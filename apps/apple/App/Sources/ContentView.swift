@@ -158,8 +158,7 @@ private struct PhoneSportCard: View {
     var body: some View {
         Button(action: start) {
             VStack(alignment: .leading, spacing: 4) {
-                Image(systemName: sport.symbolName)
-                    .font(.title2.weight(.semibold))
+                SportIcon(sport: sport, size: 34)
                     .foregroundStyle(Theme.cream)
                     .frame(width: 48, height: 48)
                     .background(Color.accentColor, in: .circle)
@@ -221,7 +220,11 @@ private struct PhoneCountdownView: View {
                 countdown.timer.duration > 0 ? countdown.timer.remaining(at: now) / countdown.timer.duration : 0
             let isFinal = seconds <= 10
             VStack(spacing: 28) {
-                Label(countdown.sport.displayName, systemImage: countdown.sport.symbolName)
+                Label {
+                    Text(countdown.sport.displayName)
+                } icon: {
+                    SportIcon(sport: countdown.sport, size: 22)
+                }
                     .font(.headline)
                     .foregroundStyle(.secondary)
                 ZStack {
@@ -321,7 +324,12 @@ private struct LiveView: View {
         ScrollView {
             VStack(spacing: 16) {
                 HStack {
-                    Label(sport.displayName, systemImage: sport.symbolName).font(.headline)
+                    Label {
+                        Text(sport.displayName)
+                    } icon: {
+                        SportIcon(sport: sport, size: 22)
+                    }
+                    .font(.headline)
                     Spacer()
                     if let state = metrics?.pauseState, let label = LiveDisplay.pauseLabel(state) {
                         Text(label)

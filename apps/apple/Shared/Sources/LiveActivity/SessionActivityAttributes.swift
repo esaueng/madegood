@@ -17,7 +17,8 @@
         }
 
         var sportName: String
-        var sportSymbol: String
+        /// Asset name of the sport's icon (Shared/Resources/SportIcons.xcassets).
+        var sportIcon: String
         var startedAt: Date
     }
 #endif

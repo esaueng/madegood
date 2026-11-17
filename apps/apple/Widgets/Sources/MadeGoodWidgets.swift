@@ -20,8 +20,12 @@ struct SessionLiveActivity: Widget {
         } dynamicIsland: { context in
             DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
-                    Label(context.attributes.sportName, systemImage: context.attributes.sportSymbol)
-                        .font(.caption)
+                    Label {
+                        Text(context.attributes.sportName)
+                    } icon: {
+                        SportImage(name: context.attributes.sportIcon, size: 16)
+                    }
+                    .font(.caption)
                 }
                 DynamicIslandExpandedRegion(.trailing) {
                     Text(timerInterval: context.attributes.startedAt...Date.distantFuture, countsDown: false)
@@ -37,11 +41,11 @@ struct SessionLiveActivity: Widget {
                     }
                 }
             } compactLeading: {
-                Image(systemName: context.attributes.sportSymbol)
+                SportImage(name: context.attributes.sportIcon, size: 20)
             } compactTrailing: {
                 Text(context.state.speedNumber).monospacedDigit().font(.caption.weight(.semibold))
             } minimal: {
-                Image(systemName: context.attributes.sportSymbol)
+                SportImage(name: context.attributes.sportIcon, size: 20)
             }
         }
     }
@@ -53,8 +57,12 @@ private struct LockScreenView: View {
     var body: some View {
         HStack(alignment: .center, spacing: 16) {
             VStack(alignment: .leading, spacing: 4) {
-                Label(context.attributes.sportName, systemImage: context.attributes.sportSymbol)
-                    .font(.subheadline.weight(.semibold))
+                Label {
+                    Text(context.attributes.sportName)
+                } icon: {
+                    SportImage(name: context.attributes.sportIcon, size: 18)
+                }
+                .font(.subheadline.weight(.semibold))
                 if let pause = context.state.pauseLabel {
                     Text(pause).font(.caption.weight(.semibold)).foregroundStyle(.yellow)
                 } else {
@@ -72,5 +80,15 @@ private struct LockScreenView: View {
             }
         }
         .foregroundStyle(.white)
+    }
+}
+
+/// A sport icon from the shared asset catalog (Shared/Resources/SportIcons.xcassets).
+private struct SportImage: View {
+    let name: String
+    let size: CGFloat
+
+    var body: some View {
+        Image(name).resizable().scaledToFit().frame(width: size, height: size)
     }
 }

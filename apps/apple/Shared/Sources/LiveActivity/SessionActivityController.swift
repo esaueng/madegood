@@ -24,7 +24,7 @@
         func start(sport: Sport, startedAt: Date) {
             guard ActivityAuthorizationInfo().areActivitiesEnabled, activity == nil else { return }
             let attributes = SessionActivityAttributes(
-                sportName: sport.displayName, sportSymbol: sport.symbolName, startedAt: startedAt)
+                sportName: sport.displayName, sportIcon: sport.iconName, startedAt: startedAt)
             let state = Self.state(nil, sport: sport)
             do {
                 let activity = try Activity.request(
