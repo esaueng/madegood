@@ -175,8 +175,9 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
     // MARK: Settings (both ways)
 
     // Each device sends its whole settings snapshot as its application context (only the
-    // latest is delivered); the receiver keeps whichever side changed last
-    // (`UserSettings.apply`).
+    // latest is delivered). The receiver keeps whichever carries the higher revision
+    // (`SettingsSync`) and answers an older one with its own, so both converge. Applying
+    // runs on the main actor, like local edits, so the two never interleave.
 
     #if os(iOS)
         /// Resends settings when the watch app is installed (or the pairing changes): an
@@ -184,10 +185,17 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
         nonisolated func sessionWatchStateDidChange(_ session: WCSession) {
             pushSettings()
         }
+    #else
+        /// Resends settings once the iPhone app is installed.
+        nonisolated func sessionCompanionAppInstalledDidChange(_ session: WCSession) {
+            pushSettings()
+        }
     #endif
 
-    /// Sends this device's settings to the other one.
-    func pushSettings() {
+    /// Sends this device's settings to the other one. If the session cannot send yet,
+    /// activation (and the install callbacks above) send them later; the snapshot is read
+    /// at that point, so nothing is lost.
+    nonisolated func pushSettings() {
         let session = WCSession.default
         guard WCSession.isSupported(), session.activationState == .activated else { return }
         #if os(iOS)
@@ -203,18 +211,37 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
     }
 
     nonisolated func session(_ session: WCSession, didReceiveApplicationContext context: [String: Any]) {
-        applySettings(context)
+        receiveSettings(context)
     }
 
-    nonisolated private func applySettings(_ context: [String: Any]) {
-        guard let settings = context[Key.settings] as? [String: Any], UserSettings.apply(settings) else { return }
+    /// Hops to the main actor (in arrival order) to apply a snapshot from the other device,
+    /// then pushes this device's settings if the other side is behind, or if `alwaysPush`.
+    nonisolated private func receiveSettings(_ context: [String: Any], alwaysPush: Bool = false) {
+        let snapshot = SendableSnapshot(value: context[Key.settings] as? [String: Any])
         DispatchQueue.main.async {
-            NotificationCenter.default.post(name: UserSettings.didChangeRemotely, object: nil)
-            #if os(iOS)
-                // Keep the phone's outgoing context current, for a watch app reinstalled later.
-                self.pushSettings()
-            #endif
+            MainActor.assumeIsolated {
+                var push = alwaysPush
+                switch snapshot.value.map(UserSettings.apply) {
+                case .applied:
+                    NotificationCenter.default.post(name: UserSettings.didChangeRemotely, object: nil)
+                    #if os(iOS)
+                        // Keep the phone's outgoing context current, for a watch app
+                        // reinstalled later.
+                        push = true
+                    #endif
+                case .keptLocalNewer:
+                    push = true
+                case .unchanged, nil:
+                    break
+                }
+                if push { self.pushSettings() }
+            }
         }
+    }
+
+    /// Property-list values from WatchConnectivity, handed to the main queue unchanged.
+    private struct SendableSnapshot: @unchecked Sendable {
+        let value: [String: Any]?
     }
 
     // MARK: Both
@@ -225,11 +252,11 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
     ) {
         if let error { print("RecordingTransfer: activation failed: \(error)") }
         guard activationState == .activated else { return }
-        applySettings(session.receivedApplicationContext)
+        // Both sides send their settings on activation: an edit made before activation
+        // (whose push returned early) goes out now, and the receiver keeps the newer.
+        receiveSettings(session.receivedApplicationContext, alwaysPush: true)
         #if os(watchOS)
             sendAllPending()
-        #else
-            pushSettings()
         #endif
     }
 }

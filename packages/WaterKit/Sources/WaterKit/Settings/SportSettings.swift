@@ -181,6 +181,7 @@ extension SportSettings {
         switch value {
         case let value as Double: value
         case let value as Int: Double(value)
+        case let value as Int64: Double(value)
         case let value as String: Double(value)
         default: nil
         }
