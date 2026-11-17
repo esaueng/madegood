@@ -68,6 +68,10 @@ final class SessionRecorder {
     private var startupInterruption: String?
     private var clockObserver: (any NSObjectProtocol)?
     private var engine: SessionEngine?
+    private var liveSport: Sport?
+    #if os(iOS)
+        private let liveActivity = SessionActivityController()
+    #endif
     /// The session the engine belongs to. Sensor callbacks carry the session they came
     /// from, so a late one from an earlier session never reaches this engine.
     private var liveSession: UUID?
@@ -200,6 +204,10 @@ final class SessionRecorder {
             MainActor.assumeIsolated { self?.writeClockAnchor() }
         }
         state = .recording(sessionId: sessionId, startedAt: startedAt, sport: sport)
+        liveSport = sport
+        #if os(iOS)
+            liveActivity.start(sport: sport, startedAt: startedAt)
+        #endif
     }
 
     /// Undoes a start that cannot continue: nothing has been recorded yet.
@@ -317,6 +325,9 @@ final class SessionRecorder {
         writtenGeneratedEvents = generated.count
         self.engine = engine
         metrics = engine.snapshot
+        #if os(iOS)
+            if let liveSport { liveActivity.update(metrics, sport: liveSport) }
+        #endif
     }
 
     /// Moves the engine's clock to now, so elapsed time and a stale speed update even when
@@ -439,6 +450,10 @@ final class SessionRecorder {
 
         ingest(.event(SessionEvent(t: endedAt.timeIntervalSince1970 - startUnix, type: .stop)))
         writers[.events]?.append(RawFormat.EventLine(ts: endedAt.timeIntervalSince1970, type: .stop))
+        #if os(iOS)
+            if let liveSport { liveActivity.end(metrics, sport: liveSport) }
+        #endif
+        liveSport = nil
         writeClockAnchor()
         refreshCounts()
         let writers = Array(writers.values)

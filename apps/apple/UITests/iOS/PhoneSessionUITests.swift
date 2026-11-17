@@ -21,6 +21,15 @@ final class PhoneSessionUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["metric.distance"].exists)
         attachScreenshot("2 recording")
 
+        // The Live Activity: leave the app and look at the Dynamic Island and Lock Screen.
+        XCUIDevice.shared.press(.home)
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        _ = springboard.wait(for: .runningForeground, timeout: 5)
+        sleep(6)  // let an update with live numbers arrive
+        attachScreenshot("2b live activity")
+        app.activate()
+        XCTAssertTrue(speed.waitForExistence(timeout: 10))
+
         app.buttons["control.pause"].tap()
         XCTAssertTrue(app.staticTexts["pauseBadge"].waitForExistence(timeout: 10))
         attachScreenshot("3 paused")
