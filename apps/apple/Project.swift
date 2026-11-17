@@ -96,6 +96,7 @@ let project = Project(
             resources: ["Watch/Resources/**"],
             entitlements: healthKit,
             dependencies: [
+                .target(name: "MadeGoodWatchWidgets"),
                 .external(name: "WaterKit"),
             ]
         ),
@@ -109,6 +110,17 @@ let project = Project(
                 "NSExtension": ["NSExtensionPointIdentifier": "com.apple.widgetkit-extension"],
             ]),
             sources: ["Widgets/Sources/**", "Shared/Sources/LiveActivity/SessionActivityAttributes.swift"]
+        ),
+        .target(
+            name: "MadeGoodWatchWidgets",
+            destinations: [.appleWatch],
+            product: .appExtension,
+            bundleId: "$(BUNDLE_ID_PREFIX).watchkitapp.complications",
+            deploymentTargets: watchOSTarget,
+            infoPlist: plist(versionKeys, [
+                "NSExtension": ["NSExtensionPointIdentifier": "com.apple.widgetkit-extension"],
+            ]),
+            sources: ["WatchWidgets/Sources/**"]
         ),
         // UI tests run the apps in demo mode (DemoFeed): no GPS, Health or prompts.
         .target(
