@@ -16,9 +16,11 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}
-  # Cancel superseded PR runs; let every main and merge-queue run finish.
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # PR runs share a group per PR, so a new push cancels the superseded run. Every other
+  # run (main, merge queue, manual) gets its own group, so none is cancelled or dropped
+  # while pending.
+  group: ${{ github.event_name == 'pull_request' && format('ci-pr-{0}', github.event.pull_request.number) || format('ci-run-{0}', github.run_id) }}
+  cancel-in-progress: true
 
 jobs:
   changes:

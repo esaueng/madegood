@@ -18,7 +18,9 @@ if [ -z "$base" ] || [ -z "$head" ] \
   all
 fi
 
-files=$(git diff --name-only "$base...$head")
+# --no-renames lists both sides of a move, so moving a file out of an area still
+# triggers that area's checks.
+files=$(git diff --name-only --no-renames "$base...$head")
 echo "Changed files:" >&2
 printf '  %s\n' $files >&2
 
