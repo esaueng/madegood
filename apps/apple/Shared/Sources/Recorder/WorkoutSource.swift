@@ -16,6 +16,9 @@ final class WorkoutSource: NSObject, HKWorkoutSessionDelegate, HKLiveWorkoutBuil
     private let lastHeartRateDate = Mutex<Date?>(nil)
     private let state = Mutex<(session: HKWorkoutSession?, builder: HKLiveWorkoutBuilder?)>((nil, nil))
     private let route = Mutex<HKWorkoutRouteBuilder?>(nil)
+    /// Route inserts run one after another; `stop` waits for the last before finishing.
+    private let routeInserts = Mutex<Task<Void, Never>?>(nil)
+    private let routePoints = Mutex(0)
     private let isStopping = Mutex(false)
     /// Called (on an arbitrary queue) if the workout fails or ends without `stop`, which
     /// means the app no longer has guaranteed background time.
@@ -61,11 +64,16 @@ final class WorkoutSource: NSObject, HKWorkoutSessionDelegate, HKLiveWorkoutBuil
     /// Adds accepted positions to the workout route (inserted in the background).
     func addRoute(_ locations: [CLLocation]) {
         guard let builder = route.withLock({ $0 }), !locations.isEmpty else { return }
-        Task.detached {
-            do {
-                try await builder.insertRouteData(locations)
-            } catch {
-                print("WorkoutSource: route insert failed: \(error)")
+        routeInserts.withLock { chain in
+            let previous = chain
+            chain = Task.detached { [self] in
+                await previous?.value
+                do {
+                    try await builder.insertRouteData(locations)
+                    self.routePoints.withLock { $0 += locations.count }
+                } catch {
+                    print("WorkoutSource: route insert failed: \(error)")
+                }
             }
         }
     }
@@ -86,6 +94,13 @@ final class WorkoutSource: NSObject, HKWorkoutSessionDelegate, HKLiveWorkoutBuil
             return current
         }
         session?.end()
+        // No new inserts can start now (the route builder is taken); finish the queued ones.
+        let pendingInserts: Task<Void, Never>? = routeInserts.withLock { chain in
+            let last = chain
+            chain = nil
+            return last
+        }
+        await pendingInserts?.value
         guard let builder else { return false }
         do {
             try await builder.endCollection(at: date)
@@ -97,14 +112,29 @@ final class WorkoutSource: NSObject, HKWorkoutSessionDelegate, HKLiveWorkoutBuil
             routeBuilder?.discard()
             return false
         }
+        let workout: HKWorkout
         do {
-            guard let workout = try await builder.finishWorkout() else { return false }
-            if let routeBuilder { try await routeBuilder.finishRoute(with: workout, metadata: nil) }
-            return true
+            guard let saved = try await builder.finishWorkout() else { return false }
+            workout = saved
         } catch {
             print("WorkoutSource: saving the workout failed: \(error)")
+            routeBuilder?.discard()
             return false
         }
+        // The route is optional: the workout is already saved even if it fails (say,
+        // route sharing was denied). An empty route cannot be finished, so it is discarded.
+        if let routeBuilder {
+            if routePoints.withLock({ $0 }) > 0 {
+                do {
+                    try await routeBuilder.finishRoute(with: workout, metadata: nil)
+                } catch {
+                    print("WorkoutSource: saving the route failed: \(error)")
+                }
+            } else {
+                routeBuilder.discard()
+            }
+        }
+        return true
     }
 
     static func activityType(for sport: Sport) -> HKWorkoutActivityType {

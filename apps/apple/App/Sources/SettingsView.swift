@@ -67,6 +67,9 @@ struct SettingsView: View {
                 }
             }
             .tint(.accentColor)
+            .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)) { _ in
+                RecordingTransfer.shared.pushSettings()
+            }
             .navigationTitle("Settings")
         }
     }

@@ -11,6 +11,29 @@ enum UserSettings {
         static func saveWorkout(_ sport: Sport) -> String { "settings.saveWorkout.\(sport.rawValue)" }
     }
 
+    /// Every stored setting, to send to the watch (`RecordingTransfer.pushSettings`).
+    static func snapshot() -> [String: Any] {
+        var keys = [Key.speedUnit, Key.distanceUnit]
+        for sport in Sport.allCases { keys += [Key.autoPause(sport), Key.saveWorkout(sport)] }
+        return keys.reduce(into: [:]) { result, key in
+            if let value = defaults.object(forKey: key) { result[key] = value }
+        }
+    }
+
+    /// Applies settings received from the phone; keys it no longer has are removed, so
+    /// "Automatic" on the phone becomes automatic on the watch too.
+    static func apply(_ snapshot: [String: Any]) {
+        var keys = [Key.speedUnit, Key.distanceUnit]
+        for sport in Sport.allCases { keys += [Key.autoPause(sport), Key.saveWorkout(sport)] }
+        for key in keys {
+            if let value = snapshot[key] {
+                defaults.set(value, forKey: key)
+            } else {
+                defaults.removeObject(forKey: key)
+            }
+        }
+    }
+
     /// Stored value for "use the sport's default".
     static let automatic = "auto"
 
