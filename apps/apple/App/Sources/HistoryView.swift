@@ -32,6 +32,8 @@ struct HistoryView: View {
                 SessionDetailView(item: item, library: library)
             }
             .refreshable { library.reload() }
+            // Settings such as auto-pause change the summaries; cached ones are reused.
+            .onAppear { library.reload() }
         }
     }
 

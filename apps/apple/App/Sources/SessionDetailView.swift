@@ -13,6 +13,8 @@ struct SessionDetailView: View {
     @State private var failed = false
     @State private var share: ShareFile?
     @State private var confirmDelete = false
+    /// Bumped when a file arrives from the watch, to reload a recording still arriving.
+    @State private var reloads = 0
     @Environment(\.dismiss) private var dismiss
 
     struct Analysis {
@@ -39,7 +41,10 @@ struct SessionDetailView: View {
         }
         .navigationTitle(item.entry.meta?.sport.displayName ?? "Session")
         .navigationBarTitleDisplayMode(.inline)
-        .task { await load() }
+        .task(id: reloads) { await load() }
+        .onReceive(NotificationCenter.default.publisher(for: RecordingTransfer.didReceiveFile)) { _ in
+            reloads += 1
+        }
         .sheet(item: $share) { file in
             ShareSheet(url: file.url)
         }

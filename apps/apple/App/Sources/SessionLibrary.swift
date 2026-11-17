@@ -4,7 +4,8 @@ import WaterKit
 
 /// The recordings on this phone with their analyzed summaries, newest first. Summaries
 /// come from replaying each recording through the session engine (without the motion
-/// stream) in the background, and are cached until the recording's files change.
+/// stream) in the background, and are cached until the recording's files or the
+/// sport's auto-pause setting change.
 @MainActor
 @Observable
 final class SessionLibrary {
@@ -21,7 +22,13 @@ final class SessionLibrary {
     }
 
     private(set) var items: [Item] = []
-    private var cache: [URL: (bytes: Int64, summary: Summary)] = [:]
+    /// What a cached summary was computed from; it is reused only while both still hold.
+    private struct CacheKey: Equatable {
+        var bytes: Int64
+        var autoPause: Bool
+    }
+
+    private var cache: [URL: (key: CacheKey, summary: Summary)] = [:]
 
     func reload() {
         let entries = RecordingStore.list()
@@ -32,10 +39,16 @@ final class SessionLibrary {
             let results = await Task.detached(priority: .userInitiated) {
                 missing.map { entry in (entry, Self.summarize(entry)) }
             }.value
+            // Files may have changed while this ran (a recording arriving from the watch),
+            // and a newer reload may already have finished. Keep a result only if it
+            // still describes the recording as it is now.
+            let current = RecordingStore.list()
+            let currentBytes = Dictionary(current.map { ($0.folder, $0.bytes) }, uniquingKeysWith: { a, _ in a })
             for (entry, summary) in results {
-                if let summary { cache[entry.folder] = (entry.bytes, summary) }
+                guard let summary, currentBytes[entry.folder] == entry.bytes else { continue }
+                cache[entry.folder] = (key(for: entry, sport: summary.sport), summary)
             }
-            items = RecordingStore.list().map { Item(entry: $0, summary: cachedSummary(for: $0)) }
+            items = current.map { Item(entry: $0, summary: cachedSummary(for: $0)) }
         }
     }
 
@@ -55,8 +68,14 @@ final class SessionLibrary {
     }
 
     private func cachedSummary(for entry: RecordingStore.Entry) -> Summary? {
-        guard let cached = cache[entry.folder], cached.bytes == entry.bytes else { return nil }
+        guard let cached = cache[entry.folder], cached.key == key(for: entry, sport: cached.summary.sport) else {
+            return nil
+        }
         return cached.summary
+    }
+
+    private func key(for entry: RecordingStore.Entry, sport: Sport) -> CacheKey {
+        CacheKey(bytes: entry.bytes, autoPause: UserSettings.profile(for: sport).autoPause.enabled)
     }
 
     nonisolated static func summarize(_ entry: RecordingStore.Entry) -> Summary? {

@@ -37,3 +37,38 @@ final class PhoneScreensUITests: XCTestCase {
         attachScreenshot("settings")
     }
 }
+
+/// Regression test from the PR #26 review: History kept showing summaries computed with
+/// the old auto-pause setting after it changed.
+final class HistorySettingsUITests: XCTestCase {
+    override func setUp() {
+        continueAfterFailure = false
+    }
+
+    func testAutoPauseChangeUpdatesHistory() {
+        // The demo kayak session (35 min) has a 2 min stop: auto-pause on gives 33:01
+        // moving, off gives the full 35:00. The setting is changed in the app, as a user
+        // would (a launch argument would pin it).
+        let app = launchDemoApp(extraArguments: ["-demoHistory"])
+        setKayakAutoPause(true, app)
+        expectHistory(showing: "33:01", app)
+        setKayakAutoPause(false, app)
+        expectHistory(showing: "35:00", app)
+        setKayakAutoPause(true, app)
+    }
+
+    private func setKayakAutoPause(_ on: Bool, _ app: XCUIApplication) {
+        app.tabBars.buttons["Settings"].tap()
+        let toggle = app.switches["settings.autoPause.kayak"]
+        XCTAssertTrue(toggle.waitForExistence(timeout: 10))
+        if (toggle.value as? String == "1") != on { toggle.switches.firstMatch.tap() }
+        XCTAssertEqual(toggle.value as? String, on ? "1" : "0")
+    }
+
+    private func expectHistory(showing text: String, _ app: XCUIApplication) {
+        app.tabBars.buttons["History"].tap()
+        let label = app.staticTexts[text]
+        for _ in 0..<6 where !label.waitForExistence(timeout: 3) { app.swipeUp() }
+        XCTAssertTrue(label.exists, "History never showed \(text)")
+    }
+}
