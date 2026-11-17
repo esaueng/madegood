@@ -1,0 +1,39 @@
+#!/usr/bin/env python3
+"""Print the UDID of an available simulator: the newest runtime for PLATFORM (iOS or
+watchOS) with a device whose name starts with PREFIX. Used by CI, whose runner images
+change which simulators exist.
+
+Usage: scripts/pick-simulator iOS "iPhone"
+       scripts/pick-simulator watchOS "Apple Watch"
+"""
+import json
+import re
+import subprocess
+import sys
+
+
+def main() -> int:
+    if len(sys.argv) != 3:
+        print(__doc__, file=sys.stderr)
+        return 2
+    platform, prefix = sys.argv[1], sys.argv[2]
+    listing = subprocess.run(
+        ["xcrun", "simctl", "list", "devices", "available", "--json"], check=True, capture_output=True, text=True
+    ).stdout
+    devices = json.loads(listing)["devices"]
+
+    def version(runtime: str) -> tuple:
+        match = re.search(rf"\.{platform}-([\d-]+)$", runtime)
+        return tuple(int(part) for part in match.group(1).split("-")) if match else ()
+
+    for runtime in sorted((r for r in devices if version(r)), key=version, reverse=True):
+        for device in devices[runtime]:
+            if device["name"].startswith(prefix):
+                print(device["udid"])
+                return 0
+    print(f"No available {platform} simulator named {prefix}*", file=sys.stderr)
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
