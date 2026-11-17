@@ -26,11 +26,9 @@ func fail(_ message: String, _ code: Int32) -> Never {
     exit(code)
 }
 
-let fm = FileManager.default
-
 func isDirectory(_ url: URL) -> Bool {
     var directory: ObjCBool = false
-    return fm.fileExists(atPath: url.path, isDirectory: &directory) && directory.boolValue
+    return FileManager.default.fileExists(atPath: url.path, isDirectory: &directory) && directory.boolValue
 }
 
 func isTrackFile(_ url: URL) -> Bool {
@@ -43,8 +41,10 @@ func isTrackFile(_ url: URL) -> Bool {
 /// Recording folders (containing meta.json) and track files under `root`.
 func recordings(under root: URL) -> [URL] {
     if !isDirectory(root) { return [root] }
-    if fm.fileExists(atPath: root.appendingPathComponent(RawFormat.metaFileName).path) { return [root] }
-    let children = (try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? []
+    if FileManager.default.fileExists(atPath: root.appendingPathComponent(RawFormat.metaFileName).path) {
+        return [root]
+    }
+    let children = (try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? []
     return children.sorted { $0.path < $1.path }.flatMap { child -> [URL] in
         if isDirectory(child) { return recordings(under: child) }
         return isTrackFile(child) ? [child] : []
@@ -92,8 +92,8 @@ guard arguments.count == 2, !arguments.contains(where: { $0.hasPrefix("-") }) el
 
 let input = URL(fileURLWithPath: arguments[0])
 var output = URL(fileURLWithPath: arguments[1])
-guard fm.fileExists(atPath: input.path) else { fail("No such file or folder: \(input.path)", 1) }
-guard !fm.fileExists(atPath: output.path) else { fail("Output already exists: \(output.path)", 1) }
+guard FileManager.default.fileExists(atPath: input.path) else { fail("No such file or folder: \(input.path)", 1) }
+guard !FileManager.default.fileExists(atPath: output.path) else { fail("Output already exists: \(output.path)", 1) }
 
 do {
     let anonymizer = Anonymizer()
