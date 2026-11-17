@@ -66,6 +66,9 @@ final class SessionRecorder {
     private var startupInterruption: String?
     private var clockObserver: (any NSObjectProtocol)?
     private var engine: SessionEngine?
+    /// The session the engine belongs to. Sensor callbacks carry the session they came
+    /// from, so a late one from an earlier session never reaches this engine.
+    private var liveSession: UUID?
     /// Unix time of the session start; engine times are seconds since it.
     private var startUnix = 0.0
     /// How many of the engine's generated events are already in events.ndjson.
@@ -118,6 +121,7 @@ final class SessionRecorder {
         self.meta = meta
         writeMeta()
         engine = SessionEngine(sport: sport)
+        liveSession = sessionId
         startUnix = anchor.unix
         writtenGeneratedEvents = 0
         metrics = engine?.snapshot
@@ -135,7 +139,7 @@ final class SessionRecorder {
                     Task { @MainActor in await self?.workoutInterrupted(message) }
                 },
                 onHeartRate: { [weak self] line in
-                    Task { @MainActor in self?.ingestHeartRate(line) }
+                    Task { @MainActor in self?.ingestHeartRate(line, session: sessionId) }
                 })
             do {
                 try await workout.start(sport: sport, at: startedAt)
@@ -167,7 +171,7 @@ final class SessionRecorder {
 
         if let writer = writers[.gps] {
             let location = LocationSource(writer: writer) { [weak self] line in
-                Task { @MainActor in self?.ingestFix(line) }
+                Task { @MainActor in self?.ingestFix(line, session: sessionId) }
             }
             location.start()
             self.location = location
@@ -196,6 +200,7 @@ final class SessionRecorder {
     /// Undoes a start that cannot continue: nothing has been recorded yet.
     private func abandonStart(folder: URL) {
         engine = nil
+        liveSession = nil
         metrics = nil
         writers = [:]
         meta = nil
@@ -253,8 +258,11 @@ final class SessionRecorder {
 
     // MARK: Live analysis
 
-    private func ingestFix(_ line: RawFormat.GPSLine) {
-        guard isRecording, let before = engine?.snapshot.acceptedFixes else { return }
+    // Callbacks are accepted from the start of `start()` until `stop()` has fed the engine
+    // its stop event, so readings queued while starting or stopping are not lost.
+
+    private func ingestFix(_ line: RawFormat.GPSLine, session: UUID) {
+        guard session == liveSession, let before = engine?.snapshot.acceptedFixes else { return }
         let fix = GPSFix(
             t: line.ts - startUnix, latitude: line.lat, longitude: line.lon, altitude: line.alt,
             horizontalAccuracy: line.hacc, verticalAccuracy: line.vacc, speed: line.spd,
@@ -265,8 +273,8 @@ final class SessionRecorder {
         }
     }
 
-    private func ingestHeartRate(_ line: RawFormat.HRLine) {
-        guard isRecording else { return }
+    private func ingestHeartRate(_ line: RawFormat.HRLine, session: UUID) {
+        guard session == liveSession else { return }
         ingest(.hr(HRSample(t: line.ts - startUnix, bpm: line.bpm)))
     }
 
@@ -280,6 +288,15 @@ final class SessionRecorder {
                 RawFormat.EventLine(ts: startUnix + event.t, type: event.type, data: event.data))
         }
         writtenGeneratedEvents = generated.count
+        self.engine = engine
+        metrics = engine.snapshot
+    }
+
+    /// Moves the engine's clock to now, so elapsed time and a stale speed update even when
+    /// no sensor is reporting.
+    private func tick() {
+        guard isRecording, var engine else { return }
+        engine.advance(to: Date().timeIntervalSince1970 - startUnix)
         self.engine = engine
         metrics = engine.snapshot
     }
@@ -308,6 +325,13 @@ final class SessionRecorder {
                 while !Task.isCancelled {
                     try? await Task.sleep(for: Self.clockAnchorInterval)
                     self?.writeClockAnchor()
+                }
+            })
+        loops.append(
+            Task { [weak self] in
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .seconds(1))
+                    self?.tick()
                 }
             })
     }
@@ -385,6 +409,7 @@ final class SessionRecorder {
         workout = nil
         self.writers = [:]
         engine = nil
+        liveSession = nil
         meta = nil
         self.folder = nil
         state = .idle
