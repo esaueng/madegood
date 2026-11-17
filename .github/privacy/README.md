@@ -1,128 +1,79 @@
-# History privacy checks
+# Privacy checks
 
-`history-privacy` prevents replaced Git objects and removed identifiers from
-entering protected history. It supplements `commit-privacy` and secret scanning.
+Two required checks keep private information out of MadeGood's history. Both
+are published by the **Esau History Privacy** GitHub App from one protected job,
+`.github/workflows/history-privacy.yml`.
 
-## What is inspected
+| Check | Looks at | Fails when |
+|---|---|---|
+| `history-privacy` | Every new commit, tree, blob, annotated tag and branch/tag name, including files deleted again before the tip | A value on the operator's private denylist appears anywhere, in any letter case |
+| `commit-privacy` | Author and committer of every new commit | An identity is not a GitHub noreply address or an approved bot, or the protected account uses anything but its own noreply |
 
-- Incoming raw commits: authors, committers, messages, signatures and merge parents.
-- Every newly reachable tree and blob, including filenames, binary data and files
-  deleted again before the branch tip.
-- Annotated and nested tags and incoming branch/tag names.
-- Raw binary tree references, including submodule/gitlink targets that Git's
-  object traversal deliberately does not follow. Submodules are never fetched.
-- Fingerprints of objects replaced by both October 16, 2026 redaction passes.
-- Full-length textual references to those replaced object IDs, including pins.
+They back up the local `git-privacy-guard` hooks, which stay the first line of
+defence: CI runs after GitHub already has the push, so it blocks the merge but
+cannot retract a pushed branch. They also cover commits that never pass through
+those hooks (GitHub web edits, cloud agents, bots). Neither check looks for
+general secrets such as API keys.
 
-The blocked-object ledger is the union for all six public Esau repositories.
-A dependency pin or gitlink cannot point at another project's retired object
-merely because that object is absent from this repository's object database.
-The policy requires the complete public-repository scope. MadeGood is not one
-of those six repositories, but it carries the same ledger for the same reason.
+## Denylist fingerprints
 
-This scanner, its tests and the ledger come from OpenZCAD. `policy.json` is
-MadeGood's own: its baseline is MadeGood's first audited `main` commit, and its
-fingerprints use a key generated for this repository. Because this repository is
-private, the scanner's fetches also authenticate (see below); that is the only
-code change from OpenZCAD.
+The denylist itself is never committed. `policy.json` holds, for each entry,
+its length and HMAC-SHA256 fingerprints of the lower-cased value and of its
+first two bytes. The 256-bit key is the `history-privacy` environment secret
+`HISTORY_PRIVACY_HMAC_KEY`, used only by this repository. The scanner recovers
+the two-byte prefixes in memory to find candidate offsets and compares full
+values by HMAC only. Failures never print the value, path or object ID.
 
-The baseline is an audited, immutable clean commit recorded in `policy.json`.
-Incoming history is compared to that fixed commit, rather than trusting the
-previous push tip, PR commit-list limits, replace refs, or retained PR/cache refs.
-Manual dispatch and the daily audit inspect all advertised owner branches and
-tags, including baseline ancestry. The daily default-branch run also detects
-old branches/tags whose own history lacks the new push workflow.
-Missing objects, shallow history, invalid policy and missing/mismatched
-keys fail verification.
+`baseline` is an audited clean commit. Pull requests are scanned from the
+baseline to their head, so earlier commits on a branch cannot hide behind a
+clean tip. Pushes to `main`, the daily run and a plain manual dispatch scan every
+branch and tag in full.
 
-`blocked-history.bin` contains sorted 32-byte SHA-256 fingerprints of **old object
-IDs**, not the original IDs or their contents. Its checksum and count are recorded
-in the policy. This avoids publishing pointers to removed GitHub objects.
+## Trust boundary
 
-Removed identifiers remain in the operator's local private denylist. Public
-policy entries contain lengths and domain-separated HMAC-SHA256 fingerprints of
-each case-folded byte string and its two-byte prefix. The random 256-bit key is
-the protected `history-privacy` environment secret `HISTORY_PRIVACY_HMAC_KEY`. Short prefixes are
-recovered in memory using the key; efficient prefix searches select candidates
-for full HMAC comparison. Neither private strings nor the key are committed.
-Do not replace keyed fingerprints with unsalted hashes of private identifiers.
+- Every trigger (`pull_request_target`, `push` to `main`, `schedule`,
+  `workflow_dispatch`) runs the workflow and scanner as they exist on `main`;
+  the scanner is checked out at `github.workflow_sha`, never the PR head. A PR
+  that edits the scanner is audited by the current one.
+- The `history-privacy` environment releases its secrets to `main` only.
+- Incoming objects are fetched into a fresh bare repository as data. Nothing is
+  checked out, built or executed. Git subprocesses get no key or App token;
+  only `git fetch` gets the job's read-only `GITHUB_TOKEN`, through Git's
+  environment configuration, because this repository is private.
+- `pull_request_target` runs on the base commit, so the job publishes both
+  checks on the exact PR head through the App. Branch protection must bind both
+  checks to that App: a check with the same name from any other source, such as
+  a workflow on a PR branch, does not satisfy it.
 
-## Trust and merge enforcement
+## Setup
 
-The audit workflow pins its scanner and policy checkout to a reviewed immutable
-commit, retained by an update- and deletion-protected policy tag so squash merges
-cannot orphan it. PR events use `pull_request_target` so a PR cannot change its own policy.
-The privileged workflow has no `push` or `merge_group` trigger. A separate,
-unprivileged requester runs those events; its completion triggers the audit from
-the default branch through `workflow_run`. The audit trusts only GitHub event
-metadata for the exact owner-repository head and requester workflow path (with
-or without GitHub's ref suffix); it
-ignores requester conclusions, outputs and artifacts. Every push request audits
-all advertised owner branches/tags as well as the originally requested head, so
-annotated-tag objects and their metadata cannot be lost by event peeling.
-The requester runs for pushes to `main`, tag pushes and merge-queue candidates.
-A pull-request head is audited once, by the `pull_request_target` run; a branch
-with no pull request is inspected by the next `main` or tag push and by the
-daily audit, both of which read every advertised branch.
-Incoming Git objects are fetched into a fresh bare repository as data. The audit
-never checks out incoming trees, runs their programs, installs their dependencies,
-loads their configuration or uploads their contents as artifacts. Git subprocesses
-do not inherit the HMAC key or API tokens. Only `git fetch` receives the job's
-contents-read `GITHUB_TOKEN`, as a github.com-scoped HTTP header passed through
-Git's environment configuration (never argv), because this repository is private.
+1. Install the Esau History Privacy App on this repository (checks: write,
+   metadata: read).
+2. Create the `history-privacy` environment with deployment branches limited to
+   `main`. Add environment secrets `HISTORY_PRIVACY_HMAC_KEY` and
+   `HISTORY_PRIVACY_APP_PRIVATE_KEY`, and repository variable
+   `HISTORY_PRIVACY_APP_CLIENT_ID`.
+3. After the first App-published run passes on `main`, require
+   `history-privacy` and `commit-privacy` from the App on `main`.
 
-The job publishes a separate `history-privacy` check explicitly on the PR head
-(or merge-group candidate). This matters because `pull_request_target` itself
-runs on the default-branch SHA. The workflow job is named
-`history-privacy-audit` to distinguish it from the required head check.
+Merge queues are not supported: candidates would never receive these checks.
 
-Require both `history-privacy` and `commit-privacy` from the dedicated **Esau History Privacy** GitHub App
-in protected-main status checks, alongside all existing checks. The App has only
-checks write and mandatory metadata read access, installed on the six public
-repositories and on this one. Its job token is restricted to the current repository and revoked
-after use. An Actions-app check with the same name cannot satisfy either binding.
-The protected History workflow publishes the authoritative identity verdict
-using pinned policy/code. The read-only `commit-privacy.yml` convenience check
-that repeated it on every pull-request push was removed; it could never satisfy
-the App-bound requirement.
-Read-only metadata API requests use the contents-read Actions token, while only
-check publication uses the dedicated App token.
-The audit's own `GITHUB_TOKEN` has contents read permission only.
+## Changing the policy
 
-Provision the HMAC key and `HISTORY_PRIVACY_APP_PRIVATE_KEY` only as environment
-secrets, and `HISTORY_PRIVACY_APP_CLIENT_ID` as a repository variable. The
-`history-privacy` environment must use **selected branches and tags**, allowing
-only branch `main`. GitHub runs `pull_request_target`, `workflow_run` and
-dispatched workflows only from definitions already on the default branch, so
-the first App-published audit runs from the `main` push that adds them; no
-bootstrap tag exception is needed. Do not allow arbitrary protected
-branches, tag patterns, or merge-queue branches to access these credentials.
+- **Denylist entries:** regenerate `policy.json` locally from the private
+  denylist with the current key. Never commit plaintext values or unkeyed hashes.
+- **Key rotation:** regenerate every fingerprint and `verification_digest` with
+  the new key, then replace the secret. Rotating only the secret makes every
+  run fail.
+- **Approved identities:** edit `PROTECTED_LOGINS`, `PUBLIC_DISPLAY_NAMES` or
+  the bot tables in `commit_privacy.py`. Public handles only.
 
-Keep admin enforcement enabled and force pushes disabled. Preserve active merge
-queues and their existing review rules. Provision credentials and verify a real
-App-published passing audit before enforcing the App-specific required check.
+## Tests
 
-Public fingerprint updates and scanner updates go through review. To update the
-pin, first commit the scanner, tests and policy, preserve the source with a new
-`history-privacy-policy-*` tag, then pin that commit in a second commit.
-A protected bootstrap dispatch may specify `audit_head` as an exact commit,
-including a merge-group candidate; ordinary dispatch without an input audits all
-owner refs. Never dispatch from an untrusted ref.
-Regenerate keyed fingerprints when rotating the key; do not rotate only
-the secret. A new redaction must add the replaced objects to the blocked set and
-extend local denylist coverage before refreshing the public policy.
+```sh
+python3 -m unittest discover -s .github/privacy -p 'test_*.py'
+```
 
-## Validation and limits
-
-Run `python3 -m unittest discover -s .github/privacy -p 'test_*.py'`.
-Tests use synthetic identifiers and disposable Git repositories only. They do not
-require the production key. Local full-history verification can use
-`history_privacy.py --repo REPO --head FULL_SHA --full` with the key provided only
-through the environment.
-
-CI checks run after GitHub receives a push. Required checks protect merging into
-`main`; they cannot retract a public branch/tag upload or replace a server-side
-pre-receive hook. Keep the local Git privacy guard installed and verified before
-every push. These checks cover known removed identifiers and replaced objects;
-they do not infer every possible new secret, encoded representation, or private
-identifier. Existing general secret scans continue to serve that separate role.
+They use synthetic identifiers and throwaway repositories, need no key, and run
+in `privacy-tests.yml` on changes to these files. A local full-history audit:
+`HISTORY_PRIVACY_HMAC_KEY=… python3 .github/privacy/history_privacy.py --repo . --full --head <sha>`.

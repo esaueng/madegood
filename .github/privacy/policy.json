@@ -1,13 +1,7 @@
 {
-  "version": 1,
+  "version": 2,
   "baseline": "71a5954d95748db21629e69689dfbaa499ce8a9e",
-  "redaction_passes": [
-    "2026-10-16-initial",
-    "2026-10-16-email-followup"
-  ],
   "verification_digest": "f5c31df7f7d542f984845b46daf920eed310cd2774e63d0dbcddd6c01e0f33e8",
-  "blocked_file_sha256": "cebcef27bfb595581b6dd7032fedf1d70bfa08f5c2faf4c4f25bf9e1850824b1",
-  "blocked_object_count": 61268,
   "identifiers": [
     {
       "length": 19,
@@ -39,13 +33,5 @@
       "prefix_digest": "384101f4cdb87dd96b8b8d3c6db3d124894c0e9ab717184214def801ccbeab71",
       "digest": "51a1387e4ca02768ccaca9310cd05fc76c9d3de3ce3e30924acd63f97151ea6e"
     }
-  ],
-  "object_ledger_scope": [
-    "esaueng/OpenFEA",
-    "esaueng/OpenLattice3D",
-    "esaueng/OpenZCAD",
-    "esaueng/glimpse",
-    "esaueng/isitjunk",
-    "esaueng/remus"
   ]
 }

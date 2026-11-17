@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
-"""Inspect Git objects as data; never check out or execute incoming code."""
+"""Audit new Git history for denylisted identifiers.
+
+Every newly reachable commit, tree, blob, annotated tag and ref name is read as
+data and checked against keyed fingerprints of the operator's private denylist.
+Incoming code is never checked out or executed, and failures never echo the
+matched value, path or object ID.
+"""
 
 import argparse
 import base64
-import hashlib
 import hmac
 import json
 import os
@@ -17,16 +22,15 @@ import urllib.request
 
 OID = re.compile(r"[0-9a-f]{40}")
 HEX256 = re.compile(r"[0-9a-f]{64}")
-OBJECT_REFERENCE = re.compile(rb"(?<![0-9a-f])[0-9a-f]{40}(?![0-9a-f])")
+REPOSITORY = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 CHUNK = 1024 * 1024
-PUBLIC_REPOSITORIES = tuple(sorted((
-    "esaueng/remus", "esaueng/OpenZCAD", "esaueng/OpenFEA",
-    "esaueng/OpenLattice3D", "esaueng/glimpse", "esaueng/isitjunk",
-)))
+POLICY_VERSION = 2
+# Never handed to Git subprocesses (GH_READ_TOKEN only to fetches, see git()).
+PRIVATE_ENV = ("HISTORY_PRIVACY_HMAC_KEY", "GH_TOKEN", "GH_READ_TOKEN")
 
 
 class PrivacyError(Exception):
-    """Errors intentionally contain no incoming content or identifiers."""
+    """Messages intentionally contain no incoming content or identifiers."""
 
 
 def fingerprint(key, domain, value):
@@ -34,26 +38,18 @@ def fingerprint(key, domain, value):
 
 
 class Policy:
+    """Keyed fingerprints of denylisted values; the plaintext never leaves the operator."""
+
     def __init__(self, path, key):
         try:
             data = json.loads(Path(path).read_text(encoding="utf-8"))
             self.key = bytes.fromhex(key)
-            if len(self.key) != 32 or data["version"] != 1:
-                raise ValueError()
-            if data["object_ledger_scope"] != list(PUBLIC_REPOSITORIES):
+            if len(self.key) != 32 or data["version"] != POLICY_VERSION:
                 raise ValueError()
             if not hmac.compare_digest(data["verification_digest"], fingerprint(self.key, b"key", b"history-privacy-v1")):
                 raise ValueError()
             self.baseline = data["baseline"]
             if not OID.fullmatch(self.baseline):
-                raise ValueError()
-            blocked = Path(path).with_name("blocked-history.bin").read_bytes()
-            if (len(blocked) % 32 or not blocked or
-                    hashlib.sha256(blocked).hexdigest() != data["blocked_file_sha256"] or
-                    len(blocked) // 32 != data["blocked_object_count"]):
-                raise ValueError()
-            self.blocked = {blocked[i:i + 32] for i in range(0, len(blocked), 32)}
-            if len(self.blocked) != data["blocked_object_count"]:
                 raise ValueError()
             tokens = data["identifiers"]
             if not tokens:
@@ -66,8 +62,8 @@ class Policy:
                         not HEX256.fullmatch(token["prefix_digest"])):
                     raise ValueError()
                 wanted.setdefault(token["prefix_digest"], []).append(token)
-            # Only two-byte candidate prefixes are recovered, using the secret
-            # key. The public policy never contains private strings or old OIDs.
+            # Recover only the two-byte prefixes, in memory, using the key. They
+            # pick candidate offsets; full values are compared by HMAC alone.
             self.prefixes = {}
             for number in range(65536):
                 prefix = number.to_bytes(2, "big")
@@ -77,78 +73,47 @@ class Policy:
             if wanted:
                 raise ValueError()
             self.find = re.compile(b"(?=(" + b"|".join(re.escape(p) for p in self.prefixes) + b"))")
-            self.overlap = max(42, max(t["length"] for t in tokens)) - 1
+            # Bytes carried between streamed chunks so a value split across a
+            # chunk boundary is still seen whole.
+            self.overlap = max(t["length"] for t in tokens) - 1
         except (KeyError, TypeError, ValueError, OSError, OverflowError):
             raise PrivacyError("Privacy policy or secret key is missing, invalid, or mismatched.") from None
 
-    def check_oid(self, oid):
-        if not OID.fullmatch(oid):
-            raise PrivacyError("Invalid Git object ID.")
-        if hashlib.sha256(oid.encode("ascii")).digest() in self.blocked:
-            raise PrivacyError("Reintroduced Git object from redacted history; details withheld.")
-
     def check(self, data):
         folded = data.lower()
-        for reference in OBJECT_REFERENCE.finditer(folded):
-            if hashlib.sha256(reference[0]).digest() in self.blocked:
-                raise PrivacyError("Reference to a replaced Git object found; details withheld.")
         for match in self.find.finditer(folded):
             for token in self.prefixes[match[1]]:
                 candidate = folded[match.start():match.start() + token["length"]]
                 if len(candidate) == token["length"] and hmac.compare_digest(
                         fingerprint(self.key, b"value", candidate), token["digest"]):
-                    raise PrivacyError("Removed identifier found in incoming Git data; details withheld.")
+                    raise PrivacyError("Denylisted identifier found in incoming Git data; details withheld.")
 
 
-PRIVATE_ENV = ("HISTORY_PRIVACY_HMAC_KEY", "GH_TOKEN", "GH_READ_TOKEN")
-
-
-def git(repo, *args, data=None, fetch_auth=False):
-    # Do not pass the fingerprint key or API tokens to Git subprocesses.
+def git_env(fetch_auth=False):
+    # Drop the key, tokens and any inherited Git config injection.
     env = {k: v for k, v in os.environ.items() if k not in PRIVATE_ENV and not k.startswith("GIT_CONFIG_")}
     env.update(GIT_NO_REPLACE_OBJECTS="1", GIT_NO_LAZY_FETCH="1", GIT_TERMINAL_PROMPT="0")
     token = os.environ.get("GH_READ_TOKEN", "")
     if fetch_auth and token:
-        # A private repository needs the job's contents-read token to fetch.
-        # Only fetches receive it, through the environment rather than argv,
-        # scoped to github.com; incoming objects are never executed.
+        # This repository is private: fetches need the job's contents-read
+        # token. Pass it through the environment (never argv), scoped to
+        # github.com, and only to fetch.
         basic = base64.b64encode(("x-access-token:" + token).encode("utf-8")).decode("ascii")
         env.update(GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="http.https://github.com/.extraheader",
                    GIT_CONFIG_VALUE_0="AUTHORIZATION: basic " + basic)
+    return env
+
+
+def git(repo, *args, data=None, fetch_auth=False):
     result = subprocess.run(["git", "-C", str(repo), *args], input=data,
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=git_env(fetch_auth))
     if result.returncode:
         raise PrivacyError("Git history is unavailable or incomplete; verification refused.")
     return result.stdout
 
 
-class TreeScanner:
-    """Check binary tree references, including gitlinks omitted by rev-list."""
-
-    def __init__(self, policy):
-        self.policy = policy
-        self.pending = b""
-
-    def feed(self, block, final=False):
-        self.pending += block
-        offset = 0
-        while True:
-            end = self.pending.find(b"\0", offset)
-            if end < 0 or len(self.pending) < end + 21:
-                break
-            entry = self.pending[offset:end].split(b" ", 1)
-            if len(entry) != 2 or not re.fullmatch(rb"[0-7]{5,6}", entry[0]) or not entry[1]:
-                raise PrivacyError("Invalid Git tree entry; verification refused.")
-            # Trees store raw 20-byte IDs. Submodule targets need not exist in
-            # this repository, so inspect the ID without following the gitlink.
-            self.policy.check_oid(self.pending[end + 1:end + 21].hex())
-            offset = end + 21
-        self.pending = self.pending[offset:]
-        if final and self.pending:
-            raise PrivacyError("Truncated Git tree entry; verification refused.")
-
-
 def scan(repo, policy, heads, excludes=(), refs=()):
+    """Check every object reachable from heads but not from excludes."""
     if not heads:
         raise PrivacyError("No history selected for verification.")
     for oid in [*heads, *excludes]:
@@ -161,11 +126,9 @@ def scan(repo, policy, heads, excludes=(), refs=()):
     revisions = "\n".join([*heads, *("^" + oid for oid in excludes)]) + "\n"
     objects = git(repo, "rev-list", "--objects", "--no-object-names", "--stdin", data=revisions.encode("ascii"))
     ids = set(objects.decode("ascii").splitlines())
-    # Explicitly include annotated tags (including nested tags), even if Git's
-    # revision traversal peels them before emitting its object list.
+    # rev-list peels annotated tags; add each tag object (and nested tags).
     for head in heads:
-        oid = head
-        seen = set()
+        oid, seen = head, set()
         while True:
             if oid in seen:
                 raise PrivacyError("Invalid tag chain.")
@@ -182,17 +145,13 @@ def scan(repo, policy, heads, excludes=(), refs=()):
             if not OID.fullmatch(oid):
                 raise PrivacyError("Invalid tag target.")
     ordered = sorted(ids)
-    for oid in ordered:
-        policy.check_oid(oid)
-    # Input and error streams are files to avoid pipe deadlocks and accidental
-    # printing of attacker-controlled paths/messages. Objects are streamed.
+    # Stream objects through files rather than pipes: no deadlocks, and Git
+    # diagnostics (which can name paths) are never printed.
     with tempfile.TemporaryFile() as requests, tempfile.TemporaryFile() as errors:
         requests.write(("\n".join(ordered) + "\n").encode("ascii"))
         requests.seek(0)
-        env = {k: v for k, v in os.environ.items() if k not in PRIVATE_ENV and not k.startswith("GIT_CONFIG_")}
-        env.update(GIT_NO_REPLACE_OBJECTS="1", GIT_NO_LAZY_FETCH="1", GIT_TERMINAL_PROMPT="0")
         process = subprocess.Popen(["git", "-C", str(repo), "cat-file", "--batch"], stdin=requests,
-                                   stdout=subprocess.PIPE, stderr=errors, env=env)
+                                   stdout=subprocess.PIPE, stderr=errors, env=git_env())
         try:
             for oid in ordered:
                 header = process.stdout.readline().split()
@@ -200,7 +159,6 @@ def scan(repo, policy, heads, excludes=(), refs=()):
                     raise PrivacyError("Git object could not be read completely.")
                 remaining = int(header[2])
                 tail = b""
-                tree = TreeScanner(policy) if header[1] == b"tree" else None
                 while remaining:
                     block = process.stdout.read(min(CHUNK, remaining))
                     if not block:
@@ -209,10 +167,6 @@ def scan(repo, policy, heads, excludes=(), refs=()):
                     joined = tail + block
                     policy.check(joined)
                     tail = joined[-policy.overlap:]
-                    if tree is not None:
-                        tree.feed(block)
-                if tree is not None:
-                    tree.feed(b"", final=True)
                 if process.stdout.read(1) != b"\n":
                     raise PrivacyError("Invalid Git object framing.")
             if process.wait():
@@ -226,33 +180,43 @@ def scan(repo, policy, heads, excludes=(), refs=()):
 
 
 def select_event(name, event, default_head):
+    """Return (heads, ref names, head to report on) for a trusted event."""
     if name == "pull_request_target":
         pr = event["pull_request"]
         return [pr["head"]["sha"]], [pr["head"]["ref"]], pr["head"]["sha"]
-    if name == "workflow_run":
-        run = event["workflow_run"]
-        # Use only GitHub's event envelope. Never trust requester artifacts,
-        # outputs, checkout code, a supplied repository URL, or its conclusion.
-        if (run["event"] not in ("push", "merge_group") or
-                run["path"].split("@", 1)[0] != ".github/workflows/history-privacy-request.yml" or
-                run["head_repository"]["full_name"].lower() != os.environ["GITHUB_REPOSITORY"].lower()):
-            raise PrivacyError("Untrusted audit request; verification refused.")
-        head = run["head_sha"]
-        return [head], [run["head_branch"]] if run.get("head_branch") else [], head
-    if name in ("workflow_dispatch", "schedule"):
-        head = event.get("inputs", {}).get("audit_head") or default_head
+    if name == "push":
+        if event.get("deleted"):
+            return [], [], None
+        head = event["after"]
         if not OID.fullmatch(head):
             raise PrivacyError("Invalid audit target.")
         return [head], [], head
-    # Branch-controlled push/merge_group definitions never receive credentials.
-    raise PrivacyError("Unsupported privileged event; verification refused.")
+    if name in ("workflow_dispatch", "schedule"):
+        head = (event.get("inputs") or {}).get("audit_head") or default_head
+        if not OID.fullmatch(head):
+            raise PrivacyError("Invalid audit target.")
+        return [head], [], head
+    # pull_request and merge_group run branch-controlled definitions; they
+    # never reach the credentials, and the scanner refuses them too.
+    raise PrivacyError("Unsupported event; verification refused.")
+
+
+def audit_all_refs(name, event):
+    # Pushes to main, the daily run and a plain dispatch audit every branch and
+    # tag, so tags and branches without a pull request are covered too.
+    return name in ("push", "schedule") or (
+        name == "workflow_dispatch" and not (event.get("inputs") or {}).get("audit_head"))
+
+
+def repository():
+    value = os.environ["GITHUB_REPOSITORY"]
+    if not REPOSITORY.fullmatch(value):
+        raise PrivacyError("Invalid repository context.")
+    return value
 
 
 def api(method, path, body):
-    repository = os.environ["GITHUB_REPOSITORY"]
-    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
-        raise PrivacyError("Invalid repository context.")
-    request = urllib.request.Request("https://api.github.com/repos/" + repository + path,
+    request = urllib.request.Request("https://api.github.com/repos/" + repository() + path,
                                      data=json.dumps(body).encode("utf-8"), method=method, headers={
                                          "Authorization": "Bearer " + os.environ["GH_TOKEN"],
                                          "Accept": "application/vnd.github+json",
@@ -264,55 +228,44 @@ def api(method, path, body):
         raise PrivacyError("GitHub check result could not be published; retry required.") from None
 
 
-def audit_all_refs(name, event):
-    # Push request payloads can peel annotated tags to their commits. Fetch all
-    # owner refs so tag objects, tagger metadata and signatures are still scanned.
-    return ((name in ("workflow_dispatch", "schedule") and not event.get("inputs", {}).get("audit_head"))
-            or (name == "workflow_run" and event["workflow_run"]["event"] == "push"))
+def start_check(head):
+    if not OID.fullmatch(head):
+        raise PrivacyError("Invalid check head.")
+    return api("POST", "/check-runs", {
+        "name": "history-privacy", "head_sha": head, "status": "in_progress",
+        "details_url": "https://github.com/" + repository() + "/actions/runs/" + os.environ.get("GITHUB_RUN_ID", "")})
 
 
 def ci(policy_path):
+    name = os.environ["GITHUB_EVENT_NAME"]
     event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text(encoding="utf-8"))
-    heads, refs, report_head = select_event(os.environ["GITHUB_EVENT_NAME"], event, os.environ["GITHUB_SHA"])
+    heads, refs, report_head = select_event(name, event, os.environ["GITHUB_SHA"])
     if not heads:
         print("Reference deletion: no incoming history.")
         return
     check = None
     passed = False
     try:
-        if report_head:
-            if not OID.fullmatch(report_head):
-                raise PrivacyError("Invalid check head.")
-            check = api("POST", "/check-runs", {"name": "history-privacy", "head_sha": report_head, "status": "in_progress",
-                    "details_url": "https://github.com/" + os.environ["GITHUB_REPOSITORY"] + "/actions/runs/" + os.environ.get("GITHUB_RUN_ID", "")})
+        # Publish on the exact head first, so any later failure is visible there.
+        check = start_check(report_head)
         policy = Policy(policy_path, os.environ.get("HISTORY_PRIVACY_HMAC_KEY", ""))
-        repository = os.environ["GITHUB_REPOSITORY"]
-        if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
-            raise PrivacyError("Invalid repository context.")
+        full_audit = audit_all_refs(name, event)
         with tempfile.TemporaryDirectory(prefix="history-privacy-") as directory:
             git(directory, "init", "--bare", "--quiet", ".")
-            git(directory, "remote", "add", "origin", "https://github.com/" + repository + ".git")
-            for oid in sorted(set([policy.baseline, *heads])):
-                if not OID.fullmatch(oid):
-                    raise PrivacyError("Invalid fetch target.")
+            git(directory, "remote", "add", "origin", "https://github.com/" + repository() + ".git")
+            for oid in sorted({policy.baseline, *heads}):
                 git(directory, "-c", "protocol.file.allow=never", "-c", "protocol.ext.allow=never",
                     "fetch", "--quiet", "--no-tags", "--no-recurse-submodules", "origin", oid, fetch_auth=True)
-            full_audit = audit_all_refs(os.environ["GITHUB_EVENT_NAME"], event)
             if full_audit:
-                git(directory, "fetch", "--quiet", "--no-recurse-submodules", "origin",
+                git(directory, "-c", "protocol.file.allow=never", "-c", "protocol.ext.allow=never",
+                    "fetch", "--quiet", "--no-recurse-submodules", "origin",
                     "+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*", fetch_auth=True)
-                advertised = git(directory, "for-each-ref", "--format=%(objectname) %(refname)",
-                                 "refs/heads", "refs/tags").decode("utf-8").splitlines()
-                # Preserve the originally requested head, even if its branch
-                # moved or disappeared before this complete owner-ref audit.
-                for line in advertised:
+                listed = git(directory, "for-each-ref", "--format=%(objectname) %(refname)",
+                             "refs/heads", "refs/tags").decode("utf-8").splitlines()
+                for line in listed:
                     oid, ref = line.split(" ", 1)
                     heads.append(oid)
                     refs.append(ref)
-            if check is None:
-                report_head = git(directory, "rev-parse", "--verify", heads[0] + "^{commit}").decode("ascii").strip()
-                check = api("POST", "/check-runs", {"name": "history-privacy", "head_sha": report_head, "status": "in_progress",
-                    "details_url": "https://github.com/" + os.environ["GITHUB_REPOSITORY"] + "/actions/runs/" + os.environ.get("GITHUB_RUN_ID", "")})
             count = scan(directory, policy, heads, excludes=[] if full_audit else [policy.baseline], refs=refs)
         print(f"PASS: inspected {count} incoming Git objects; privacy details withheld.")
         passed = True
@@ -321,10 +274,9 @@ def ci(policy_path):
             api("PATCH", "/check-runs/" + str(check["id"]), {
                 "status": "completed", "conclusion": "success" if passed else "failure",
                 "output": {"title": "History privacy " + ("passed" if passed else "failed"),
-                           "summary": "Replaced history and removed identifiers checked without executing incoming code. Audit: "
-                           + "https://github.com/" + os.environ["GITHUB_REPOSITORY"] + "/actions/runs/"
-                           + os.environ.get("GITHUB_RUN_ID", "")
-                           if passed else "History privacy verification failed. Values and object IDs are withheld; inspect the trusted audit job."}})
+                           "summary": "New history checked for denylisted identifiers without executing it."
+                           if passed else "Verification failed. Values, paths and object IDs are withheld; "
+                           "inspect the audit job and run git-privacy-guard locally."}})
 
 
 def main():
@@ -333,7 +285,7 @@ def main():
     parser.add_argument("--ci", action="store_true")
     parser.add_argument("--repo", default=".")
     parser.add_argument("--head", action="append", default=[])
-    parser.add_argument("--full", action="store_true", help="Also inspect the trusted baseline ancestry")
+    parser.add_argument("--full", action="store_true", help="Also inspect the baseline's ancestry")
     args = parser.parse_args()
     try:
         if args.ci:
@@ -344,7 +296,7 @@ def main():
             print(f"PASS: inspected {count} Git objects; privacy details withheld.")
         return 0
     except (PrivacyError, KeyError, TypeError, ValueError, OSError, UnicodeError):
-        # Never echo exceptions, Git diagnostics, names, filenames, or object IDs.
+        # Never echo exceptions, Git diagnostics, names, paths or object IDs.
         print("::error::History privacy verification failed; values and object IDs withheld.", file=sys.stderr)
         return 1
 

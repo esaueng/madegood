@@ -1,4 +1,4 @@
-"""Verify the trusted metadata workflow publishes the actual PR-head result."""
+"""Verify commit-privacy publishes its verdict on the actual PR head."""
 
 import contextlib
 import io
@@ -28,7 +28,7 @@ class MetadataWorkflowTests(unittest.TestCase):
                 env = dict(GITHUB_EVENT_NAME="pull_request_target", GITHUB_EVENT_PATH=str(event),
                            GITHUB_API_URL="https://api.github.com", GITHUB_REPOSITORY="example/repo",
                            GH_TOKEN="synthetic-publisher", GH_READ_TOKEN="synthetic-reader",
-                           GITHUB_SHA=base, COMMIT_PRIVACY_SELF_TEST="0")
+                           GITHUB_SHA=base)
                 calls = []
 
                 def respond(request, timeout):
@@ -47,7 +47,7 @@ class MetadataWorkflowTests(unittest.TestCase):
 
                 with patch.dict(os.environ, env), patch("urllib.request.urlopen", side_effect=respond), patch.object(module.Path, "read_text", return_value=json.dumps({"baseline": base})):
                     with contextlib.redirect_stdout(io.StringIO()):
-                        result = scope["main"](publish=True)
+                        result = scope["main"]()
                 self.assertEqual(bool(result), not compliant)
                 posted = json.loads(calls[0].data)
                 self.assertEqual(posted["head_sha"], head)

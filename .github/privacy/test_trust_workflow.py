@@ -3,46 +3,59 @@ from pathlib import Path
 import re
 import unittest
 
+WORKFLOWS = Path(__file__).parents[1] / "workflows"
+
 
 class WorkflowTrustTests(unittest.TestCase):
-    def test_privileged_workflow_uses_trusted_events_environment_and_publisher(self):
-        workflow = Path(__file__).parents[1] / 'workflows' / 'history-privacy.yml'
-        text = workflow.read_text()
-        events = text.split('permissions:', 1)[0]
-        self.assertNotRegex(events, r'(?m)^  (push|merge_group|pull_request):')
-        for event in ('pull_request_target:', 'workflow_run:', 'workflow_dispatch:', 'schedule:'):
-            self.assertIn(event, events)
-        self.assertIn('environment: history-privacy', text)
-        self.assertNotRegex(text, r'(?m)^\s+checks: write$')
-        self.assertIn('permission-checks: write', text)
-        self.assertIn('GH_TOKEN: ${{ steps.publisher.outputs.token }}', text)
-        self.assertRegex(text, r'uses: actions/create-github-app-token@[0-9a-f]{40}')
-        self.assertRegex(text, r'(?m)^          ref: [0-9a-f]{40}$')
-        self.assertIn('persist-credentials: false', text)
-        self.assertNotIn('github.event.pull_request.head', text)
+    def setUp(self):
+        self.text = (WORKFLOWS / "history-privacy.yml").read_text()
+        self.events = self.text.split("\npermissions:", 1)[0]
 
-    def test_requester_has_no_credentials_or_write_permissions(self):
-        text = (Path(__file__).parents[1] / 'workflows' / 'history-privacy-request.yml').read_text()
-        self.assertNotIn('secrets.', text)
-        self.assertNotIn('environment:', text)
-        self.assertNotRegex(text, r':\s*write\b')
-        for event in ('push:', 'merge_group:'):
-            self.assertIn(event, text)
-        # Pull-request heads are audited by pull_request_target alone; main,
-        # tags and queue candidates must keep requesting the all-refs audit.
-        self.assertIn('  push:\n    branches: [main]\n    tags: ["**"]\n  merge_group:\n', text)
-        self.assertNotRegex(text, r'(?m)^  pull_request')
+    def test_only_main_defined_triggers(self):
+        # Each of these runs the copy of this file on main. pull_request and
+        # merge_group would run a branch-controlled copy.
+        for event in ("pull_request_target:", "workflow_dispatch:", "schedule:"):
+            self.assertIn(event, self.events)
+        self.assertIn("  push:\n    branches: [main]\n", self.events)
+        self.assertNotRegex(self.events, r"(?m)^  (pull_request|merge_group|workflow_run):")
+        self.assertNotIn("tags:", self.events)
 
-    def test_identity_verdict_has_one_protected_publisher(self):
-        workflows = Path(__file__).parents[1] / 'workflows'
-        # The read-only duplicate is gone; nothing branch-controlled may
-        # reintroduce a job that looks like the required context.
-        self.assertFalse((workflows / 'commit-privacy.yml').exists())
-        publishers = [path.name for path in sorted(workflows.glob('*.yml'))
-                      if 'commit_privacy.py' in path.read_text()]
-        self.assertEqual(publishers, ['history-privacy.yml'])
-        text = (workflows / 'history-privacy.yml').read_text()
-        self.assertIn('python3 .github/privacy/commit_privacy.py --publish', text)
-        self.assertIn('GH_READ_TOKEN: ${{ github.token }}', text)
-        # Scanner fetches (private repository) and identity API reads.
-        self.assertEqual(text.count('GH_READ_TOKEN: ${{ github.token }}'), 2)
+    def test_scanner_never_comes_from_the_incoming_head(self):
+        self.assertIn("ref: ${{ github.workflow_sha }}", self.text)
+        self.assertNotIn("github.event.pull_request.head", self.text)
+        self.assertNotIn("github.head_ref", self.text)
+        self.assertIn("persist-credentials: false", self.text)
+
+    def test_secrets_stay_in_the_protected_environment_and_app_token(self):
+        self.assertIn("environment: history-privacy", self.text)
+        self.assertRegex(self.text, r"(?m)^permissions:\n  contents: read\n")
+        writes = [line.strip() for line in self.text.splitlines() if re.search(r":\s*write\s*$", line)]
+        self.assertEqual(writes, ["permission-checks: write"])
+        self.assertIn("permission-checks: write", self.text)
+        self.assertRegex(self.text, r"uses: actions/create-github-app-token@[0-9a-f]{40}")
+        self.assertRegex(self.text, r"uses: actions/checkout@[0-9a-f]{40}")
+        self.assertEqual(self.text.count("GH_TOKEN: ${{ steps.publisher.outputs.token }}"), 2)
+        # Fetching this private repository, and reading commit metadata.
+        self.assertEqual(self.text.count("GH_READ_TOKEN: ${{ github.token }}"), 2)
+
+    def test_both_required_checks_have_one_protected_publisher(self):
+        self.assertIn("python3 .github/privacy/history_privacy.py --ci", self.text)
+        self.assertIn("python3 .github/privacy/commit_privacy.py", self.text)
+        for path in sorted(WORKFLOWS.glob("*.y*ml")):
+            if path.name == "history-privacy.yml":
+                continue
+            other = path.read_text()
+            with self.subTest(workflow=path.name):
+                self.assertNotIn("history_privacy.py --ci", other)
+                self.assertNotIn("commit_privacy.py", other)
+                self.assertNotRegex(other, r"(?m)^\s+(name|context):\s*['\"]?(history|commit)-privacy['\"]?\s*$")
+
+    def test_test_workflow_has_no_credentials(self):
+        text = (WORKFLOWS / "privacy-tests.yml").read_text()
+        self.assertNotIn("secrets.", text)
+        self.assertNotIn("environment:", text)
+        self.assertNotRegex(text, r":\s*write\b")
+
+
+if __name__ == "__main__":
+    unittest.main()

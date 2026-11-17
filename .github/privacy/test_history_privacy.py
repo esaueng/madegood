@@ -1,7 +1,6 @@
 """Synthetic regression fixtures only; no real identifiers or historical OIDs."""
 
 import base64
-import hashlib
 import importlib.util
 import json
 import os
@@ -53,16 +52,11 @@ class HistoryTests(unittest.TestCase):
         self.run_git("add", "--", name)
         self.run_git("commit", "--quiet", "-m", message, env=env)
 
-    def write_policy(self, banned=("0" * 40,), key=KEY):
-        blocked = b"".join(sorted(hashlib.sha256(oid.encode()).digest() for oid in banned))
-        self.policy_path.with_name("blocked-history.bin").write_bytes(blocked)
+    def write_policy(self, key=KEY):
         raw = bytes.fromhex(key)
         self.policy_path.write_text(json.dumps({
-            "version": 1, "baseline": self.base,
-            "object_ledger_scope": list(guard.PUBLIC_REPOSITORIES),
+            "version": guard.POLICY_VERSION, "baseline": self.base,
             "verification_digest": guard.fingerprint(raw, b"key", b"history-privacy-v1"),
-            "blocked_file_sha256": hashlib.sha256(blocked).hexdigest(),
-            "blocked_object_count": len(banned),
             "identifiers": [{"length": len(REMOVED),
                              "prefix_digest": guard.fingerprint(raw, b"prefix", REMOVED[:2]),
                              "digest": guard.fingerprint(raw, b"value", REMOVED)}]}))
@@ -115,59 +109,6 @@ class HistoryTests(unittest.TestCase):
         with self.assertRaises(guard.PrivacyError):
             guard.scan(self.repo, self.policy, [self.oid()], [self.base], ["refs/heads/" + REMOVED.decode()])
 
-    def test_reintroduced_rewritten_object_is_blocked_without_private_content(self):
-        self.commit("old.txt", b"otherwise clean", "replaced history fixture")
-        old = self.oid()
-        self.write_policy(banned=(old,))
-        self.policy = guard.Policy(self.policy_path, KEY)
-        with self.assertRaises(guard.PrivacyError):
-            self.inspect()
-
-    def test_reference_to_replaced_object_is_also_blocked(self):
-        old = "a" * 40
-        self.write_policy(banned=(old,))
-        self.policy = guard.Policy(self.policy_path, KEY)
-        self.commit("pin.txt", old.upper().encode(), "old pin fixture")
-        with self.assertRaises(guard.PrivacyError):
-            self.inspect()
-
-    def test_cross_repository_retired_pin_is_blocked(self):
-        own, foreign = "a" * 40, "b" * 40
-        self.write_policy(banned=(own, foreign))
-        self.policy = guard.Policy(self.policy_path, KEY)
-        self.commit("dependency-pin.txt", foreign.encode(), "foreign repository pin fixture")
-        with self.assertRaisesRegex(guard.PrivacyError, "Reference to a replaced Git object"):
-            self.inspect()
-
-    def test_object_ledger_must_cover_every_public_repository(self):
-        data = json.loads(self.policy_path.read_text())
-        data["object_ledger_scope"].pop()
-        self.policy_path.write_text(json.dumps(data))
-        with self.assertRaises(guard.PrivacyError):
-            guard.Policy(self.policy_path, KEY)
-
-    def test_blocked_gitlink_is_rejected_even_when_target_object_is_absent(self):
-        old = "1" * 40
-        self.write_policy(banned=(old,))
-        self.policy = guard.Policy(self.policy_path, KEY)
-        self.run_git("update-index", "--add", "--cacheinfo", "160000," + old + ",module")
-        self.run_git("commit", "--quiet", "-m", "gitlink fixture")
-        for chunk in (guard.CHUNK, 7):
-            with self.subTest(chunk=chunk), patch.object(guard, "CHUNK", chunk):
-                with self.assertRaisesRegex(guard.PrivacyError, "Reintroduced Git object"):
-                    self.inspect()
-
-    def test_clean_gitlink_needs_no_submodule_fetch(self):
-        self.run_git("update-index", "--add", "--cacheinfo", "160000," + "2" * 40 + ",module")
-        self.run_git("commit", "--quiet", "-m", "clean gitlink fixture")
-        self.assertGreater(self.inspect(), 0)
-
-    def test_truncated_binary_tree_fails_closed(self):
-        tree = guard.TreeScanner(self.policy)
-        tree.feed(b"160000 module\0" + b"\x11" * 19)
-        with self.assertRaisesRegex(guard.PrivacyError, "Truncated Git tree"):
-            tree.feed(b"", final=True)
-
     def test_non_fast_forward_history_and_merge_parent_are_checked(self):
         self.commit("old.txt", REMOVED, "dirty side branch")
         old = self.oid()
@@ -195,9 +136,11 @@ class HistoryTests(unittest.TestCase):
         for key in ("", "cd" * 32):
             with self.assertRaises(guard.PrivacyError):
                 guard.Policy(self.policy_path, key)
-        self.policy_path.with_name("blocked-history.bin").write_bytes(b"bad")
-        with self.assertRaises(guard.PrivacyError):
-            guard.Policy(self.policy_path, KEY)
+        valid = json.loads(self.policy_path.read_text())
+        for corrupt in ({"version": 1}, {"identifiers": []}, {"baseline": "main"}):
+            self.policy_path.write_text(json.dumps(dict(valid, **corrupt)))
+            with self.subTest(corrupt=corrupt), self.assertRaises(guard.PrivacyError):
+                guard.Policy(self.policy_path, KEY)
 
     def test_errors_do_not_echo_private_content_or_oid(self):
         self.commit("dirty.txt", REMOVED, "dirty fixture")
@@ -216,35 +159,26 @@ class HistoryTests(unittest.TestCase):
         self.assertEqual(guard.select_event("workflow_dispatch", {"inputs": {"audit_head": head}}, self.base),
                          ([head], [], head))
         self.assertEqual(guard.select_event("schedule", {}, self.base), ([self.base], [], self.base))
-        run = {"event": "merge_group", "path": ".github/workflows/history-privacy-request.yml",
-               "head_repository": {"full_name": "example/repository"}, "head_sha": head,
-               "head_branch": "gh-readonly-queue/main/fixture"}
-        with patch.dict(os.environ, GITHUB_REPOSITORY="example/repository"):
-            self.assertEqual(guard.select_event("workflow_run", {"workflow_run": run}, self.base),
-                             ([head], [run["head_branch"]], head))
-            for suffix in ("@main", "@refs/tags/v-fixture"):
-                qualified = dict(run, path=run["path"] + suffix)
-                self.assertEqual(guard.select_event("workflow_run", {"workflow_run": qualified}, self.base)[2], head)
-            for field, bad in (("event", "pull_request"), ("path", "other.yml"),
-                               ("head_repository", {"full_name": "foreign/repository"})):
-                with self.subTest(field=field), self.assertRaises(guard.PrivacyError):
-                    guard.select_event("workflow_run", {"workflow_run": dict(run, **{field: bad})}, self.base)
-        for name in ("push", "merge_group", "pull_request"):
+        self.assertEqual(guard.select_event("push", {"after": head}, self.base), ([head], [], head))
+        self.assertEqual(guard.select_event("push", {"deleted": True}, self.base), ([], [], None))
+        for name in ("pull_request", "merge_group", "workflow_run"):
             with self.subTest(name=name), self.assertRaises(guard.PrivacyError):
                 guard.select_event(name, {}, self.base)
+        self.assertTrue(guard.audit_all_refs("push", {}))
+        self.assertTrue(guard.audit_all_refs("schedule", {}))
+        self.assertTrue(guard.audit_all_refs("workflow_dispatch", {"inputs": {"audit_head": ""}}))
+        self.assertFalse(guard.audit_all_refs("workflow_dispatch", {"inputs": {"audit_head": head}}))
+        self.assertFalse(guard.audit_all_refs("pull_request_target", {}))
         with self.assertRaises(guard.PrivacyError):
             guard.select_event("workflow_dispatch", {"inputs": {"audit_head": "untrusted argument"}}, self.base)
 
-    def test_push_request_catches_annotated_tag_metadata_on_a_clean_commit(self):
+    def test_main_push_audit_catches_annotated_tag_metadata_on_a_clean_commit(self):
         head = self.oid()
         self.run_git("tag", "-a", "dirty-metadata", "-m", REMOVED.decode())
         tag = self.oid("dirty-metadata")
         event = self.root / "tag-event.json"
-        event.write_text(json.dumps({"workflow_run": {
-            "event": "push", "path": ".github/workflows/history-privacy-request.yml@main",
-            "head_repository": {"full_name": "example/repository"},
-            "head_sha": head, "head_branch": "dirty-metadata"}}))
-        env = dict(GITHUB_EVENT_PATH=str(event), GITHUB_EVENT_NAME="workflow_run",
+        event.write_text(json.dumps({"ref": "refs/heads/main", "after": head}))
+        env = dict(GITHUB_EVENT_PATH=str(event), GITHUB_EVENT_NAME="push",
                    GITHUB_SHA=self.base, GITHUB_REPOSITORY="example/repository",
                    HISTORY_PRIVACY_HMAC_KEY=KEY)
         real_git, real_scan = guard.git, guard.scan
@@ -253,7 +187,7 @@ class HistoryTests(unittest.TestCase):
                 return (tag + " refs/tags/dirty-metadata\n").encode()
             return b""
         def inspect_fixture(repo, policy, heads, excludes, refs):
-            self.assertIn(head, heads)  # original event head survives all-ref enumeration
+            self.assertIn(head, heads)  # pushed head survives all-ref enumeration
             self.assertIn(tag, heads)   # annotated tag object, not only its peeled commit
             with patch.object(guard, "git", real_git):
                 return real_scan(self.repo, policy, heads, excludes, refs)
