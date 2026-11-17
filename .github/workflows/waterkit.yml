@@ -4,6 +4,8 @@ on:
   pull_request:
     paths: &waterkit-paths
       - packages/WaterKit/**
+      - fixtures/**
+      - scripts/anonymize-track
       - .github/workflows/waterkit.yml
   push:
     branches: [main]
@@ -37,6 +39,9 @@ jobs:
 
       - name: Test
         run: swift test --package-path packages/WaterKit --parallel
+
+      - name: Check fixtures are anonymized
+        run: swift run --package-path packages/WaterKit waterkit-anonymize --check fixtures
 
   macos:
     name: WaterKit tests (macOS)

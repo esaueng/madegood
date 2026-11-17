@@ -1,0 +1,11 @@
+{
+  "v": 1,
+  "sport": "sailing",
+  "source": "synthetic",
+  "description": "Generated: 300 s due north at 1.11 m/s with 50 Hz motion at rest, a start event and a MOB at 100 s. Exercises the reader, replay CLI, and anonymizer; not a metric-accuracy case.",
+  "license": "CC0-1.0",
+  "truth": {
+    "distanceM": 332.5,
+    "maneuvers": []
+  }
+}
