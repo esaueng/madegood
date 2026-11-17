@@ -78,8 +78,29 @@ use the same workflow with its own secret and variables.
   add new columns or tables first (expand), deploy code that uses them, and only drop
   or rename old ones in a later release (contract).
 
-## Secrets
+## Secrets and settings
 
-Secrets (signing keys, Apple credentials; arriving in Phase 3) are set with
-`wrangler secret put` and locally in `web/.dev.vars`, which is gitignored. They are
-never committed.
+Secrets are set with `wrangler secret put` and locally in `web/.dev.vars`, which is
+gitignored. They are never committed.
+
+| Name | Kind | Purpose |
+|---|---|---|
+| `JWT_SIGNING_KEY` | secret | Signs API access tokens (HS256). At least 32 characters of randomness. |
+| `APPLE_AUDIENCES` | var in `wrangler.jsonc` | Comma-separated Sign in with Apple audiences: your iOS bundle ID, later also your web Services ID. |
+
+```sh
+# Local development: web/.dev.vars
+echo "JWT_SIGNING_KEY=$(openssl rand -base64 48)" >> web/.dev.vars
+
+# Each deployed environment gets its own key
+cd web
+openssl rand -base64 48 | pnpm exec wrangler secret put JWT_SIGNING_KEY
+openssl rand -base64 48 | pnpm exec wrangler secret put JWT_SIGNING_KEY --env preview
+```
+
+A fork that ships its own app changes `APPLE_AUDIENCES` to its bundle ID. Changing
+`JWT_SIGNING_KEY` invalidates outstanding access tokens; clients get a new one with
+their refresh token, so nobody is signed out.
+
+Sign-in fetches Apple's public keys from `https://appleid.apple.com/auth/keys` and
+caches them in memory for an hour.
