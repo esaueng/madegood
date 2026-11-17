@@ -62,6 +62,16 @@ since unmerged branches become public with the repository.
 
 Merge queues are not supported: candidates would never receive these checks.
 
+## Dependabot pull requests
+
+Runs that Dependabot triggers receive only Dependabot secrets, so the audit may
+fail to publish either check on a Dependabot pull request. A maintainer then
+audits the head commit by hand, which publishes both checks on it:
+
+```sh
+gh workflow run history-privacy.yml -f audit_head="$(gh pr view <number> --json headRefOid --jq .headRefOid)"
+```
+
 ## Changing the policy
 
 - **Denylist entries:** regenerate `policy.json` locally from the private

@@ -1,0 +1,25 @@
+# Dependency update pull requests. Grouped and monthly to keep the queue short;
+# security updates still arrive as soon as an advisory lands.
+# Swift packages are left out until WaterKit or the app has an external dependency.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 5
+    groups:
+      npm-minor-and-patch:
+        update-types: [minor, patch]
+    commit-message:
+      prefix: deps
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: ci
