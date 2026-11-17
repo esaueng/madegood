@@ -85,6 +85,10 @@ final class WatchSessionUITests: XCTestCase {
         XCTAssertTrue(clear.waitForExistence(timeout: 10))
         attachScreenshot("8 man overboard after session")
         app.terminate()
+        // Relaunching while the old process is still exiting fails on slower runners
+        // ("Application has termination assertions"), so wait for it to be gone.
+        XCTAssertTrue(app.wait(for: .notRunning, timeout: 20))
+        sleep(3)
         let relaunched = launchDemoApp()
         XCTAssertTrue(relaunched.buttons["mob.clear"].waitForExistence(timeout: 15))
         // A new session can start while the mark is kept (review of #27).
