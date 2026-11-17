@@ -17,7 +17,20 @@
         }
 
         var sportName: String
-        var sportSymbol: String
+        /// Asset name of the sport's icon (Shared/Resources/SportIcons.xcassets). Activities
+        /// started by builds before the drawn icons hold an SF Symbol name here instead.
+        var sportIcon: String
         var startedAt: Date
+
+        /// The icon is stored under its old key, so an activity started by an earlier build
+        /// still decodes after an update.
+        enum CodingKeys: String, CodingKey {
+            case sportName
+            case sportIcon = "sportSymbol"
+            case startedAt
+        }
+
+        /// Whether `sportIcon` is an SF Symbol name from an earlier build.
+        var isLegacySymbol: Bool { !sportIcon.hasPrefix("sport.") }
     }
 #endif

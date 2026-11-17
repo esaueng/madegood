@@ -80,8 +80,13 @@ struct SessionRow: View {
     var body: some View {
         let sport = item.summary?.sport ?? item.entry.meta?.sport
         HStack(spacing: 12) {
-            Image(systemName: sport?.symbolName ?? "applewatch.radiowaves.left.and.right")
-                .font(.title3)
+            Group {
+                if let sport {
+                    SportIcon(sport: sport, size: 26)
+                } else {
+                    Image(systemName: "applewatch.radiowaves.left.and.right").font(.title3)
+                }
+            }
                 .foregroundStyle(Color.accentColor)
                 .frame(width: 36, height: 36)
                 .background(Color.accentColor.opacity(0.12), in: .circle)

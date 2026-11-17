@@ -74,7 +74,7 @@ let project = Project(
                 "ITSAppUsesNonExemptEncryption": false,
             ]),
             sources: ["App/Sources/**", "Shared/Sources/**"],
-            resources: ["App/Resources/**"],
+            resources: ["App/Resources/**", "Shared/Resources/**"],
             entitlements: healthKit,
             dependencies: [
                 .target(name: "MadeGoodWatch"),
@@ -96,7 +96,7 @@ let project = Project(
                 "WKBackgroundModes": ["workout-processing"],
             ]),
             sources: ["Watch/Sources/**", "Shared/Sources/**"],
-            resources: ["Watch/Resources/**"],
+            resources: ["Watch/Resources/**", "Shared/Resources/**"],
             entitlements: healthKit,
             dependencies: [
                 .target(name: "MadeGoodWatchWidgets"),
@@ -112,7 +112,8 @@ let project = Project(
             infoPlist: plist(versionKeys, [
                 "NSExtension": ["NSExtensionPointIdentifier": "com.apple.widgetkit-extension"],
             ]),
-            sources: ["Widgets/Sources/**", "Shared/Sources/LiveActivity/SessionActivityAttributes.swift"]
+            sources: ["Widgets/Sources/**", "Shared/Sources/LiveActivity/SessionActivityAttributes.swift"],
+            resources: ["Shared/Resources/**"]
         ),
         .target(
             name: "MadeGoodWatchWidgets",

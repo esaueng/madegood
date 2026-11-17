@@ -144,8 +144,7 @@ private struct SportCard: View {
     var body: some View {
         Button(action: start) {
             VStack(alignment: .leading, spacing: 2) {
-                Image(systemName: sport.symbolName)
-                    .font(.title3.weight(.semibold))
+                SportIcon(sport: sport, size: 26)
                     .foregroundStyle(Theme.cream)
                     .frame(width: 34, height: 34)
                     .background(Theme.brightTeal.opacity(isLuminanceReduced ? 0.4 : 1), in: .circle)
@@ -390,8 +389,7 @@ private struct MetricsPage: View {
             let time = isLuminanceReduced ? Formatting.duration(elapsed) : Formatting.elapsed(elapsed)
             VStack(alignment: .leading, spacing: 2) {
                 HStack {
-                    Image(systemName: sport.symbolName)
-                        .accessibilityLabel(sport.displayName)
+                    SportIcon(sport: sport, size: 18, labeled: true)
                     if let state = metrics?.pauseState, let label = LiveDisplay.pauseLabel(state) {
                         Text(label).foregroundStyle(.yellow)
                             .accessibilityIdentifier("pauseBadge")
@@ -613,7 +611,11 @@ private struct SummaryView: View {
         let metrics = summary.metrics
         ScrollView {
             VStack(alignment: .leading, spacing: 4) {
-                Label(summary.sport.displayName, systemImage: summary.sport.symbolName)
+                Label {
+                    Text(summary.sport.displayName)
+                } icon: {
+                    SportIcon(sport: summary.sport, size: 20)
+                }
                     .font(.headline)
                 Field(label: "Time", value: Formatting.elapsed(metrics.elapsed))
                 Field(label: "Moving", value: Formatting.elapsed(metrics.movingTime))

@@ -20,8 +20,12 @@ struct SessionLiveActivity: Widget {
         } dynamicIsland: { context in
             DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
-                    Label(context.attributes.sportName, systemImage: context.attributes.sportSymbol)
-                        .font(.caption)
+                    Label {
+                        Text(context.attributes.sportName)
+                    } icon: {
+                        SportImage(attributes: context.attributes, size: 16)
+                    }
+                    .font(.caption)
                 }
                 DynamicIslandExpandedRegion(.trailing) {
                     Text(timerInterval: context.attributes.startedAt...Date.distantFuture, countsDown: false)
@@ -37,11 +41,11 @@ struct SessionLiveActivity: Widget {
                     }
                 }
             } compactLeading: {
-                Image(systemName: context.attributes.sportSymbol)
+                SportImage(attributes: context.attributes, size: 20, labeled: true)
             } compactTrailing: {
                 Text(context.state.speedNumber).monospacedDigit().font(.caption.weight(.semibold))
             } minimal: {
-                Image(systemName: context.attributes.sportSymbol)
+                SportImage(attributes: context.attributes, size: 20, labeled: true)
             }
         }
     }
@@ -53,8 +57,12 @@ private struct LockScreenView: View {
     var body: some View {
         HStack(alignment: .center, spacing: 16) {
             VStack(alignment: .leading, spacing: 4) {
-                Label(context.attributes.sportName, systemImage: context.attributes.sportSymbol)
-                    .font(.subheadline.weight(.semibold))
+                Label {
+                    Text(context.attributes.sportName)
+                } icon: {
+                    SportImage(attributes: context.attributes, size: 18)
+                }
+                .font(.subheadline.weight(.semibold))
                 if let pause = context.state.pauseLabel {
                     Text(pause).font(.caption.weight(.semibold)).foregroundStyle(.yellow)
                 } else {
@@ -72,5 +80,24 @@ private struct LockScreenView: View {
             }
         }
         .foregroundStyle(.white)
+    }
+}
+
+/// The sport's icon from the shared asset catalog (Shared/Resources/SportIcons.xcassets), or
+/// the SF Symbol an activity from an earlier build carries. Decorative unless `labeled`,
+/// when VoiceOver reads the sport's name.
+private struct SportImage: View {
+    let attributes: SessionActivityAttributes
+    let size: CGFloat
+    var labeled = false
+
+    var body: some View {
+        let image = attributes.isLegacySymbol ? Image(systemName: attributes.sportIcon) : Image(attributes.sportIcon)
+        let sized = image.resizable().scaledToFit().frame(width: size, height: size)
+        if labeled {
+            sized.accessibilityLabel(attributes.sportName)
+        } else {
+            sized.accessibilityHidden(true)
+        }
     }
 }

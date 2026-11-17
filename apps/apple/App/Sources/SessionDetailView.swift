@@ -81,7 +81,7 @@ struct SessionDetailView: View {
                         analysis.session.startedAt,
                         format: .dateTime.weekday(.wide).day().month().year().hour().minute())
                 } icon: {
-                    Image(systemName: sport.symbolName).foregroundStyle(Color.accentColor)
+                    SportIcon(sport: sport, size: 22).foregroundStyle(Color.accentColor)
                 }
                 .font(.headline)
                 if analysis.replay.fixes.count > 1 {
