@@ -26,3 +26,57 @@ describe("D1 migrations", () => {
     await expect(insertUser("u12", "sub-10", "helmsman")).rejects.toThrow(/UNIQUE/);
   });
 });
+
+describe("D1 migrations: sessions, tokens, privacy zones", () => {
+  const insertSession = (id: string, userId: string) =>
+    env.DB.prepare(
+      "insert into sessions (id, user_id, sport, started_at) values (?, ?, 'kayak', ?)",
+    )
+      .bind(id, userId, 1_800_000_000_000)
+      .run();
+
+  it("make sessions private by default", async () => {
+    await insertUser("u20", "sub-20", "bosun");
+    await insertSession("s20", "u20");
+    const row = await env.DB.prepare("select visibility, updated_at from sessions where id = ?")
+      .bind("s20")
+      .first<{ visibility: string; updated_at: number }>();
+    expect(row?.visibility).toBe("private");
+    expect(row?.updated_at).toBeGreaterThan(1_700_000_000_000);
+  });
+
+  it("delete a user's sessions, tokens and zones with the user", async () => {
+    await insertUser("u30", "sub-30", "purser");
+    await insertSession("s30", "u30");
+    await env.DB.prepare(
+      "insert into refresh_tokens (id, user_id, token_hash, expires_at) values (?, ?, ?, ?)",
+    )
+      .bind("t30", "u30", "hash-30", 1_900_000_000_000)
+      .run();
+    await env.DB.prepare(
+      "insert into privacy_zones (id, user_id, lat, lon, radius_m) values (?, ?, 0, 0, 200)",
+    )
+      .bind("z30", "u30")
+      .run();
+    await env.DB.prepare("delete from users where id = ?").bind("u30").run();
+    for (const table of ["sessions", "refresh_tokens", "privacy_zones"]) {
+      const row = await env.DB.prepare(`select count(*) as n from ${table} where user_id = ?`)
+        .bind("u30")
+        .first<{ n: number }>();
+      expect(row?.n, table).toBe(0);
+    }
+  });
+
+  it("reject a session for an unknown user and a reused token hash", async () => {
+    await expect(insertSession("s40", "nobody")).rejects.toThrow(/FOREIGN KEY/);
+    await insertUser("u41", "sub-41", "cook");
+    const insertToken = (id: string) =>
+      env.DB.prepare(
+        "insert into refresh_tokens (id, user_id, token_hash, expires_at) values (?, 'u41', 'same', 1)",
+      )
+        .bind(id)
+        .run();
+    await insertToken("t41");
+    await expect(insertToken("t42")).rejects.toThrow(/UNIQUE/);
+  });
+});

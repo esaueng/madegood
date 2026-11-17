@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Regenerates openapi/openapi.json from the API's own description (the Hono app
+# serves it at /api/openapi.json). The Swift client builds from the committed file,
+# and web/test/openapi.test.ts fails when it is out of date.
+#
+# Usage: scripts/generate-openapi
+set -euo pipefail
+root="$(cd "$(dirname "$0")/.." && pwd)"
+port="${OPENAPI_PORT:-5199}"
+
+cd "$root/web"
+pnpm exec vite --port "$port" --strictPort > "${TMPDIR:-/tmp}/madegood-openapi-vite.log" 2>&1 &
+server=$!
+trap 'kill "$server" 2>/dev/null || true' EXIT
+
+for _ in $(seq 1 60); do
+  if curl -fsS "http://localhost:$port/api/openapi.json" -o "${TMPDIR:-/tmp}/madegood-openapi.json" 2>/dev/null; then
+    python3 -c 'import json,sys; doc=json.load(open(sys.argv[1])); open(sys.argv[2],"w").write(json.dumps(doc, indent=2) + "\n")' \
+      "${TMPDIR:-/tmp}/madegood-openapi.json" "$root/openapi/openapi.json"
+    echo "Wrote openapi/openapi.json"
+    exit 0
+  fi
+  sleep 1
+done
+echo "The dev server did not serve /api/openapi.json; see ${TMPDIR:-/tmp}/madegood-openapi-vite.log" >&2
+exit 1
