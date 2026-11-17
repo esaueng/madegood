@@ -48,6 +48,24 @@ pnpm exec wrangler d1 migrations apply DB --remote --env preview
 CLOUDFLARE_ENV=preview pnpm deploy
 ```
 
+## How the main deployment works
+
+The project's own deployment (`madegood.esau.workers.dev`, previews on
+`madegood-preview`) runs from `.github/workflows/deploy.yml`:
+
+- Each pull request that touches `web/` uploads a preview version of
+  `madegood-preview` at `pr-<number>-madegood-preview.<subdomain>.workers.dev` and
+  links it in a comment. Each PR gets its own D1 database, `madegood-pr-<number>`,
+  which is deleted when the PR closes; previews share the preview R2 bucket.
+- Each push to `main` that touches `web/` builds, applies migrations, then deploys
+  production.
+
+The workflow needs the `CLOUDFLARE_API_TOKEN` secret (Workers Scripts and D1 edit on
+the account) and the repository variables `CLOUDFLARE_ACCOUNT_ID`, `D1_DATABASE_ID`
+and `D1_PREVIEW_DATABASE_ID`. `scripts/cloudflare-config` writes the IDs into the
+runner's copy of `wrangler.jsonc`; the repository keeps the placeholders. A fork can
+use the same workflow with its own secret and variables.
+
 ## Database migrations
 
 - The schema lives in `web/src/server/db/schema.ts` (Drizzle).
@@ -55,6 +73,10 @@ CLOUDFLARE_ENV=preview pnpm deploy
   `wrangler d1 migrations apply` reads. Never edit a migration that has been applied;
   add a new one.
 - Migrations are applied with Wrangler only. The tests apply the same files.
+- Production applies migrations just before deploying the new code, so the version
+  already running must keep working with the new schema. Change the schema in steps:
+  add new columns or tables first (expand), deploy code that uses them, and only drop
+  or rename old ones in a later release (contract).
 
 ## Secrets
 
