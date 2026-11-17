@@ -222,6 +222,23 @@ private func approx(_ a: Double?, _ b: Double, tolerance: Double = 0.01) -> Bool
         }
     }
 
+    // Regression test from the PR #25 review: with GPS quiet and no heart rate, the
+    // current speed stayed at its last value because the clock never moved.
+    @Test func advancingTheClockBlanksAStaleSpeed() {
+        var engine = SessionEngine(sport: .kayak)
+        for fix in Run(speed: { _ in 2 }).fixes(0...10) { engine.ingest(.gps(fix)) }
+        #expect(approx(engine.snapshot.speed, 2))
+        engine.advance(to: 20)
+        #expect(engine.snapshot.speed == nil)
+        #expect(engine.snapshot.elapsed == 20)
+        engine.advance(to: 15)
+        engine.advance(to: .nan)
+        #expect(engine.snapshot.elapsed == 20)
+        engine.ingest(.event(SessionEvent(t: 21, type: .stop)))
+        engine.advance(to: 30)
+        #expect(engine.snapshot.elapsed == 21)
+    }
+
     // Regression tests from the PR #23 review.
 
     @Test func manualResumeDoesNotCountThePausedInterval() {

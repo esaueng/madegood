@@ -14,6 +14,8 @@ DerivedData/
 *.xcworkspace/
 xcuserdata/
 apps/apple/Derived/
+# Tuist generates this inside the local WaterKit package too.
+packages/WaterKit/Derived/
 apps/apple/Tuist/.build/
 *.xcresult
 

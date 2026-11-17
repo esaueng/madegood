@@ -138,6 +138,13 @@ public struct SessionEngine: LiveAnalyzer {
         }
     }
 
+    /// Moves the session clock forward without a sample, so time-based values (elapsed
+    /// time, blanking a stale current speed) stay current while the sensors are quiet.
+    public mutating func advance(to t: Double) {
+        guard !finished, t.isFinite else { return }
+        latestTime = max(latestTime, t)
+    }
+
     public var snapshot: LiveMetrics {
         LiveMetrics(
             elapsed: latestTime, movingTime: movingTime, distance: distance,

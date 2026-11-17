@@ -5,7 +5,8 @@ import Observation
 import WaterKit
 
 /// Records a raw session (docs/formats.md) on whichever device runs it: GPS, 100 Hz
-/// device motion, heart rate, heading, clock anchors, and manual marks.
+/// device motion, heart rate, heading, clock anchors, and manual events. GPS and heart
+/// rate also feed WaterKit's `SessionEngine` for the live metrics on screen.
 @MainActor
 @Observable
 final class SessionRecorder {
@@ -29,8 +30,21 @@ final class SessionRecorder {
     static let flushInterval: Duration = .seconds(5)
     static let clockAnchorInterval: Duration = .seconds(60)
 
+    /// A position for the live map.
+    struct TrackPoint: Equatable {
+        var latitude: Double
+        var longitude: Double
+    }
+
+    /// The live map keeps at most this many points, thinning older ones evenly.
+    static let maxTrackPoints = 2_000
+
     private(set) var state: State = .idle
     private(set) var counts = Counts()
+    /// Live metrics while recording; after a stop, the final values for the summary.
+    private(set) var metrics: LiveMetrics?
+    /// Accepted positions for the live map, oldest first.
+    private(set) var trackPoints: [TrackPoint] = []
     private(set) var lastError: String?
     /// Called with the session folder after a recording stops.
     var onFinish: ((URL) -> Void)?
@@ -51,6 +65,14 @@ final class SessionRecorder {
     /// A workout failure reported while `start()` was still running.
     private var startupInterruption: String?
     private var clockObserver: (any NSObjectProtocol)?
+    private var engine: SessionEngine?
+    /// The session the engine belongs to. Sensor callbacks carry the session they came
+    /// from, so a late one from an earlier session never reaches this engine.
+    private var liveSession: UUID?
+    /// Unix time of the session start; engine times are seconds since it.
+    private var startUnix = 0.0
+    /// How many of the engine's generated events are already in events.ndjson.
+    private var writtenGeneratedEvents = 0
 
     var isRecording: Bool {
         if case .recording = state { true } else { false }
@@ -66,8 +88,9 @@ final class SessionRecorder {
         counts = Counts()
 
         // Ask for location while the app is in use (shows the prompt the first time).
-        serviceSession = CLServiceSession(authorization: .whenInUse)
-        if WorkoutSource.isAvailable {
+        let demo = DemoFeed.isEnabled
+        if !demo { serviceSession = CLServiceSession(authorization: .whenInUse) }
+        if WorkoutSource.isAvailable, !demo {
             do {
                 try await WorkoutSource.requestAuthorization(store: healthStore)
             } catch {
@@ -98,16 +121,27 @@ final class SessionRecorder {
             requestedRates: ["gps": 1, "motion": Self.motionRate])
         self.meta = meta
         writeMeta()
+        engine = SessionEngine(sport: sport)
+        liveSession = sessionId
+        startUnix = anchor.unix
+        writtenGeneratedEvents = 0
+        metrics = engine?.snapshot
+        trackPoints = []
 
         let writers = Dictionary(
             uniqueKeysWithValues: RawFormat.Stream.allCases.map { ($0, RawStreamWriter(stream: $0, folder: folder)) })
         self.writers = writers
 
         // A workout session keeps the app running with the screen off (watch and iPhone).
-        if WorkoutSource.isAvailable, let hrWriter = writers[.hr] {
-            let workout = WorkoutSource(store: healthStore, writer: hrWriter) { [weak self] message in
-                Task { @MainActor in await self?.workoutInterrupted(message) }
-            }
+        if WorkoutSource.isAvailable, !demo, let hrWriter = writers[.hr] {
+            let workout = WorkoutSource(
+                store: healthStore, writer: hrWriter,
+                onInterruption: { [weak self] message in
+                    Task { @MainActor in await self?.workoutInterrupted(message) }
+                },
+                onHeartRate: { [weak self] line in
+                    Task { @MainActor in self?.ingestHeartRate(line, session: sessionId) }
+                })
             do {
                 try await workout.start(sport: sport, at: startedAt)
                 if let message = startupInterruption {
@@ -124,7 +158,7 @@ final class SessionRecorder {
         #if os(watchOS)
             // Without a workout the watch suspends the app when the wrist drops, so a
             // recording would silently stop. Don't start one.
-            if workout == nil {
+            if workout == nil, !demo {
                 if lastError == nil {
                     lastError = "Health is unavailable, so the watch can't record in the background."
                 }
@@ -136,17 +170,21 @@ final class SessionRecorder {
             backgroundActivity = CLBackgroundActivitySession()
         #endif
 
-        if let writer = writers[.gps] {
-            let location = LocationSource(writer: writer)
+        if demo {
+            startDemoFeed(session: sessionId)
+        } else if let writer = writers[.gps] {
+            let location = LocationSource(writer: writer) { [weak self] line in
+                Task { @MainActor in self?.ingestFix(line, session: sessionId) }
+            }
             location.start()
             self.location = location
         }
-        if let writer = writers[.motion] {
+        if !demo, let writer = writers[.motion] {
             let motion = MotionSource(writer: writer)
             motion.start(rate: Self.motionRate)
             self.motion = motion
         }
-        if let writer = writers[.heading] {
+        if !demo, let writer = writers[.heading] {
             let heading = HeadingSource(writer: writer)
             heading.start()
             self.heading = heading
@@ -164,6 +202,9 @@ final class SessionRecorder {
 
     /// Undoes a start that cannot continue: nothing has been recorded yet.
     private func abandonStart(folder: URL) {
+        engine = nil
+        liveSession = nil
+        metrics = nil
         writers = [:]
         meta = nil
         self.folder = nil
@@ -198,6 +239,99 @@ final class SessionRecorder {
         counts.marks += 1
     }
 
+    func lap() { userEvent(.lap) }
+
+    func pause() { userEvent(.pause) }
+
+    func resume() { userEvent(.resume) }
+
+    var isPaused: Bool {
+        switch metrics?.pauseState {
+        case .autoPaused, .manuallyPaused: true
+        case .moving, nil: false
+        }
+    }
+
+    private func userEvent(_ type: EventType) {
+        guard isRecording else { return }
+        let now = Date().timeIntervalSince1970
+        writers[.events]?.append(RawFormat.EventLine(ts: now, type: type))
+        ingest(.event(SessionEvent(t: now - startUnix, type: type)))
+    }
+
+    // MARK: Live analysis
+
+    // Callbacks are accepted from the start of `start()` until `stop()` has fed the engine
+    // its stop event, so readings queued while starting or stopping are not lost.
+
+    private func ingestFix(_ line: RawFormat.GPSLine, session: UUID) {
+        guard session == liveSession, let before = engine?.snapshot.acceptedFixes else { return }
+        let fix = GPSFix(
+            t: line.ts - startUnix, latitude: line.lat, longitude: line.lon, altitude: line.alt,
+            horizontalAccuracy: line.hacc, verticalAccuracy: line.vacc, speed: line.spd,
+            speedAccuracy: line.spdacc, course: line.crs, courseAccuracy: line.crsacc)
+        ingest(.gps(fix))
+        if let after = engine?.snapshot.acceptedFixes, after > before {
+            appendTrackPoint(TrackPoint(latitude: line.lat, longitude: line.lon))
+        }
+    }
+
+    private func ingestHeartRate(_ line: RawFormat.HRLine, session: UUID) {
+        guard session == liveSession else { return }
+        ingest(.hr(HRSample(t: line.ts - startUnix, bpm: line.bpm)))
+    }
+
+    /// Feeds the engine, stores any events it generated, and publishes the new metrics.
+    private func ingest(_ sample: Sample) {
+        guard var engine else { return }
+        engine.ingest(sample)
+        let generated = engine.generatedEvents
+        for event in generated.dropFirst(writtenGeneratedEvents) {
+            writers[.events]?.append(
+                RawFormat.EventLine(ts: startUnix + event.t, type: event.type, data: event.data))
+        }
+        writtenGeneratedEvents = generated.count
+        self.engine = engine
+        metrics = engine.snapshot
+    }
+
+    /// Moves the engine's clock to now, so elapsed time and a stale speed update even when
+    /// no sensor is reporting.
+    private func tick() {
+        guard isRecording, var engine else { return }
+        engine.advance(to: Date().timeIntervalSince1970 - startUnix)
+        self.engine = engine
+        metrics = engine.snapshot
+    }
+
+    private func appendTrackPoint(_ point: TrackPoint) {
+        trackPoints.append(point)
+        if trackPoints.count > Self.maxTrackPoints {
+            // Keep the newest point and every other older one.
+            let newest = trackPoints.removeLast()
+            trackPoints = trackPoints.enumerated().filter { $0.offset.isMultiple(of: 2) }.map(\.element) + [newest]
+        }
+    }
+
+    /// Feeds the synthetic route through the same path as real sensors (see `DemoFeed`).
+    private func startDemoFeed(session: UUID) {
+        loops.append(
+            Task { [weak self] in
+                var second = 1
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .seconds(1))
+                    guard let self, self.isRecording else { return }
+                    let fix = DemoFeed.fix(second: second, startUnix: self.startUnix)
+                    let hr = DemoFeed.heartRate(second: second, startUnix: self.startUnix)
+                    self.writers[.gps]?.append(fix)
+                    self.writers[.hr]?.append(hr)
+                    self.ingestFix(fix, session: session)
+                    self.ingestHeartRate(hr, session: session)
+                    second += 1
+                }
+            })
+    }
+
     private func startLoops() {
         loops.append(
             Task { [weak self] in
@@ -213,6 +347,13 @@ final class SessionRecorder {
                 while !Task.isCancelled {
                     try? await Task.sleep(for: Self.clockAnchorInterval)
                     self?.writeClockAnchor()
+                }
+            })
+        loops.append(
+            Task { [weak self] in
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .seconds(1))
+                    self?.tick()
                 }
             })
     }
@@ -262,6 +403,7 @@ final class SessionRecorder {
         serviceSession?.invalidate()
         serviceSession = nil
 
+        ingest(.event(SessionEvent(t: endedAt.timeIntervalSince1970 - startUnix, type: .stop)))
         writers[.events]?.append(RawFormat.EventLine(ts: endedAt.timeIntervalSince1970, type: .stop))
         writeClockAnchor()
         refreshCounts()
@@ -288,6 +430,8 @@ final class SessionRecorder {
         heading = nil
         workout = nil
         self.writers = [:]
+        engine = nil
+        liveSession = nil
         meta = nil
         self.folder = nil
         state = .idle

@@ -12,20 +12,25 @@ import WaterKit
 /// 1 Hz location via `CLLocationUpdate.liveUpdates(.fitness)`.
 final class LocationSource: Sendable {
     private let writer: RawStreamWriter
+    private let onFix: @Sendable (RawFormat.GPSLine) -> Void
     private let task = Mutex<Task<Void, Never>?>(nil)
 
-    init(writer: RawStreamWriter) {
+    /// `onFix` receives every line written, on a background task, for live analysis.
+    init(writer: RawStreamWriter, onFix: @escaping @Sendable (RawFormat.GPSLine) -> Void = { _ in }) {
         self.writer = writer
+        self.onFix = onFix
     }
 
     func start() {
         let writer = writer
+        let onFix = onFix
         let newTask = Task.detached(priority: .userInitiated) {
             do {
                 for try await update in CLLocationUpdate.liveUpdates(.fitness) {
                     if Task.isCancelled { break }
                     guard let location = update.location, let line = Self.line(for: location) else { continue }
                     writer.append(line)
+                    onFix(line)
                 }
             } catch {
                 print("LocationSource: updates ended: \(error)")
