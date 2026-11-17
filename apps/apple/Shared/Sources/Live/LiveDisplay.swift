@@ -6,12 +6,9 @@ struct LiveDisplay {
     var speed: SpeedUnit
     var distance: DistanceUnit
 
-    /// Defaults until the units setting exists (#21 follow-up): nautical units on boats
-    /// and boards, metric for paddling.
+    /// The automatic units: nautical on boats and boards, metric for paddling.
     static func standard(for sport: Sport) -> LiveDisplay {
-        sport.isPaddling
-            ? LiveDisplay(speed: .kilometresPerHour, distance: .metric)
-            : LiveDisplay(speed: .knots, distance: .nauticalMiles)
+        LiveDisplay(speed: .automatic(for: sport), distance: .automatic(for: sport))
     }
 
     func speed(_ metresPerSecond: Double?) -> String {

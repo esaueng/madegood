@@ -3,9 +3,11 @@ import XCTest
 extension XCTestCase {
     /// Launches the app with the synthetic demo session (DemoFeed in the app), so tests
     /// need no GPS, Health or permission prompts and see the same numbers every run.
-    func launchDemoApp(extraArguments: [String] = []) -> XCUIApplication {
+    /// Settings start from their defaults unless `resetSettings` is false. A
+    /// `-settings.<key> <value>` argument pins that setting for the launch.
+    func launchDemoApp(extraArguments: [String] = [], resetSettings: Bool = true) -> XCUIApplication {
         let app = XCUIApplication()
-        app.launchArguments = ["-demoSession"] + extraArguments
+        app.launchArguments = ["-demoSession"] + (resetSettings ? ["-resetSettings"] : []) + extraArguments
         app.launch()
         return app
     }
@@ -16,6 +18,23 @@ extension XCTestCase {
         attachment.name = name
         attachment.lifetime = .keepAlways
         add(attachment)
+    }
+
+    /// Any element with this accessibility identifier.
+    func element(_ identifier: String, in app: XCUIApplication) -> XCUIElement {
+        app.descendants(matching: .any)[identifier].firstMatch
+    }
+
+    /// Swipes up until the element can be tapped.
+    func scrollTo(_ element: XCUIElement, in app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
+        for _ in 0..<8 where !(element.exists && element.isHittable) {
+            // A slow drag, like a finger: the watch ignores XCUITest's quick swipes.
+            let window = app.windows.firstMatch
+            let low = window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.8))
+            let high = window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.35))
+            low.press(forDuration: 0.05, thenDragTo: high, withVelocity: .slow, thenHoldForDuration: 0.1)
+        }
+        XCTAssertTrue(element.isHittable, "\(element) never became hittable", file: file, line: line)
     }
 
     /// Waits until the element's label equals `label`.

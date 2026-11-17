@@ -22,3 +22,7 @@ extension Sport {
         }
     }
 }
+
+extension Sport: @retroactive Identifiable {
+    public var id: String { rawValue }
+}

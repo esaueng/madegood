@@ -1,12 +1,6 @@
 import SwiftUI
 
-/// Brand colors from the logo (assets/icon.svg). The app's accent is AccentColor in the
-/// asset catalog; these are for the few places that need the full palette.
-enum Theme {
-    static let teal = Color(red: 0x05 / 255, green: 0x60 / 255, blue: 0x5F / 255)
-    static let cream = Color(red: 0xFC / 255, green: 0xF0 / 255, blue: 0xDA / 255)
-    static let coral = Color(red: 0xEE / 255, green: 0x7B / 255, blue: 0x57 / 255)
-
+extension Theme {
     /// Track colors from slow to fast.
     static let speedScale: [Color] = [
         Color(red: 0.16, green: 0.45, blue: 0.70),

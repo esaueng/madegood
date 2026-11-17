@@ -7,8 +7,9 @@ final class PhoneScreensUITests: XCTestCase {
     }
 
     func testScreens() {
-        let app = launchDemoApp(extraArguments: ["-demoHistory", "-recorder.sport", "sailing"])
-        XCTAssertTrue(app.buttons["control.start"].waitForExistence(timeout: 15))
+        let app = launchDemoApp(extraArguments: ["-demoHistory"])
+        XCTAssertTrue(app.buttons["sport.sailing"].waitForExistence(timeout: 15))
+        sleep(2)  // last-session lines come from the history summaries
         attachScreenshot("record")
 
         app.tabBars.buttons["History"].tap()
@@ -33,8 +34,14 @@ final class PhoneScreensUITests: XCTestCase {
         app.navigationBars.buttons.firstMatch.tap()
 
         app.tabBars.buttons["Settings"].tap()
-        XCTAssertTrue(app.staticTexts["Units"].waitForExistence(timeout: 10))
+        let sailingRow = app.buttons["settings.sport.sailing"]
+        XCTAssertTrue(sailingRow.waitForExistence(timeout: 10))
         attachScreenshot("settings")
+        sailingRow.tap()
+        XCTAssertTrue(app.buttons["sportSettings.speedUnit"].waitForExistence(timeout: 10))
+        attachScreenshot("sport settings")
+        app.swipeUp()
+        attachScreenshot("sport settings lower")
     }
 }
 
@@ -59,10 +66,14 @@ final class HistorySettingsUITests: XCTestCase {
 
     private func setKayakAutoPause(_ on: Bool, _ app: XCUIApplication) {
         app.tabBars.buttons["Settings"].tap()
-        let toggle = app.switches["settings.autoPause.kayak"]
+        let row = app.buttons["settings.sport.kayak"]
+        XCTAssertTrue(row.waitForExistence(timeout: 10))
+        row.tap()
+        let toggle = app.switches["sportSettings.autoPause"]
         XCTAssertTrue(toggle.waitForExistence(timeout: 10))
         if (toggle.value as? String == "1") != on { toggle.switches.firstMatch.tap() }
         XCTAssertEqual(toggle.value as? String, on ? "1" : "0")
+        app.navigationBars.buttons.firstMatch.tap()
     }
 
     private func expectHistory(showing text: String, _ app: XCUIApplication) {

@@ -172,37 +172,50 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
         }
     #endif
 
-    // MARK: Settings (phone → watch)
+    // MARK: Settings (both ways)
+
+    // Each device sends its whole settings snapshot as its application context (only the
+    // latest is delivered); the receiver keeps whichever side changed last
+    // (`UserSettings.apply`).
 
     #if os(iOS)
-        /// Sends the phone's settings to the watch; the latest context replaces older ones.
         /// Resends settings when the watch app is installed (or the pairing changes): an
         /// earlier push returns early while the app is missing.
         nonisolated func sessionWatchStateDidChange(_ session: WCSession) {
             pushSettings()
         }
-
-        func pushSettings() {
-            let session = WCSession.default
-            guard WCSession.isSupported(), session.activationState == .activated, session.isPaired,
-                session.isWatchAppInstalled
-            else { return }
-            do {
-                try session.updateApplicationContext([Key.settings: UserSettings.snapshot()])
-            } catch {
-                print("RecordingTransfer: settings update failed: \(error)")
-            }
-        }
-    #else
-        nonisolated func session(_ session: WCSession, didReceiveApplicationContext context: [String: Any]) {
-            applySettings(context)
-        }
-
-        nonisolated private func applySettings(_ context: [String: Any]) {
-            guard let settings = context[Key.settings] as? [String: Any] else { return }
-            UserSettings.apply(settings)
-        }
     #endif
+
+    /// Sends this device's settings to the other one.
+    func pushSettings() {
+        let session = WCSession.default
+        guard WCSession.isSupported(), session.activationState == .activated else { return }
+        #if os(iOS)
+            guard session.isPaired, session.isWatchAppInstalled else { return }
+        #else
+            guard session.isCompanionAppInstalled else { return }
+        #endif
+        do {
+            try session.updateApplicationContext([Key.settings: UserSettings.snapshot()])
+        } catch {
+            print("RecordingTransfer: settings update failed: \(error)")
+        }
+    }
+
+    nonisolated func session(_ session: WCSession, didReceiveApplicationContext context: [String: Any]) {
+        applySettings(context)
+    }
+
+    nonisolated private func applySettings(_ context: [String: Any]) {
+        guard let settings = context[Key.settings] as? [String: Any], UserSettings.apply(settings) else { return }
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(name: UserSettings.didChangeRemotely, object: nil)
+            #if os(iOS)
+                // Keep the phone's outgoing context current, for a watch app reinstalled later.
+                self.pushSettings()
+            #endif
+        }
+    }
 
     // MARK: Both
 
@@ -211,13 +224,12 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
         error: (any Error)?
     ) {
         if let error { print("RecordingTransfer: activation failed: \(error)") }
+        guard activationState == .activated else { return }
+        applySettings(session.receivedApplicationContext)
         #if os(watchOS)
-            if activationState == .activated {
-                sendAllPending()
-                applySettings(session.receivedApplicationContext)
-            }
+            sendAllPending()
         #else
-            if activationState == .activated { pushSettings() }
+            pushSettings()
         #endif
     }
 }

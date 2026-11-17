@@ -1,6 +1,6 @@
 import XCTest
 
-/// Walks through a demo kayak session on the watch: start, metrics, controls, map, end,
+/// Walks through a demo kayak session on the watch: start card, metrics, controls, map, end,
 /// summary. The demo boat moves at 2.5 m/s, which kayak shows as 9.0 km/h.
 final class WatchSessionUITests: XCTestCase {
     override func setUp() {
@@ -12,7 +12,7 @@ final class WatchSessionUITests: XCTestCase {
 
         let kayak = app.buttons["sport.kayak"]
         XCTAssertTrue(kayak.waitForExistence(timeout: 15))
-        attachScreenshot("1 sports")
+        attachScreenshot("1 sport cards")
         let started = Date()
         kayak.tap()
 
@@ -116,27 +116,5 @@ final class WatchSessionUITests: XCTestCase {
         XCTAssertTrue(relaunched.buttons["mob.clear"].waitForExistence(timeout: 15))
         relaunched.buttons["mob.clear"].tap()
         XCTAssertTrue(relaunched.buttons["sport.kayak"].waitForExistence(timeout: 10))
-    }
-
-    /// Moves the vertical page view to `page` (1-based) by dragging. XCUITest's quick
-    /// swipes and Digital Crown rotation did not change page in the simulator.
-    private func goToPage(_ page: Int, _ app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
-        let indicator = app.descendants(matching: .any)
-            .matching(NSPredicate(format: "value BEGINSWITH 'page '")).firstMatch
-        for _ in 0..<8 {
-            guard let value = indicator.value as? String,
-                let current = Int(value.split(separator: " ").dropFirst().first ?? "")
-            else { break }
-            if current == page { return }
-            // A slow drag, like a finger: up for the next page, down for the previous one.
-            let window = app.windows.firstMatch
-            let high = window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.25))
-            let low = window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.85))
-            let (from, to) = current < page ? (low, high) : (high, low)
-            from.press(forDuration: 0.05, thenDragTo: to, withVelocity: .slow, thenHoldForDuration: 0.05)
-            sleep(1)
-        }
-        XCTFail(
-            "Could not reach page \(page); indicator: \(String(describing: indicator.value))", file: file, line: line)
     }
 }

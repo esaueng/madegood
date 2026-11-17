@@ -48,6 +48,9 @@ final class SessionRecorder {
     /// Accepted positions for the live map, oldest first.
     private(set) var trackPoints: [TrackPoint] = []
     private(set) var lastError: String?
+    /// The latest distance alert (the sport's "alert every N" setting), for a banner and
+    /// a haptic. Not recorded: alerts are a display feature, not session data.
+    private(set) var distanceAlert: DistanceAlertEvent?
     /// Called with the session folder after a recording stops.
     var onFinish: ((URL) -> Void)?
 
@@ -79,6 +82,15 @@ final class SessionRecorder {
     private var startUnix = 0.0
     /// How many of the engine's generated events are already in events.ndjson.
     private var writtenGeneratedEvents = 0
+
+    struct DistanceAlertEvent: Equatable, Identifiable {
+        /// Counts alerts in the session, so the same distance twice is still a change.
+        var id: Int
+        /// The milestone reached, m.
+        var distance: Double
+    }
+
+    private var distanceAlertTracker: DistanceAlert?
 
     var isRecording: Bool {
         if case .recording = state { true } else { false }
@@ -133,6 +145,9 @@ final class SessionRecorder {
         writtenGeneratedEvents = 0
         metrics = engine?.snapshot
         trackPoints = []
+        distanceAlert = nil
+        let settings = UserSettings.settings(for: sport)
+        distanceAlertTracker = DistanceAlert(interval: settings.distanceAlertMetres(for: sport))
 
         let writers = Dictionary(
             uniqueKeysWithValues: RawFormat.Stream.allCases.map { ($0, RawStreamWriter(stream: $0, folder: folder)) })
@@ -325,9 +340,17 @@ final class SessionRecorder {
         writtenGeneratedEvents = generated.count
         self.engine = engine
         metrics = engine.snapshot
+        checkDistanceAlert()
         #if os(iOS)
             if let liveSport { liveActivity.update(metrics, sport: liveSport) }
         #endif
+    }
+
+    private func checkDistanceAlert() {
+        guard isRecording, let distance = metrics?.distance,
+            let reached = distanceAlertTracker?.update(distance: distance)
+        else { return }
+        distanceAlert = DistanceAlertEvent(id: distanceAlertTracker?.count ?? 0, distance: reached)
     }
 
     /// Moves the engine's clock to now, so elapsed time and a stale speed update even when
@@ -483,6 +506,8 @@ final class SessionRecorder {
         self.writers = [:]
         engine = nil
         liveSession = nil
+        distanceAlertTracker = nil
+        distanceAlert = nil
         meta = nil
         self.folder = nil
         state = .idle

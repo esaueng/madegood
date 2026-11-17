@@ -1,59 +1,25 @@
 import SwiftUI
 import WaterKit
 
-/// Units and auto-pause. Values default to "Automatic", which follows the sport.
+/// One row per sport, each opening that sport's settings (the same form as on the watch),
+/// then app-wide items. Every setting starts at an automatic value that follows the sport.
 struct SettingsView: View {
-    @AppStorage(UserSettings.Key.speedUnit) private var speedUnit = UserSettings.automatic
-    @AppStorage(UserSettings.Key.distanceUnit) private var distanceUnit = UserSettings.automatic
+    @State private var store = SettingsStore.shared
 
     var body: some View {
         NavigationStack {
-            Form {
-                Section {
-                    Picker("Speed", selection: $speedUnit) {
-                        Text("Automatic").tag(UserSettings.automatic)
-                        ForEach(SpeedUnit.allCases, id: \.rawValue) { unit in
-                            Text(unit.symbol).tag(unit.rawValue)
-                        }
-                    }
-                    .accessibilityIdentifier("settings.speedUnit")
-                    Picker("Distance", selection: $distanceUnit) {
-                        Text("Automatic").tag(UserSettings.automatic)
-                        ForEach(DistanceUnit.allCases, id: \.rawValue) { unit in
-                            Text(unit.name).tag(unit.rawValue)
-                        }
-                    }
-                    .accessibilityIdentifier("settings.distanceUnit")
-                } header: {
-                    Text("Units")
-                } footer: {
-                    Text(
-                        "Automatic uses knots and nautical miles on boats and boards, km/h and kilometres for paddling."
-                    )
-                }
-
+            List {
                 Section {
                     ForEach(Sport.allCases, id: \.self) { sport in
-                        AutoPauseToggle(sport: sport)
+                        NavigationLink(value: sport) {
+                            SportRow(sport: sport, settings: store[sport])
+                        }
+                        .accessibilityIdentifier("settings.sport.\(sport.rawValue)")
                     }
                 } header: {
-                    Text("Auto-pause")
+                    Text("Sports")
                 } footer: {
-                    Text(
-                        "Pauses when you stop for 10 seconds and resumes when you move again. Changes apply to new sessions and to how past ones are shown."
-                    )
-                }
-
-                Section {
-                    ForEach(Sport.allCases, id: \.self) { sport in
-                        SaveWorkoutToggle(sport: sport)
-                    }
-                } header: {
-                    Text("Apple Health")
-                } footer: {
-                    Text(
-                        "Saves each session as a workout with its route and heart rate. Recordings stay in MadeGood either way."
-                    )
+                    Text("Units, first screen, alerts, countdown and Health for each sport. Changes reach your watch.")
                 }
 
                 Section("About") {
@@ -61,62 +27,52 @@ struct SettingsView: View {
                     Link(destination: URL(string: "https://github.com/esaueng/madegood")!) {
                         Label("Source code", systemImage: "chevron.left.forwardslash.chevron.right")
                     }
-                    Text("Routes and charts are not for navigation.")
+                    Label("Routes and charts are not for navigation.", systemImage: "exclamationmark.triangle")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
             }
-            .tint(.accentColor)
-            .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)) { _ in
-                RecordingTransfer.shared.pushSettings()
-            }
             .navigationTitle("Settings")
+            .navigationDestination(for: Sport.self) { sport in
+                SportSettingsForm(sport: sport)
+            }
         }
     }
 }
 
-private struct AutoPauseToggle: View {
+private struct SportRow: View {
     let sport: Sport
-    @AppStorage private var enabled: Bool
-
-    init(sport: Sport) {
-        self.sport = sport
-        _enabled = AppStorage(
-            wrappedValue: SportProfile.standard(for: sport).autoPause.enabled, UserSettings.Key.autoPause(sport))
-    }
+    let settings: SportSettings
 
     var body: some View {
-        Toggle(isOn: $enabled) {
-            Label(sport.displayName, systemImage: sport.symbolName)
+        HStack(spacing: 12) {
+            Image(systemName: sport.symbolName)
+                .font(.body.weight(.semibold))
+                .foregroundStyle(Theme.cream)
+                .frame(width: 32, height: 32)
+                .background(Color.accentColor.opacity(settings.isHidden ? 0.4 : 1), in: .rect(cornerRadius: 8))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(sport.displayName)
+                    .foregroundStyle(settings.isHidden ? .secondary : .primary)
+                Text(summary)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
         }
-        .accessibilityIdentifier("settings.autoPause.\(sport.rawValue)")
-    }
-}
-
-private struct SaveWorkoutToggle: View {
-    let sport: Sport
-    @AppStorage private var enabled: Bool
-
-    init(sport: Sport) {
-        self.sport = sport
-        _enabled = AppStorage(
-            wrappedValue: SportProfile.standard(for: sport).savesWorkoutByDefault, UserSettings.Key.saveWorkout(sport))
+        .accessibilityElement(children: .combine)
     }
 
-    var body: some View {
-        Toggle(isOn: $enabled) {
-            Label(sport.displayName, systemImage: sport.symbolName)
+    /// "kn · nm · Countdown 5 min", "Hidden".
+    private var summary: String {
+        if settings.isHidden { return "Hidden" }
+        var parts = [
+            settings.resolvedSpeedUnit(for: sport).symbol, settings.resolvedDistanceUnit(for: sport).symbol,
+        ]
+        if settings.countdownMinutes > 0 { parts.append("\(settings.countdownMinutes) min countdown") }
+        if let alert = settings.distanceAlert {
+            parts.append("alert \(ShortNumber.text(alert)) \(settings.resolvedDistanceUnit(for: sport).symbol)")
         }
-        .accessibilityIdentifier("settings.saveWorkout.\(sport.rawValue)")
-    }
-}
-
-extension DistanceUnit {
-    var name: String {
-        switch self {
-        case .metric: "Kilometres"
-        case .nauticalMiles: "Nautical miles"
-        case .statuteMiles: "Miles"
-        }
+        return parts.joined(separator: " · ")
     }
 }
