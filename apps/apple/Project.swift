@@ -12,6 +12,29 @@ let versionKeys: [String: Plist.Value] = [
     "CFBundleDisplayName": "MadeGood",
 ]
 
+/// Permission prompts shared by both apps.
+let usageKeys: [String: Plist.Value] = [
+    "NSLocationWhenInUseUsageDescription":
+        "MadeGood records your track, speed, and course while you are on the water.",
+    "NSMotionUsageDescription":
+        "MadeGood records wrist motion to count paddle strokes and detect maneuvers.",
+    "NSHealthShareUsageDescription":
+        "MadeGood reads your heart rate during a session.",
+    "NSHealthUpdateUsageDescription":
+        "MadeGood runs a workout session so recording continues with the screen off.",
+]
+
+let healthKit: Entitlements = .dictionary([
+    "com.apple.developer.healthkit": true,
+    "com.apple.developer.healthkit.access": [],
+])
+
+func plist(_ parts: [String: Plist.Value]...) -> InfoPlist {
+    .extendingDefault(with: parts.reduce(into: [:]) { result, part in
+        result.merge(part) { _, new in new }
+    })
+}
+
 let project = Project(
     name: "MadeGood",
     options: .options(
@@ -34,15 +57,23 @@ let project = Project(
             product: .app,
             bundleId: "$(BUNDLE_ID_PREFIX)",
             deploymentTargets: iOSTarget,
-            infoPlist: .extendingDefault(with: versionKeys.merging([
+            infoPlist: plist(versionKeys, usageKeys, [
                 "UILaunchScreen": [:],
                 "UIRequiredDeviceCapabilities": ["arm64"],
                 "UISupportedInterfaceOrientations": ["UIInterfaceOrientationPortrait"],
-            ]) { _, new in new }),
+                // Location keeps recording with the screen off; workout-processing lets
+                // the phone run its own workout session (iOS 26).
+                "UIBackgroundModes": ["location", "workout-processing"],
+                // Recordings in Documents are visible in the Files app.
+                "UIFileSharingEnabled": true,
+                "LSSupportsOpeningDocumentsInPlace": true,
+            ]),
             sources: ["App/Sources/**", "Shared/Sources/**"],
             resources: ["App/Resources/**"],
+            entitlements: healthKit,
             dependencies: [
                 .target(name: "MadeGoodWatch"),
+                .external(name: "WaterKit"),
             ]
         ),
         .target(
@@ -52,13 +83,18 @@ let project = Project(
             productName: "MadeGoodWatch",
             bundleId: "$(BUNDLE_ID_PREFIX).watchkitapp",
             deploymentTargets: watchOSTarget,
-            infoPlist: .extendingDefault(with: versionKeys.merging([
+            infoPlist: plist(versionKeys, usageKeys, [
                 "WKApplication": true,
                 "WKCompanionAppBundleIdentifier": "$(BUNDLE_ID_PREFIX)",
                 "WKRunsIndependentlyOfCompanionApp": false,
-            ]) { _, new in new }),
+                "WKBackgroundModes": ["workout-processing"],
+            ]),
             sources: ["Watch/Sources/**", "Shared/Sources/**"],
-            resources: ["Watch/Resources/**"]
+            resources: ["Watch/Resources/**"],
+            entitlements: healthKit,
+            dependencies: [
+                .external(name: "WaterKit"),
+            ]
         ),
     ]
 )

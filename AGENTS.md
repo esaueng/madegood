@@ -28,7 +28,7 @@ Run the checks for every area you touch before you push.
 | WaterKit tests | `swift test --package-path packages/WaterKit` |
 | Replay a session | `swift run --package-path packages/WaterKit waterkit-replay <path>` |
 | Anonymize a track | `scripts/anonymize-track <in> <out>` |
-| Apple project | `mise install` (pins Tuist), then `cd apps/apple && tuist generate --no-open` |
+| Apple project | `mise install` (pins Tuist), then `cd apps/apple && tuist install && tuist generate --no-open` |
 | Apple build | see `.github/workflows/apple.yml` for the exact `xcodebuild` lines |
 | Web install | `pnpm install` |
 | Web lint/format | `pnpm check` (Biome) |
