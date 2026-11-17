@@ -35,7 +35,8 @@ enum UserSettings {
     @MainActor
     static func save(_ settings: SportSettings, for sport: Sport, at date: Date = Date()) {
         settings.write(sport: sport, to: write)
-        SettingsSync.stampLocalChange(now: date.timeIntervalSince1970, reading: read, writing: write)
+        SettingsSync.stampLocalChange(
+            now: date.timeIntervalSince1970, device: deviceID, reading: read, writing: write)
     }
 
     static func display(for sport: Sport) -> LiveDisplay {
@@ -64,6 +65,9 @@ enum UserSettings {
     // MARK: Sync
 
     /// This device's per-sport settings and their revision, to send to the other device.
+    /// Main actor only, so it never mixes values from before a save with the revision
+    /// from after it.
+    @MainActor
     static func snapshot() -> [String: Any] {
         SettingsSync.snapshot(reading: read)
     }
@@ -80,7 +84,8 @@ enum UserSettings {
     @MainActor
     static func migrate(now: Date = Date()) {
         SportSettings.migrateLegacyUnits(reading: read, writing: write)
-        SettingsSync.assignMissingRevision(now: now.timeIntervalSince1970, reading: read, writing: write)
+        SettingsSync.assignMissingRevision(
+            now: now.timeIntervalSince1970, device: deviceID, reading: read, writing: write)
         for key in [Key.legacyWatchLastSport, Key.legacyPhoneSport] {
             if let raw = defaults.string(forKey: key), let sport = Sport(rawValue: raw),
                 defaults.object(forKey: Key.lastUsed(sport)) == nil
@@ -89,6 +94,15 @@ enum UserSettings {
             }
             defaults.removeObject(forKey: key)
         }
+    }
+
+    /// A stable random ID for this device, made once; breaks ties between revisions.
+    @MainActor
+    static var deviceID: String {
+        if let id = defaults.string(forKey: SettingsSync.Key.deviceID), !id.isEmpty { return id }
+        let id = UUID().uuidString
+        defaults.set(id, forKey: SettingsSync.Key.deviceID)
+        return id
     }
 
     private static func read(_ key: String) -> Any? {

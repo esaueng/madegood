@@ -183,19 +183,21 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
         /// Resends settings when the watch app is installed (or the pairing changes): an
         /// earlier push returns early while the app is missing.
         nonisolated func sessionWatchStateDidChange(_ session: WCSession) {
-            pushSettings()
+            pushSettingsOnMain()
         }
     #else
         /// Resends settings once the iPhone app is installed.
         nonisolated func sessionCompanionAppInstalledDidChange(_ session: WCSession) {
-            pushSettings()
+            pushSettingsOnMain()
         }
     #endif
 
     /// Sends this device's settings to the other one. If the session cannot send yet,
     /// activation (and the install callbacks above) send them later; the snapshot is read
-    /// at that point, so nothing is lost.
-    nonisolated func pushSettings() {
+    /// at that point, so nothing is lost. Main actor only, like every settings write, so a
+    /// snapshot's values and revision always come from one consistent state.
+    @MainActor
+    func pushSettings() {
         let session = WCSession.default
         guard WCSession.isSupported(), session.activationState == .activated else { return }
         #if os(iOS)
@@ -207,6 +209,13 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
             try session.updateApplicationContext([Key.settings: UserSettings.snapshot()])
         } catch {
             print("RecordingTransfer: settings update failed: \(error)")
+        }
+    }
+
+    /// For WatchConnectivity callbacks, which arrive off the main actor.
+    nonisolated private func pushSettingsOnMain() {
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated { self.pushSettings() }
         }
     }
 

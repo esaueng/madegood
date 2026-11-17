@@ -5,7 +5,13 @@ import Testing
 /// Regression tests from the PR #39 review: two-way settings sync.
 @Suite struct SettingsSyncTests {
     final class Device {
+        let id: String
         var values: [String: Any] = [:]
+
+        init(id: String = "device-\(Int.random(in: 0..<1_000_000))") {
+            self.id = id
+        }
+
         func read(_ key: String) -> Any? { values[key] }
         func write(_ key: String, _ value: Any?) { values[key] = value }
 
@@ -17,7 +23,7 @@ import Testing
             var settings = SportSettings(sport: sport, reading: read)
             change(&settings)
             settings.write(sport: sport, to: write)
-            SettingsSync.stampLocalChange(now: now, reading: read, writing: write)
+            SettingsSync.stampLocalChange(now: now, device: id, reading: read, writing: write)
         }
 
         func receive(_ snapshot: [String: Any]) -> SettingsSync.Outcome {
@@ -34,12 +40,16 @@ import Testing
         upgraded.values[SportSettings.Key.legacySpeedUnit] = "mph"
         upgraded.values[SportSettings.Key.autoPause(.kayak)] = false
         SportSettings.migrateLegacyUnits(reading: upgraded.read, writing: upgraded.write)
-        #expect(SettingsSync.assignMissingRevision(now: 1_000, reading: upgraded.read, writing: upgraded.write))
+        #expect(
+            SettingsSync.assignMissingRevision(
+                now: 1_000, device: upgraded.id, reading: upgraded.read, writing: upgraded.write))
         #expect(upgraded.revision == 1_000_000)
 
         let fresh = Device()
         // Nothing to assign on an empty device.
-        #expect(!SettingsSync.assignMissingRevision(now: 2_000, reading: fresh.read, writing: fresh.write))
+        #expect(
+            !SettingsSync.assignMissingRevision(now: 2_000, device: fresh.id, reading: fresh.read, writing: fresh.write)
+        )
         // The fresh device's empty snapshot (no revision) changes nothing and asks for ours.
         #expect(upgraded.receive(fresh.snapshot) == .keptLocalNewer)
         #expect(upgraded.settings(.sailing).speedUnit == .milesPerHour)
@@ -70,7 +80,9 @@ import Testing
         let device = Device()
         device.edit(.canoe, at: 10) { $0.isHidden = true }
         let revision = device.revision
-        #expect(!SettingsSync.assignMissingRevision(now: 99, reading: device.read, writing: device.write))
+        #expect(
+            !SettingsSync.assignMissingRevision(now: 99, device: device.id, reading: device.read, writing: device.write)
+        )
         #expect(device.revision == revision)
     }
 
@@ -100,12 +112,70 @@ import Testing
         #expect(SettingsSync.nextRevision(now: 2, highestSeen: 0) == 2_000)
         #expect(SettingsSync.nextRevision(now: 2, highestSeen: 5_000) == 5_001)
         #expect(SettingsSync.nextRevision(now: .nan, highestSeen: 7) == 8)
-        // Seeing a revision, even one that is rejected, raises the floor.
+    }
+
+    /// An accepted revision from a clock that ran ahead raises the floor for later edits.
+    @Test func acceptedRevisionRaisesTheFloor() {
         let device = Device()
         device.edit(.kayak, at: 100) { $0.autoPause = false }
-        _ = device.receive([SettingsSync.Key.revision: Int64(50_000_000)] as [String: Any])
-        device.edit(.kayak, at: 100) { $0.autoPause = true }
+        let ahead: [String: Any] = [SettingsSync.Key.revision: Int64(50_000_000), SettingsSync.Key.revisionDevice: "x"]
+        #expect(device.receive(ahead) == .applied)
+        device.edit(.kayak, at: 100) { $0.autoPause = false }
         #expect(device.revision == 50_000_001)
+    }
+
+    /// Review re-check: a rejected (older) snapshot changes neither the values nor the
+    /// revisions, and the next local edit continues from this device's own revision.
+    @Test func rejectedRevisionChangesNothing() {
+        let device = Device()
+        device.edit(.kayak, at: 100_000) { $0.distanceAlert = 2 }
+        let before = device.values.count
+        let revision = device.revision
+        let older: [String: Any] = [
+            SettingsSync.Key.revision: Int64(50_000_000), SettingsSync.Key.revisionDevice: "zzz",
+            SportSettings.Key.distanceAlert(.kayak): 5.0,
+        ]
+        #expect(device.receive(older) == .keptLocalNewer)
+        #expect(device.settings(.kayak).distanceAlert == 2)
+        #expect(device.revision == revision)
+        #expect(device.values.count == before)
+        #expect(SettingsSync.revision(device.values[SettingsSync.Key.highestSeen]) == revision)
+        device.edit(.kayak, at: 1) { $0.distanceAlert = 1 }  // clock far behind
+        #expect(device.revision == (revision ?? 0) + 1)
+    }
+
+    /// Review re-check: two devices that reach the same revision with different settings
+    /// converge on the same winner, the higher device ID, and stop replying.
+    @Test func equalRevisionsConvergeOnOneWinner() {
+        let a = Device(id: "A")
+        let b = Device(id: "B")
+        // Both saw revision R from a clock that ran ahead, then edited offline.
+        let ahead: [String: Any] = [SettingsSync.Key.revision: Int64(9_000_000), SettingsSync.Key.revisionDevice: "C"]
+        #expect(a.receive(ahead) == .applied)
+        #expect(b.receive(ahead) == .applied)
+        a.edit(.sailing, at: 10) { $0.countdownMinutes = 1 }
+        b.edit(.sailing, at: 10) { $0.countdownMinutes = 5 }
+        #expect(a.revision == 9_000_001)
+        #expect(a.revision == b.revision)
+
+        // Messages cross: each side gets the other's snapshot.
+        let fromA = a.snapshot
+        let fromB = b.snapshot
+        #expect(a.receive(fromB) == .applied)  // B wins the tie on both sides
+        #expect(b.receive(fromA) == .keptLocalNewer)  // B replies with its own...
+        #expect(a.receive(b.snapshot) == .unchanged)  // ...which A already has: no loop
+        #expect(a.settings(.sailing).countdownMinutes == 5)
+        #expect(b.settings(.sailing).countdownMinutes == 5)
+        // A's reply after applying (the phone re-pushes) is a no-op at B.
+        #expect(b.receive(a.snapshot) == .unchanged)
+    }
+
+    /// The order is lexicographic: revision first, then device ID.
+    @Test func stampsCompareRevisionThenDevice() {
+        typealias Stamp = SettingsSync.Stamp
+        #expect(Stamp(revision: 2, device: "A") > Stamp(revision: 1, device: "Z"))
+        #expect(Stamp(revision: 2, device: "B") > Stamp(revision: 2, device: "A"))
+        #expect(Stamp(revision: 2, device: "A") == Stamp(revision: 2, device: "A"))
     }
 
     /// Finding 4 (and the receiver's half of it): an edit made while the other device was
@@ -152,6 +222,10 @@ import Testing
         let device = Device()
         device.edit(.sailing, at: 1) { $0.firstScreen = .map }
         device.values["history.lastUsed.sailing"] = 1.0
-        #expect(Set(device.snapshot.keys) == [SportSettings.Key.firstScreen(.sailing), SettingsSync.Key.revision])
+        #expect(
+            Set(device.snapshot.keys) == [
+                SportSettings.Key.firstScreen(.sailing), SettingsSync.Key.revision, SettingsSync.Key.revisionDevice,
+            ])
+        #expect(device.snapshot[SettingsSync.Key.revisionDevice] as? String == device.id)
     }
 }

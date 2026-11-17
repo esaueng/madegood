@@ -7,6 +7,11 @@
 /// seen". So a revision never goes backwards when a clock is corrected, and an edit made
 /// after seeing another device's state always wins over it.
 ///
+/// Two devices can still reach the same revision (independent offline edits after a
+/// clock correction). Each revision is therefore stamped with the ID of the device that
+/// made it, and states compare as (revision, device ID): both devices pick the same
+/// winner, and an identical pair is a no-op, so replies cannot loop.
+///
 /// A snapshot without a revision comes from a device that never had settings of its own
 /// (a fresh install). It never replaces or removes anything. A device that has stored
 /// values always has a revision: saving assigns one, and `assignMissingRevision` gives
@@ -17,12 +22,33 @@ public enum SettingsSync {
     public enum Key {
         /// The revision of this device's settings, in the snapshot it sends.
         public static let revision = "settings.revision"
+        /// The ID of the device that made `revision`, in the snapshot it sends.
+        public static let revisionDevice = "settings.revisionDevice"
         /// Device-local: the highest revision seen from either device. Never sent.
         public static let highestSeen = "settings.revisionSeen"
+        /// Device-local: this device's stable random ID, made once. Never sent on its own.
+        public static let deviceID = "settings.deviceID"
     }
 
     /// Every key a snapshot carries.
-    public static var snapshotKeys: [String] { SportSettings.Key.allSports + [Key.revision] }
+    public static var snapshotKeys: [String] {
+        SportSettings.Key.allSports + [Key.revision, Key.revisionDevice]
+    }
+
+    /// A state's position in the order both devices agree on.
+    public struct Stamp: Comparable, Sendable {
+        public var revision: Int64
+        public var device: String
+
+        public init(revision: Int64, device: String) {
+            self.revision = revision
+            self.device = device
+        }
+
+        public static func < (a: Stamp, b: Stamp) -> Bool {
+            (a.revision, a.device) < (b.revision, b.device)
+        }
+    }
 
     /// The next revision for a local change at `now` (unix time, s).
     public static func nextRevision(now: Double, highestSeen: Int64) -> Int64 {
@@ -30,13 +56,15 @@ public enum SettingsSync {
         return max(millis, highestSeen + 1)
     }
 
-    /// Stamps a local change: call after writing the new values.
+    /// Stamps a local change made by `device` (this device's ID): call after writing the
+    /// new values.
     public static func stampLocalChange(
-        now: Double, reading value: (String) -> Any?, writing set: (String, Any?) -> Void
+        now: Double, device: String, reading value: (String) -> Any?, writing set: (String, Any?) -> Void
     ) {
         let seen = max(revision(value(Key.highestSeen)) ?? 0, revision(value(Key.revision)) ?? 0)
         let next = nextRevision(now: now, highestSeen: seen)
         set(Key.revision, next)
+        set(Key.revisionDevice, device)
         set(Key.highestSeen, next)
     }
 
@@ -45,12 +73,12 @@ public enum SettingsSync {
     /// no values or they already have a revision. Returns whether it assigned one.
     @discardableResult
     public static func assignMissingRevision(
-        now: Double, reading value: (String) -> Any?, writing set: (String, Any?) -> Void
+        now: Double, device: String, reading value: (String) -> Any?, writing set: (String, Any?) -> Void
     ) -> Bool {
         guard revision(value(Key.revision)) == nil,
             SportSettings.Key.allSports.contains(where: { value($0) != nil })
         else { return false }
-        stampLocalChange(now: now, reading: value, writing: set)
+        stampLocalChange(now: now, device: device, reading: value, writing: set)
         return true
     }
 
@@ -60,11 +88,11 @@ public enum SettingsSync {
         case applied
         /// This device's state is newer: send it back so the other side catches up.
         case keptLocalNewer
-        /// Same revision, or neither side has anything: nothing to do.
+        /// The same (revision, device), or neither side has anything: nothing to do.
         case unchanged
     }
 
-    /// Applies `remote` if its revision is higher than this device's. Keys it lacks are
+    /// Applies `remote` if its (revision, device) is higher than this device's. Keys it lacks are
     /// removed, so "Automatic" stays automatic. Older builds' global units in `remote` are
     /// migrated first. Always raises "highest seen" to the remote revision.
     public static func apply(
@@ -78,14 +106,21 @@ public enum SettingsSync {
             let seen = revision(value(Key.highestSeen)) ?? 0
             if theirs > seen { set(Key.highestSeen, theirs) }
         }
-        guard let theirs, theirs > (ours ?? 0) else {
+        let ourStamp = ours.map { Stamp(revision: $0, device: value(Key.revisionDevice) as? String ?? "") }
+        guard let theirs else {
             // No revision (a device that never had settings) never wins.
-            return (ours ?? 0) > (theirs ?? 0) ? .keptLocalNewer : .unchanged
+            return ourStamp == nil ? .unchanged : .keptLocalNewer
+        }
+        let theirStamp = Stamp(revision: theirs, device: remote[Key.revisionDevice] as? String ?? "")
+        if let ourStamp {
+            if theirStamp == ourStamp { return .unchanged }
+            if theirStamp < ourStamp { return .keptLocalNewer }
         }
         for key in SportSettings.Key.allSports {
             set(key, remote[key])
         }
         set(Key.revision, theirs)
+        set(Key.revisionDevice, theirStamp.device)
         return .applied
     }
 
