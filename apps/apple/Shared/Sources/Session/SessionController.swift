@@ -2,6 +2,10 @@ import Foundation
 import Observation
 import WaterKit
 
+#if os(iOS)
+    import UIKit
+#endif
+
 /// Starts sessions on either device: through the sport's countdown when it has one, then
 /// the recorder. One shared instance, so the UI and App Intents (Shortcuts, the Action
 /// button) drive the same session.
@@ -12,13 +16,23 @@ final class SessionController {
 
     let recorder = SessionRecorder()
     /// The countdown in progress, before recording starts.
-    private(set) var countdown: Countdown?
+    private(set) var countdown: Countdown? {
+        didSet {
+            #if os(iOS)
+                // A locked iPhone suspends the app, which would delay the countdown's
+                // buzzes and the start, so the screen stays on until recording starts.
+                UIApplication.shared.isIdleTimerDisabled = countdown != nil
+            #endif
+        }
+    }
     /// The sport of the session being recorded or counted down to, or last recorded.
     private(set) var sport: Sport?
     /// Called with the sport, its final metrics and the folder after a recording stops.
     var onFinish: ((Sport, LiveMetrics?, URL) -> Void)?
 
     struct Countdown: Equatable {
+        /// Tells this countdown from a later one for the same sport.
+        var id = UUID()
         var sport: Sport
         var timer: StartCountdown
         /// Rounding to the minute matters at race starts (sailing).
@@ -59,10 +73,19 @@ final class SessionController {
                 seconds = value
             }
         #endif
+        let countdownID = UUID()
         countdown = Countdown(
-            sport: sport, timer: StartCountdown(duration: seconds, startingAt: Self.now), canSync: sport == .sailing)
+            id: countdownID, sport: sport, timer: StartCountdown(duration: seconds, startingAt: Self.now), canSync: sport == .sailing)
         Haptics.play(.countdownStarted)
         runTicker()
+        // On the watch, a prepared workout session keeps the app running with the wrist
+        // down, so the buzzes and the start stay on time.
+        Task { [weak self] in
+            guard let self, let prepareID = await self.recorder.prepare(sport: sport) else { return }
+            // Cancelled before the session was ready: don't leave it running. Only this
+            // preparation is ended; a newer countdown's is left alone.
+            if self.countdown?.id != countdownID { self.recorder.cancelPrepared(prepareID) }
+        }
     }
 
     /// Rounds the countdown to the nearest minute (the start signal).
@@ -84,6 +107,7 @@ final class SessionController {
         ticker?.cancel()
         ticker = nil
         countdown = nil
+        recorder.cancelPrepared()
     }
 
     func lap() {
