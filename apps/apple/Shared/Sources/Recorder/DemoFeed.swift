@@ -15,8 +15,9 @@ enum DemoFeed {
         #endif
     }
 
-    /// Simulated seconds per real second, so metrics build up quickly in a test.
-    static let timeScale = 5.0
+    // One fix per real second, on the same clock as user events and metadata: a faster
+    // simulated clock made saved recordings disagree with themselves (events and
+    // `endedAt` behind the fixes).
     /// Constant speed of the synthetic boat, m/s.
     static let speed = 2.5
     /// A fake origin in open water, like the anonymized fixtures (no real location).

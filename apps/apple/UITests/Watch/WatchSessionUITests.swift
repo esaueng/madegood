@@ -13,6 +13,7 @@ final class WatchSessionUITests: XCTestCase {
         let kayak = app.buttons["sport.kayak"]
         XCTAssertTrue(kayak.waitForExistence(timeout: 15))
         attachScreenshot("1 sports")
+        let started = Date()
         kayak.tap()
 
         // Metrics page: speed from the engine, and distance accumulating.
@@ -55,11 +56,18 @@ final class WatchSessionUITests: XCTestCase {
         ).firstMatch
         XCTAssertTrue(confirm.waitForExistence(timeout: 10))
         confirm.tap()
+        let ended = Date()
 
         let done = app.buttons["summary.done"]
         XCTAssertTrue(done.waitForExistence(timeout: 20))
         XCTAssertTrue(app.staticTexts["field.Distance"].exists)
         XCTAssertEqual(app.staticTexts["field.Laps"].label, "2")
+        // Regression check from review: the demo once ran on a 5x clock, so the session
+        // time outran the real session and the saved events.
+        let time = app.staticTexts["field.Time"].label.split(separator: ":").compactMap { Double($0) }
+        XCTAssertEqual(time.count, 2)
+        let seconds = (time.first ?? 0) * 60 + (time.last ?? 0)
+        XCTAssertLessThanOrEqual(seconds, ended.timeIntervalSince(started) + 2)
         attachScreenshot("6 summary")
         done.tap()
         XCTAssertTrue(kayak.waitForExistence(timeout: 10))

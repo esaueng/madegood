@@ -317,9 +317,9 @@ final class SessionRecorder {
     private func startDemoFeed(session: UUID) {
         loops.append(
             Task { [weak self] in
-                var second = 0
+                var second = 1
                 while !Task.isCancelled {
-                    try? await Task.sleep(for: .seconds(1 / DemoFeed.timeScale))
+                    try? await Task.sleep(for: .seconds(1))
                     guard let self, self.isRecording else { return }
                     let fix = DemoFeed.fix(second: second, startUnix: self.startUnix)
                     let hr = DemoFeed.heartRate(second: second, startUnix: self.startUnix)
