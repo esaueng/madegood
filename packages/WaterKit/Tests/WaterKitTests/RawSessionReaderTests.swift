@@ -133,6 +133,24 @@ import Testing
         #expect(session.issues.contains(RawReadIssue(file: "motion.ndjson.gz", line: nil, kind: .truncatedFile)))
     }
 
+    @Test func aDamagedStreamDoesNotHideTheOthers() throws {
+        let folder = try TempFolder()
+        try folder.write(RawFormat.metaFileName, RawFormat.encodeMeta(Self.meta()))
+        try folder.write("gps.ndjson", lines([RawFormat.GPSLine(ts: Self.startUnix + 1, lat: 0, lon: 0)]))
+        // The first motion flush was cut off after one byte of its gzip header.
+        try folder.write("motion.ndjson.gz", Data([0x1f]))
+        // The heading stream's header is corrupt.
+        try folder.write("heading.ndjson.gz", Data([0x1f, 0x8b, 0x08, 0xff, 0xff, 0xff, 0xff]))
+
+        let session = try RawSessionReader.read(folder: folder.url)
+        #expect(session.gps.count == 1)
+        #expect(session.motion.isEmpty && session.heading.isEmpty)
+        let unreadable = session.issues.filter {
+            if case .unreadableFile = $0.kind { true } else { false }
+        }
+        #expect(Set(unreadable.map(\.file)) == ["motion.ndjson.gz", "heading.ndjson.gz"])
+    }
+
     @Test func missingStreamsAreEmpty() throws {
         let folder = try TempFolder()
         try folder.write(RawFormat.metaFileName, RawFormat.encodeMeta(Self.meta()))

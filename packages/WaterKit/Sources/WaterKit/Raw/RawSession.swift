@@ -52,6 +52,9 @@ public struct RawReadIssue: Sendable, Hashable, CustomStringConvertible {
         case invalidLine(String)
         /// A gzipped stream ends inside a gzip member; the readable part was used.
         case truncatedFile
+        /// A gzipped stream could not be decoded at all (e.g. a write cut off in the first
+        /// header); the stream was treated as empty.
+        case unreadableFile(String)
     }
 
     public var file: String
@@ -65,6 +68,7 @@ public struct RawReadIssue: Sendable, Hashable, CustomStringConvertible {
         case .truncatedLine: return "\(location): truncated last line (skipped)"
         case .invalidLine(let reason): return "\(location): invalid line skipped (\(reason))"
         case .truncatedFile: return "\(location): gzip data ends early; read what was complete"
+        case .unreadableFile(let reason): return "\(location): unreadable, treated as empty (\(reason))"
         }
     }
 }

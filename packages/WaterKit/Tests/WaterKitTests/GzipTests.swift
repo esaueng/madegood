@@ -49,6 +49,17 @@ import Testing
         #expect(partial.data.starts(with: Data("first\nsecond line\n".utf8)))
     }
 
+    @Test func partialNextHeaderOrGarbageIsIncomplete() throws {
+        let first = try Gzip.compress(Data("first\n".utf8))
+        for tail in [Data([0x1f]), Data([0x42, 0x00]), Data([0x1f, 0x8b, 0x08])] {
+            let data = first + tail
+            #expect(throws: Gzip.Error.truncated) { try Gzip.decompress(data) }
+            let partial = try Gzip.decompressAvailable(data)
+            #expect(!partial.complete)
+            #expect(partial.data == Data("first\n".utf8))
+        }
+    }
+
     @Test func rejectsNonGzipData() {
         #expect(throws: Gzip.Error.invalidData) { try Gzip.decompress(Data("plain text".utf8)) }
         #expect(throws: Gzip.Error.invalidData) { try Gzip.decompress(Data()) }

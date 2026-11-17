@@ -100,12 +100,14 @@ public enum Gzip {
 
                 switch status {
                 case Z_STREAM_END:
-                    // End of one member. Continue only if another gzip member follows;
-                    // anything else (e.g. zero padding) ends the stream.
+                    // End of one member. Another member may follow; zero padding ends the
+                    // stream cleanly; anything else (a partial header from an interrupted
+                    // write, or garbage) means the data did not end cleanly.
                     let remaining = Int(stream.avail_in)
-                    guard remaining >= 2, let next = stream.next_in, next[0] == 0x1f, next[1] == 0x8b else {
-                        return (output, true)
-                    }
+                    guard remaining > 0, let next = stream.next_in else { return (output, true) }
+                    let rest = UnsafeBufferPointer(start: next, count: remaining)
+                    if rest.allSatisfy({ $0 == 0 }) { return (output, true) }
+                    guard remaining >= 2, rest[0] == 0x1f, rest[1] == 0x8b else { return (output, false) }
                     let resetStatus = inflateReset(&stream)
                     guard resetStatus == Z_OK else { throw Error.streamError(resetStatus) }
                 case Z_OK:

@@ -109,9 +109,15 @@ public enum RawSessionReader {
             fileName = stream.gzippedFileName
             let raw = try Data(contentsOf: gzipped)
             if raw.isEmpty { return [] }
-            let result = try Gzip.decompressAvailable(raw)
-            if !result.complete { issues.append(RawReadIssue(file: fileName, line: nil, kind: .truncatedFile)) }
-            data = result.data
+            do {
+                let result = try Gzip.decompressAvailable(raw)
+                if !result.complete { issues.append(RawReadIssue(file: fileName, line: nil, kind: .truncatedFile)) }
+                data = result.data
+            } catch {
+                // A damaged stream must not stop the other streams from opening.
+                issues.append(RawReadIssue(file: fileName, line: nil, kind: .unreadableFile(String(describing: error))))
+                return []
+            }
         } else if hasPlain {
             fileName = stream.fileName
             data = try Data(contentsOf: plain)
