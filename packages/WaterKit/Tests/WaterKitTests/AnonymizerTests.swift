@@ -37,6 +37,8 @@ import Testing
             SessionEvent(t: 100, type: .mark, data: ["note": "near the yacht club", "count": 3]),
             SessionEvent(t: 200, type: .mob, data: ["lat": 47.6, "lon": -122.3, "acknowledged": true]),
             SessionEvent(t: 300, type: .tack, data: ["durationS": 8.1, "speedLossPct": 22, "nested": ["a": 1]]),
+            SessionEvent(t: 400, type: "Alice at Lake Example"),
+            SessionEvent(t: 500, type: .mark, data: ["Alice": true, "timestamp": 1_809_165_600, "x": -122.3]),
         ]
         return RawSession(
             meta: meta, gps: fixes, motion: motion, hr: [HRSample(t: 5, bpm: 120)],
@@ -91,7 +93,8 @@ import Testing
         #expect(anonymized.gps.map(\.course) == original.gps.map(\.course))
         #expect(anonymized.gps.map(\.t) == original.gps.map(\.t))
         #expect(anonymized.motion == original.motion)
-        #expect(anonymized.heading == original.heading)
+        #expect(anonymized.heading.map(\.trueHeading) == original.heading.map(\.trueHeading))
+        #expect(anonymized.heading.allSatisfy { $0.magnetic == nil })
         #expect(anonymized.hr == original.hr)
     }
 
@@ -110,10 +113,9 @@ import Testing
         #expect(anonymized.meta.device == original.meta.device)
 
         let data = anonymized.events.map(\.data)
-        #expect(data[0] == nil)
-        #expect(data[1] == ["count": 3])
-        #expect(data[2] == ["acknowledged": true])
-        #expect(data[3] == ["durationS": 8.1, "speedLossPct": 22])
+        // Only allowed types survive, and only allowed small numeric fields within them.
+        #expect(anonymized.events.map(\.type) == [.start, .mark, .mob, .tack, .mark])
+        #expect(data == [nil, nil, nil, ["durationS": 8.1, "speedLossPct": 22], nil])
     }
 
     @Test func writtenFolderReadsBackIdentically() throws {
@@ -125,6 +127,7 @@ import Testing
         let reread = try RawSessionReader.read(folder: output)
         #expect(reread.issues.isEmpty)
         #expect(FixtureCheck.problems(in: reread) == [])
+        #expect(FixtureCheck.problems(inFolder: output) == [])
         #expect(reread.gps.count == anonymized.gps.count)
         #expect(zip(reread.motion, anonymized.motion).allSatisfy { abs($0.t - $1.t) < 1e-9 })
         #expect(reread.events.map(\.data) == anonymized.events.map(\.data))

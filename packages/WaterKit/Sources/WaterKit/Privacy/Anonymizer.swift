@@ -12,10 +12,15 @@ import Foundation
 /// - **Time:** every timestamp is shifted so the session starts at `fakeStart`; relative
 ///   times are unchanged. Device uptime is rebased to `fakeUptime`.
 /// - **Identifiers:** a new session ID. Altitude and vertical accuracy are dropped
-///   (altitude can identify a lake). Event data keeps only numeric and boolean values
-///   whose keys don't suggest a position or free text; the track summary is dropped and
+///   (altitude can identify a lake), and so is the magnetic heading: its difference from
+///   the true heading is the local magnetic declination, which narrows down the region.
+/// - **Events:** only `allowedEventTypes` are kept, and their data only keeps
+///   `allowedEventDataKeys` with small finite numbers. Everything else (free text, names,
+///   coordinates, timestamps, unknown types) is removed. The track summary is dropped and
 ///   can be recomputed.
-/// - **Kept:** sport, device kind/model/OS, app version, and requested sampling rates.
+/// - **Kept:** sport, device kind/model/OS, app version, requested sampling rates, true
+///   heading, and all motion data (CoreMotion's default attitude frame has an arbitrary
+///   yaw, not magnetic north).
 public struct Anonymizer: Sendable {
     /// Open Atlantic Ocean, far from land and from (0, 0), which some tools treat as "no fix".
     public static let fakeOrigin = (lat: 10.0, lon: -30.0)
@@ -44,7 +49,12 @@ public struct Anonymizer: Sendable {
         var result = session
         result.meta = meta
         result.gps = session.gps.map { move($0, reference: reference) }
-        result.events = session.events.map(Self.sanitize)
+        result.events = Self.sanitize(session.events)
+        result.heading = session.heading.map { heading in
+            var clean = heading
+            clean.magnetic = nil
+            return clean
+        }
         result.clockAnchors = [meta.clock]
         result.issues = []
         return result
@@ -58,7 +68,7 @@ public struct Anonymizer: Sendable {
         result.sessionId = sessionId
         result.startedAt = Date(timeIntervalSince1970: Self.fakeStart)
         result.gps = track.gps.map { move($0, reference: reference) }
-        result.events = track.events.map(Self.sanitize)
+        result.events = Self.sanitize(track.events)
         result.summary = nil
         return result
     }
@@ -92,22 +102,29 @@ public struct Anonymizer: Sendable {
 
     // MARK: Event data
 
-    /// Keys that may carry a position or personal text, matched case-insensitively.
-    static let blockedKeyFragments = [
-        "lat", "lon", "lng", "pos", "coord", "geo", "home", "name", "note", "text", "addr",
+    /// Event types that may appear in a published recording.
+    public static let allowedEventTypes: Set<EventType> = [
+        .start, .stop, .pause, .resume, .mark, .lap, .mob, .tack, .gybe,
     ]
+    /// Event data fields that may appear in a published recording (analysis outputs).
+    public static let allowedEventDataKeys: Set<String> = ["durationS", "speedLossPct", "angleDeg"]
+    /// Larger values are rejected so a timestamp or coordinate can't hide in an allowed field.
+    public static let maxEventDataMagnitude = 10_000.0
 
-    static func sanitize(_ event: SessionEvent) -> SessionEvent {
-        var clean = event
-        let kept = (event.data ?? [:]).filter { key, value in
-            let lowered = key.lowercased()
-            guard !blockedKeyFragments.contains(where: lowered.contains) else { return false }
-            switch value {
-            case .number, .bool: return true
-            default: return false
+    static func sanitize(_ events: [SessionEvent]) -> [SessionEvent] {
+        events.compactMap { event in
+            guard allowedEventTypes.contains(event.type) else { return nil }
+            var clean = event
+            let kept = (event.data ?? [:]).filter { key, value in
+                allowedEventDataKeys.contains(key) && isAllowedEventValue(value)
             }
+            clean.data = kept.isEmpty ? nil : kept
+            return clean
         }
-        clean.data = kept.isEmpty ? nil : kept
-        return clean
+    }
+
+    static func isAllowedEventValue(_ value: JSONValue) -> Bool {
+        guard case .number(let number) = value else { return false }
+        return number.isFinite && abs(number) <= maxEventDataMagnitude
     }
 }

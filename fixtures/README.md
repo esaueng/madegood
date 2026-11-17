@@ -23,12 +23,14 @@ Git; how it is hosted is still an open decision (docs/PLAN.md §10), and
    ```
 
    This moves the track to a fake origin in the Atlantic (10°N 30°W), keeping every
-   distance and bearing. It shifts all times to 2000-01-01, replaces the session ID,
-   and drops altitude and any free-text or position-like event data. Speeds, courses,
-   headings, heart rate, and motion data are unchanged.
+   distance and bearing. It shifts all times to 2000-01-01 and replaces the session ID.
+   It drops altitude and the magnetic heading (its difference from true heading reveals
+   the region), and any event or event data outside a small allowlist. Speeds, courses,
+   true headings, heart rate, and motion data are unchanged.
 
-2. **Check it.** CI runs the same check over the whole folder and fails on anything that
-   is not anonymized:
+2. **Check it.** CI runs the same check over the whole folder. It fails on anything not
+   anonymized, and also on unknown files, unknown JSON fields, and damaged lines, since
+   any data the reader skips could still hold real values:
 
    ```sh
    scripts/anonymize-track --check fixtures

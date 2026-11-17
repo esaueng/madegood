@@ -60,8 +60,8 @@ func check(_ paths: [String]) -> Never {
             do {
                 let problems =
                     isDirectory(url)
-                    ? FixtureCheck.problems(in: try RawSessionReader.read(folder: url))
-                    : FixtureCheck.problems(in: try TrackCodec.decode(Data(contentsOf: url)))
+                    ? FixtureCheck.problems(inFolder: url)
+                    : FixtureCheck.problems(inTrackFile: try Data(contentsOf: url))
                 if problems.isEmpty {
                     print("ok    \(url.path)")
                 } else {
@@ -100,13 +100,13 @@ do {
     if isDirectory(input) {
         let session = anonymizer.anonymize(try RawSessionReader.read(folder: input))
         try RawSessionWriter.write(session, to: output)
-        let problems = FixtureCheck.problems(in: try RawSessionReader.read(folder: output))
+        let problems = FixtureCheck.problems(inFolder: output)
         guard problems.isEmpty else { fail("Anonymized output failed its check: \(problems)", 1) }
     } else {
         if output.pathExtension != "gz" { output.appendPathExtension("gz") }
         let track = anonymizer.anonymize(try TrackCodec.decode(Data(contentsOf: input)))
         try TrackCodec.encode(track).write(to: output)
-        let problems = FixtureCheck.problems(in: try TrackCodec.decode(Data(contentsOf: output)))
+        let problems = FixtureCheck.problems(inTrackFile: try Data(contentsOf: output))
         guard problems.isEmpty else { fail("Anonymized output failed its check: \(problems)", 1) }
     }
     print("Wrote \(output.path) (session \(anonymizer.sessionId.uuidString.lowercased()))")
