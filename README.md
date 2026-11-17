@@ -96,9 +96,11 @@ see [docs/self-hosting.md](docs/self-hosting.md).
 
 ## Contributing
 
-Contributions are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md); every commit
-needs a DCO sign-off (`git commit -s`). [AGENTS.md](AGENTS.md) lists the commands and
-conventions for people and coding agents. Please follow the
+Anyone can open an issue: bug reports, wrong metrics, feature ideas, and
+anonymized recordings are all welcome. Pull requests are limited to the
+project's collaborators. [CONTRIBUTING.md](CONTRIBUTING.md) explains how to
+help, and [AGENTS.md](AGENTS.md) lists the commands and conventions for
+collaborators and coding agents. Please follow the
 [Code of Conduct](CODE_OF_CONDUCT.md), and report security issues privately as
 described in [SECURITY.md](SECURITY.md).
 
