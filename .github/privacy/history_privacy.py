@@ -2,6 +2,7 @@
 """Inspect Git objects as data; never check out or execute incoming code."""
 
 import argparse
+import base64
 import hashlib
 import hmac
 import json
@@ -99,10 +100,21 @@ class Policy:
                     raise PrivacyError("Removed identifier found in incoming Git data; details withheld.")
 
 
-def git(repo, *args, data=None):
-    # Do not pass the fingerprint key or API token to Git subprocesses.
-    env = {k: v for k, v in os.environ.items() if k not in ("HISTORY_PRIVACY_HMAC_KEY", "GH_TOKEN")}
+PRIVATE_ENV = ("HISTORY_PRIVACY_HMAC_KEY", "GH_TOKEN", "GH_READ_TOKEN")
+
+
+def git(repo, *args, data=None, fetch_auth=False):
+    # Do not pass the fingerprint key or API tokens to Git subprocesses.
+    env = {k: v for k, v in os.environ.items() if k not in PRIVATE_ENV and not k.startswith("GIT_CONFIG_")}
     env.update(GIT_NO_REPLACE_OBJECTS="1", GIT_NO_LAZY_FETCH="1", GIT_TERMINAL_PROMPT="0")
+    token = os.environ.get("GH_READ_TOKEN", "")
+    if fetch_auth and token:
+        # A private repository needs the job's contents-read token to fetch.
+        # Only fetches receive it, through the environment rather than argv,
+        # scoped to github.com; incoming objects are never executed.
+        basic = base64.b64encode(("x-access-token:" + token).encode("utf-8")).decode("ascii")
+        env.update(GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="http.https://github.com/.extraheader",
+                   GIT_CONFIG_VALUE_0="AUTHORIZATION: basic " + basic)
     result = subprocess.run(["git", "-C", str(repo), *args], input=data,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
     if result.returncode:
@@ -177,7 +189,7 @@ def scan(repo, policy, heads, excludes=(), refs=()):
     with tempfile.TemporaryFile() as requests, tempfile.TemporaryFile() as errors:
         requests.write(("\n".join(ordered) + "\n").encode("ascii"))
         requests.seek(0)
-        env = {k: v for k, v in os.environ.items() if k not in ("HISTORY_PRIVACY_HMAC_KEY", "GH_TOKEN")}
+        env = {k: v for k, v in os.environ.items() if k not in PRIVATE_ENV and not k.startswith("GIT_CONFIG_")}
         env.update(GIT_NO_REPLACE_OBJECTS="1", GIT_NO_LAZY_FETCH="1", GIT_TERMINAL_PROMPT="0")
         process = subprocess.Popen(["git", "-C", str(repo), "cat-file", "--batch"], stdin=requests,
                                    stdout=subprocess.PIPE, stderr=errors, env=env)
@@ -284,11 +296,11 @@ def ci(policy_path):
                 if not OID.fullmatch(oid):
                     raise PrivacyError("Invalid fetch target.")
                 git(directory, "-c", "protocol.file.allow=never", "-c", "protocol.ext.allow=never",
-                    "fetch", "--quiet", "--no-tags", "--no-recurse-submodules", "origin", oid)
+                    "fetch", "--quiet", "--no-tags", "--no-recurse-submodules", "origin", oid, fetch_auth=True)
             full_audit = audit_all_refs(os.environ["GITHUB_EVENT_NAME"], event)
             if full_audit:
                 git(directory, "fetch", "--quiet", "--no-recurse-submodules", "origin",
-                    "+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*")
+                    "+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*", fetch_auth=True)
                 advertised = git(directory, "for-each-ref", "--format=%(objectname) %(refname)",
                                  "refs/heads", "refs/tags").decode("utf-8").splitlines()
                 # Preserve the originally requested head, even if its branch

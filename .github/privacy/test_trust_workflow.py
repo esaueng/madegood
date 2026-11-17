@@ -44,3 +44,5 @@ class WorkflowTrustTests(unittest.TestCase):
         text = (workflows / 'history-privacy.yml').read_text()
         self.assertIn('python3 .github/privacy/commit_privacy.py --publish', text)
         self.assertIn('GH_READ_TOKEN: ${{ github.token }}', text)
+        # Scanner fetches (private repository) and identity API reads.
+        self.assertEqual(text.count('GH_READ_TOKEN: ${{ github.token }}'), 2)

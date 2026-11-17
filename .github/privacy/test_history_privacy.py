@@ -1,5 +1,6 @@
 """Synthetic regression fixtures only; no real identifiers or historical OIDs."""
 
+import base64
 import hashlib
 import importlib.util
 import json
@@ -292,6 +293,36 @@ class HistoryTests(unittest.TestCase):
         passed_env = run.call_args.kwargs["env"]
         self.assertNotIn("HISTORY_PRIVACY_HMAC_KEY", passed_env)
         self.assertNotIn("GH_TOKEN", passed_env)
+
+    def test_only_fetches_receive_the_read_token_through_the_environment(self):
+        token = "synthetic-read-token"
+        env = dict(HISTORY_PRIVACY_HMAC_KEY=KEY, GH_TOKEN="synthetic-api-token", GH_READ_TOKEN=token,
+                   GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="core.example", GIT_CONFIG_VALUE_0="inherited")
+        with patch.dict(os.environ, env):
+            with patch.object(guard.subprocess, "run") as run:
+                run.return_value.returncode = 0
+                run.return_value.stdout = b"ok"
+                guard.git(self.repo, "rev-parse", "HEAD")
+                plain = run.call_args
+                guard.git(self.repo, "fetch", "origin", "a" * 40, fetch_auth=True)
+                fetch = run.call_args
+        for call in (plain, fetch):
+            passed = call.kwargs["env"]
+            for name in ("HISTORY_PRIVACY_HMAC_KEY", "GH_TOKEN", "GH_READ_TOKEN"):
+                self.assertNotIn(name, passed)
+            self.assertNotIn(token, " ".join(call.args[0]))
+        self.assertFalse(any(key.startswith("GIT_CONFIG_") for key in plain.kwargs["env"]))
+        header = base64.b64encode(("x-access-token:" + token).encode()).decode()
+        self.assertEqual(fetch.kwargs["env"]["GIT_CONFIG_COUNT"], "1")
+        self.assertEqual(fetch.kwargs["env"]["GIT_CONFIG_KEY_0"], "http.https://github.com/.extraheader")
+        self.assertEqual(fetch.kwargs["env"]["GIT_CONFIG_VALUE_0"], "AUTHORIZATION: basic " + header)
+        with patch.dict(os.environ, HISTORY_PRIVACY_HMAC_KEY=KEY):
+            os.environ.pop("GH_READ_TOKEN", None)
+            with patch.object(guard.subprocess, "run") as run:
+                run.return_value.returncode = 0
+                run.return_value.stdout = b"ok"
+                guard.git(self.repo, "fetch", "origin", "a" * 40, fetch_auth=True)
+        self.assertNotIn("GIT_CONFIG_COUNT", run.call_args.kwargs["env"])
 
 
 if __name__ == "__main__":

@@ -20,9 +20,11 @@ merely because that object is absent from this repository's object database.
 The policy requires the complete public-repository scope. MadeGood is not one
 of those six repositories, but it carries the same ledger for the same reason.
 
-This scanner, its tests and the ledger are copied unchanged from OpenZCAD. Only
-`policy.json` is MadeGood's own: its baseline is MadeGood's first audited
-`main` commit, and its fingerprints use a key generated for this repository.
+This scanner, its tests and the ledger come from OpenZCAD. `policy.json` is
+MadeGood's own: its baseline is MadeGood's first audited `main` commit, and its
+fingerprints use a key generated for this repository. Because this repository is
+private, the scanner's fetches also authenticate (see below); that is the only
+code change from OpenZCAD.
 
 The baseline is an audited, immutable clean commit recorded in `policy.json`.
 Incoming history is compared to that fixed commit, rather than trusting the
@@ -65,7 +67,9 @@ daily audit, both of which read every advertised branch.
 Incoming Git objects are fetched into a fresh bare repository as data. The audit
 never checks out incoming trees, runs their programs, installs their dependencies,
 loads their configuration or uploads their contents as artifacts. Git subprocesses
-do not inherit the HMAC key or API token.
+do not inherit the HMAC key or API tokens. Only `git fetch` receives the job's
+contents-read `GITHUB_TOKEN`, as a github.com-scoped HTTP header passed through
+Git's environment configuration (never argv), because this repository is private.
 
 The job publishes a separate `history-privacy` check explicitly on the PR head
 (or merge-group candidate). This matters because `pull_request_target` itself
