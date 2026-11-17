@@ -1,0 +1,7 @@
+* text=auto eol=lf
+*.gz binary
+*.zip binary
+*.png binary
+*.jpg binary
+fixtures/** -diff linguist-generated
+openapi/openapi.json linguist-generated
