@@ -35,7 +35,9 @@ enum RecordingStore {
         let folders = (try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? []
         return folders.compactMap { folder -> Entry? in
             var isDirectory: ObjCBool = false
-            guard fm.fileExists(atPath: folder.path, isDirectory: &isDirectory), isDirectory.boolValue else { return nil }
+            guard fm.fileExists(atPath: folder.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+                return nil
+            }
             let files = ((try? fm.contentsOfDirectory(atPath: folder.path)) ?? []).filter(isRecordingFileName).sorted()
             let bytes = files.reduce(Int64(0)) { total, name in
                 let attributes = try? fm.attributesOfItem(atPath: folder.appendingPathComponent(name).path)

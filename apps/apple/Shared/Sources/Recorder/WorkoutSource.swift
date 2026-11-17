@@ -75,12 +75,14 @@ final class WorkoutSource: NSObject, HKWorkoutSessionDelegate, HKLiveWorkoutBuil
 
     // MARK: HKLiveWorkoutBuilderDelegate
 
-    nonisolated func workoutBuilder(_ workoutBuilder: HKLiveWorkoutBuilder, didCollectDataOf collectedTypes: Set<HKSampleType>) {
+    nonisolated func workoutBuilder(
+        _ workoutBuilder: HKLiveWorkoutBuilder, didCollectDataOf collectedTypes: Set<HKSampleType>
+    ) {
         let heartRate = HKQuantityType(.heartRate)
         guard collectedTypes.contains(heartRate),
-              let statistics = workoutBuilder.statistics(for: heartRate),
-              let quantity = statistics.mostRecentQuantity(),
-              let interval = statistics.mostRecentQuantityDateInterval()
+            let statistics = workoutBuilder.statistics(for: heartRate),
+            let quantity = statistics.mostRecentQuantity(),
+            let interval = statistics.mostRecentQuantityDateInterval()
         else { return }
         let isNew = lastHeartRateDate.withLock { last in
             guard last != interval.start else { return false }

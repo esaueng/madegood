@@ -48,6 +48,8 @@ final class SessionRecorder {
         private var backgroundActivity: CLBackgroundActivitySession?
     #endif
     private var loops: [Task<Void, Never>] = []
+    /// A workout failure reported while `start()` was still running.
+    private var startupInterruption: String?
     private var clockObserver: (any NSObjectProtocol)?
 
     var isRecording: Bool {
@@ -59,6 +61,7 @@ final class SessionRecorder {
     func start(sport: Sport) async {
         guard state == .idle else { return }
         state = .starting
+        startupInterruption = nil
         lastError = nil
         counts = Counts()
 
@@ -107,7 +110,13 @@ final class SessionRecorder {
             }
             do {
                 try await workout.start(sport: sport, at: startedAt)
-                self.workout = workout
+                if let message = startupInterruption {
+                    // It failed while starting; don't rely on it.
+                    await workout.stop(at: Date())
+                    lastError = message
+                } else {
+                    self.workout = workout
+                }
             } catch {
                 lastError = "Workout session failed: \(error.localizedDescription)"
             }
@@ -116,7 +125,9 @@ final class SessionRecorder {
             // Without a workout the watch suspends the app when the wrist drops, so a
             // recording would silently stop. Don't start one.
             if workout == nil {
-                if lastError == nil { lastError = "Health is unavailable, so the watch can't record in the background." }
+                if lastError == nil {
+                    lastError = "Health is unavailable, so the watch can't record in the background."
+                }
                 abandonStart(folder: folder)
                 return
             }
@@ -167,6 +178,10 @@ final class SessionRecorder {
     /// time, so the recording is finished cleanly with what it has; the iPhone keeps
     /// recording on its background location session and shows the warning.
     private func workoutInterrupted(_ message: String) async {
+        if state == .starting {
+            startupInterruption = message
+            return
+        }
         guard isRecording else { return }
         lastError = message
         #if os(watchOS)
@@ -252,7 +267,8 @@ final class SessionRecorder {
         refreshCounts()
         let writers = Array(writers.values)
         let savedEverything = await Task.detached(priority: .userInitiated) {
-            writers.map { $0.flushAndWait() }.allSatisfy { $0 }
+            // Complete only if the final flush worked and nothing was ever dropped.
+            writers.map { $0.flushAndWait() }.allSatisfy { $0 } && writers.allSatisfy { $0.status.dropped == 0 }
         }.value
         refreshCounts()
 
@@ -262,7 +278,7 @@ final class SessionRecorder {
             meta?.endedAt = endedAt.timeIntervalSince1970
             writeMeta()
         } else {
-            lastError = "Some data could not be saved (storage full?). The recording is marked as incomplete."
+            lastError = "Some data could not be saved or was dropped. The recording is marked as incomplete."
         }
 
         let folder = folder

@@ -180,7 +180,9 @@ private struct RecordingDetail: View {
                     Text(exportError).font(.footnote).foregroundStyle(.red)
                 }
             } footer: {
-                Text("Recordings contain precise locations and times. Anonymize them before posting publicly (scripts/anonymize-track).")
+                Text(
+                    "Recordings contain precise locations and times. Anonymize them before posting publicly (scripts/anonymize-track)."
+                )
             }
         }
         .navigationTitle(entry.meta?.sport.displayName ?? "Recording")

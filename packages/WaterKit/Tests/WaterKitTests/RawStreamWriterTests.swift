@@ -55,6 +55,13 @@ import Testing
         #expect(!writer.flushAndWait())
         #expect(writer.status.dropped == 2)
         #expect(writer.status.lastError != nil)
+
+        // Storage recovers: later writes succeed, but the loss stays on record.
+        try FileManager.default.removeItem(at: writer.url)
+        writer.append(Self.line(3))
+        #expect(writer.flushAndWait())
+        #expect(writer.status.lastError == nil)
+        #expect(writer.status.dropped == 2)
     }
 
     @Test func unencodableLinesAreCountedAsDropped() {
