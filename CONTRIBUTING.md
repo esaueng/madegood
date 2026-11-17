@@ -7,13 +7,19 @@ starting anything larger than a small fix.
 
 ## Ways to help
 
+Anyone can open an issue. Pull requests are limited to the project's
+collaborators, so if you're not one, an issue is the way to contribute.
+
 - **Recordings.** Real sessions with ground truth (stroke counts, tack times, wind
-  direction) are the most valuable thing you can give. See `fixtures/README.md`
-  (Phase 0) for how to anonymize and label them. Never commit a raw recording.
+  direction) are the most valuable thing you can give. Anonymize the track with
+  `scripts/anonymize-track` (see `fixtures/README.md`), then attach it to an issue
+  with your labels. Never share a raw recording.
 - **Bugs and metric accuracy.** Use the issue forms. For a wrong metric, attach an
   anonymized track and what the right value was.
-- **Code.** Pick an issue labeled `good first issue` or `help wanted`, or open an
-  issue first for anything that changes behavior, formats, or the API.
+- **Ideas.** Use the feature request form, or start a thread in
+  [Discussions](https://github.com/esaueng/madegood/discussions).
+
+The rest of this guide is for collaborators changing code.
 
 ## Developer Certificate of Origin (DCO)
 
