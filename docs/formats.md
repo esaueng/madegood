@@ -196,6 +196,15 @@ because the raw recording keeps full precision:
 
 Raw motion data is not part of a track.
 
+### Upload
+
+`PUT /api/sessions/<id>/track` takes the gzipped file exactly as written: the body is
+`track.json.gz` with `Content-Type: application/gzip` and no `Content-Encoding`, at most
+8 MiB (8,388,608 bytes), declaring at most 64 MiB inflated in its gzip trailer. `GET`
+returns it the same way. The server stores the bytes unchanged; on upload it checks only
+the gzip header and that the file starts a JSON object, so clients must send a valid
+track v1 whose `sessionId` matches the URL.
+
 ---
 
 ## GPX export
