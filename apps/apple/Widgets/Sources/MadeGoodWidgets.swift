@@ -23,7 +23,7 @@ struct SessionLiveActivity: Widget {
                     Label {
                         Text(context.attributes.sportName)
                     } icon: {
-                        SportImage(name: context.attributes.sportIcon, size: 16)
+                        SportImage(attributes: context.attributes, size: 16)
                     }
                     .font(.caption)
                 }
@@ -41,11 +41,11 @@ struct SessionLiveActivity: Widget {
                     }
                 }
             } compactLeading: {
-                SportImage(name: context.attributes.sportIcon, size: 20)
+                SportImage(attributes: context.attributes, size: 20, labeled: true)
             } compactTrailing: {
                 Text(context.state.speedNumber).monospacedDigit().font(.caption.weight(.semibold))
             } minimal: {
-                SportImage(name: context.attributes.sportIcon, size: 20)
+                SportImage(attributes: context.attributes, size: 20, labeled: true)
             }
         }
     }
@@ -60,7 +60,7 @@ private struct LockScreenView: View {
                 Label {
                     Text(context.attributes.sportName)
                 } icon: {
-                    SportImage(name: context.attributes.sportIcon, size: 18)
+                    SportImage(attributes: context.attributes, size: 18)
                 }
                 .font(.subheadline.weight(.semibold))
                 if let pause = context.state.pauseLabel {
@@ -83,12 +83,21 @@ private struct LockScreenView: View {
     }
 }
 
-/// A sport icon from the shared asset catalog (Shared/Resources/SportIcons.xcassets).
+/// The sport's icon from the shared asset catalog (Shared/Resources/SportIcons.xcassets), or
+/// the SF Symbol an activity from an earlier build carries. Decorative unless `labeled`,
+/// when VoiceOver reads the sport's name.
 private struct SportImage: View {
-    let name: String
+    let attributes: SessionActivityAttributes
     let size: CGFloat
+    var labeled = false
 
     var body: some View {
-        Image(name).resizable().scaledToFit().frame(width: size, height: size)
+        let image = attributes.isLegacySymbol ? Image(systemName: attributes.sportIcon) : Image(attributes.sportIcon)
+        let sized = image.resizable().scaledToFit().frame(width: size, height: size)
+        if labeled {
+            sized.accessibilityLabel(attributes.sportName)
+        } else {
+            sized.accessibilityHidden(true)
+        }
     }
 }
