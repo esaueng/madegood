@@ -2,6 +2,8 @@
 
 # MadeGood
 
+[![CI](https://github.com/esaueng/madegood/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/esaueng/madegood/actions/workflows/ci.yml)
+
 Open-source tracking for time on the water, on iPhone, Apple Watch, and the web.
 
 - **Sessions** (watch-first): workout tracking for sailing, windsurfing,

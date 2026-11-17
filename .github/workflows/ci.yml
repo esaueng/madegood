@@ -1,0 +1,222 @@
+name: CI
+
+# One workflow for every area. Each job runs only when its files change (macOS minutes
+# are expensive on a private repo), and the final `CI` job reports one result that
+# branch protection can require: it passes when every job that ran passed and treats
+# skipped jobs as fine.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # PR runs share a group per PR, so a new push cancels the superseded run. Every other
+  # run (main, merge queue, manual) gets its own group, so none is cancelled or dropped
+  # while pending.
+  group: ${{ github.event_name == 'pull_request' && format('ci-pr-{0}', github.event.pull_request.number) || format('ci-run-{0}', github.run_id) }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      waterkit: ${{ steps.filter.outputs.waterkit }}
+      apple: ${{ steps.filter.outputs.apple }}
+      web: ${{ steps.filter.outputs.web }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: filter
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          MQ_BASE: ${{ github.event.merge_group.base_sha }}
+          MQ_HEAD: ${{ github.event.merge_group.head_sha }}
+        run: scripts/ci-changes.sh >> "$GITHUB_OUTPUT"
+
+  biome:
+    name: Biome
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm check
+
+  waterkit-linux:
+    name: WaterKit tests (Linux)
+    needs: changes
+    if: needs.changes.outputs.waterkit == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Swift 6.3.3 matches the compiler in Xcode 26.6 used by the Apple job.
+    container: swift:6.3.3-noble
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install zlib headers
+        run: |
+          if [ ! -f /usr/include/zlib.h ]; then
+            apt-get update -q && apt-get install -yq --no-install-recommends zlib1g-dev
+          fi
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: packages/WaterKit/.build
+          key: waterkit-linux-swift-6.3.3-${{ hashFiles('packages/WaterKit/Package.swift', 'packages/WaterKit/Sources/**') }}
+          restore-keys: waterkit-linux-swift-6.3.3-
+      - name: Test
+        run: swift test --package-path packages/WaterKit --parallel
+      - name: Check fixtures are anonymized
+        run: swift run --package-path packages/WaterKit waterkit-anonymize --check fixtures
+
+  waterkit-macos:
+    name: WaterKit tests (macOS)
+    needs: changes
+    if: needs.changes.outputs.waterkit == 'true'
+    runs-on: macos-26
+    timeout-minutes: 20
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Test
+        run: swift test --package-path packages/WaterKit --parallel
+
+  apple:
+    name: iOS + watchOS build (simulator)
+    needs: changes
+    if: needs.changes.outputs.apple == 'true'
+    runs-on: macos-26
+    timeout-minutes: 30
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      TUIST_DISABLE_ANALYTICS: "1"
+      MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}
+    defaults:
+      run:
+        working-directory: apps/apple
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d # v5.2.9
+        with:
+          install: true
+          cache: true
+
+      - name: Toolchain versions
+        run: |
+          xcodebuild -version
+          swift --version
+          tuist version
+
+      - name: Generate Xcode project
+        run: |
+          tuist install
+          tuist generate --no-open
+
+      - name: Check both apps compile in Swift 6 mode
+        run: |
+          for scheme in MadeGood MadeGoodWatch; do
+            settings=$(xcodebuild -workspace MadeGood.xcworkspace -scheme "$scheme" -showBuildSettings 2>/dev/null)
+            version=$(printf '%s\n' "$settings" | awk -F' = ' '/^ *SWIFT_VERSION = / { print $2; exit }')
+            echo "$scheme: SWIFT_VERSION=$version"
+            test "$version" = "6.0"
+          done
+
+      # The iOS scheme embeds the watch app, so one build covers both platforms.
+      - name: Build
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -workspace MadeGood.xcworkspace \
+            -scheme MadeGood \
+            -configuration Debug \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            -resultBundlePath "$RUNNER_TEMP/MadeGood.xcresult" \
+            CODE_SIGNING_ALLOWED=NO \
+            | tee "$RUNNER_TEMP/xcodebuild.log" \
+            | grep -E '(error|warning):|\*\* BUILD' || true
+          grep -q '\*\* BUILD SUCCEEDED \*\*' "$RUNNER_TEMP/xcodebuild.log"
+
+      - name: Check the watch app was built and embedded
+        run: |
+          app="$RUNNER_TEMP/DerivedData/Build/Products/Debug-iphonesimulator/MadeGood.app"
+          ls "$app/Watch"
+          test -d "$app/Watch/MadeGoodWatch.app"
+
+      - name: Upload build logs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: apple-build-logs
+          path: |
+            ${{ runner.temp }}/xcodebuild.log
+            ${{ runner.temp }}/MadeGood.xcresult
+          retention-days: 7
+
+  web:
+    name: Web typecheck, test, build
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build
+      - name: Check the route tree is committed and current
+        run: git diff --exit-code -- src/client/routeTree.gen.ts
+
+  ci:
+    name: CI
+    needs: [changes, biome, waterkit-linux, waterkit-macos, apple, web]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every job that ran passed
+        env:
+          RESULTS: ${{ toJSON(needs.*.result) }}
+        run: |
+          echo "Job results: $RESULTS"
+          if echo "$RESULTS" | grep -Eq '"(failure|cancelled)"'; then
+            echo "A required job failed or was cancelled."
+            exit 1
+          fi
