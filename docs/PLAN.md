@@ -491,7 +491,7 @@ more sports (rowing, wing, kite, outrigger, dragon boat).
 | Decision | Needed by | Notes |
 |---|---|---|
 | Apple Developer account (team ID) | Phase 0 task 4 | Needed for device builds, HealthKit, TestFlight |
-| TestFlight via Xcode Cloud or GitHub Actions + fastlane | Phase 1 | Xcode Cloud is simpler; GitHub Actions keeps everything in one place |
+| ~~TestFlight via Xcode Cloud or GitHub Actions + fastlane~~ | Phase 1 | Decided: GitHub Actions with plain `xcodebuild` and an App Store Connect API key, no fastlane (docs/releasing.md) |
 | Strava integration | Phase 3 | Requires Strava API approval |
 | Fixture data hosting | Phase 0 | Public R2 bucket vs Git LFS |
 

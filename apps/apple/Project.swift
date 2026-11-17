@@ -69,6 +69,8 @@ let project = Project(
                 // Recordings in Documents are visible in the Files app.
                 "UIFileSharingEnabled": true,
                 "LSSupportsOpeningDocumentsInPlace": true,
+                // Only standard HTTPS, so App Store Connect needs no export compliance answer.
+                "ITSAppUsesNonExemptEncryption": false,
             ]),
             sources: ["App/Sources/**", "Shared/Sources/**"],
             resources: ["App/Resources/**"],
