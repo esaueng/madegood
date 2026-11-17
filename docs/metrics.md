@@ -5,7 +5,8 @@ How MadeGood computes each metric. The code is the reference implementation
 values are SI internally (m, s, m/s, degrees true) and converted only for display.
 
 Live metrics come from `SessionEngine`, which runs on the watch or phone during a
-session and only uses data it has already seen. Post-session analysis (Phase 2) can
+session and only uses data it has already seen. Samples with a non-finite time are
+ignored. Post-session analysis (Phase 2) can
 revise some of them using the whole track.
 
 ## GPS cleaning
@@ -14,7 +15,7 @@ revise some of them using the whole track.
 
 | Rule | Default |
 |---|---|
-| Its time is not after the last accepted fix | — |
+| Its time is not finite, or not after the last accepted fix | — |
 | Latitude or longitude is missing or out of range | — |
 | Horizontal accuracy is missing or worse than the limit | 25 m |
 | Doppler speed is above the limit | 50 m/s (about 97 kn) |
@@ -75,7 +76,13 @@ are added. The engine records these as `pause` and `resume` events with
 `{"auto": true}`.
 
 A manual pause stops all accounting until a manual resume, and auto-resume does not
-end it.
+end it. After a manual resume, accounting restarts from the next fix: the interval
+that spans the resume is not counted.
+
+Hold timers only run on observed fixes. After a re-anchor (a long GPS gap or recovery
+from rejected fixes) they start again, so an unobserved gap can neither pause nor
+resume a session. An auto-pause is never dated back past the start of the current lap,
+so closed laps keep their totals.
 
 ## Laps
 

@@ -96,9 +96,10 @@ private func approx(_ a: Double?, _ b: Double, tolerance: Double = 0.01) -> Bool
                 .event(SessionEvent(t: 40.5, type: .pause)), .event(SessionEvent(t: 60.5, type: .resume)),
             ]
         let engine = simulate(.sailing, samples)
-        // Intervals ending at fixes 41…60 are dropped.
-        #expect(engine.snapshot.movingTime == 79)
-        #expect(approx(engine.snapshot.distance, 158))
+        // Intervals ending at fixes 41…60 fall in the pause; the one ending at 61 started
+        // before the resume, so accounting restarts from fix 61.
+        #expect(engine.snapshot.movingTime == 78)
+        #expect(approx(engine.snapshot.distance, 156))
         #expect(engine.generatedEvents.isEmpty)
     }
 
@@ -219,5 +220,61 @@ private func approx(_ a: Double?, _ b: Double, tolerance: Double = 0.01) -> Bool
             #expect(profile.autoPause.enabled == sport.isPaddling)
             #expect(profile.savesWorkoutByDefault == (sport != .motorboating))
         }
+    }
+
+    // Regression tests from the PR #23 review.
+
+    @Test func manualResumeDoesNotCountThePausedInterval() {
+        let run = Run(speed: { _ in 2 })
+        let samples: [Sample] = [
+            .gps(run.fix(0)), .event(SessionEvent(t: 1, type: .pause)), .event(SessionEvent(t: 9, type: .resume)),
+            .gps(run.fix(10)), .gps(run.fix(11)),
+        ]
+        let m = simulate(.sailing, samples).snapshot
+        #expect(m.movingTime == 1)
+        #expect(approx(m.distance, 2))
+    }
+
+    @Test func autoPauseDoesNotRollBackClosedLaps() {
+        let run = Run(speed: { _ in 0.2 })
+        let samples = run.fixes(0...12).map(Sample.gps) + [.event(SessionEvent(t: 5.5, type: .lap))]
+        let engine = simulate(.kayak, samples)
+        let m = engine.snapshot
+        #expect(m.pauseState == .autoPaused)
+        #expect(m.laps.count == 1)
+        // The pause is dated back to the lap boundary, so the session total still
+        // covers the closed lap and the current lap is empty, not negative.
+        #expect(m.movingTime == m.laps[0].movingTime)
+        #expect(approx(m.distance, m.laps[0].distance, tolerance: 1e-9))
+        #expect(m.currentLap.movingTime == 0)
+        #expect(engine.generatedEvents.map(\.t) == [5.5])
+    }
+
+    @Test func reanchorDoesNotSatisfyResumeHold() {
+        let still = Run(speed: { _ in 0 })
+        let samples = still.fixes(0...12).map(Sample.gps) + [.gps(Run(speed: { _ in 2 }).fix(100))]
+        let engine = simulate(.kayak, samples)
+        #expect(engine.generatedEvents.map(\.type) == [.pause])
+        #expect(engine.snapshot.pauseState == .autoPaused)
+    }
+
+    @Test func nonFiniteTimesAreIgnored() {
+        let run = Run(speed: { _ in 2 })
+        var bad = run.fix(1)
+        bad.t = .nan
+        let samples: [Sample] = [
+            .gps(run.fix(0)), .gps(bad), .gps(run.fix(2)), .hr(HRSample(t: .infinity, bpm: 150)),
+            .event(SessionEvent(t: .nan, type: .stop)),
+        ]
+        var engine = SessionEngine(sport: .kayak)
+        for sample in samples { engine.ingest(sample) }
+        let m = engine.snapshot
+        #expect(m.movingTime == 2)
+        #expect(m.elapsed == 2)
+        #expect(m.rejectedFixes == 0)
+        #expect(m.heartRate == nil)
+        #expect(!m.isFinished)
+        var filter = GPSFilter()
+        #expect(filter.ingest(bad) == .rejected(.invalidTime))
     }
 }

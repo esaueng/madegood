@@ -31,6 +31,7 @@ public struct GPSFilter: Sendable {
     }
 
     public enum Rejection: String, Sendable, Hashable, Codable {
+        case invalidTime
         case outOfOrder
         case invalidCoordinate
         case inaccurate
@@ -65,6 +66,7 @@ public struct GPSFilter: Sendable {
     }
 
     public mutating func ingest(_ fix: GPSFix) -> Decision {
+        guard fix.t.isFinite else { return reject(.invalidTime) }
         if let last, fix.t <= last.t { return reject(.outOfOrder) }
         guard fix.latitude.isFinite, fix.longitude.isFinite, abs(fix.latitude) <= 90, abs(fix.longitude) <= 180
         else { return reject(.invalidCoordinate) }

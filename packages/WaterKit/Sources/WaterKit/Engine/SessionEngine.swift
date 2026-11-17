@@ -114,6 +114,9 @@ public struct SessionEngine: LiveAnalyzer {
     private var acceptedFixes = 0
     private var rejectedFixes = 0
     private var finished = false
+    /// Set by a manual resume: the interval from the last fix spans the pause, so the
+    /// next fix starts a new interval instead of closing that one.
+    private var intervalBroken = false
 
     public init(profile: SportProfile, filter: GPSFilter.Config = GPSFilter.Config()) {
         self.profile = profile
@@ -125,7 +128,7 @@ public struct SessionEngine: LiveAnalyzer {
     }
 
     public mutating func ingest(_ sample: Sample) {
-        guard !finished else { return }
+        guard !finished, sample.t.isFinite else { return }
         latestTime = max(latestTime, sample.t)
         switch sample {
         case .gps(let fix): ingestFix(fix)
@@ -169,13 +172,22 @@ public struct SessionEngine: LiveAnalyzer {
 
         var dt = 0.0
         var step = 0.0
-        if let previous, !accepted.isAnchor {
+        let startsInterval = accepted.isAnchor || intervalBroken
+        intervalBroken = false
+        if startsInterval {
+            // Hold timers must not be satisfied by time nobody observed.
+            slow = nil
+            fast = nil
+        }
+        if let previous, !startsInterval {
             dt = fix.t - previous.t
             step = Geo.distance(
                 lat1: previous.latitude, lon1: previous.longitude, lat2: fix.latitude, lon2: fix.longitude)
         }
         let speed = fix.speed.flatMap { $0.isFinite && $0 >= 0 ? $0 : nil }
-        account(dt: dt, step: step, speed: speed, at: fix.t, intervalStart: previous?.t ?? fix.t)
+        account(
+            dt: dt, step: step, speed: speed, at: fix.t,
+            intervalStart: startsInterval ? fix.t : (previous?.t ?? fix.t))
         updateSpeeds(fix, speed: speed)
         // Auto-laps fall at whole multiples of the lap distance from the last manual lap,
         // so one lap's overshoot is not added to the next. The epsilon absorbs rounding
@@ -202,7 +214,12 @@ public struct SessionEngine: LiveAnalyzer {
                 let mark = slow ?? Mark(since: t, movingTime: movingTime, distance: distance)
                 slow = mark
                 if t - mark.since >= config.pauseAfter {
-                    // Date the pause back to when the boat slowed down.
+                    // Date the pause back to when the boat slowed down, but not past the
+                    // start of the current lap: closed laps keep their totals.
+                    let mark =
+                        lapStart.since > mark.since
+                        ? Mark(since: lapStart.since, movingTime: lapStart.movingTime, distance: lapStart.distance)
+                        : mark
                     movingTime = mark.movingTime
                     distance = mark.distance
                     mode = .autoPaused
@@ -275,6 +292,7 @@ public struct SessionEngine: LiveAnalyzer {
             slow = nil
             fast = nil
         case .resume:
+            if mode == .manuallyPaused { intervalBroken = true }
             if mode != .moving { mode = .moving }
             slow = nil
             fast = nil
