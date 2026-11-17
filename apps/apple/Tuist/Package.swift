@@ -4,7 +4,12 @@ import PackageDescription
 #if TUIST
     import struct ProjectDescription.PackageSettings
 
-    let packageSettings = PackageSettings(productTypes: [:])
+    // Packages link statically into the apps, so they are never signed on their own;
+    // without this an archive asks for a signing certificate for each package target.
+    let packageSettings = PackageSettings(
+        productTypes: [:],
+        baseSettings: .settings(base: ["CODE_SIGNING_ALLOWED": "NO"])
+    )
 #endif
 
 // Packages the apps depend on. `tuist install` resolves them; reference products in

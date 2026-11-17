@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+# Archives the iPhone app (which embeds the watch app and the widget extensions) and
+# uploads it to App Store Connect, where it becomes a TestFlight build. Used by
+# .github/workflows/testflight.yml; it also runs locally.
+#
+# Signing is automatic and uses an App Store Connect API key, so the runner needs no
+# certificates or profiles: Xcode fetches or creates them with the key.
+#
+# Required environment:
+#   APPLE_TEAM_ID                  Apple Developer team ID
+#   APP_STORE_CONNECT_KEY_ID       API key ID
+#   APP_STORE_CONNECT_ISSUER_ID    API issuer ID
+#   APP_STORE_CONNECT_KEY_PATH     path to the key's .p8 file
+#   BUILD_NUMBER                   CFBundleVersion for every target; must increase
+# Optional:
+#   UPLOAD=0                       export an .ipa instead of uploading it
+#   WORK_DIR                       where the archive and logs go
+#
+# Run `tuist install && tuist generate --no-open` in apps/apple first.
+set -euo pipefail
+root="$(cd "$(dirname "$0")/.." && pwd)"
+
+: "${APPLE_TEAM_ID:?set APPLE_TEAM_ID}"
+: "${APP_STORE_CONNECT_KEY_ID:?set APP_STORE_CONNECT_KEY_ID}"
+: "${APP_STORE_CONNECT_ISSUER_ID:?set APP_STORE_CONNECT_ISSUER_ID}"
+: "${APP_STORE_CONNECT_KEY_PATH:?set APP_STORE_CONNECT_KEY_PATH}"
+: "${BUILD_NUMBER:?set BUILD_NUMBER}"
+test -f "$APP_STORE_CONNECT_KEY_PATH" || { echo "No key file at APP_STORE_CONNECT_KEY_PATH" >&2; exit 1; }
+
+work="${WORK_DIR:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/madegood-testflight}"
+rm -rf "$work"
+mkdir -p "$work"
+
+destination="upload"
+if [ "${UPLOAD:-1}" = 0 ]; then destination="export"; fi
+
+auth=(
+  -allowProvisioningUpdates
+  -authenticationKeyPath "$APP_STORE_CONNECT_KEY_PATH"
+  -authenticationKeyID "$APP_STORE_CONNECT_KEY_ID"
+  -authenticationKeyIssuerID "$APP_STORE_CONNECT_ISSUER_ID"
+)
+
+cd "$root/apps/apple"
+
+echo "Archiving build $BUILD_NUMBER"
+xcodebuild archive \
+  -workspace MadeGood.xcworkspace \
+  -scheme MadeGood \
+  -configuration Release \
+  -destination 'generic/platform=iOS' \
+  -archivePath "$work/MadeGood.xcarchive" \
+  "${auth[@]}" \
+  DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+  CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
+  > "$work/archive.log" 2>&1 || true
+grep -E '(error|warning):|\*\* ARCHIVE' "$work/archive.log" || true
+if ! grep -q '\*\* ARCHIVE SUCCEEDED \*\*' "$work/archive.log"; then
+  echo "Archive failed; see $work/archive.log" >&2
+  exit 1
+fi
+
+# Fail early if the watch app did not make it into the archive.
+test -d "$work/MadeGood.xcarchive/Products/Applications/MadeGood.app/Watch/MadeGoodWatch.app"
+
+cat > "$work/ExportOptions.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>method</key><string>app-store-connect</string>
+  <key>destination</key><string>$destination</string>
+  <key>teamID</key><string>$APPLE_TEAM_ID</string>
+  <key>signingStyle</key><string>automatic</string>
+  <key>uploadSymbols</key><true/>
+  <key>manageAppVersionAndBuildNumber</key><false/>
+</dict>
+</plist>
+PLIST
+
+echo "Exporting ($destination)"
+xcodebuild -exportArchive \
+  -archivePath "$work/MadeGood.xcarchive" \
+  -exportOptionsPlist "$work/ExportOptions.plist" \
+  -exportPath "$work/export" \
+  "${auth[@]}" \
+  > "$work/export.log" 2>&1 || true
+grep -E '(error|warning):|\*\* EXPORT|Upload' "$work/export.log" || true
+if ! grep -q '\*\* EXPORT SUCCEEDED \*\*' "$work/export.log"; then
+  echo "Export failed; see $work/export.log" >&2
+  exit 1
+fi
+echo "Build $BUILD_NUMBER: $destination done"
