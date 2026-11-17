@@ -4,12 +4,15 @@
 
 Please do not open a public issue for a security problem.
 
-Report it privately by email to **security@madegood.app**. Include what you found,
-how to reproduce it, and what an attacker could do with it.
+Report it privately through GitHub: open the repository's **Security** tab and choose
+**Report a vulnerability**, or go straight to
+[the private report form](https://github.com/esaueng/madegood/security/advisories/new).
+Only the maintainers can see the report. Include what you found, how to reproduce it,
+and what an attacker could do with it.
 
 We aim to acknowledge reports within 3 working days and to agree on a fix and
-disclosure date with you. We credit reporters in the release notes unless you
-ask us not to.
+disclosure date with you in the private advisory. We credit reporters in the advisory
+and release notes unless you ask us not to.
 
 ## Scope
 
