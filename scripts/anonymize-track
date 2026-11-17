@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Anonymize a recording before sharing it or adding it to fixtures/.
+#
+#   scripts/anonymize-track <raw-folder | track.json[.gz]> <output>
+#   scripts/anonymize-track --check <path>...
+#
+# Moves positions to a fake origin (keeping distances and bearings), shifts times to
+# 2000-01-01, replaces the session ID, and drops altitude and free-text event data.
+# See packages/WaterKit/Sources/WaterKit/Privacy/Anonymizer.swift and fixtures/README.md.
+set -euo pipefail
+repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+exec swift run --quiet --package-path "$repo/packages/WaterKit" -c release waterkit-anonymize "$@"

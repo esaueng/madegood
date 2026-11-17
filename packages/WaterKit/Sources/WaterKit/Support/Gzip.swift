@@ -71,6 +71,37 @@ public enum Gzip {
     public static func decompressAvailable(
         _ data: Data, limit: Int = defaultOutputLimit
     ) throws -> (data: Data, complete: Bool) {
+        try inflateMembers(data, limit: limit, memberStart: { _ in })
+    }
+
+    /// The fixed 10-byte header of one gzip member (RFC 1952 §2.3).
+    public struct MemberHeader: Sendable, Equatable {
+        /// FLG byte: FTEXT 0x01, FHCRC 0x02, FEXTRA 0x04, FNAME 0x08, FCOMMENT 0x10.
+        public var flags: UInt8
+        /// MTIME, Unix seconds (0 when not set).
+        public var modificationTime: UInt32
+
+        /// True if the member stores a file name, comment, or extra field.
+        public var hasOptionalFields: Bool { flags & 0x1C != 0 }
+    }
+
+    /// The header of every member, in order. Optional header fields (file name, comment,
+    /// extra data) and MTIME are not part of the decompressed data, so callers that must
+    /// vet everything in a file inspect them here.
+    public static func memberHeaders(_ data: Data) throws -> [MemberHeader] {
+        var starts: [Int] = []
+        _ = try inflateMembers(data, limit: defaultOutputLimit, memberStart: { starts.append($0) })
+        return starts.compactMap { start in
+            guard start + 10 <= data.count else { return nil }
+            let base = data.startIndex + start
+            let time = (0..<4).reduce(UInt32(0)) { $0 | UInt32(data[base + 4 + $1]) << (8 * UInt32($1)) }
+            return MemberHeader(flags: data[base + 3], modificationTime: time)
+        }
+    }
+
+    private static func inflateMembers(
+        _ data: Data, limit: Int, memberStart: (Int) -> Void
+    ) throws -> (data: Data, complete: Bool) {
         guard isGzipped(data) else { throw Error.invalidData }
         guard data.count <= Int(UInt32.max) else { throw Error.inputTooLarge }
 
@@ -85,6 +116,7 @@ public enum Gzip {
         return try data.withUnsafeBytes { (input: UnsafeRawBufferPointer) -> (Data, Bool) in
             stream.next_in = UnsafeMutablePointer(mutating: input.bindMemory(to: Bytef.self).baseAddress)
             stream.avail_in = uInt(input.count)
+            memberStart(0)
 
             while true {
                 var status: Int32 = Z_OK
@@ -108,6 +140,7 @@ public enum Gzip {
                     let rest = UnsafeBufferPointer(start: next, count: remaining)
                     if rest.allSatisfy({ $0 == 0 }) { return (output, true) }
                     guard remaining >= 2, rest[0] == 0x1f, rest[1] == 0x8b else { return (output, false) }
+                    memberStart(input.count - remaining)
                     let resetStatus = inflateReset(&stream)
                     guard resetStatus == Z_OK else { throw Error.streamError(resetStatus) }
                 case Z_OK:

@@ -1,0 +1,20 @@
+{
+  "app" : {
+    "build" : "1",
+    "version" : "0.1.0"
+  },
+  "clock" : {
+    "unix" : 946728000,
+    "uptime" : 1000
+  },
+  "device" : {
+    "kind" : "phone",
+    "model" : "iPhone18,1",
+    "os" : "iOS 26.1"
+  },
+  "format" : "madegood-raw",
+  "sessionId" : "207AB482-B73B-45A2-B707-A0C7844F9DA1",
+  "sport" : "sailing",
+  "startedAt" : 946728000,
+  "version" : 1
+}
