@@ -9,8 +9,13 @@ through the same types the readers use.
 | **Raw recording v1** | Research and algorithm work: every sensor stream at full rate | Only when the user shares it (AirDrop/Files), or with an opt-in "contribute data" setting |
 | **Track v1** | The stored and uploaded session: GPS, heart rate, events, analysis summary | Uploaded when sync is on |
 
+WaterKit also exports tracks as **GPX 1.1** for other apps (see [GPX export](#gpx-export)).
+GPX is output only: nothing reads it back.
+
 All values are SI: metres, seconds, m/s, m/s², rad/s, and degrees true (0–360,
-clockwise from north). Convert units only for display.
+clockwise from north). Convert units only for display, with WaterKit's `SpeedUnit`
+(kn, km/h, mph, m/s) and `DistanceUnit` (m/km, nm, mi). They use the exact
+definitions 1 nm = 1852 m, 1 mi = 1609.344 m and 1 h = 3600 s.
 
 ## Compatibility rules
 
@@ -188,6 +193,61 @@ because the raw recording keeps full precision:
 | `bpm` | 0.1 |
 
 Raw motion data is not part of a track.
+
+---
+
+## GPX export
+
+`GPXWriter` turns a track into a GPX 1.1 document (UTF-8). `waterkit-replay <path> --gpx
+<out.gpx>` does the same from the command line, for a raw recording or a track file.
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="MadeGood" xmlns="http://www.topografix.com/GPX/1/1"
+     xmlns:gpxtpx="http://www.garmin.com/xmlschemas/TrackPointExtension/v2" …>
+  <metadata>
+    <name>Sailing</name>
+    <time>2000-01-01T12:00:00.000Z</time>
+  </metadata>
+  <trk>
+    <name>Sailing</name>
+    <type>sailing</type>
+    <trkseg>
+      <trkpt lat="10.00001" lon="-30"><ele>1.2</ele><time>2000-01-01T12:00:01.000Z</time><extensions><gpxtpx:TrackPointExtension><gpxtpx:speed>2.5</gpxtpx:speed><gpxtpx:course>45</gpxtpx:course></gpxtpx:TrackPointExtension></extensions></trkpt>
+    </trkseg>
+  </trk>
+</gpx>
+```
+
+| Element | Content |
+|---|---|
+| `gpx/@creator` | `MadeGood`. |
+| `metadata/name`, `trk/name` | The sport's name (`Sailing`, `Windsurfing`, `Motorboating`, `Kayak`, `Canoe`, `Stand-up paddle`), or a name the caller passes. |
+| `metadata/time` | `startedAt`. |
+| `trk/type` | The sport's wire name (`sailing`, `kayak`, …). |
+| `trkpt/@lat`, `@lon` | Degrees (WGS 84), up to 7 decimals. |
+| `ele` | Altitude, m, 1 decimal. Left out when the fix has none. |
+| `time` | `startedAt + t`, ISO 8601 UTC with milliseconds. |
+| `extensions/gpxtpx:TrackPointExtension` | Garmin's [TrackPointExtension v2](https://www8.garmin.com/xmlschemas/TrackPointExtensionv2.xsd) (`http://www.garmin.com/xmlschemas/TrackPointExtension/v2`), which Strava, Garmin Connect, GPXSee and most other readers understand. `gpxtpx:speed` is the receiver's Doppler speed in m/s (2 decimals); `gpxtpx:course` is the Doppler course in degrees true (1 decimal, 0 ≤ course < 360). Each is left out when invalid, and the block is left out when both are. |
+
+Rules:
+
+- **One track.** Every session is one `<trk>`. Heart rate, events and the analysis
+  summary are not exported.
+- **Time order.** Fixes are written sorted by `t`; fixes with the same `t` keep their
+  stored order. Tracks may be stored out of order, so writers must not assume they are.
+- **Invalid fixes are skipped:** a non-finite `t`, latitude or longitude, a latitude
+  outside ±90° or a longitude outside ±180°.
+- **Segments.** A new `<trkseg>` starts at the first fix at or after a `resume` event
+  that follows a `pause` (a `resume` with no `pause` before it, or a `pause` that is
+  never resumed, splits nothing). A new `<trkseg>` also starts when consecutive fixes
+  are more than **30 s** apart (`GPXWriter.defaultSegmentGap`; callers can change it),
+  so a signal loss is not drawn as a straight line. Fixes recorded while paused stay in
+  the segment before the resume.
+- **Text** (names, the creator) is XML-escaped (`& < > " '`), and characters XML 1.0
+  does not allow are dropped. Numbers use `.` as the decimal separator and never an
+  exponent.
+- A track with no valid fixes is written as a `<trk>` with no segments.
 
 ---
 
