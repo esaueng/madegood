@@ -12,9 +12,10 @@ from pathlib import Path
 import re
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 
-from history_privacy import select_event
+from history_privacy import audit_all_refs, select_event
 
 # Public GitHub handles and approved public display names only.
 # Never put private names, emails, or the denylist here.
@@ -181,7 +182,8 @@ def main():
         except (urllib.error.URLError, ValueError):
             raise CheckError("GitHub could not supply commit metadata; retry the check.") from None
 
-    _, _, head = select_event(os.environ["GITHUB_EVENT_NAME"], event, os.environ["GITHUB_SHA"])
+    name = os.environ["GITHUB_EVENT_NAME"]
+    _, _, head = select_event(name, event, os.environ["GITHUB_SHA"])
     if head is None:
         print("Reference deletion: no new commits to check.")
         return 0
@@ -190,9 +192,19 @@ def main():
         "name": "commit-privacy", "head_sha": head, "status": "in_progress"})
     passed = False
     try:
-        commits = collect_commits(baseline, head, request)
+        targets = [head]
+        if audit_all_refs(name, event):
+            # Full audits cover every branch and tag, like history-privacy:
+            # unmerged branches become public along with the repository.
+            for kind in ("heads", "tags"):
+                for ref in request(f"/git/matching-refs/{kind}/"):
+                    targets.append(request("/commits/" + urllib.parse.quote(ref["ref"], safe="/"))["sha"])
+        commits = {}
+        for target in dict.fromkeys(targets):
+            for commit in collect_commits(baseline, target, request):
+                commits[commit["sha"]] = commit
         failures = 0
-        for commit in commits:
+        for commit in commits.values():
             for field in invalid_fields(commit):
                 print(f"::error::An incoming commit has noncompliant {field} metadata. Use an approved public "
                       "name and GitHub noreply email; run git-privacy-guard verify before pushing.")

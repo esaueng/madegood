@@ -208,6 +208,23 @@ def audit_all_refs(name, event):
         name == "workflow_dispatch" and not (event.get("inputs") or {}).get("audit_head"))
 
 
+def refs_at_head(advertised, head):
+    """From `git ls-remote --heads --tags` output, return the names of every
+    branch and tag that resolves to head, and the annotated tag objects among
+    them ({ref: tag object ID})."""
+    direct, peeled = {}, {}
+    for line in advertised.splitlines():
+        oid, ref = line.split("\t", 1)
+        if not OID.fullmatch(oid):
+            raise PrivacyError("Invalid advertised reference.")
+        if ref.endswith("^{}"):
+            peeled[ref[:-3]] = oid
+        else:
+            direct[ref] = oid
+    names = sorted(ref for ref, oid in direct.items() if peeled.get(ref, oid) == head)
+    return names, {ref: direct[ref] for ref in names if ref in peeled}
+
+
 def repository():
     value = os.environ["GITHUB_REPOSITORY"]
     if not REPOSITORY.fullmatch(value):
@@ -250,15 +267,15 @@ def ci(policy_path):
         check = start_check(report_head)
         policy = Policy(policy_path, os.environ.get("HISTORY_PRIVACY_HMAC_KEY", ""))
         full_audit = audit_all_refs(name, event)
+        remote = ("-c", "protocol.file.allow=never", "-c", "protocol.ext.allow=never")
         with tempfile.TemporaryDirectory(prefix="history-privacy-") as directory:
             git(directory, "init", "--bare", "--quiet", ".")
             git(directory, "remote", "add", "origin", "https://github.com/" + repository() + ".git")
             for oid in sorted({policy.baseline, *heads}):
-                git(directory, "-c", "protocol.file.allow=never", "-c", "protocol.ext.allow=never",
-                    "fetch", "--quiet", "--no-tags", "--no-recurse-submodules", "origin", oid, fetch_auth=True)
+                git(directory, *remote, "fetch", "--quiet", "--no-tags", "--no-recurse-submodules",
+                    "origin", oid, fetch_auth=True)
             if full_audit:
-                git(directory, "-c", "protocol.file.allow=never", "-c", "protocol.ext.allow=never",
-                    "fetch", "--quiet", "--no-recurse-submodules", "origin",
+                git(directory, *remote, "fetch", "--quiet", "--no-recurse-submodules", "origin",
                     "+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*", fetch_auth=True)
                 listed = git(directory, "for-each-ref", "--format=%(objectname) %(refname)",
                              "refs/heads", "refs/tags").decode("utf-8").splitlines()
@@ -266,6 +283,18 @@ def ci(policy_path):
                     oid, ref = line.split(" ", 1)
                     heads.append(oid)
                     refs.append(ref)
+            else:
+                # A check run belongs to a commit, not a branch. Every branch and
+                # tag at this head must pass too, or a clean twin branch could
+                # overwrite a failure published for the same commit.
+                advertised = git(directory, *remote, "ls-remote", "--heads", "--tags", "origin",
+                                 fetch_auth=True).decode("utf-8")
+                names, tag_objects = refs_at_head(advertised, report_head)
+                refs.extend(names)
+                for ref, oid in tag_objects.items():
+                    git(directory, *remote, "fetch", "--quiet", "--no-tags", "--no-recurse-submodules",
+                        "origin", "+" + ref + ":" + ref, fetch_auth=True)
+                    heads.append(oid)
             count = scan(directory, policy, heads, excludes=[] if full_audit else [policy.baseline], refs=refs)
         print(f"PASS: inspected {count} incoming Git objects; privacy details withheld.")
         passed = True

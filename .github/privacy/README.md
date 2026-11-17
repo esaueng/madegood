@@ -26,8 +26,12 @@ values by HMAC only. Failures never print the value, path or object ID.
 
 `baseline` is an audited clean commit. Pull requests are scanned from the
 baseline to their head, so earlier commits on a branch cannot hide behind a
-clean tip. Pushes to `main`, the daily run and a plain manual dispatch scan every
-branch and tag in full.
+clean tip. Because a check run belongs to a commit, not a branch, a PR audit
+also checks the name of every branch and tag (and every annotated tag object)
+pointing at the same head; a clean twin branch cannot overwrite a failure.
+Pushes to `main`, the daily run and a plain manual dispatch scan every branch
+and tag in full, and `commit-privacy` then checks identities on all of them,
+since unmerged branches become public with the repository.
 
 ## Trust boundary
 

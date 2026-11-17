@@ -1,7 +1,9 @@
 """Synthetic regression fixtures only; no real identifiers or historical OIDs."""
 
 import base64
+import contextlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -197,6 +199,51 @@ class HistoryTests(unittest.TestCase):
             with self.assertRaises(guard.PrivacyError):
                 guard.ci(self.policy_path)
         self.assertEqual(api.call_args_list[-1].args[2]["conclusion"], "failure")
+
+    def test_refs_at_head_includes_branches_and_annotated_tags(self):
+        head, other, tag = "a" * 40, "b" * 40, "c" * 40
+        advertised = "\n".join(oid + "\t" + ref for oid, ref in (
+            (head, "refs/heads/topic"), (head, "refs/heads/twin"), (other, "refs/heads/main"),
+            (head, "refs/tags/light"), (tag, "refs/tags/annotated"), (head, "refs/tags/annotated^{}"),
+            (tag, "refs/tags/elsewhere"), (other, "refs/tags/elsewhere^{}")))
+        names, tags = guard.refs_at_head(advertised, head)
+        self.assertEqual(names, ["refs/heads/topic", "refs/heads/twin", "refs/tags/annotated", "refs/tags/light"])
+        self.assertEqual(tags, {"refs/tags/annotated": tag})
+        with self.assertRaises(guard.PrivacyError):
+            guard.refs_at_head("not-an-oid\trefs/heads/topic", head)
+
+    def test_clean_twin_branch_cannot_pass_a_head_shared_with_a_denied_name(self):
+        # Check runs belong to a commit: auditing the clean branch must still
+        # fail while a denylisted branch name points at the same head.
+        self.commit("clean.txt", b"clean", "clean change")
+        head = self.oid()
+        event = self.root / "event.json"
+        event.write_text(json.dumps({"pull_request": {"head": {"sha": head, "ref": "clean-topic"}}}))
+        env = dict(GITHUB_EVENT_PATH=str(event), GITHUB_EVENT_NAME="pull_request_target",
+                   GITHUB_SHA=self.base, GITHUB_REPOSITORY="example/repository", HISTORY_PRIVACY_HMAC_KEY=KEY)
+        real_git, real_scan = guard.git, guard.scan
+        for twin, should_pass in (("other-topic", True), (REMOVED.decode(), False)):
+            def fetch_fixture(repo, *args, **kwargs):
+                if "ls-remote" in args:
+                    lines = (head + "\trefs/heads/clean-topic", head + "\trefs/heads/" + twin,
+                             self.base + "\trefs/heads/main")
+                    return ("\n".join(lines) + "\n").encode()
+                return b""
+            def inspect_fixture(repo, policy, heads, excludes, refs):
+                with patch.object(guard, "git", real_git):
+                    return real_scan(self.repo, policy, heads, excludes, refs)
+            with self.subTest(twin=twin), patch.dict(os.environ, env), \
+                    patch.object(guard, "git", side_effect=fetch_fixture), \
+                    patch.object(guard, "scan", side_effect=inspect_fixture), \
+                    patch.object(guard, "api", return_value={"id": 123}) as api, \
+                    contextlib.redirect_stdout(io.StringIO()):
+                if should_pass:
+                    guard.ci(self.policy_path)
+                else:
+                    with self.assertRaises(guard.PrivacyError):
+                        guard.ci(self.policy_path)
+                self.assertEqual(api.call_args_list[0].args[2]["head_sha"], head)
+                self.assertEqual(api.call_args_list[-1].args[2]["conclusion"], "success" if should_pass else "failure")
 
     def test_incoming_program_is_never_executed(self):
         marker = self.root / "should-not-exist"
