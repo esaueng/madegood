@@ -10,9 +10,12 @@ import WaterKit
 /// At the end the workout is saved to Apple Health with its route and heart rate, or
 /// discarded, per the sport's setting (`UserSettings.savesWorkout`). The raw recording is
 /// kept either way.
+///
+/// A countdown can `prepare` the session first: it stays in its prepared state (sensors
+/// on, the app kept running with the wrist down, nothing collected) until `start` begins
+/// the same session, or `cancel` ends it.
 final class WorkoutSource: NSObject, HKWorkoutSessionDelegate, HKLiveWorkoutBuilderDelegate, Sendable {
     private let store: HKHealthStore
-    private let writer: RawStreamWriter
     private let lastHeartRateDate = Mutex<Date?>(nil)
     private let state = Mutex<(session: HKWorkoutSession?, builder: HKLiveWorkoutBuilder?)>((nil, nil))
     private let route = Mutex<HKWorkoutRouteBuilder?>(nil)
@@ -23,17 +26,13 @@ final class WorkoutSource: NSObject, HKWorkoutSessionDelegate, HKLiveWorkoutBuil
     /// Called (on an arbitrary queue) if the workout fails or ends without `stop`, which
     /// means the app no longer has guaranteed background time.
     private let onInterruption: @Sendable (String) -> Void
-    /// Receives every heart-rate line written, on an arbitrary queue, for live analysis.
-    private let onHeartRate: @Sendable (RawFormat.HRLine) -> Void
+    /// Where heart rate goes once `start` has run: the raw writer, and a callback (on an
+    /// arbitrary queue) for live analysis.
+    private let heartRateSink = Mutex<(writer: RawStreamWriter, onHeartRate: @Sendable (RawFormat.HRLine) -> Void)?>(nil)
 
-    init(
-        store: HKHealthStore, writer: RawStreamWriter, onInterruption: @escaping @Sendable (String) -> Void,
-        onHeartRate: @escaping @Sendable (RawFormat.HRLine) -> Void = { _ in }
-    ) {
+    init(store: HKHealthStore, onInterruption: @escaping @Sendable (String) -> Void) {
         self.store = store
-        self.writer = writer
         self.onInterruption = onInterruption
-        self.onHeartRate = onHeartRate
     }
 
     static var isAvailable: Bool { HKHealthStore.isHealthDataAvailable() }
@@ -44,7 +43,63 @@ final class WorkoutSource: NSObject, HKWorkoutSessionDelegate, HKLiveWorkoutBuil
             toShare: [HKObjectType.workoutType(), HKSeriesType.workoutRoute()], read: [heartRate])
     }
 
-    func start(sport: Sport, at date: Date) async throws {
+    /// Creates the session for `sport` and moves it to the prepared state, for a countdown.
+    func prepare(sport: Sport) throws {
+        let (session, builder) = try makeSession(sport: sport)
+        state.withLock { $0 = (session, builder) }
+        session.prepare()
+    }
+
+    /// Begins the workout: the prepared session if there is a usable one for `sport`,
+    /// otherwise a new one. Heart rate goes to `writer` and `onHeartRate` from here on.
+    func start(
+        sport: Sport, at date: Date, writer: RawStreamWriter,
+        onHeartRate: @escaping @Sendable (RawFormat.HRLine) -> Void = { _ in }
+    ) async throws {
+        heartRateSink.withLock { $0 = (writer, onHeartRate) }
+        let activityType = Self.activityType(for: sport)
+        let prepared = state.withLock { state -> (HKWorkoutSession, HKLiveWorkoutBuilder)? in
+            guard let session = state.session, let builder = state.builder,
+                Self.canStart(session.state), session.workoutConfiguration.activityType == activityType
+            else { return nil }
+            return (session, builder)
+        }
+        let (session, builder): (HKWorkoutSession, HKLiveWorkoutBuilder)
+        if let prepared {
+            (session, builder) = prepared
+        } else {
+            // A prepared session that ended (or is for another sport) can't be started.
+            let stale = state.withLock { state in
+                let current = state.session
+                state = (nil, nil)
+                return current
+            }
+            stale?.end()
+            (session, builder) = try makeSession(sport: sport)
+            state.withLock { $0 = (session, builder) }
+        }
+        route.withLock { $0 = HKWorkoutRouteBuilder(healthStore: store, device: nil) }
+
+        session.startActivity(with: date)
+        try await builder.beginCollection(at: date)
+    }
+
+    /// Ends a session that was prepared but never started. Nothing is saved.
+    func cancel() {
+        let session = state.withLock { state in
+            let current = state.session
+            state = (nil, nil)
+            return current
+        }
+        session?.end()
+    }
+
+    /// Only a session that has not run yet can start (`startActivity`).
+    static func canStart(_ state: HKWorkoutSessionState) -> Bool {
+        state == .notStarted || state == .prepared
+    }
+
+    private func makeSession(sport: Sport) throws -> (HKWorkoutSession, HKLiveWorkoutBuilder) {
         let configuration = HKWorkoutConfiguration()
         configuration.activityType = Self.activityType(for: sport)
         configuration.locationType = .outdoor
@@ -54,11 +109,7 @@ final class WorkoutSource: NSObject, HKWorkoutSessionDelegate, HKLiveWorkoutBuil
         builder.dataSource = HKLiveWorkoutDataSource(healthStore: store, workoutConfiguration: configuration)
         session.delegate = self
         builder.delegate = self
-        state.withLock { $0 = (session, builder) }
-        route.withLock { $0 = HKWorkoutRouteBuilder(healthStore: store, device: nil) }
-
-        session.startActivity(with: date)
-        try await builder.beginCollection(at: date)
+        return (session, builder)
     }
 
     /// Adds accepted positions to the workout route (inserted in the background).
@@ -167,27 +218,33 @@ final class WorkoutSource: NSObject, HKWorkoutSessionDelegate, HKLiveWorkoutBuil
             last = interval.start
             return true
         }
-        guard isNew else { return }
+        guard isNew, let sink = heartRateSink.withLock({ $0 }) else { return }
         let bpm = quantity.doubleValue(for: HKUnit.count().unitDivided(by: .minute()))
         let line = RawFormat.HRLine(ts: interval.start.timeIntervalSince1970, bpm: bpm)
-        writer.append(line)
-        onHeartRate(line)
+        sink.writer.append(line)
+        sink.onHeartRate(line)
     }
 
     nonisolated func workoutBuilderDidCollectEvent(_ workoutBuilder: HKLiveWorkoutBuilder) {}
 
     // MARK: HKWorkoutSessionDelegate
 
+    /// Callbacks from a session that was replaced, cancelled or stopped are not interruptions.
+    private nonisolated func isCurrent(_ session: HKWorkoutSession) -> Bool {
+        state.withLock { $0.session === session }
+    }
+
     nonisolated func workoutSession(
         _ workoutSession: HKWorkoutSession, didChangeTo toState: HKWorkoutSessionState,
         from fromState: HKWorkoutSessionState, date: Date
     ) {
-        guard toState == .ended || toState == .stopped, !isStopping.withLock({ $0 }) else { return }
+        guard toState == .ended || toState == .stopped, !isStopping.withLock({ $0 }), isCurrent(workoutSession)
+        else { return }
         onInterruption("The workout session ended unexpectedly.")
     }
 
     nonisolated func workoutSession(_ workoutSession: HKWorkoutSession, didFailWithError error: any Error) {
-        guard !isStopping.withLock({ $0 }) else { return }
+        guard !isStopping.withLock({ $0 }), isCurrent(workoutSession) else { return }
         onInterruption("The workout session failed: \(error.localizedDescription)")
     }
 }

@@ -62,6 +62,11 @@ final class SessionRecorder {
     private var motion: MotionSource?
     private var heading: HeadingSource?
     private var workout: WorkoutSource?
+    /// The workout session held in its prepared state during a countdown; `start` begins it.
+    private var prepared: (sport: Sport, workout: WorkoutSource)?
+    /// Identifies the latest `prepare` call, so one that finishes after a cancel or start
+    /// does not leave a session behind.
+    private var prepareID: UUID?
     private var serviceSession: CLServiceSession?
     #if os(iOS)
         private var backgroundActivity: CLBackgroundActivitySession?
@@ -98,9 +103,55 @@ final class SessionRecorder {
 
     // MARK: Start
 
+    /// For a countdown: puts a workout session for `sport` into its prepared state, which
+    /// keeps the watch app running (and its countdown haptics on time) with the wrist
+    /// down. `start` begins this session; `cancelPrepared` ends it.
+    func prepare(sport: Sport) async {
+        guard state == .idle, WorkoutSource.isAvailable, !DemoFeed.isEnabled else { return }
+        cancelPrepared()
+        let id = UUID()
+        prepareID = id
+        // Asks for Health access before the start, so the prompt never delays it.
+        try? await WorkoutSource.requestAuthorization(store: healthStore)
+        guard prepareID == id, state == .idle else { return }
+        prepareID = nil
+        let workout = makeWorkout()
+        do {
+            try workout.prepare(sport: sport)
+            prepared = (sport, workout)
+        } catch {
+            // Not fatal: `start` creates the session itself.
+            print("SessionRecorder: preparing the workout failed: \(error)")
+        }
+    }
+
+    /// Ends a prepared workout session (the countdown was cancelled).
+    func cancelPrepared() {
+        prepareID = nil
+        prepared?.workout.cancel()
+        prepared = nil
+    }
+
+    /// The prepared workout if it is for `sport`; any other is ended.
+    private func takePrepared(for sport: Sport) -> WorkoutSource? {
+        prepareID = nil
+        guard let prepared else { return nil }
+        self.prepared = nil
+        if prepared.sport == sport { return prepared.workout }
+        prepared.workout.cancel()
+        return nil
+    }
+
+    private func makeWorkout() -> WorkoutSource {
+        WorkoutSource(store: healthStore) { [weak self] message in
+            Task { @MainActor in await self?.workoutInterrupted(message) }
+        }
+    }
+
     func start(sport: Sport) async {
         guard state == .idle else { return }
         state = .starting
+        let preparedWorkout = takePrepared(for: sport)
         startupInterruption = nil
         lastError = nil
         counts = Counts()
@@ -126,6 +177,7 @@ final class SessionRecorder {
         } catch {
             lastError = "Could not create the recording folder: \(error.localizedDescription)"
             RecordingTransfer.shared.markActive(folder, false)
+            preparedWorkout?.cancel()
             state = .idle
             return
         }
@@ -155,16 +207,11 @@ final class SessionRecorder {
 
         // A workout session keeps the app running with the screen off (watch and iPhone).
         if WorkoutSource.isAvailable, !demo, let hrWriter = writers[.hr] {
-            let workout = WorkoutSource(
-                store: healthStore, writer: hrWriter,
-                onInterruption: { [weak self] message in
-                    Task { @MainActor in await self?.workoutInterrupted(message) }
-                },
-                onHeartRate: { [weak self] line in
-                    Task { @MainActor in self?.ingestHeartRate(line, session: sessionId) }
-                })
+            let workout = preparedWorkout ?? makeWorkout()
             do {
-                try await workout.start(sport: sport, at: startedAt)
+                try await workout.start(sport: sport, at: startedAt, writer: hrWriter) { [weak self] line in
+                    Task { @MainActor in self?.ingestHeartRate(line, session: sessionId) }
+                }
                 if let message = startupInterruption {
                     // It failed while starting; don't rely on it.
                     await workout.stop(at: Date())
@@ -173,6 +220,7 @@ final class SessionRecorder {
                     self.workout = workout
                 }
             } catch {
+                workout.cancel()
                 lastError = "Workout session failed: \(error.localizedDescription)"
             }
         }
