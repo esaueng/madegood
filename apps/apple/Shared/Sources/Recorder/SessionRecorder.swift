@@ -5,7 +5,8 @@ import Observation
 import WaterKit
 
 /// Records a raw session (docs/formats.md) on whichever device runs it: GPS, 100 Hz
-/// device motion, heart rate, heading, clock anchors, and manual marks.
+/// device motion, heart rate, heading, clock anchors, and manual events. GPS and heart
+/// rate also feed WaterKit's `SessionEngine` for the live metrics on screen.
 @MainActor
 @Observable
 final class SessionRecorder {
@@ -29,8 +30,21 @@ final class SessionRecorder {
     static let flushInterval: Duration = .seconds(5)
     static let clockAnchorInterval: Duration = .seconds(60)
 
+    /// A position for the live map.
+    struct TrackPoint: Equatable {
+        var latitude: Double
+        var longitude: Double
+    }
+
+    /// The live map keeps at most this many points, thinning older ones evenly.
+    static let maxTrackPoints = 2_000
+
     private(set) var state: State = .idle
     private(set) var counts = Counts()
+    /// Live metrics while recording; after a stop, the final values for the summary.
+    private(set) var metrics: LiveMetrics?
+    /// Accepted positions for the live map, oldest first.
+    private(set) var trackPoints: [TrackPoint] = []
     private(set) var lastError: String?
     /// Called with the session folder after a recording stops.
     var onFinish: ((URL) -> Void)?
@@ -51,6 +65,11 @@ final class SessionRecorder {
     /// A workout failure reported while `start()` was still running.
     private var startupInterruption: String?
     private var clockObserver: (any NSObjectProtocol)?
+    private var engine: SessionEngine?
+    /// Unix time of the session start; engine times are seconds since it.
+    private var startUnix = 0.0
+    /// How many of the engine's generated events are already in events.ndjson.
+    private var writtenGeneratedEvents = 0
 
     var isRecording: Bool {
         if case .recording = state { true } else { false }
@@ -98,6 +117,11 @@ final class SessionRecorder {
             requestedRates: ["gps": 1, "motion": Self.motionRate])
         self.meta = meta
         writeMeta()
+        engine = SessionEngine(sport: sport)
+        startUnix = anchor.unix
+        writtenGeneratedEvents = 0
+        metrics = engine?.snapshot
+        trackPoints = []
 
         let writers = Dictionary(
             uniqueKeysWithValues: RawFormat.Stream.allCases.map { ($0, RawStreamWriter(stream: $0, folder: folder)) })
@@ -105,9 +129,14 @@ final class SessionRecorder {
 
         // A workout session keeps the app running with the screen off (watch and iPhone).
         if WorkoutSource.isAvailable, let hrWriter = writers[.hr] {
-            let workout = WorkoutSource(store: healthStore, writer: hrWriter) { [weak self] message in
-                Task { @MainActor in await self?.workoutInterrupted(message) }
-            }
+            let workout = WorkoutSource(
+                store: healthStore, writer: hrWriter,
+                onInterruption: { [weak self] message in
+                    Task { @MainActor in await self?.workoutInterrupted(message) }
+                },
+                onHeartRate: { [weak self] line in
+                    Task { @MainActor in self?.ingestHeartRate(line) }
+                })
             do {
                 try await workout.start(sport: sport, at: startedAt)
                 if let message = startupInterruption {
@@ -137,7 +166,9 @@ final class SessionRecorder {
         #endif
 
         if let writer = writers[.gps] {
-            let location = LocationSource(writer: writer)
+            let location = LocationSource(writer: writer) { [weak self] line in
+                Task { @MainActor in self?.ingestFix(line) }
+            }
             location.start()
             self.location = location
         }
@@ -164,6 +195,8 @@ final class SessionRecorder {
 
     /// Undoes a start that cannot continue: nothing has been recorded yet.
     private func abandonStart(folder: URL) {
+        engine = nil
+        metrics = nil
         writers = [:]
         meta = nil
         self.folder = nil
@@ -196,6 +229,68 @@ final class SessionRecorder {
         guard isRecording else { return }
         writers[.events]?.append(RawFormat.EventLine(ts: Date().timeIntervalSince1970, type: .mark))
         counts.marks += 1
+    }
+
+    func lap() { userEvent(.lap) }
+
+    func pause() { userEvent(.pause) }
+
+    func resume() { userEvent(.resume) }
+
+    var isPaused: Bool {
+        switch metrics?.pauseState {
+        case .autoPaused, .manuallyPaused: true
+        case .moving, nil: false
+        }
+    }
+
+    private func userEvent(_ type: EventType) {
+        guard isRecording else { return }
+        let now = Date().timeIntervalSince1970
+        writers[.events]?.append(RawFormat.EventLine(ts: now, type: type))
+        ingest(.event(SessionEvent(t: now - startUnix, type: type)))
+    }
+
+    // MARK: Live analysis
+
+    private func ingestFix(_ line: RawFormat.GPSLine) {
+        guard isRecording, let before = engine?.snapshot.acceptedFixes else { return }
+        let fix = GPSFix(
+            t: line.ts - startUnix, latitude: line.lat, longitude: line.lon, altitude: line.alt,
+            horizontalAccuracy: line.hacc, verticalAccuracy: line.vacc, speed: line.spd,
+            speedAccuracy: line.spdacc, course: line.crs, courseAccuracy: line.crsacc)
+        ingest(.gps(fix))
+        if let after = engine?.snapshot.acceptedFixes, after > before {
+            appendTrackPoint(TrackPoint(latitude: line.lat, longitude: line.lon))
+        }
+    }
+
+    private func ingestHeartRate(_ line: RawFormat.HRLine) {
+        guard isRecording else { return }
+        ingest(.hr(HRSample(t: line.ts - startUnix, bpm: line.bpm)))
+    }
+
+    /// Feeds the engine, stores any events it generated, and publishes the new metrics.
+    private func ingest(_ sample: Sample) {
+        guard var engine else { return }
+        engine.ingest(sample)
+        let generated = engine.generatedEvents
+        for event in generated.dropFirst(writtenGeneratedEvents) {
+            writers[.events]?.append(
+                RawFormat.EventLine(ts: startUnix + event.t, type: event.type, data: event.data))
+        }
+        writtenGeneratedEvents = generated.count
+        self.engine = engine
+        metrics = engine.snapshot
+    }
+
+    private func appendTrackPoint(_ point: TrackPoint) {
+        trackPoints.append(point)
+        if trackPoints.count > Self.maxTrackPoints {
+            // Keep the newest point and every other older one.
+            let newest = trackPoints.removeLast()
+            trackPoints = trackPoints.enumerated().filter { $0.offset.isMultiple(of: 2) }.map(\.element) + [newest]
+        }
     }
 
     private func startLoops() {
@@ -262,6 +357,7 @@ final class SessionRecorder {
         serviceSession?.invalidate()
         serviceSession = nil
 
+        ingest(.event(SessionEvent(t: endedAt.timeIntervalSince1970 - startUnix, type: .stop)))
         writers[.events]?.append(RawFormat.EventLine(ts: endedAt.timeIntervalSince1970, type: .stop))
         writeClockAnchor()
         refreshCounts()
@@ -288,6 +384,7 @@ final class SessionRecorder {
         heading = nil
         workout = nil
         self.writers = [:]
+        engine = nil
         meta = nil
         self.folder = nil
         state = .idle

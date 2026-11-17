@@ -89,10 +89,23 @@ private struct RecordControls: View {
                             .font(.title2.monospacedDigit().bold())
                     }
                 }
+                LiveMetricsGrid(metrics: recorder.metrics, display: .standard(for: sport))
                 CountsGrid(counts: recorder.counts)
                 if let error = recorder.lastError {
                     Text(error).font(.footnote).foregroundStyle(.orange)
                 }
+            }
+            Button {
+                if recorder.isPaused { recorder.resume() } else { recorder.pause() }
+            } label: {
+                Label(
+                    recorder.isPaused ? "Resume" : "Pause",
+                    systemImage: recorder.isPaused ? "play.circle" : "pause.circle")
+            }
+            Button {
+                recorder.lap()
+            } label: {
+                Label("Lap", systemImage: "stopwatch")
             }
             Button {
                 recorder.mark()
@@ -105,6 +118,35 @@ private struct RecordControls: View {
                 Label("Stop", systemImage: "stop.circle")
             }
         }
+    }
+}
+
+/// Live session metrics from the engine, in display units.
+private struct LiveMetricsGrid: View {
+    let metrics: LiveMetrics?
+    let display: LiveDisplay
+
+    var body: some View {
+        Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 4) {
+            GridRow {
+                Text(display.speed(metrics?.speed)).font(.largeTitle.monospacedDigit().bold())
+                    .gridCellColumns(2)
+            }
+            GridRow {
+                Text("Distance \(display.distance(metrics?.distance ?? 0))")
+                Text("Avg \(display.speed(metrics?.averageSpeed))")
+            }
+            GridRow {
+                Text("Max 10 s \(display.speed(metrics?.maxSpeed10s))")
+                Text("HR \(LiveDisplay.heartRate(metrics?.heartRate))")
+            }
+            if let state = metrics?.pauseState, let label = LiveDisplay.pauseLabel(state) {
+                GridRow {
+                    Text(label).foregroundStyle(.yellow).gridCellColumns(2)
+                }
+            }
+        }
+        .font(.subheadline.monospacedDigit())
     }
 }
 

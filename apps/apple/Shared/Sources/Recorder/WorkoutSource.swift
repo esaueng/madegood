@@ -17,11 +17,17 @@ final class WorkoutSource: NSObject, HKWorkoutSessionDelegate, HKLiveWorkoutBuil
     /// Called (on an arbitrary queue) if the workout fails or ends without `stop`, which
     /// means the app no longer has guaranteed background time.
     private let onInterruption: @Sendable (String) -> Void
+    /// Receives every heart-rate line written, on an arbitrary queue, for live analysis.
+    private let onHeartRate: @Sendable (RawFormat.HRLine) -> Void
 
-    init(store: HKHealthStore, writer: RawStreamWriter, onInterruption: @escaping @Sendable (String) -> Void) {
+    init(
+        store: HKHealthStore, writer: RawStreamWriter, onInterruption: @escaping @Sendable (String) -> Void,
+        onHeartRate: @escaping @Sendable (RawFormat.HRLine) -> Void = { _ in }
+    ) {
         self.store = store
         self.writer = writer
         self.onInterruption = onInterruption
+        self.onHeartRate = onHeartRate
     }
 
     static var isAvailable: Bool { HKHealthStore.isHealthDataAvailable() }
@@ -91,7 +97,9 @@ final class WorkoutSource: NSObject, HKWorkoutSessionDelegate, HKLiveWorkoutBuil
         }
         guard isNew else { return }
         let bpm = quantity.doubleValue(for: HKUnit.count().unitDivided(by: .minute()))
-        writer.append(RawFormat.HRLine(ts: interval.start.timeIntervalSince1970, bpm: bpm))
+        let line = RawFormat.HRLine(ts: interval.start.timeIntervalSince1970, bpm: bpm)
+        writer.append(line)
+        onHeartRate(line)
     }
 
     nonisolated func workoutBuilderDidCollectEvent(_ workoutBuilder: HKLiveWorkoutBuilder) {}
