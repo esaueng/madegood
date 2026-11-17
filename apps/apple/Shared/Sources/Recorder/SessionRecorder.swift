@@ -363,17 +363,16 @@ final class SessionRecorder {
     private func startDemoFeed(session: UUID) {
         loops.append(
             Task { [weak self] in
-                var second = 1
                 while !Task.isCancelled {
                     try? await Task.sleep(for: .seconds(1))
                     guard let self, self.isRecording else { return }
-                    let fix = DemoFeed.fix(second: second, startUnix: self.startUnix)
-                    let hr = DemoFeed.heartRate(second: second, startUnix: self.startUnix)
+                    let now = Date().timeIntervalSince1970
+                    let fix = DemoFeed.fix(at: now, startUnix: self.startUnix)
+                    let hr = DemoFeed.heartRate(at: now, startUnix: self.startUnix)
                     self.writers[.gps]?.append(fix)
                     self.writers[.hr]?.append(hr)
                     self.ingestFix(fix, session: session)
                     self.ingestHeartRate(hr, session: session)
-                    second += 1
                 }
             })
     }
