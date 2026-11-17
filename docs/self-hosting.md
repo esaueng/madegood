@@ -48,6 +48,22 @@ pnpm exec wrangler d1 migrations apply DB --remote --env preview
 CLOUDFLARE_ENV=preview pnpm deploy
 ```
 
+## How the main deployment works
+
+The project's own deployment (`madegood.esau.workers.dev`, previews on
+`madegood-preview`) runs from `.github/workflows/deploy.yml`:
+
+- Each pull request that touches `web/` uploads a preview version of
+  `madegood-preview` at `pr-<number>-madegood-preview.<subdomain>.workers.dev` and
+  links it in a comment. Previews use the preview database and bucket.
+- Each push to `main` that touches `web/` applies migrations and deploys production.
+
+The workflow needs the `CLOUDFLARE_API_TOKEN` secret (Workers Scripts and D1 edit on
+the account) and the repository variables `CLOUDFLARE_ACCOUNT_ID`, `D1_DATABASE_ID`
+and `D1_PREVIEW_DATABASE_ID`. `scripts/cloudflare-config` writes the IDs into the
+runner's copy of `wrangler.jsonc`; the repository keeps the placeholders. A fork can
+use the same workflow with its own secret and variables.
+
 ## Database migrations
 
 - The schema lives in `web/src/server/db/schema.ts` (Drizzle).
