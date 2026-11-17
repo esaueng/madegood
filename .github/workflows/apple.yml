@@ -48,7 +48,9 @@ jobs:
           tuist version
 
       - name: Generate Xcode project
-        run: tuist generate --no-open
+        run: |
+          tuist install
+          tuist generate --no-open
 
       - name: Check both apps compile in Swift 6 mode
         run: |
