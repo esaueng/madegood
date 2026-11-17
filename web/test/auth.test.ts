@@ -1,6 +1,12 @@
 import { env } from "cloudflare:workers";
+import { drizzle } from "drizzle-orm/d1";
 import { decodeJwt } from "jose";
 import { describe, expect, it } from "vitest";
+import {
+  consumeRefreshToken,
+  hashRefreshToken,
+  revokeAllRefreshTokens,
+} from "../src/server/auth/tokens";
 import { forgerKey, identityToken, jwksRequests, postJson, type SignIn, signIn } from "./apple";
 
 describe("POST /api/auth/apple", () => {
@@ -129,6 +135,54 @@ describe("POST /api/auth/refresh", () => {
       expect(response.status).toBe(401);
       expect(await response.json()).toMatchObject({ error: "refresh_token_reused" });
     }
+  });
+
+  // Regression test from review of #36: request A reads a token, request B reuses the
+  // same token and revokes everything, then A writes. A must not get a live successor.
+  it("issues no successor when reuse revocation lands between read and write", async () => {
+    const session = await signIn({
+      identityToken: await identityToken({ sub: "001234.race.0001" }),
+    });
+    const db = drizzle(env.DB);
+    const row = await env.DB.prepare(
+      "select id, user_id as userId from refresh_tokens where token_hash = ?",
+    )
+      .bind(await hashRefreshToken(session.refreshToken))
+      .first<{ id: string; userId: string }>();
+    expect(row).not.toBeNull();
+    if (!row) return;
+
+    await revokeAllRefreshTokens(db, session.user.id); // B detects reuse
+    expect(await consumeRefreshToken(db, row)).toBeNull(); // A's write comes after
+
+    const live = await env.DB.prepare(
+      "select count(*) as n from refresh_tokens where user_id = ? and revoked_at is null",
+    )
+      .bind(session.user.id)
+      .first<{ n: number }>();
+    expect(live?.n).toBe(0);
+  });
+
+  it("consumes a token and stores its successor atomically", async () => {
+    const session = await signIn();
+    const db = drizzle(env.DB);
+    const row = await env.DB.prepare(
+      "select id, user_id as userId from refresh_tokens where token_hash = ?",
+    )
+      .bind(await hashRefreshToken(session.refreshToken))
+      .first<{ id: string; userId: string }>();
+    if (!row) throw new Error("no refresh token row");
+
+    const successor = await consumeRefreshToken(db, row);
+    expect(successor).not.toBeNull();
+    // The same row cannot be consumed twice.
+    expect(await consumeRefreshToken(db, row)).toBeNull();
+    const stored = await env.DB.prepare(
+      "select revoked_at as revokedAt from refresh_tokens where token_hash = ?",
+    )
+      .bind(await hashRefreshToken(successor ?? ""))
+      .first<{ revokedAt: number | null }>();
+    expect(stored).toEqual({ revokedAt: null });
   });
 
   it("rejects unknown and expired tokens", async () => {

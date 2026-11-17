@@ -67,7 +67,7 @@ export async function hashRefreshToken(token: string): Promise<string> {
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-type Db = DrizzleD1Database<Record<string, unknown>>;
+type Db = DrizzleD1Database<Record<string, unknown>> & { $client: D1Database };
 
 /** Creates a random 256-bit refresh token; only its SHA-256 hash is stored. */
 export async function issueRefreshToken(db: Db, userId: string, now = Date.now()) {
@@ -112,23 +112,48 @@ export async function rotateRefreshToken(
   }
   if (row.expiresAt <= now) return { ok: false, reason: "invalid" };
 
-  // Conditional on still being unrevoked, so two concurrent uses of the same token can't
-  // both succeed: the loser is treated as reuse.
-  const revoked = await db
-    .update(refreshTokens)
-    .set({ revokedAt: now })
-    .where(and(eq(refreshTokens.id, row.id), isNull(refreshTokens.revokedAt)))
-    .returning({ id: refreshTokens.id });
-  if (revoked.length === 0) {
+  const successor = await consumeRefreshToken(db, row, now);
+  if (successor === null) {
+    // Another request used or revoked this token after we read it: treat it as reuse.
     await revokeAllRefreshTokens(db, row.userId, now);
     return { ok: false, reason: "reused" };
   }
+  return { ok: true, userId: row.userId, refreshToken: successor };
+}
 
-  return {
-    ok: true,
-    userId: row.userId,
-    refreshToken: await issueRefreshToken(db, row.userId, now),
-  };
+/**
+ * Revokes `row` and issues its successor in one D1 batch (a single transaction), and only
+ * if `row` was still unrevoked at that moment. Returns the new token, or null when it was
+ * already used or revoked.
+ *
+ * Two separate writes are not enough (review of #36): request A revokes the token, request
+ * B with the same token sees reuse and revokes every token of the user, and then A inserts
+ * an unrevoked successor, so a stolen token would survive reuse detection. Inside the batch
+ * nothing can run between the two statements, and the insert happens only when the update
+ * changed a row. Exported for the test that forces that interleaving.
+ */
+export async function consumeRefreshToken(
+  db: Db,
+  row: { id: string; userId: string },
+  now = Date.now(),
+): Promise<string | null> {
+  const token = base64url(crypto.getRandomValues(new Uint8Array(32)));
+  const tokenHash = await hashRefreshToken(token);
+  // Plain D1 statements: Drizzle's batch has no raw INSERT ... SELECT, and the two must
+  // share one batch. changes() is the row count of the update just before it.
+  const d1 = db.$client;
+  const [revoked] = await d1.batch([
+    d1
+      .prepare("UPDATE refresh_tokens SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL")
+      .bind(now, row.id),
+    d1
+      .prepare(
+        `INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at, created_at)
+         SELECT ?, ?, ?, ?, ? WHERE changes() = 1`,
+      )
+      .bind(crypto.randomUUID(), row.userId, tokenHash, now + REFRESH_TOKEN_TTL_MS, now),
+  ]);
+  return revoked?.meta.changes === 1 ? token : null;
 }
 
 export async function revokeAllRefreshTokens(db: Db, userId: string, now = Date.now()) {
