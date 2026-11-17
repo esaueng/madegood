@@ -8,6 +8,7 @@ enum UserSettings {
         static let speedUnit = "settings.speedUnit"
         static let distanceUnit = "settings.distanceUnit"
         static func autoPause(_ sport: Sport) -> String { "settings.autoPause.\(sport.rawValue)" }
+        static func saveWorkout(_ sport: Sport) -> String { "settings.saveWorkout.\(sport.rawValue)" }
     }
 
     /// Stored value for "use the sport's default".
@@ -24,6 +25,14 @@ enum UserSettings {
             display.distance = unit
         }
         return display
+    }
+
+    /// Whether sessions of this sport are saved to Apple Health (off for motorboating
+    /// unless the user turns it on, PLAN §5).
+    static func savesWorkout(for sport: Sport) -> Bool {
+        defaults.object(forKey: Key.saveWorkout(sport)) == nil
+            ? SportProfile.standard(for: sport).savesWorkoutByDefault
+            : defaults.bool(forKey: Key.saveWorkout(sport))
     }
 
     /// The sport's engine profile with the user's auto-pause choice applied.

@@ -16,6 +16,7 @@ struct WatchContentView: View {
         let id = UUID()
         let sport: Sport
         let metrics: LiveMetrics
+        var savedToHealth = false
     }
 
     var body: some View {
@@ -54,7 +55,7 @@ struct WatchContentView: View {
         .onAppear {
             recorder.onFinish = { folder in
                 if let sport = Sport(rawValue: lastSportRaw), let metrics = recorder.metrics {
-                    summary = Summary(sport: sport, metrics: metrics)
+                    summary = Summary(sport: sport, metrics: metrics, savedToHealth: recorder.savedToHealth)
                 }
                 RecordingTransfer.shared.send(folder: folder)
                 reload()
@@ -366,6 +367,11 @@ private struct SummaryView: View {
                 Field(label: "Avg HR", value: LiveDisplay.heartRate(metrics.heartRateAverage))
                 if !metrics.laps.isEmpty {
                     Field(label: "Laps", value: "\(metrics.laps.count + 1)")
+                }
+                if summary.savedToHealth {
+                    Label("Saved to Health", systemImage: "heart.fill")
+                        .font(.footnote)
+                        .foregroundStyle(.pink)
                 }
                 Button("Done") { dismiss() }
                     .padding(.top, 6)

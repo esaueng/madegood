@@ -1,3 +1,4 @@
+import CoreLocation
 import Foundation
 import HealthKit
 import Synchronization
@@ -6,13 +7,15 @@ import WaterKit
 /// Runs an `HKWorkoutSession` so the app keeps recording in the background (and the watch
 /// keeps its sensors on), and logs heart rate from the live workout builder.
 ///
-/// The raw recorder discards the workout at the end: Phase 0 recordings are for algorithm
-/// work and should not appear in the Health app. Saving workouts arrives in Phase 1.
+/// At the end the workout is saved to Apple Health with its route and heart rate, or
+/// discarded, per the sport's setting (`UserSettings.savesWorkout`). The raw recording is
+/// kept either way.
 final class WorkoutSource: NSObject, HKWorkoutSessionDelegate, HKLiveWorkoutBuilderDelegate, Sendable {
     private let store: HKHealthStore
     private let writer: RawStreamWriter
     private let lastHeartRateDate = Mutex<Date?>(nil)
     private let state = Mutex<(session: HKWorkoutSession?, builder: HKLiveWorkoutBuilder?)>((nil, nil))
+    private let route = Mutex<HKWorkoutRouteBuilder?>(nil)
     private let isStopping = Mutex(false)
     /// Called (on an arbitrary queue) if the workout fails or ends without `stop`, which
     /// means the app no longer has guaranteed background time.
@@ -34,7 +37,8 @@ final class WorkoutSource: NSObject, HKWorkoutSessionDelegate, HKLiveWorkoutBuil
 
     static func requestAuthorization(store: HKHealthStore) async throws {
         let heartRate = HKQuantityType(.heartRate)
-        try await store.requestAuthorization(toShare: [HKObjectType.workoutType()], read: [heartRate])
+        try await store.requestAuthorization(
+            toShare: [HKObjectType.workoutType(), HKSeriesType.workoutRoute()], read: [heartRate])
     }
 
     func start(sport: Sport, at date: Date) async throws {
@@ -48,26 +52,59 @@ final class WorkoutSource: NSObject, HKWorkoutSessionDelegate, HKLiveWorkoutBuil
         session.delegate = self
         builder.delegate = self
         state.withLock { $0 = (session, builder) }
+        route.withLock { $0 = HKWorkoutRouteBuilder(healthStore: store, device: nil) }
 
         session.startActivity(with: date)
         try await builder.beginCollection(at: date)
     }
 
-    func stop(at date: Date) async {
+    /// Adds accepted positions to the workout route (inserted in the background).
+    func addRoute(_ locations: [CLLocation]) {
+        guard let builder = route.withLock({ $0 }), !locations.isEmpty else { return }
+        Task.detached {
+            do {
+                try await builder.insertRouteData(locations)
+            } catch {
+                print("WorkoutSource: route insert failed: \(error)")
+            }
+        }
+    }
+
+    /// Ends the workout and saves it (with route and heart rate) or discards it.
+    /// Returns whether a workout was saved to Health.
+    @discardableResult
+    func stop(at date: Date, save: Bool = false) async -> Bool {
         isStopping.withLock { $0 = true }
         let (session, builder) = state.withLock { state in
             let current = state
             state = (nil, nil)
             return current
         }
+        let routeBuilder = route.withLock { builder in
+            let current = builder
+            builder = nil
+            return current
+        }
         session?.end()
-        guard let builder else { return }
+        guard let builder else { return false }
         do {
             try await builder.endCollection(at: date)
         } catch {
             print("WorkoutSource: endCollection failed: \(error)")
         }
-        builder.discardWorkout()
+        guard save else {
+            builder.discardWorkout()
+            routeBuilder?.discard()
+            return false
+        }
+        do {
+            guard let workout = try await builder.finishWorkout() else { return false }
+            if let routeBuilder { try await routeBuilder.finishRoute(with: workout, metadata: nil) }
+            return true
+        } catch {
+            print("WorkoutSource: saving the workout failed: \(error)")
+            return false
+        }
     }
 
     static func activityType(for sport: Sport) -> HKWorkoutActivityType {

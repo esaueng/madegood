@@ -43,6 +43,8 @@ final class SessionRecorder {
     private(set) var counts = Counts()
     /// Live metrics while recording; after a stop, the final values for the summary.
     private(set) var metrics: LiveMetrics?
+    /// Whether the last session's workout was saved to Apple Health.
+    private(set) var savedToHealth = false
     /// Accepted positions for the live map, oldest first.
     private(set) var trackPoints: [TrackPoint] = []
     private(set) var lastError: String?
@@ -290,6 +292,7 @@ final class SessionRecorder {
         ingest(.gps(fix))
         if let after = engine?.snapshot.acceptedFixes, after > before {
             appendTrackPoint(TrackPoint(latitude: line.lat, longitude: line.lon))
+            workout?.addRoute([Self.location(line)])
             ManOverboard.shared.update(
                 ManOverboard.Position(
                     latitude: line.lat, longitude: line.lon, at: Date(timeIntervalSince1970: line.ts),
@@ -323,6 +326,14 @@ final class SessionRecorder {
         engine.advance(to: Date().timeIntervalSince1970 - startUnix)
         self.engine = engine
         metrics = engine.snapshot
+    }
+
+    static func location(_ line: RawFormat.GPSLine) -> CLLocation {
+        CLLocation(
+            coordinate: CLLocationCoordinate2D(latitude: line.lat, longitude: line.lon),
+            altitude: line.alt ?? 0, horizontalAccuracy: line.hacc ?? 0, verticalAccuracy: line.vacc ?? -1,
+            course: line.crs ?? -1, courseAccuracy: line.crsacc ?? -1, speed: line.spd ?? -1,
+            speedAccuracy: line.spdacc ?? -1, timestamp: Date(timeIntervalSince1970: line.ts))
     }
 
     private func appendTrackPoint(_ point: TrackPoint) {
@@ -406,6 +417,7 @@ final class SessionRecorder {
 
     func stop() async {
         guard isRecording else { return }
+        let stoppingSport: Sport? = if case .recording(_, _, let sport) = state { sport } else { nil }
         state = .stopping
         let endedAt = Date()
 
@@ -416,7 +428,8 @@ final class SessionRecorder {
         location?.stop()
         motion?.stop()
         heading?.stop()
-        await workout?.stop(at: endedAt)
+        savedToHealth =
+            await workout?.stop(at: endedAt, save: stoppingSport.map(UserSettings.savesWorkout) ?? false) ?? false
         #if os(iOS)
             backgroundActivity?.invalidate()
             backgroundActivity = nil
