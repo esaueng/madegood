@@ -87,6 +87,11 @@ final class WatchSessionUITests: XCTestCase {
         app.terminate()
         let relaunched = launchDemoApp()
         XCTAssertTrue(relaunched.buttons["mob.clear"].waitForExistence(timeout: 15))
+        // A new session can start while the mark is kept (review of #27).
+        relaunched.buttons["mob.newSession"].tap()
+        XCTAssertTrue(relaunched.buttons["sport.kayak"].waitForExistence(timeout: 10))
+        relaunched.navigationBars.buttons.firstMatch.tap()
+        XCTAssertTrue(relaunched.buttons["mob.clear"].waitForExistence(timeout: 10))
         relaunched.buttons["mob.clear"].tap()
         XCTAssertTrue(relaunched.buttons["sport.kayak"].waitForExistence(timeout: 10))
     }

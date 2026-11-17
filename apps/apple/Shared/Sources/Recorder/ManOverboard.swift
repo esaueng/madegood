@@ -24,9 +24,9 @@ final class ManOverboard {
         var markedAt: Date
         /// When the marked position was measured; earlier than `markedAt` if GPS was stale.
         var positionAt: Date
-
-        /// How old the position was when MOB was pressed, s.
-        var positionAge: TimeInterval { markedAt.timeIntervalSince(positionAt) }
+        /// How old the position was when MOB was pressed, s, measured on the monotonic
+        /// uptime clock so a change to the device clock cannot hide its age.
+        var positionAge: TimeInterval
     }
 
     struct Position: Equatable {
@@ -36,6 +36,9 @@ final class ManOverboard {
         /// Doppler speed, m/s, and course over ground, degrees true, when known.
         var speed: Double?
         var course: Double?
+        /// `ProcessInfo.systemUptime` when the position arrived. Freshness uses this, not
+        /// `at`: the wall clock can be set backward, uptime cannot.
+        var receivedUptime: TimeInterval = ProcessInfo.processInfo.systemUptime
     }
 
     struct Guidance: Equatable {
@@ -69,7 +72,8 @@ final class ManOverboard {
     func markNow(at now: Date = Date()) -> Mark? {
         guard let position else { return nil }
         let mark = Mark(
-            latitude: position.latitude, longitude: position.longitude, markedAt: now, positionAt: position.at)
+            latitude: position.latitude, longitude: position.longitude, markedAt: now, positionAt: position.at,
+            positionAge: age(of: position))
         set(mark)
         return mark
     }
@@ -79,15 +83,19 @@ final class ManOverboard {
         stopOwnUpdates()
     }
 
-    func isFresh(at now: Date = Date()) -> Bool {
+    func isFresh() -> Bool {
         guard let position else { return false }
-        return now.timeIntervalSince(position.at) <= Self.freshFor
+        return age(of: position) <= Self.freshFor
+    }
+
+    private func age(of position: Position) -> TimeInterval {
+        max(0, ProcessInfo.processInfo.systemUptime - position.receivedUptime)
     }
 
     /// Distance and arrow to the mark from a current position; nil when there is no mark
     /// or the position is stale, so the screen never shows guidance from an old fix.
-    func guidance(at now: Date = Date()) -> Guidance? {
-        guard let mark, let position, isFresh(at: now) else { return nil }
+    func guidance() -> Guidance? {
+        guard let mark, let position, isFresh() else { return nil }
         let distance = Geo.distance(
             lat1: position.latitude, lon1: position.longitude, lat2: mark.latitude, lon2: mark.longitude)
         let bearing = Geo.bearing(

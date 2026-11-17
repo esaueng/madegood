@@ -23,9 +23,20 @@ struct WatchContentView: View {
             switch recorder.state {
             case .idle where manOverboard.mark != nil:
                 // An active mark outlives the session (and relaunches) until cleared.
-                ManOverboardPage(manOverboard: manOverboard, sport: Sport(rawValue: lastSportRaw) ?? .sailing)
-                    .onAppear { manOverboard.startOwnUpdates() }
-                    .onDisappear { manOverboard.stopOwnUpdates() }
+                ManOverboardPage(
+                    manOverboard: manOverboard, sport: Sport(rawValue: lastSportRaw) ?? .sailing,
+                    newSession: {
+                        AnyView(
+                            SportPicker(
+                                recorder: recorder, waiting: waiting, lastSport: Sport(rawValue: lastSportRaw)
+                            ) { sport in
+                                lastSportRaw = sport.rawValue
+                                Task { await recorder.start(sport: sport) }
+                            })
+                    }
+                )
+                .onAppear { manOverboard.startOwnUpdates() }
+                .onDisappear { manOverboard.stopOwnUpdates() }
             case .idle:
                 SportPicker(recorder: recorder, waiting: waiting, lastSport: Sport(rawValue: lastSportRaw)) { sport in
                     lastSportRaw = sport.rawValue
@@ -265,41 +276,50 @@ private struct ControlsPage: View {
 struct ManOverboardPage: View {
     let manOverboard: ManOverboard
     let sport: Sport
+    /// Shown outside a session: lets the user record again without clearing the mark.
+    var newSession: (() -> AnyView)?
 
     var body: some View {
         let display = UserSettings.display(for: sport)
         TimelineView(.periodic(from: .now, by: 1)) { context in
-            VStack(spacing: 4) {
-                if let guidance = manOverboard.guidance(at: context.date) {
-                    Image(systemName: "location.north.fill")
-                        .font(.system(size: 44))
+            ScrollView {
+                VStack(spacing: 4) {
+                    let _ = context.date  // re-evaluate freshness every second
+                    if let guidance = manOverboard.guidance() {
+                        Image(systemName: "location.north.fill")
+                            .font(.system(size: 44))
+                            .foregroundStyle(.red)
+                            .rotationEffect(.degrees(guidance.arrow))
+                            .accessibilityLabel("Bearing \(Int(guidance.bearing.rounded())) degrees")
+                        Text(display.distance(guidance.distance))
+                            .font(.title2.weight(.semibold).monospacedDigit())
+                            .accessibilityIdentifier("mob.distance")
+                        Text(
+                            "Man overboard · \(Int(guidance.bearing.rounded()))°\(guidance.isCourseRelative ? "" : " true")"
+                        )
+                        .font(.footnote.weight(.semibold).monospacedDigit())
                         .foregroundStyle(.red)
-                        .rotationEffect(.degrees(guidance.arrow))
-                        .accessibilityLabel("Bearing \(Int(guidance.bearing.rounded())) degrees")
-                    Text(display.distance(guidance.distance))
-                        .font(.title2.weight(.semibold).monospacedDigit())
-                        .accessibilityIdentifier("mob.distance")
-                    Text(
-                        "Man overboard · \(Int(guidance.bearing.rounded()))°\(guidance.isCourseRelative ? "" : " true")"
-                    )
-                    .font(.footnote.weight(.semibold).monospacedDigit())
-                    .foregroundStyle(.red)
-                } else {
-                    Image(systemName: "location.slash").font(.title).foregroundStyle(.red)
-                    Text("Man overboard").font(.headline).foregroundStyle(.red)
-                    Text("Waiting for GPS").font(.footnote).foregroundStyle(.secondary)
-                        .accessibilityIdentifier("mob.waiting")
-                }
-                if let mark = manOverboard.mark {
-                    if mark.positionAge > ManOverboard.freshFor {
-                        Text("Marked from a fix \(Formatting.duration(mark.positionAge)) old")
-                            .font(.footnote)
-                            .foregroundStyle(.orange)
+                    } else {
+                        Image(systemName: "location.slash").font(.title).foregroundStyle(.red)
+                        Text("Man overboard").font(.headline).foregroundStyle(.red)
+                        Text("Waiting for GPS").font(.footnote).foregroundStyle(.secondary)
+                            .accessibilityIdentifier("mob.waiting")
                     }
-                    Text(mark.markedAt, style: .relative).font(.footnote).foregroundStyle(.secondary)
+                    if let mark = manOverboard.mark {
+                        if mark.positionAge > ManOverboard.freshFor {
+                            Text("Marked from a fix \(Formatting.duration(mark.positionAge)) old")
+                                .font(.footnote)
+                                .foregroundStyle(.orange)
+                        }
+                        Text(mark.markedAt, style: .relative).font(.footnote).foregroundStyle(.secondary)
+                    }
+                    if let newSession {
+                        NavigationLink("New session") { newSession() }
+                            .accessibilityIdentifier("mob.newSession")
+                    }
+                    Button("Clear", role: .destructive) { manOverboard.clear() }
+                        .accessibilityIdentifier("mob.clear")
                 }
-                Button("Clear", role: .destructive) { manOverboard.clear() }
-                    .accessibilityIdentifier("mob.clear")
             }
         }
     }
