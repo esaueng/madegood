@@ -1,0 +1,10 @@
+{
+  // Editor entry point. `pnpm typecheck` checks each of these projects in turn.
+  "files": [],
+  "references": [
+    { "path": "./tsconfig.client.json" },
+    { "path": "./tsconfig.server.json" },
+    { "path": "./tsconfig.node.json" },
+    { "path": "./test/tsconfig.json" }
+  ]
+}
