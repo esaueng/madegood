@@ -163,7 +163,7 @@ describe("POST /api/auth/refresh", () => {
     expect(live?.n).toBe(0);
   });
 
-  it("consumes a token and stores its successor atomically", async () => {
+  it("consumes a token once and stores a live successor", async () => {
     const session = await signIn();
     const db = drizzle(env.DB);
     const row = await env.DB.prepare(
