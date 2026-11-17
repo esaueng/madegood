@@ -123,6 +123,52 @@ enum SyntheticPaddle {
         #expect(SessionStats.bestAverageSpeed(sparse, window: 10) == nil)
     }
 
+    @Test func windowsHaveExactlyTheRequestedLength() {
+        // Uneven spacing: a window anchored at a fix and cut at exactly 2 s averages 3.5 m/s.
+        // (Stretching to the next fix gave 3.0; a window starting between fixes reaches 4.0.)
+        let fixes = [(0.0, 0.0), (1.5, 6.0), (3.0, 0.0)].map {
+            GPSFix(t: $0.0, latitude: 0, longitude: 0, horizontalAccuracy: 5, speed: $0.1)
+        }
+        #expect(SessionStats.bestAverageSpeed(fixes, window: 2) == 3.5)
+    }
+
+    @Test func averageSpeedUsesDopplerNotPositionChanges() {
+        let east10m = Geo.destination(lat: 0, lon: 0, bearing: 90, distance: 10)
+        let track = Track(
+            sessionId: UUID(), sport: .kayak, startedAt: Date(timeIntervalSince1970: 0),
+            gps: [
+                GPSFix(t: 0, latitude: 0, longitude: 0, horizontalAccuracy: 5, speed: 0),
+                GPSFix(t: 2, latitude: east10m.lat, longitude: east10m.lon, horizontalAccuracy: 5, speed: 0),
+            ])
+        let stats = SessionStats(track: track)
+        #expect(abs(stats.distance - 10) < 1e-6)
+        #expect(stats.averageSpeed == 0)
+    }
+
+    @Test func fixesWithoutAccuracyAreRejected() {
+        let track = Track(
+            sessionId: UUID(), sport: .kayak, startedAt: Date(timeIntervalSince1970: 0),
+            gps: [
+                GPSFix(t: 0, latitude: 0, longitude: 0, speed: 1),
+                GPSFix(t: 1, latitude: 0, longitude: 1, speed: 1),
+            ])
+        let stats = SessionStats(track: track)
+        #expect(stats.acceptedFixes == 0)
+        #expect(stats.rejectedFixes == 2)
+        #expect(stats.distance == 0)
+    }
+
+    @Test func unsortedTrackColumnsAreOrderedFirst() {
+        let fixes = [0.0, 2, 1, 3].map { metres in
+            let point = Geo.destination(lat: 0, lon: 0, bearing: 90, distance: metres)
+            return GPSFix(t: metres, latitude: point.lat, longitude: point.lon, horizontalAccuracy: 5, speed: 1)
+        }
+        let stats = SessionStats(
+            track: Track(sessionId: UUID(), sport: .kayak, startedAt: Date(timeIntervalSince1970: 0), gps: fixes))
+        #expect(abs(stats.distance - 3) < 1e-6)
+        #expect(stats.streams["gps"]?.medianRate == 1)
+    }
+
     @Test func textReportShowsTheKeyFigures() throws {
         let folder = try TempFolder()
         try SyntheticPaddle.write(to: folder.url)
