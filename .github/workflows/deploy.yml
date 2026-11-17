@@ -3,7 +3,8 @@ name: Deploy
 # Deploys the website and API (one Cloudflare Worker, web/).
 # - Pull requests: a preview version of `madegood-preview` at
 #   pr-<number>-madegood-preview.<subdomain>.workers.dev, linked in a PR comment. Each
-#   PR gets its own D1 database (`madegood-pr-<number>`, deleted when the PR closes), so
+#   PR gets its own D1 database (`madegood-pr-<number>`, deleted by deploy-cleanup.yml
+#   when the PR closes), so
 #   one branch's migrations never change another preview's schema. Previews share the
 #   preview R2 bucket; nothing touches production data.
 # - Pushes to main: production (`madegood`).
@@ -15,7 +16,6 @@ name: Deploy
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, closed]
     paths:
       - "web/**"
       - "package.json"
@@ -53,9 +53,7 @@ jobs:
     name: Preview deploy
     # Secrets are not available to pull requests from forks; PR creation is limited to
     # collaborators, so every PR comes from a branch of this repository.
-    if: >-
-      github.event_name == 'pull_request' && github.event.action != 'closed' &&
-      github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -141,33 +139,6 @@ jobs:
             gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$existing" -f body="$body" > /dev/null
           else
             gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" -f body="$body" > /dev/null
-          fi
-
-  cleanup:
-    name: Delete the PR database
-    if: >-
-      github.event_name == 'pull_request' && github.event.action == 'closed' &&
-      github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version-file: .nvmrc
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - name: Delete madegood-pr-<number> if it exists
-        working-directory: web
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          NAME: madegood-pr-${{ github.event.pull_request.number }}
-        run: |
-          if pnpm exec wrangler d1 list --json | jq -e --arg name "$NAME" 'any(.[]; .name == $name)' > /dev/null; then
-            pnpm exec wrangler d1 delete "$NAME" --skip-confirmation
           fi
 
   production:
