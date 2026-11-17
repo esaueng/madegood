@@ -13,7 +13,8 @@ backend (Phases 5–6).
 
 Name: **MadeGood** · domain **madegood.app** · App Store name
 "MadeGood: Sail & Kayak Tracker" (the App Store caps names at 30 characters) ·
-bundle prefix `app.madegood` (forks override it in `Local.xcconfig`).
+bundle prefix `app.madegood` (forks override it in `Local.xcconfig`) · GitHub repo
+`esaueng/madegood` (the Esau Engineering organization).
 
 ---
 
@@ -489,7 +490,6 @@ more sports (rowing, wing, kite, outrigger, dragon boat).
 
 | Decision | Needed by | Notes |
 |---|---|---|
-| GitHub org (`madegood` is taken) | Phase 0 | e.g. `madegood-app`; name and domain are decided |
 | Apple Developer account (team ID) | Phase 0 task 4 | Needed for device builds, HealthKit, TestFlight |
 | TestFlight via Xcode Cloud or GitHub Actions + fastlane | Phase 1 | Xcode Cloud is simpler; GitHub Actions keeps everything in one place |
 | Strava integration | Phase 3 | Requires Strava API approval |
