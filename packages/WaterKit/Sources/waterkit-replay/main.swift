@@ -27,37 +27,22 @@ func fail(_ message: String, _ code: ExitCode) -> Never {
     exit(code.rawValue)
 }
 
-var arguments = Array(CommandLine.arguments.dropFirst())
-var path: String?
-var sportOverride: Sport?
-var asJSON = false
-var gpxPath: String?
-
-while !arguments.isEmpty {
-    let argument = arguments.removeFirst()
-    switch argument {
-    case "-h", "--help":
+let options: ReplayArguments
+do {
+    switch try ReplayArguments.parse(Array(CommandLine.arguments.dropFirst())) {
+    case .help:
         print(usage, terminator: "")
         exit(ExitCode.ok.rawValue)
-    case "--json":
-        asJSON = true
-    case "--sport":
-        guard let value = arguments.first else { fail("--sport needs a value\n\n" + usage, .usage) }
-        arguments.removeFirst()
-        guard let sport = Sport(rawValue: value) else { fail("Unknown sport \"\(value)\"\n\n" + usage, .usage) }
-        sportOverride = sport
-    case "--gpx":
-        guard let value = arguments.first else { fail("--gpx needs an output path\n\n" + usage, .usage) }
-        arguments.removeFirst()
-        gpxPath = value
-    default:
-        if argument.hasPrefix("-") { fail("Unknown option \(argument)\n\n" + usage, .usage) }
-        if path != nil { fail("Only one path is allowed\n\n" + usage, .usage) }
-        path = argument
+    case .run(let parsed):
+        options = parsed
     }
+} catch {
+    fail("\(error)\n\n" + usage, .usage)
 }
-
-guard let path else { fail(usage, .usage) }
+let path = options.path
+let sportOverride = options.sport
+let asJSON = options.json
+let gpxPath = options.gpxPath
 
 let url = URL(fileURLWithPath: path)
 var isDirectory: ObjCBool = false

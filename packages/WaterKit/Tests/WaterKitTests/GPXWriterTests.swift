@@ -12,8 +12,10 @@ import Testing
     static let start = Date(timeIntervalSince1970: 946_728_000)  // 2000-01-01T12:00:00Z
     static let id = UUID(uuidString: "00000000-0000-4000-8000-000000000001")!
 
-    static func fix(_ t: Double, lat: Double = 10, lon: Double = -30, alt: Double? = nil,
-                    speed: Double? = nil, course: Double? = nil) -> GPSFix {
+    static func fix(
+        _ t: Double, lat: Double = 10, lon: Double = -30, alt: Double? = nil,
+        speed: Double? = nil, course: Double? = nil
+    ) -> GPSFix {
         GPSFix(t: t, latitude: lat, longitude: lon, altitude: alt, speed: speed, course: course)
     }
 
@@ -43,11 +45,12 @@ import Testing
         #expect(parsed.segments.count == 1)
         #expect(parsed.segments[0].map(\.lat) == ["10", "10.00001", "10.00002", "10.00003"])
         #expect(parsed.segments[0].map(\.lon) == ["-30", "-29.99999", "-29.99998", "-29.99997"])
-        #expect(parsed.texts("time") == [
-            "2000-01-01T12:00:00.000Z",  // metadata
-            "2000-01-01T12:00:00.000Z", "2000-01-01T12:00:01.000Z", "2000-01-01T12:00:02.250Z",
-            "2000-01-01T12:00:03.000Z",
-        ])
+        #expect(
+            parsed.texts("time") == [
+                "2000-01-01T12:00:00.000Z",  // metadata
+                "2000-01-01T12:00:00.000Z", "2000-01-01T12:00:01.000Z", "2000-01-01T12:00:02.250Z",
+                "2000-01-01T12:00:03.000Z",
+            ])
         #expect(parsed.texts("ele") == ["1.3"])
         // Garmin TrackPointExtension v2, namespaced; 359.96° rounds to 360 and wraps to 0.
         #expect(parsed.texts("speed", namespace: GPXWriter.trackPointExtensionNamespace) == ["2.5", "2.5"])
@@ -94,7 +97,8 @@ import Testing
 
     @Test func omitsInvalidSpeedCourseAndAltitude() {
         let point = GPXWriter.trackPoint(
-            GPSFix(t: 0, latitude: 1, longitude: 2, altitude: .nan, speed: -1, course: .infinity), startedAt: Self.start)
+            GPSFix(t: 0, latitude: 1, longitude: 2, altitude: .nan, speed: -1, course: .infinity), startedAt: Self.start
+        )
         #expect(point == #"<trkpt lat="1" lon="2"><time>2000-01-01T12:00:00.000Z</time></trkpt>"#)
     }
 
@@ -182,6 +186,14 @@ import Testing
         #expect(GPXWriter.courseText(360) == "0")
         #expect(GPXWriter.courseText(725.5) == "5.5")
     }
+    // Regression test from the PR #24 review: GPX 1.1 longitude must be below 180.
+    @Test func antimeridianIsWrittenAsMinus180() {
+        #expect(GPXWriter.longitudeText(180) == "-180")
+        #expect(GPXWriter.longitudeText(179.99999999) == "-180")
+        #expect(GPXWriter.longitudeText(179.9999999) == "179.9999999")
+        #expect(GPXWriter.longitudeText(-180) == "-180")
+        #expect(GPXWriter.trackPoint(Self.fix(0, lon: 179.99999999), startedAt: Self.start).contains("lon=\"-180\""))
+    }
 }
 
 /// A minimal namespace-aware GPX reader built on XMLParser (FoundationXML on Linux).
@@ -240,4 +252,5 @@ private final class GPXParse: NSObject, XMLParserDelegate {
     ) {
         stack.removeLast()
     }
+
 }

@@ -127,9 +127,16 @@ public struct GPXWriter: Sendable {
         return times
     }
 
+    /// GPX 1.1 longitude is in [-180, 180): the antimeridian, including values that round
+    /// to it, is written as -180.
+    static func longitudeText(_ longitude: Double) -> String {
+        let text = DecimalText.fixed(longitude, digits: 7, trimZeros: true)
+        return text == "180" ? "-180" : text
+    }
+
     static func trackPoint(_ fix: GPSFix, startedAt: Date) -> String {
         var point = "<trkpt lat=\"\(DecimalText.fixed(fix.latitude, digits: 7, trimZeros: true))\""
-        point += " lon=\"\(DecimalText.fixed(fix.longitude, digits: 7, trimZeros: true))\">"
+        point += " lon=\"\(longitudeText(fix.longitude))\">"
         if let altitude = fix.altitude, altitude.isFinite {
             point += "<ele>\(DecimalText.fixed(altitude, digits: 1, trimZeros: true))</ele>"
         }
