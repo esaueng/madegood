@@ -25,6 +25,20 @@ import Testing
             gravity: Vector3(x: 0, y: 0, z: -RawFormat.standardGravity), rotationRate: .zero, attitude: .identity)
     }
 
+    @Test func canSkipTheMotionStream() throws {
+        let folder = try TempFolder()
+        try folder.write(RawFormat.metaFileName, RawFormat.encodeMeta(Self.meta()))
+        try folder.write(
+            "gps.ndjson", lines([RawFormat.GPSLine(ts: Self.startUnix + 1, lat: 0.0001, lon: 0.0002, hacc: 4)]))
+        try folder.write(
+            "motion.ndjson.gz", Gzip.compress(lines([Self.motionLine(uptime: Self.startUptime + 0.01, ax: 1)])))
+        let full = try RawSessionReader.read(folder: folder.url)
+        let light = try RawSessionReader.read(folder: folder.url, includeMotion: false)
+        #expect(full.motion.count == 1)
+        #expect(light.motion.isEmpty)
+        #expect(light.gps == full.gps)
+    }
+
     @Test func readsAllStreamsOntoTheSessionTimeline() throws {
         let folder = try TempFolder()
         try folder.write(RawFormat.metaFileName, RawFormat.encodeMeta(Self.meta()))

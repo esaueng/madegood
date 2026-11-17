@@ -24,7 +24,9 @@ public enum RawSessionReader {
         }
     }
 
-    public static func read(folder: URL) throws -> RawSession {
+    /// Reads a recording folder. Pass `includeMotion: false` to skip the 100 Hz motion
+    /// stream (tens of MB per hour) when only GPS, heart rate and events are needed.
+    public static func read(folder: URL, includeMotion: Bool = true) throws -> RawSession {
         let meta = try readMeta(folder: folder)
         var issues: [RawReadIssue] = []
 
@@ -38,7 +40,9 @@ public enum RawSessionReader {
                 horizontalAccuracy: line.hacc, verticalAccuracy: line.vacc, speed: line.spd,
                 speedAccuracy: line.spdacc, course: line.crs, courseAccuracy: line.crsacc)
         }
-        let motion = try (readStream(.motion, in: folder, issues: &issues) as [RawFormat.MotionLine]).map { l in
+        let motionLines: [RawFormat.MotionLine] =
+            includeMotion ? try readStream(.motion, in: folder, issues: &issues) : []
+        let motion = motionLines.map { l in
             MotionSample(
                 t: clock.fromUptime(l.ts),
                 userAcceleration: Vector3(x: l.ax, y: l.ay, z: l.az),

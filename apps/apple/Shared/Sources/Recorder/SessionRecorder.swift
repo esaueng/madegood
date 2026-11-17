@@ -121,7 +121,7 @@ final class SessionRecorder {
             requestedRates: ["gps": 1, "motion": Self.motionRate])
         self.meta = meta
         writeMeta()
-        engine = SessionEngine(sport: sport)
+        engine = SessionEngine(profile: UserSettings.profile(for: sport))
         liveSession = sessionId
         startUnix = anchor.unix
         writtenGeneratedEvents = 0

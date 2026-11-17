@@ -14,6 +14,21 @@ public struct RawSession: Sendable {
     /// Problems found while reading that did not stop the read (e.g. a truncated last line).
     public var issues: [RawReadIssue]
 
+    public init(
+        meta: RawFormat.Meta, gps: [GPSFix] = [], motion: [MotionSample] = [], hr: [HRSample] = [],
+        heading: [HeadingSample] = [], events: [SessionEvent] = [], clockAnchors: [RawFormat.ClockAnchor]? = nil,
+        issues: [RawReadIssue] = []
+    ) {
+        self.meta = meta
+        self.gps = gps
+        self.motion = motion
+        self.hr = hr
+        self.heading = heading
+        self.events = events
+        self.clockAnchors = clockAnchors ?? [meta.clock]
+        self.issues = issues
+    }
+
     public var startedAt: Date { Date(timeIntervalSince1970: meta.startedAt) }
 
     /// Duration from the start to `endedAt`, or to the last sample if the recording did not stop cleanly.

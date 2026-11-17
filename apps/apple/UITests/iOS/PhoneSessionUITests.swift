@@ -31,6 +31,9 @@ final class PhoneSessionUITests: XCTestCase {
         attachScreenshot("4 lap")
 
         app.buttons["control.stop"].tap()
+        let confirm = app.buttons["End session"].firstMatch
+        XCTAssertTrue(confirm.waitForExistence(timeout: 10))
+        confirm.tap()
         XCTAssertTrue(start.waitForExistence(timeout: 20))
         attachScreenshot("5 stopped")
     }

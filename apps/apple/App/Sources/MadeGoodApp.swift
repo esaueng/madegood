@@ -5,6 +5,7 @@ struct MadeGoodApp: App {
     init() {
         // Receive recordings from the watch, including ones sent while the app was closed.
         RecordingTransfer.shared.activate()
+        DemoHistory.seedIfRequested()
     }
 
     var body: some Scene {
