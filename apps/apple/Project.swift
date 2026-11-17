@@ -61,9 +61,10 @@ let project = Project(
                 "UILaunchScreen": [:],
                 "UIRequiredDeviceCapabilities": ["arm64"],
                 "UISupportedInterfaceOrientations": ["UIInterfaceOrientationPortrait"],
-                // Location keeps recording with the screen off; workout-processing lets
-                // the phone run its own workout session (iOS 26).
-                "UIBackgroundModes": ["location", "workout-processing"],
+                // Location keeps recording with the screen off. `workout-processing` is a
+                // watchOS mode: App Store Connect rejects it in an iPhone app's
+                // UIBackgroundModes, so the phone's own workout session relies on location.
+                "UIBackgroundModes": ["location"],
                 // Lock Screen and Dynamic Island while recording (Widgets/).
                 "NSSupportsLiveActivities": true,
                 // Recordings in Documents are visible in the Files app.
