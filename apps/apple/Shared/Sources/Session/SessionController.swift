@@ -31,6 +31,8 @@ final class SessionController {
     var onFinish: ((Sport, LiveMetrics?, URL) -> Void)?
 
     struct Countdown: Equatable {
+        /// Tells this countdown from a later one for the same sport.
+        var id = UUID()
         var sport: Sport
         var timer: StartCountdown
         /// Rounding to the minute matters at race starts (sailing).
@@ -71,17 +73,18 @@ final class SessionController {
                 seconds = value
             }
         #endif
+        let countdownID = UUID()
         countdown = Countdown(
-            sport: sport, timer: StartCountdown(duration: seconds, startingAt: Self.now), canSync: sport == .sailing)
+            id: countdownID, sport: sport, timer: StartCountdown(duration: seconds, startingAt: Self.now), canSync: sport == .sailing)
         Haptics.play(.countdownStarted)
         runTicker()
         // On the watch, a prepared workout session keeps the app running with the wrist
         // down, so the buzzes and the start stay on time.
         Task { [weak self] in
-            guard let self else { return }
-            await self.recorder.prepare(sport: sport)
-            // Cancelled before the session was ready: don't leave it running.
-            if self.countdown?.sport != sport { self.recorder.cancelPrepared() }
+            guard let self, let prepareID = await self.recorder.prepare(sport: sport) else { return }
+            // Cancelled before the session was ready: don't leave it running. Only this
+            // preparation is ended; a newer countdown's is left alone.
+            if self.countdown?.id != countdownID { self.recorder.cancelPrepared(prepareID) }
         }
     }
 

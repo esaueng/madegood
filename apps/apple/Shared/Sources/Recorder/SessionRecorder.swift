@@ -63,7 +63,7 @@ final class SessionRecorder {
     private var heading: HeadingSource?
     private var workout: WorkoutSource?
     /// The workout session held in its prepared state during a countdown; `start` begins it.
-    private var prepared: (sport: Sport, workout: WorkoutSource)?
+    private var prepared: (id: UUID, sport: Sport, workout: WorkoutSource)?
     /// Identifies the latest `prepare` call, so one that finishes after a cancel or start
     /// does not leave a session behind.
     private var prepareID: UUID?
@@ -105,27 +105,37 @@ final class SessionRecorder {
 
     /// For a countdown: puts a workout session for `sport` into its prepared state, which
     /// keeps the watch app running (and its countdown haptics on time) with the wrist
-    /// down. `start` begins this session; `cancelPrepared` ends it.
-    func prepare(sport: Sport) async {
-        guard state == .idle, WorkoutSource.isAvailable, !DemoFeed.isEnabled else { return }
+    /// down. `start` begins this session; `cancelPrepared` ends it. Returns this
+    /// preparation's ID for `cancelPrepared(_:)`, or nil if it did nothing.
+    @discardableResult
+    func prepare(sport: Sport) async -> UUID? {
+        guard state == .idle, WorkoutSource.isAvailable, !DemoFeed.isEnabled else { return nil }
         cancelPrepared()
         let id = UUID()
         prepareID = id
         // Asks for Health access before the start, so the prompt never delays it.
         try? await WorkoutSource.requestAuthorization(store: healthStore)
-        guard prepareID == id, state == .idle else { return }
+        guard prepareID == id, state == .idle else { return nil }
         prepareID = nil
         let workout = makeWorkout()
         do {
             try workout.prepare(sport: sport)
-            prepared = (sport, workout)
+            prepared = (id, sport, workout)
         } catch {
             // Not fatal: `start` creates the session itself.
             print("SessionRecorder: preparing the workout failed: \(error)")
         }
+        return id
     }
 
-    /// Ends a prepared workout session (the countdown was cancelled).
+    /// Ends the prepared workout session (or the pending preparation) if it is the one
+    /// `prepare` returned `id` for; a newer one is left alone.
+    func cancelPrepared(_ id: UUID) {
+        guard prepared?.id == id || prepareID == id else { return }
+        cancelPrepared()
+    }
+
+    /// Ends any prepared workout session (the countdown was cancelled).
     func cancelPrepared() {
         prepareID = nil
         prepared?.workout.cancel()
@@ -143,8 +153,12 @@ final class SessionRecorder {
     }
 
     private func makeWorkout() -> WorkoutSource {
-        WorkoutSource(store: healthStore) { [weak self] message in
-            Task { @MainActor in await self?.workoutInterrupted(message) }
+        WorkoutSource(store: healthStore) { [weak self] source, message, generation in
+            Task { @MainActor in
+                // Queued before a replacement session started: not about the current one.
+                guard source.isCurrent(generation: generation) else { return }
+                await self?.workoutInterrupted(message)
+            }
         }
     }
 
