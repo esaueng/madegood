@@ -343,6 +343,40 @@ describe("visibility", () => {
     }
   });
 
+  // Regression test from review of #37: a coordinate in the summary must not reach anyone
+  // but the owner.
+  it("shows others only the shared summary numbers, never positions or heart rate", async () => {
+    const owner = await signIn();
+    const other = await signIn();
+    const id = crypto.randomUUID();
+    const summary = {
+      distance: 5000,
+      movingTime: 3300,
+      elapsed: 3600,
+      maxSpeed10s: 2.4,
+      heartRateMax: 150,
+      start: { lat: 0.0001, lon: 0.0002 },
+      laps: [
+        { start: 0, end: 600, distance: 1000, movingTime: 590, auto: true, at: [0.0001, 0.0002] },
+      ],
+    };
+    expect((await putSession(owner.accessToken, id, metadata({ summary }))).status).toBe(201);
+    expect((await patchSession(owner.accessToken, id, { visibility: "public" })).status).toBe(200);
+
+    const mine = (await (await getSession(owner.accessToken, id)).json()) as { summary: unknown };
+    expect(mine.summary).toEqual(summary);
+    for (const token of [other.accessToken, null]) {
+      const theirs = (await (await getSession(token, id)).json()) as { summary: unknown };
+      expect(theirs.summary).toEqual({
+        distance: 5000,
+        movingTime: 3300,
+        elapsed: 3600,
+        maxSpeed10s: 2.4,
+        laps: [{ start: 0, end: 600, distance: 1000, movingTime: 590, auto: true }],
+      });
+    }
+  });
+
   it("withholds tracks from others while the owner has a privacy zone", async () => {
     const owner = await signIn();
     const other = await signIn();
@@ -479,6 +513,34 @@ describe("DELETE /api/sessions/:id", () => {
     expect(row).toBeNull();
 
     expect((await deleteSession(owner.accessToken, id)).status).toBe(204);
+  });
+
+  // Regression test from review of #37: a track whose upload is still in flight when the
+  // session is deleted must not stay in R2.
+  it("leaves no track behind when the session is deleted during the upload", async () => {
+    const owner = await signIn();
+    const id = crypto.randomUUID();
+    expect((await putSession(owner.accessToken, id)).status).toBe(201);
+
+    let send: (bytes: Uint8Array) => void = () => {};
+    let finish: () => void = () => {};
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        send = (bytes) => controller.enqueue(bytes);
+        finish = () => controller.close();
+      },
+    });
+    const bytes = await gzip(trackJson(id));
+    const upload = putTrack(owner.accessToken, id, body);
+    send(bytes.slice(0, 10)); // the handler has checked ownership and is reading the body
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    expect((await deleteSession(owner.accessToken, id)).status).toBe(204);
+    send(bytes.slice(10));
+    finish();
+
+    expect((await upload).status).toBe(404);
+    expect(await env.TRACKS.head(trackKey(owner.user.id, id))).toBeNull();
   });
 });
 

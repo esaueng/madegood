@@ -161,6 +161,52 @@ const SessionList = z
 
 const iso = (ms: number) => new Date(ms).toISOString();
 
+// Summary keys anyone may see on a public or unlisted session (docs/metrics.md). The
+// summary is whatever the device sent, so other viewers get only these numbers, never the
+// whole object: a key holding a position would otherwise bypass privacy zones and the
+// track's restrictions (review of #37). Heart rate stays with the owner.
+const SHARED_SUMMARY_NUMBERS = [
+  "distance",
+  "movingTime",
+  "elapsed",
+  "averageSpeed",
+  "maxSpeed2s",
+  "maxSpeed10s",
+] as const;
+const SHARED_LAP_NUMBERS = ["start", "end", "distance", "movingTime"] as const;
+const MAX_SHARED_LAPS = 1000;
+
+const isNumber = (value: unknown): value is number =>
+  typeof value === "number" && Number.isFinite(value);
+
+/** The owner's summary as stored; for anyone else, only the shared numbers. */
+export function viewSummary(
+  session: Pick<Session, "summaryJson" | "userId">,
+  viewerId: string | null,
+): Record<string, unknown> | null {
+  if (session.summaryJson === null) return null;
+  const summary: unknown = JSON.parse(session.summaryJson);
+  if (session.userId === viewerId) return summary as Record<string, unknown>;
+  if (typeof summary !== "object" || summary === null || Array.isArray(summary)) return null;
+  const source = summary as Record<string, unknown>;
+
+  const shared: Record<string, unknown> = {};
+  for (const key of SHARED_SUMMARY_NUMBERS) {
+    if (isNumber(source[key])) shared[key] = source[key];
+  }
+  if (Array.isArray(source.laps)) {
+    shared.laps = source.laps.slice(0, MAX_SHARED_LAPS).flatMap((lap: unknown) => {
+      if (typeof lap !== "object" || lap === null) return [];
+      const fields = lap as Record<string, unknown>;
+      const out: Record<string, unknown> = {};
+      for (const key of SHARED_LAP_NUMBERS) if (isNumber(fields[key])) out[key] = fields[key];
+      if (typeof fields.auto === "boolean") out.auto = fields.auto;
+      return [out];
+    });
+  }
+  return shared;
+}
+
 function toSessionBody(session: Session, viewerId: string | null): z.infer<typeof SessionBody> {
   return {
     id: session.id,
@@ -175,7 +221,7 @@ function toSessionBody(session: Session, viewerId: string | null): z.infer<typeo
     distanceM: session.distanceM,
     maxSpeedMps: session.maxSpeedMps,
     avgSpeedMps: session.avgSpeedMps,
-    summary: session.summaryJson === null ? null : JSON.parse(session.summaryJson),
+    summary: viewSummary(session, viewerId),
     analyzerVersion: session.analyzerVersion,
     hasTrack: session.trackKey !== null,
     isOwner: session.userId === viewerId,
@@ -516,10 +562,18 @@ sessionRoutes.openapi(putTrackRoute, async (c) => {
   const object = await c.env.TRACKS.put(key, bytes, {
     httpMetadata: { contentType: TRACK_CONTENT_TYPE },
   });
-  await db
+  const [attached] = await db
     .update(sessions)
     .set({ trackKey: key, updatedAt: Date.now() })
-    .where(and(eq(sessions.id, id), eq(sessions.userId, userId)));
+    .where(and(eq(sessions.id, id), eq(sessions.userId, userId), isNull(sessions.deletedAt)))
+    .returning({ id: sessions.id });
+  if (!attached) {
+    // The session was deleted while the body was uploading (review of #37). DELETE removes
+    // the row before the objects, so either it already deleted this object or it will
+    // find none; remove ours so no track outlives its session.
+    await c.env.TRACKS.delete(key);
+    return notFound(c);
+  }
 
   // TODO(post-processing): enqueue the session for the queue consumer (docs/PLAN.md §7),
   // which reads the whole track, checks `v` and `sessionId`, computes the bbox and start
@@ -591,16 +645,16 @@ sessionRoutes.openapi(deleteRoute, async (c) => {
   const { id } = c.req.valid("param");
   const userId = c.var.userId;
   const db = drizzle(c.env.DB);
-  const [session] = await db
-    .select({ trackKey: sessions.trackKey })
-    .from(sessions)
-    .where(and(eq(sessions.id, id), eq(sessions.userId, userId)));
-  if (!session) return c.body(null, 204);
-
-  // R2 first, as for account deletion: if it fails, the row remains and a retry finds the
-  // objects again.
+  // The row goes first, then the objects (review of #37). A track upload attaches its
+  // object only if the row still exists and otherwise deletes it, so with this order no
+  // upload that overlaps the delete can leave a track behind. The objects are deleted even
+  // when there is no row, so retrying after an R2 failure still cleans up.
+  const deleted = await db
+    .delete(sessions)
+    .where(and(eq(sessions.id, id), eq(sessions.userId, userId)))
+    .returning({ trackKey: sessions.trackKey });
   await deletePrefix(c.env.TRACKS, `${userPrefix(userId)}sessions/${id}/`);
-  if (session.trackKey) await c.env.TRACKS.delete(session.trackKey);
-  await db.delete(sessions).where(and(eq(sessions.id, id), eq(sessions.userId, userId)));
+  const keys = deleted.flatMap((row) => (row.trackKey ? [row.trackKey] : []));
+  if (keys.length > 0) await c.env.TRACKS.delete(keys);
   return c.body(null, 204);
 });
