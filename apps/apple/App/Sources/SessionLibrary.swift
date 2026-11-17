@@ -80,7 +80,34 @@ final class SessionLibrary {
 
     nonisolated static func summarize(_ entry: RecordingStore.Entry) -> Summary? {
         guard let session = try? RawSessionReader.read(folder: entry.folder, includeMotion: false) else { return nil }
-        let replay = SessionReplay(track: session.track(), profile: UserSettings.profile(for: session.meta.sport))
+        let track = session.track()
+        let replay = SessionReplay(track: track, profile: UserSettings.profile(for: session.meta.sport))
+        // A finished recording also gets its track v1 file (docs/formats.md), the form
+        // that is stored and uploaded. Rewritten when the analysis changes.
+        if session.meta.endedAt != nil {
+            writeTrackFile(replay.analyzedTrack(from: track), folder: entry.folder, analyzedBytes: entry.bytes)
+        }
         return Summary(sport: session.meta.sport, startedAt: session.startedAt, metrics: replay.metrics)
+    }
+
+    /// Serializes track-file writes, so the freshness check and the write happen together.
+    private nonisolated static let trackWrites = NSLock()
+
+    /// Writes the track only if the recording still has the size it was analyzed at: an
+    /// analysis of a recording that has since grown (still arriving from the watch) must
+    /// not replace a newer track, and a deleted recording must not be recreated.
+    nonisolated static func writeTrackFile(_ track: Track, folder: URL, analyzedBytes: Int64) {
+        let url = folder.appendingPathComponent(RecordingStore.trackFileName)
+        trackWrites.lock()
+        defer { trackWrites.unlock() }
+        guard FileManager.default.fileExists(atPath: folder.path),
+            RecordingStore.contents(of: folder).bytes == analyzedBytes
+        else { return }
+        do {
+            let data = try TrackCodec.encode(track)
+            if (try? Data(contentsOf: url)) != data { try data.write(to: url, options: .atomic) }
+        } catch {
+            print("SessionLibrary: could not write the track file: \(error)")
+        }
     }
 }

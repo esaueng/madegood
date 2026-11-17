@@ -31,4 +31,45 @@ public struct SessionReplay: Sendable {
         self.fixes = fixes
         events = (userEvents + engine.generatedEvents).sorted { $0.t < $1.t }
     }
+
+    /// Version of the analysis that produced `summary` and the generated events. Bump it
+    /// when a metric definition in docs/metrics.md changes, so stored tracks can be
+    /// re-analyzed.
+    public static let analyzerVersion = "1.0.0"
+
+    /// The session summary stored in track v1 (`summary`, docs/metrics.md "Session
+    /// summary"). Values are SI; absent values are left out.
+    public var summary: JSONValue {
+        var fields: [String: JSONValue] = [
+            "distance": .number(metrics.distance),
+            "movingTime": .number(metrics.movingTime),
+            "elapsed": .number(metrics.elapsed),
+            "laps": .array(
+                (metrics.laps + (metrics.laps.isEmpty ? [] : [metrics.currentLap])).map { lap in
+                    .object([
+                        "start": .number(lap.start), "end": .number(lap.end), "distance": .number(lap.distance),
+                        "movingTime": .number(lap.movingTime), "auto": .bool(lap.isAuto),
+                    ])
+                }),
+        ]
+        let optional: [(String, Double?)] = [
+            ("averageSpeed", metrics.averageSpeed), ("maxSpeed2s", metrics.maxSpeed2s),
+            ("maxSpeed10s", metrics.maxSpeed10s), ("heartRateAverage", metrics.heartRateAverage),
+            ("heartRateMax", metrics.heartRateMax),
+        ]
+        for (key, value) in optional {
+            if let value, value.isFinite { fields[key] = .number(value) }
+        }
+        return .object(fields)
+    }
+
+    /// The track as stored and uploaded: the recorded GPS and heart rate, the user's and
+    /// regenerated events, and this summary with `analyzerVersion`.
+    public func analyzedTrack(from track: Track) -> Track {
+        var analyzed = track
+        analyzed.events = events
+        analyzed.summary = summary
+        analyzed.analyzerVersion = Self.analyzerVersion
+        return analyzed
+    }
 }

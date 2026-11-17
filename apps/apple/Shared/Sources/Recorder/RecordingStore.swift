@@ -8,6 +8,9 @@ enum RecordingStore {
         return documents.appendingPathComponent("Recordings", isDirectory: true)
     }
 
+    /// The track v1 file the phone writes next to a finished raw recording.
+    static let trackFileName = "track.json.gz"
+
     static func folder(for sessionId: UUID) -> URL {
         root.appendingPathComponent(sessionId.uuidString.lowercased(), isDirectory: true)
     }
@@ -38,15 +41,22 @@ enum RecordingStore {
             guard fm.fileExists(atPath: folder.path, isDirectory: &isDirectory), isDirectory.boolValue else {
                 return nil
             }
-            let files = ((try? fm.contentsOfDirectory(atPath: folder.path)) ?? []).filter(isRecordingFileName).sorted()
-            let bytes = files.reduce(Int64(0)) { total, name in
-                let attributes = try? fm.attributesOfItem(atPath: folder.appendingPathComponent(name).path)
-                return total + ((attributes?[.size] as? NSNumber)?.int64Value ?? 0)
-            }
+            let (files, bytes) = contents(of: folder)
             let meta = try? RawSessionReader.readMeta(folder: folder)
             return Entry(folder: folder, meta: meta, bytes: bytes, files: files)
         }
         .sorted { ($0.startedAt ?? .distantPast) > ($1.startedAt ?? .distantPast) }
+    }
+
+    /// The recording files in a folder and their total size, bytes.
+    static func contents(of folder: URL) -> (files: [String], bytes: Int64) {
+        let fm = FileManager.default
+        let files = ((try? fm.contentsOfDirectory(atPath: folder.path)) ?? []).filter(isRecordingFileName).sorted()
+        let bytes = files.reduce(Int64(0)) { total, name in
+            let attributes = try? fm.attributesOfItem(atPath: folder.appendingPathComponent(name).path)
+            return total + ((attributes?[.size] as? NSNumber)?.int64Value ?? 0)
+        }
+        return (files, bytes)
     }
 
     static func delete(_ entry: Entry) throws {
