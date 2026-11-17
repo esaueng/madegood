@@ -1,16 +1,17 @@
 import XCTest
 
-/// Records a demo kayak session on the iPhone: live metrics, pause and resume, lap, stop.
+/// Records a demo kayak session on the iPhone: start card, live metrics, pause and resume,
+/// lap, stop.
 final class PhoneSessionUITests: XCTestCase {
     override func setUp() {
         continueAfterFailure = false
     }
 
     func testDemoSession() {
-        // `-recorder.sport kayak` sets the remembered sport for this launch only.
-        let app = launchDemoApp(extraArguments: ["-recorder.sport", "kayak"])
+        let app = launchDemoApp()
 
-        let start = app.buttons["control.start"]
+        // Tapping a sport card starts it (no countdown by default).
+        let start = app.buttons["sport.kayak"]
         XCTAssertTrue(start.waitForExistence(timeout: 15))
         attachScreenshot("1 home")
         start.tap()

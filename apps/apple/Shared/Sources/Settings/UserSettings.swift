@@ -1,69 +1,158 @@
 import Foundation
 import WaterKit
 
-/// The user's preferences, in UserDefaults on each device. Each value has an "automatic"
-/// default that depends on the sport, so most people never need to touch them.
+/// The user's preferences, in UserDefaults on each device: per-sport settings
+/// (`SportSettings`, edited on either device and kept in sync through
+/// `RecordingTransfer` and `SettingsSync`) plus device-local history used to order the
+/// start screen.
+///
+/// Every write to the synced settings runs on the main actor (local edits, incoming
+/// snapshots, migration), so a revision check and the keys it writes are never
+/// interleaved with another write. Reads are safe anywhere.
 enum UserSettings {
     enum Key {
-        static let speedUnit = "settings.speedUnit"
-        static let distanceUnit = "settings.distanceUnit"
-        static func autoPause(_ sport: Sport) -> String { "settings.autoPause.\(sport.rawValue)" }
-        static func saveWorkout(_ sport: Sport) -> String { "settings.saveWorkout.\(sport.rawValue)" }
+        /// Device-local: when each sport was last started, and its last session.
+        static func lastUsed(_ sport: Sport) -> String { "history.lastUsed.\(sport.rawValue)" }
+        static func lastDistance(_ sport: Sport) -> String { "history.lastDistance.\(sport.rawValue)" }
+        static func lastDate(_ sport: Sport) -> String { "history.lastDate.\(sport.rawValue)" }
+        /// Older builds remembered the last sport here (watch) and the selected one (iPhone).
+        static let legacyWatchLastSport = "watch.lastSport"
+        static let legacyPhoneSport = "recorder.sport"
     }
 
-    /// Every stored setting, to send to the watch (`RecordingTransfer.pushSettings`).
-    static func snapshot() -> [String: Any] {
-        var keys = [Key.speedUnit, Key.distanceUnit]
-        for sport in Sport.allCases { keys += [Key.autoPause(sport), Key.saveWorkout(sport)] }
-        return keys.reduce(into: [:]) { result, key in
-            if let value = defaults.object(forKey: key) { result[key] = value }
-        }
-    }
-
-    /// Applies settings received from the phone; keys it no longer has are removed, so
-    /// "Automatic" on the phone becomes automatic on the watch too.
-    static func apply(_ snapshot: [String: Any]) {
-        var keys = [Key.speedUnit, Key.distanceUnit]
-        for sport in Sport.allCases { keys += [Key.autoPause(sport), Key.saveWorkout(sport)] }
-        for key in keys {
-            if let value = snapshot[key] {
-                defaults.set(value, forKey: key)
-            } else {
-                defaults.removeObject(forKey: key)
-            }
-        }
-    }
-
-    /// Stored value for "use the sport's default".
-    static let automatic = "auto"
+    /// Posted on the main queue when settings arrive from the other device.
+    static let didChangeRemotely = Notification.Name("UserSettings.didChangeRemotely")
 
     static var defaults: UserDefaults { .standard }
 
+    // MARK: Per sport
+
+    static func settings(for sport: Sport) -> SportSettings {
+        SportSettings(sport: sport) { defaults.object(forKey: $0) }
+    }
+
+    /// Stores a sport's settings and gives them a new revision.
+    @MainActor
+    static func save(_ settings: SportSettings, for sport: Sport, at date: Date = Date()) {
+        settings.write(sport: sport, to: write)
+        SettingsSync.stampLocalChange(
+            now: date.timeIntervalSince1970, device: deviceID, reading: read, writing: write)
+    }
+
     static func display(for sport: Sport) -> LiveDisplay {
-        var display = LiveDisplay.standard(for: sport)
-        if let raw = defaults.string(forKey: Key.speedUnit), let unit = SpeedUnit(rawValue: raw) {
-            display.speed = unit
-        }
-        if let raw = defaults.string(forKey: Key.distanceUnit), let unit = DistanceUnit(rawValue: raw) {
-            display.distance = unit
-        }
-        return display
+        let settings = settings(for: sport)
+        return LiveDisplay(
+            speed: settings.resolvedSpeedUnit(for: sport), distance: settings.resolvedDistanceUnit(for: sport))
     }
 
     /// Whether sessions of this sport are saved to Apple Health (off for motorboating
     /// unless the user turns it on, PLAN §5).
     static func savesWorkout(for sport: Sport) -> Bool {
-        defaults.object(forKey: Key.saveWorkout(sport)) == nil
-            ? SportProfile.standard(for: sport).savesWorkoutByDefault
-            : defaults.bool(forKey: Key.saveWorkout(sport))
+        settings(for: sport).savesWorkout
     }
 
     /// The sport's engine profile with the user's auto-pause choice applied.
     static func profile(for sport: Sport) -> SportProfile {
         var profile = SportProfile.standard(for: sport)
-        if defaults.object(forKey: Key.autoPause(sport)) != nil {
-            profile.autoPause.enabled = defaults.bool(forKey: Key.autoPause(sport))
-        }
+        profile.autoPause.enabled = settings(for: sport).autoPause
         return profile
+    }
+
+    static var hiddenSports: Set<Sport> {
+        Set(Sport.allCases.filter { settings(for: $0).isHidden })
+    }
+
+    // MARK: Sync
+
+    /// This device's per-sport settings and their revision, to send to the other device.
+    /// Main actor only, so it never mixes values from before a save with the revision
+    /// from after it.
+    @MainActor
+    static func snapshot() -> [String: Any] {
+        SettingsSync.snapshot(reading: read)
+    }
+
+    /// Applies settings from the other device if their revision is newer (`SettingsSync`).
+    @MainActor
+    static func apply(_ snapshot: [String: Any]) -> SettingsSync.Outcome {
+        SettingsSync.apply(remote: snapshot, reading: read, writing: write)
+    }
+
+    /// Moves settings from older builds to the current keys and gives values without a
+    /// revision one, so a fresh companion's empty settings never replace them. Run at
+    /// launch, before syncing.
+    @MainActor
+    static func migrate(now: Date = Date()) {
+        SportSettings.migrateLegacyUnits(reading: read, writing: write)
+        SettingsSync.assignMissingRevision(
+            now: now.timeIntervalSince1970, device: deviceID, reading: read, writing: write)
+        for key in [Key.legacyWatchLastSport, Key.legacyPhoneSport] {
+            if let raw = defaults.string(forKey: key), let sport = Sport(rawValue: raw),
+                defaults.object(forKey: Key.lastUsed(sport)) == nil
+            {
+                defaults.set(1.0, forKey: Key.lastUsed(sport))  // used, but before anything newer
+            }
+            defaults.removeObject(forKey: key)
+        }
+    }
+
+    /// A stable random ID for this device, made once; breaks ties between revisions.
+    @MainActor
+    static var deviceID: String {
+        if let id = defaults.string(forKey: SettingsSync.Key.deviceID), !id.isEmpty { return id }
+        let id = UUID().uuidString
+        defaults.set(id, forKey: SettingsSync.Key.deviceID)
+        return id
+    }
+
+    private static func read(_ key: String) -> Any? {
+        defaults.object(forKey: key)
+    }
+
+    private static func write(_ key: String, _ value: Any?) {
+        if let value { defaults.set(value, forKey: key) } else { defaults.removeObject(forKey: key) }
+    }
+
+    // MARK: Device-local history
+
+    struct LastSession: Equatable {
+        var distance: Double
+        var date: Date
+    }
+
+    static func lastUsed() -> [Sport: Double] {
+        Sport.allCases.reduce(into: [:]) { result, sport in
+            if let time = defaults.object(forKey: Key.lastUsed(sport)) as? Double { result[sport] = time }
+        }
+    }
+
+    static func markUsed(_ sport: Sport, at date: Date = Date()) {
+        defaults.set(date.timeIntervalSince1970, forKey: Key.lastUsed(sport))
+    }
+
+    static func lastSession(_ sport: Sport) -> LastSession? {
+        guard let distance = defaults.object(forKey: Key.lastDistance(sport)) as? Double,
+            let time = defaults.object(forKey: Key.lastDate(sport)) as? Double
+        else { return nil }
+        return LastSession(distance: distance, date: Date(timeIntervalSince1970: time))
+    }
+
+    static func recordSession(_ sport: Sport, distance: Double, date: Date) {
+        defaults.set(distance, forKey: Key.lastDistance(sport))
+        defaults.set(date.timeIntervalSince1970, forKey: Key.lastDate(sport))
+    }
+
+    /// Debug builds launched with `-resetSettings` start from defaults, so UI tests do not
+    /// depend on what an earlier run changed.
+    @MainActor
+    static func resetIfRequested() {
+        #if DEBUG
+            guard ProcessInfo.processInfo.arguments.contains("-resetSettings") else { return }
+            var keys = SettingsSync.snapshotKeys + [SettingsSync.Key.highestSeen]
+            for sport in Sport.allCases {
+                keys += [Key.lastUsed(sport), Key.lastDistance(sport), Key.lastDate(sport)]
+            }
+            for key in keys { defaults.removeObject(forKey: key) }
+        #endif
     }
 }
