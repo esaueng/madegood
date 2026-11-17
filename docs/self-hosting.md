@@ -39,8 +39,14 @@ macOS, Linux and Windows (x64).
 
 `env.preview` in `wrangler.jsonc` describes a separate database and bucket for
 preview deployments, so previews never touch production data. Create those the
-same way (`madegood-preview`, `madegood-tracks-preview`) and deploy with
-`--env preview`.
+same way (`madegood-preview`, `madegood-tracks-preview`). The Vite plugin bakes the
+environment's bindings into the build output, so select the environment when
+**building**, not only when deploying:
+
+```sh
+pnpm exec wrangler d1 migrations apply DB --remote --env preview
+CLOUDFLARE_ENV=preview pnpm deploy
+```
 
 ## Database migrations
 

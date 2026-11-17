@@ -8,9 +8,11 @@ export function createApp() {
 
   api.route("/", health);
 
+  // Paths in the document are relative to the `/api` server, where `api` is mounted.
   api.doc31("/openapi.json", {
     openapi: "3.1.0",
     info: { title: "MadeGood API", version: "1" },
+    servers: [{ url: "/api" }],
   });
 
   const app = new OpenAPIHono<AppEnv>().route("/api", api);
