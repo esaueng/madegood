@@ -50,6 +50,15 @@ jobs:
       - name: Generate Xcode project
         run: tuist generate --no-open
 
+      - name: Check both apps compile in Swift 6 mode
+        run: |
+          for scheme in MadeGood MadeGoodWatch; do
+            settings=$(xcodebuild -workspace MadeGood.xcworkspace -scheme "$scheme" -showBuildSettings 2>/dev/null)
+            version=$(printf '%s\n' "$settings" | awk -F' = ' '/^ *SWIFT_VERSION = / { print $2; exit }')
+            echo "$scheme: SWIFT_VERSION=$version"
+            test "$version" = "6.0"
+          done
+
       # The iOS scheme embeds the watch app, so one build covers both platforms.
       - name: Build
         run: |

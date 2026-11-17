@@ -19,6 +19,9 @@ let project = Project(
         developmentRegion: "en"
     ),
     settings: .settings(
+        // Must be in the manifest: Tuist sets a target-level SWIFT_VERSION = 5 unless the
+        // project's base settings define it, and that would override the xcconfig.
+        base: ["SWIFT_VERSION": "6.0"],
         configurations: [
             .debug(name: .debug, xcconfig: "Config/MadeGood.xcconfig"),
             .release(name: .release, xcconfig: "Config/MadeGood.xcconfig"),
