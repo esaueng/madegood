@@ -50,6 +50,14 @@ final class WatchSessionUITests: XCTestCase {
         goToPage(1, app)
         XCTAssertTrue(app.buttons["control.end"].waitForExistence(timeout: 10))
 
+        // Man-overboard: marks the position and shows the way back on its own page.
+        app.buttons["control.mob"].tap()
+        XCTAssertTrue(app.staticTexts["mob.distance"].waitForExistence(timeout: 10))
+        attachScreenshot("6 man overboard")
+        // The MOB page is now page 1, so the controls are page 2.
+        goToPage(2, app)
+        XCTAssertTrue(app.buttons["control.end"].waitForExistence(timeout: 10))
+
         app.buttons["control.end"].tap()
         let confirm = app.buttons.matching(
             NSPredicate(format: "label == 'End' AND identifier != 'control.end'")
@@ -68,9 +76,24 @@ final class WatchSessionUITests: XCTestCase {
         XCTAssertEqual(time.count, 2)
         let seconds = (time.first ?? 0) * 60 + (time.last ?? 0)
         XCTAssertLessThanOrEqual(seconds, ended.timeIntervalSince(started) + 2)
-        attachScreenshot("6 summary")
+        attachScreenshot("7 summary")
         done.tap()
-        XCTAssertTrue(kayak.waitForExistence(timeout: 10))
+
+        // Regression checks from review: an uncleared mark outlives the session and a
+        // relaunch, with its own location updates.
+        let clear = app.buttons["mob.clear"]
+        XCTAssertTrue(clear.waitForExistence(timeout: 10))
+        attachScreenshot("8 man overboard after session")
+        app.terminate()
+        let relaunched = launchDemoApp()
+        XCTAssertTrue(relaunched.buttons["mob.clear"].waitForExistence(timeout: 15))
+        // A new session can start while the mark is kept (review of #27).
+        relaunched.buttons["mob.newSession"].tap()
+        XCTAssertTrue(relaunched.buttons["sport.kayak"].waitForExistence(timeout: 10))
+        relaunched.navigationBars.buttons.firstMatch.tap()
+        XCTAssertTrue(relaunched.buttons["mob.clear"].waitForExistence(timeout: 10))
+        relaunched.buttons["mob.clear"].tap()
+        XCTAssertTrue(relaunched.buttons["sport.kayak"].waitForExistence(timeout: 10))
     }
 
     /// Moves the vertical page view to `page` (1-based) by dragging. XCUITest's quick

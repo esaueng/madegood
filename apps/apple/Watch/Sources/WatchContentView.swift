@@ -9,6 +9,7 @@ struct WatchContentView: View {
     @State private var recorder = SessionRecorder()
     @State private var waiting: [RecordingStore.Entry] = []
     @State private var summary: Summary?
+    @State private var manOverboard = ManOverboard.shared
     @AppStorage("watch.lastSport") private var lastSportRaw = ""
 
     struct Summary: Identifiable {
@@ -20,6 +21,22 @@ struct WatchContentView: View {
     var body: some View {
         NavigationStack {
             switch recorder.state {
+            case .idle where manOverboard.mark != nil:
+                // An active mark outlives the session (and relaunches) until cleared.
+                ManOverboardPage(
+                    manOverboard: manOverboard, sport: Sport(rawValue: lastSportRaw) ?? .sailing,
+                    newSession: {
+                        AnyView(
+                            SportPicker(
+                                recorder: recorder, waiting: waiting, lastSport: Sport(rawValue: lastSportRaw)
+                            ) { sport in
+                                lastSportRaw = sport.rawValue
+                                Task { await recorder.start(sport: sport) }
+                            })
+                    }
+                )
+                .onAppear { manOverboard.startOwnUpdates() }
+                .onDisappear { manOverboard.stopOwnUpdates() }
             case .idle:
                 SportPicker(recorder: recorder, waiting: waiting, lastSport: Sport(rawValue: lastSportRaw)) { sport in
                     lastSportRaw = sport.rawValue
@@ -103,14 +120,18 @@ private struct SessionPages: View {
     let startedAt: Date
     let sport: Sport
     @State private var page = Page.metrics
+    @State private var manOverboard = ManOverboard.shared
 
-    enum Page { case controls, metrics, map }
+    enum Page { case manOverboard, controls, metrics, map }
 
     var body: some View {
         TabView(selection: $page) {
-            ControlsPage(recorder: recorder).tag(Page.controls)
+            if manOverboard.mark != nil {
+                ManOverboardPage(manOverboard: manOverboard, sport: sport).tag(Page.manOverboard)
+            }
+            ControlsPage(recorder: recorder) { page = .manOverboard }.tag(Page.controls)
             MetricsPage(recorder: recorder, startedAt: startedAt, sport: sport).tag(Page.metrics)
-            MapPage(points: recorder.trackPoints).tag(Page.map)
+            MapPage(points: recorder.trackPoints, manOverboard: manOverboard.mark).tag(Page.map)
         }
         .tabViewStyle(.verticalPage)
     }
@@ -120,6 +141,7 @@ private struct MetricsPage: View {
     let recorder: SessionRecorder
     let startedAt: Date
     let sport: Sport
+    @Environment(\.isLuminanceReduced) private var isLuminanceReduced
 
     var body: some View {
         let display = UserSettings.display(for: sport)
@@ -136,8 +158,10 @@ private struct MetricsPage: View {
                         .accessibilityIdentifier("metric.lap")
                 }
                 Spacer()
-                TimelineView(.periodic(from: startedAt, by: 1)) { context in
-                    Text(Formatting.elapsed(context.date.timeIntervalSince(startedAt)))
+                // Always-on updates about once a minute, so seconds would just be wrong.
+                TimelineView(.periodic(from: startedAt, by: isLuminanceReduced ? 60 : 1)) { context in
+                    let elapsed = context.date.timeIntervalSince(startedAt)
+                    Text(isLuminanceReduced ? Formatting.duration(elapsed) : Formatting.elapsed(elapsed))
                         .monospacedDigit()
                 }
             }
@@ -148,9 +172,11 @@ private struct MetricsPage: View {
                 .lineLimit(1)
                 .accessibilityIdentifier("metric.speed")
             Field(label: "Distance", value: display.distance(metrics?.distance ?? 0))
-            Field(label: "Avg", value: display.speed(metrics?.averageSpeed))
-            Field(label: "Max 10 s", value: display.speed(metrics?.maxSpeed10s))
-            Field(label: "HR", value: LiveDisplay.heartRate(metrics?.heartRate))
+            if !isLuminanceReduced {
+                Field(label: "Avg", value: display.speed(metrics?.averageSpeed))
+                Field(label: "Max 10 s", value: display.speed(metrics?.maxSpeed10s))
+                Field(label: "HR", value: LiveDisplay.heartRate(metrics?.heartRate))
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -173,6 +199,7 @@ private struct Field: View {
 
 private struct MapPage: View {
     let points: [SessionRecorder.TrackPoint]
+    let manOverboard: ManOverboard.Mark?
 
     var body: some View {
         let coordinates = points.map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
@@ -182,6 +209,14 @@ private struct MapPage: View {
             if coordinates.count > 1 {
                 MapPolyline(coordinates: coordinates).stroke(.cyan, lineWidth: 3)
             }
+            if let manOverboard {
+                Marker(
+                    "MOB", systemImage: "figure.wave",
+                    coordinate: CLLocationCoordinate2D(
+                        latitude: manOverboard.latitude, longitude: manOverboard.longitude)
+                )
+                .tint(.red)
+            }
             UserAnnotation()
         }
         .accessibilityIdentifier("page.map")
@@ -190,10 +225,11 @@ private struct MapPage: View {
 
 private struct ControlsPage: View {
     let recorder: SessionRecorder
+    let showManOverboard: () -> Void
     @State private var confirmEnd = false
 
     var body: some View {
-        Grid(horizontalSpacing: 8, verticalSpacing: 8) {
+        Grid(horizontalSpacing: 6, verticalSpacing: 6) {
             GridRow {
                 ControlButton(
                     title: recorder.isPaused ? "Resume" : "Pause",
@@ -208,13 +244,82 @@ private struct ControlsPage: View {
                 }
             }
             GridRow {
-                ControlButton(title: "Mark", symbol: "flag.fill", tint: .teal) { recorder.mark() }
+                ControlButton(title: "MOB", symbol: "figure.wave", tint: .red) {
+                    recorder.markManOverboard()
+                    WKInterfaceDevice.current().play(.notification)
+                    if ManOverboard.shared.mark != nil { showManOverboard() }
+                }
+                ControlButton(title: "Lock", symbol: "drop.fill", tint: .cyan) {
+                    // Water lock ignores taps until the user turns the Digital Crown.
+                    WKInterfaceDevice.current().enableWaterLock()
+                }
+            }
+            GridRow {
+                ControlButton(title: "Mark", symbol: "flag.fill", tint: .teal) {
+                    recorder.mark()
+                    WKInterfaceDevice.current().play(.click)
+                }
                 ControlButton(title: "End", symbol: "xmark", tint: .red) { confirmEnd = true }
             }
         }
         .confirmationDialog("End session?", isPresented: $confirmEnd) {
             Button("End", role: .destructive) {
                 Task { await recorder.stop() }
+            }
+        }
+    }
+}
+
+/// Bearing and distance back to the man-overboard mark. Guidance needs a position from
+/// the last 10 s; the arrow is relative to the course only while moving at 0.5 m/s or
+/// more, and points from true north otherwise.
+struct ManOverboardPage: View {
+    let manOverboard: ManOverboard
+    let sport: Sport
+    /// Shown outside a session: lets the user record again without clearing the mark.
+    var newSession: (() -> AnyView)?
+
+    var body: some View {
+        let display = UserSettings.display(for: sport)
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            ScrollView {
+                VStack(spacing: 4) {
+                    let _ = context.date  // re-evaluate freshness every second
+                    if let guidance = manOverboard.guidance() {
+                        Image(systemName: "location.north.fill")
+                            .font(.system(size: 44))
+                            .foregroundStyle(.red)
+                            .rotationEffect(.degrees(guidance.arrow))
+                            .accessibilityLabel("Bearing \(Int(guidance.bearing.rounded())) degrees")
+                        Text(display.distance(guidance.distance))
+                            .font(.title2.weight(.semibold).monospacedDigit())
+                            .accessibilityIdentifier("mob.distance")
+                        Text(
+                            "Man overboard · \(Int(guidance.bearing.rounded()))°\(guidance.isCourseRelative ? "" : " true")"
+                        )
+                        .font(.footnote.weight(.semibold).monospacedDigit())
+                        .foregroundStyle(.red)
+                    } else {
+                        Image(systemName: "location.slash").font(.title).foregroundStyle(.red)
+                        Text("Man overboard").font(.headline).foregroundStyle(.red)
+                        Text("Waiting for GPS").font(.footnote).foregroundStyle(.secondary)
+                            .accessibilityIdentifier("mob.waiting")
+                    }
+                    if let mark = manOverboard.mark {
+                        if mark.positionAge > ManOverboard.freshFor {
+                            Text("Marked from a fix \(Formatting.duration(mark.positionAge)) old")
+                                .font(.footnote)
+                                .foregroundStyle(.orange)
+                        }
+                        Text(mark.markedAt, style: .relative).font(.footnote).foregroundStyle(.secondary)
+                    }
+                    if let newSession {
+                        NavigationLink("New session") { newSession() }
+                            .accessibilityIdentifier("mob.newSession")
+                    }
+                    Button("Clear", role: .destructive) { manOverboard.clear() }
+                        .accessibilityIdentifier("mob.clear")
+                }
             }
         }
     }

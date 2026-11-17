@@ -241,6 +241,23 @@ final class SessionRecorder {
 
     func lap() { userEvent(.lap) }
 
+    /// Marks man-overboard (PLAN §5) at the latest position in `ManOverboard`, and
+    /// records a `mob` event with that position and how old it was.
+    func markManOverboard() {
+        guard isRecording else { return }
+        let now = Date()
+        let mark = ManOverboard.shared.markNow(at: now)
+        var data: [String: JSONValue]?
+        if let mark {
+            data = [
+                "lat": .number(mark.latitude), "lon": .number(mark.longitude),
+                "positionAge": .number((mark.positionAge * 10).rounded() / 10),
+            ]
+        }
+        writers[.events]?.append(RawFormat.EventLine(ts: now.timeIntervalSince1970, type: .mob, data: data))
+        ingest(.event(SessionEvent(t: now.timeIntervalSince1970 - startUnix, type: .mob, data: data)))
+    }
+
     func pause() { userEvent(.pause) }
 
     func resume() { userEvent(.resume) }
@@ -273,6 +290,10 @@ final class SessionRecorder {
         ingest(.gps(fix))
         if let after = engine?.snapshot.acceptedFixes, after > before {
             appendTrackPoint(TrackPoint(latitude: line.lat, longitude: line.lon))
+            ManOverboard.shared.update(
+                ManOverboard.Position(
+                    latitude: line.lat, longitude: line.lon, at: Date(timeIntervalSince1970: line.ts),
+                    speed: line.spd, course: line.crs))
         }
     }
 
