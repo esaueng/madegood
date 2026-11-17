@@ -73,7 +73,9 @@ final class SessionRecorder {
     #endif
     private var loops: [Task<Void, Never>] = []
     /// A workout failure reported while `start()` was still running.
-    private var startupInterruption: String?
+    /// With the session it was about, so a session that `start` replaced afterwards (an
+    /// ended prepared one) does not fail the start.
+    private var startupInterruption: (message: String, source: WorkoutSource, generation: Int)?
     private var clockObserver: (any NSObjectProtocol)?
     private var engine: SessionEngine?
     private var liveSport: Sport?
@@ -157,7 +159,7 @@ final class SessionRecorder {
             Task { @MainActor in
                 // Queued before a replacement session started: not about the current one.
                 guard source.isCurrent(generation: generation) else { return }
-                await self?.workoutInterrupted(message)
+                await self?.workoutInterrupted(message, source: source, generation: generation)
             }
         }
     }
@@ -226,10 +228,12 @@ final class SessionRecorder {
                 try await workout.start(sport: sport, at: startedAt, writer: hrWriter) { [weak self] line in
                     Task { @MainActor in self?.ingestHeartRate(line, session: sessionId) }
                 }
-                if let message = startupInterruption {
+                if let interruption = startupInterruption,
+                    interruption.source.isCurrent(generation: interruption.generation)
+                {
                     // It failed while starting; don't rely on it.
                     await workout.stop(at: Date())
-                    lastError = message
+                    lastError = interruption.message
                 } else {
                     self.workout = workout
                 }
@@ -305,9 +309,9 @@ final class SessionRecorder {
     /// The workout failed or ended on its own. On the watch that means no more background
     /// time, so the recording is finished cleanly with what it has; the iPhone keeps
     /// recording on its background location session and shows the warning.
-    private func workoutInterrupted(_ message: String) async {
+    private func workoutInterrupted(_ message: String, source: WorkoutSource, generation: Int) async {
         if state == .starting {
-            startupInterruption = message
+            startupInterruption = (message, source, generation)
             return
         }
         guard isRecording else { return }
