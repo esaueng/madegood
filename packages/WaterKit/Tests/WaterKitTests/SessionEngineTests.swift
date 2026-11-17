@@ -295,3 +295,47 @@ private func approx(_ a: Double?, _ b: Double, tolerance: Double = 0.01) -> Bool
         #expect(filter.ingest(bad) == .rejected(.invalidTime))
     }
 }
+
+@Suite struct SessionReplayTests {
+    private static let id = UUID(uuidString: "00000000-0000-4000-8000-000000000002")!
+
+    private func track(_ fixes: [GPSFix], events: [SessionEvent] = [], sport: Sport = .kayak) -> Track {
+        Track(sessionId: Self.id, sport: sport, startedAt: Date(timeIntervalSince1970: 0), gps: fixes, events: events)
+    }
+
+    @Test func matchesTheLiveEngine() {
+        let fixes = Run(speed: { t in t < 60 || t >= 100 ? 1.5 : 0 }).fixes(0...159)
+        var live = SessionEngine(sport: .kayak)
+        for fix in fixes { live.ingest(.gps(fix)) }
+        let replay = SessionReplay(track: track(fixes))
+        #expect(replay.metrics == live.snapshot)
+        #expect(replay.events == live.generatedEvents)
+        #expect(replay.fixes.count == 160)
+    }
+
+    @Test func storedAutoEventsAreRegeneratedNotReplayed() {
+        let fixes = Run(speed: { t in t < 60 || t >= 100 ? 1.5 : 0 }).fixes(0...159)
+        let stored = [
+            SessionEvent(t: 60, type: .pause, data: ["auto": true]),
+            SessionEvent(t: 99, type: .resume, data: ["auto": true]),
+            SessionEvent(t: 120, type: .mark),
+        ]
+        let replay = SessionReplay(track: track(fixes, events: stored))
+        let plain = SessionReplay(track: track(fixes))
+        #expect(replay.metrics.movingTime == plain.metrics.movingTime)
+        #expect(replay.events.map(\.type) == [.pause, .resume, .mark])
+    }
+
+    @Test func stopAtTheLastFixKeepsIt() {
+        let fixes = Run(speed: { _ in 2 }).fixes(0...10)
+        let replay = SessionReplay(track: track(fixes, events: [SessionEvent(t: 10, type: .stop)]))
+        #expect(replay.metrics.movingTime == 10)
+        #expect(replay.metrics.isFinished)
+    }
+
+    @Test func rejectedFixesAreLeftOut() {
+        var fixes = Run(speed: { _ in 2 }).fixes(0...10)
+        fixes[5].horizontalAccuracy = 80
+        #expect(SessionReplay(track: track(fixes)).fixes.map(\.t) == [0, 1, 2, 3, 4, 6, 7, 8, 9, 10])
+    }
+}

@@ -122,7 +122,7 @@ private struct MetricsPage: View {
     let sport: Sport
 
     var body: some View {
-        let display = LiveDisplay.standard(for: sport)
+        let display = UserSettings.display(for: sport)
         let metrics = recorder.metrics
         VStack(alignment: .leading, spacing: 2) {
             HStack {
@@ -246,7 +246,7 @@ private struct SummaryView: View {
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        let display = LiveDisplay.standard(for: summary.sport)
+        let display = UserSettings.display(for: summary.sport)
         let metrics = summary.metrics
         ScrollView {
             VStack(alignment: .leading, spacing: 4) {
