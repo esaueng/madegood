@@ -44,6 +44,18 @@ struct SettingsView: View {
                     )
                 }
 
+                Section {
+                    ForEach(Sport.allCases, id: \.self) { sport in
+                        SaveWorkoutToggle(sport: sport)
+                    }
+                } header: {
+                    Text("Apple Health")
+                } footer: {
+                    Text(
+                        "Saves each session as a workout with its route and heart rate. Recordings stay in MadeGood either way."
+                    )
+                }
+
                 Section("About") {
                     LabeledContent("Version", value: AppInfo.version)
                     Link(destination: URL(string: "https://github.com/esaueng/madegood")!) {
@@ -55,6 +67,9 @@ struct SettingsView: View {
                 }
             }
             .tint(.accentColor)
+            .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)) { _ in
+                RecordingTransfer.shared.pushSettings()
+            }
             .navigationTitle("Settings")
         }
     }
@@ -75,6 +90,24 @@ private struct AutoPauseToggle: View {
             Label(sport.displayName, systemImage: sport.symbolName)
         }
         .accessibilityIdentifier("settings.autoPause.\(sport.rawValue)")
+    }
+}
+
+private struct SaveWorkoutToggle: View {
+    let sport: Sport
+    @AppStorage private var enabled: Bool
+
+    init(sport: Sport) {
+        self.sport = sport
+        _enabled = AppStorage(
+            wrappedValue: SportProfile.standard(for: sport).savesWorkoutByDefault, UserSettings.Key.saveWorkout(sport))
+    }
+
+    var body: some View {
+        Toggle(isOn: $enabled) {
+            Label(sport.displayName, systemImage: sport.symbolName)
+        }
+        .accessibilityIdentifier("settings.saveWorkout.\(sport.rawValue)")
     }
 }
 

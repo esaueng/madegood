@@ -28,6 +28,7 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
         static let sessionId = "sessionId"
         static let file = "file"
         static let stored = "stored"
+        static let settings = "settings"
     }
 
     /// Folder names of recordings being written right now; never sent or deleted.
@@ -171,6 +172,38 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
         }
     #endif
 
+    // MARK: Settings (phone → watch)
+
+    #if os(iOS)
+        /// Sends the phone's settings to the watch; the latest context replaces older ones.
+        /// Resends settings when the watch app is installed (or the pairing changes): an
+        /// earlier push returns early while the app is missing.
+        nonisolated func sessionWatchStateDidChange(_ session: WCSession) {
+            pushSettings()
+        }
+
+        func pushSettings() {
+            let session = WCSession.default
+            guard WCSession.isSupported(), session.activationState == .activated, session.isPaired,
+                session.isWatchAppInstalled
+            else { return }
+            do {
+                try session.updateApplicationContext([Key.settings: UserSettings.snapshot()])
+            } catch {
+                print("RecordingTransfer: settings update failed: \(error)")
+            }
+        }
+    #else
+        nonisolated func session(_ session: WCSession, didReceiveApplicationContext context: [String: Any]) {
+            applySettings(context)
+        }
+
+        nonisolated private func applySettings(_ context: [String: Any]) {
+            guard let settings = context[Key.settings] as? [String: Any] else { return }
+            UserSettings.apply(settings)
+        }
+    #endif
+
     // MARK: Both
 
     nonisolated func session(
@@ -179,7 +212,12 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
     ) {
         if let error { print("RecordingTransfer: activation failed: \(error)") }
         #if os(watchOS)
-            if activationState == .activated { sendAllPending() }
+            if activationState == .activated {
+                sendAllPending()
+                applySettings(session.receivedApplicationContext)
+            }
+        #else
+            if activationState == .activated { pushSettings() }
         #endif
     }
 }

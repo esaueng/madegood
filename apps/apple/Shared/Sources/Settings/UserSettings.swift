@@ -8,6 +8,30 @@ enum UserSettings {
         static let speedUnit = "settings.speedUnit"
         static let distanceUnit = "settings.distanceUnit"
         static func autoPause(_ sport: Sport) -> String { "settings.autoPause.\(sport.rawValue)" }
+        static func saveWorkout(_ sport: Sport) -> String { "settings.saveWorkout.\(sport.rawValue)" }
+    }
+
+    /// Every stored setting, to send to the watch (`RecordingTransfer.pushSettings`).
+    static func snapshot() -> [String: Any] {
+        var keys = [Key.speedUnit, Key.distanceUnit]
+        for sport in Sport.allCases { keys += [Key.autoPause(sport), Key.saveWorkout(sport)] }
+        return keys.reduce(into: [:]) { result, key in
+            if let value = defaults.object(forKey: key) { result[key] = value }
+        }
+    }
+
+    /// Applies settings received from the phone; keys it no longer has are removed, so
+    /// "Automatic" on the phone becomes automatic on the watch too.
+    static func apply(_ snapshot: [String: Any]) {
+        var keys = [Key.speedUnit, Key.distanceUnit]
+        for sport in Sport.allCases { keys += [Key.autoPause(sport), Key.saveWorkout(sport)] }
+        for key in keys {
+            if let value = snapshot[key] {
+                defaults.set(value, forKey: key)
+            } else {
+                defaults.removeObject(forKey: key)
+            }
+        }
     }
 
     /// Stored value for "use the sport's default".
@@ -24,6 +48,14 @@ enum UserSettings {
             display.distance = unit
         }
         return display
+    }
+
+    /// Whether sessions of this sport are saved to Apple Health (off for motorboating
+    /// unless the user turns it on, PLAN §5).
+    static func savesWorkout(for sport: Sport) -> Bool {
+        defaults.object(forKey: Key.saveWorkout(sport)) == nil
+            ? SportProfile.standard(for: sport).savesWorkoutByDefault
+            : defaults.bool(forKey: Key.saveWorkout(sport))
     }
 
     /// The sport's engine profile with the user's auto-pause choice applied.
