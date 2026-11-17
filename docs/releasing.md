@@ -11,8 +11,8 @@ certificates, profiles or fastlane setup to maintain.
 - **A version:** bump `MARKETING_VERSION` in `apps/apple/Config/MadeGood.xcconfig`, merge,
   then push a matching tag, for example `git tag v0.2.0 && git push origin v0.2.0`.
 
-The build number is the workflow's run number plus its attempt (`42.1`), so it always
-increases. Apple processes an upload in about 10–30 minutes; the **Internal** TestFlight
+The build number is the UTC time of the build (`20261117.91530` for 09:15:30), so it
+always increases, even when an older run is re-run. Apple processes an upload in about 10–30 minutes; the **Internal** TestFlight
 group has automatic distribution on, so its testers get the build without further
 steps.
 
