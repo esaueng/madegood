@@ -30,6 +30,7 @@ Run the checks for every area you touch before you push.
 | Anonymize a track | `scripts/anonymize-track <in> <out>` |
 | Apple project | `mise install` (pins Tuist), then `cd apps/apple && tuist install && tuist generate --no-open` |
 | Apple build | see the `apple` job in `.github/workflows/ci.yml` for the exact `xcodebuild` lines |
+| Apple UI tests | in `apps/apple`: `xcodebuild test -workspace MadeGood.xcworkspace -scheme MadeGoodWatch -destination 'platform=watchOS Simulator,name=<watch>'`, and `-scheme MadeGood -only-testing:MadeGoodUITests` with an iPhone simulator. They launch the apps with `-demoSession` (a synthetic route, no permissions); export screenshots with `xcrun xcresulttool export attachments` |
 | Web install | `pnpm install` |
 | Web lint/format | `pnpm check` (Biome) |
 | Web typecheck/test | `pnpm -C web typecheck && pnpm -C web test` |

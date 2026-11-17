@@ -1,5 +1,6 @@
 import MapKit
 import SwiftUI
+import WatchKit
 import WaterKit
 
 /// Watch app: pick a sport, record with live metrics, a map and controls, then see a
@@ -75,6 +76,7 @@ private struct SportPicker: View {
                 } label: {
                     Label(sport.displayName, systemImage: sport.symbolName)
                 }
+                .accessibilityIdentifier("sport.\(sport.rawValue)")
             }
             if let error = recorder.lastError {
                 Text(error).font(.footnote).foregroundStyle(.red)
@@ -128,6 +130,10 @@ private struct MetricsPage: View {
                     .labelStyle(.iconOnly)
                 if let state = metrics?.pauseState, let label = LiveDisplay.pauseLabel(state) {
                     Text(label).foregroundStyle(.yellow)
+                        .accessibilityIdentifier("pauseBadge")
+                } else if let lap = LiveDisplay.lapLabel(metrics) {
+                    Text(lap).foregroundStyle(.blue)
+                        .accessibilityIdentifier("metric.lap")
                 }
                 Spacer()
                 TimelineView(.periodic(from: startedAt, by: 1)) { context in
@@ -140,6 +146,7 @@ private struct MetricsPage: View {
                 .font(.system(size: 40, weight: .semibold, design: .rounded).monospacedDigit())
                 .minimumScaleFactor(0.6)
                 .lineLimit(1)
+                .accessibilityIdentifier("metric.speed")
             Field(label: "Distance", value: display.distance(metrics?.distance ?? 0))
             Field(label: "Avg", value: display.speed(metrics?.averageSpeed))
             Field(label: "Max 10 s", value: display.speed(metrics?.maxSpeed10s))
@@ -158,6 +165,7 @@ private struct Field: View {
             Text(label).foregroundStyle(.secondary)
             Spacer()
             Text(value).monospacedDigit()
+                .accessibilityIdentifier("field.\(label)")
         }
         .font(.body)
     }
@@ -168,13 +176,15 @@ private struct MapPage: View {
 
     var body: some View {
         let coordinates = points.map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
-        Map(initialPosition: .userLocation(fallback: .automatic)) {
+        // Display only: an interactive map takes the swipes and the Digital Crown, which
+        // trapped the user on this page. It follows the current position instead.
+        Map(initialPosition: .userLocation(followsHeading: false, fallback: .automatic), interactionModes: []) {
             if coordinates.count > 1 {
                 MapPolyline(coordinates: coordinates).stroke(.cyan, lineWidth: 3)
             }
             UserAnnotation()
         }
-        .mapControls { MapUserLocationButton() }
+        .accessibilityIdentifier("page.map")
     }
 }
 
@@ -190,9 +200,11 @@ private struct ControlsPage: View {
                     symbol: recorder.isPaused ? "play.fill" : "pause.fill", tint: .yellow
                 ) {
                     if recorder.isPaused { recorder.resume() } else { recorder.pause() }
+                    WKInterfaceDevice.current().play(recorder.isPaused ? .stop : .start)
                 }
                 ControlButton(title: "Lap", symbol: "stopwatch", tint: .blue) {
                     recorder.lap()
+                    WKInterfaceDevice.current().play(.click)
                 }
             }
             GridRow {
@@ -223,6 +235,7 @@ private struct ControlButton: View {
             .frame(maxWidth: .infinity, minHeight: 56)
         }
         .tint(tint)
+        .accessibilityIdentifier("control.\(title.lowercased())")
     }
 }
 
@@ -251,6 +264,7 @@ private struct SummaryView: View {
                 }
                 Button("Done") { dismiss() }
                     .padding(.top, 6)
+                    .accessibilityIdentifier("summary.done")
             }
         }
     }

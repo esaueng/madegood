@@ -33,6 +33,12 @@ struct LiveDisplay {
         return "\(Int(degrees.rounded()) % 360)°"
     }
 
+    /// "Lap 2" once the user has closed a lap; nil while still on the first.
+    static func lapLabel(_ metrics: LiveMetrics?) -> String? {
+        guard let metrics, !metrics.laps.isEmpty else { return nil }
+        return "Lap \(metrics.currentLap.index)"
+    }
+
     static func pauseLabel(_ state: LiveMetrics.PauseState) -> String? {
         switch state {
         case .moving: nil

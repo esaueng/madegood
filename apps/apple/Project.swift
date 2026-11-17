@@ -96,5 +96,26 @@ let project = Project(
                 .external(name: "WaterKit"),
             ]
         ),
+        // UI tests run the apps in demo mode (DemoFeed): no GPS, Health or prompts.
+        .target(
+            name: "MadeGoodUITests",
+            destinations: [.iPhone],
+            product: .uiTests,
+            bundleId: "$(BUNDLE_ID_PREFIX).uitests",
+            deploymentTargets: iOSTarget,
+            infoPlist: .default,
+            sources: ["UITests/iOS/**", "UITests/Shared/**"],
+            dependencies: [.target(name: "MadeGood")]
+        ),
+        .target(
+            name: "MadeGoodWatchUITests",
+            destinations: [.appleWatch],
+            product: .uiTests,
+            bundleId: "$(BUNDLE_ID_PREFIX).watchkitapp.uitests",
+            deploymentTargets: watchOSTarget,
+            infoPlist: .default,
+            sources: ["UITests/Watch/**", "UITests/Shared/**"],
+            dependencies: [.target(name: "MadeGoodWatch")]
+        ),
     ]
 )

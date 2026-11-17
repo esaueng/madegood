@@ -88,8 +88,9 @@ final class SessionRecorder {
         counts = Counts()
 
         // Ask for location while the app is in use (shows the prompt the first time).
-        serviceSession = CLServiceSession(authorization: .whenInUse)
-        if WorkoutSource.isAvailable {
+        let demo = DemoFeed.isEnabled
+        if !demo { serviceSession = CLServiceSession(authorization: .whenInUse) }
+        if WorkoutSource.isAvailable, !demo {
             do {
                 try await WorkoutSource.requestAuthorization(store: healthStore)
             } catch {
@@ -132,7 +133,7 @@ final class SessionRecorder {
         self.writers = writers
 
         // A workout session keeps the app running with the screen off (watch and iPhone).
-        if WorkoutSource.isAvailable, let hrWriter = writers[.hr] {
+        if WorkoutSource.isAvailable, !demo, let hrWriter = writers[.hr] {
             let workout = WorkoutSource(
                 store: healthStore, writer: hrWriter,
                 onInterruption: { [weak self] message in
@@ -157,7 +158,7 @@ final class SessionRecorder {
         #if os(watchOS)
             // Without a workout the watch suspends the app when the wrist drops, so a
             // recording would silently stop. Don't start one.
-            if workout == nil {
+            if workout == nil, !demo {
                 if lastError == nil {
                     lastError = "Health is unavailable, so the watch can't record in the background."
                 }
@@ -169,19 +170,21 @@ final class SessionRecorder {
             backgroundActivity = CLBackgroundActivitySession()
         #endif
 
-        if let writer = writers[.gps] {
+        if demo {
+            startDemoFeed(session: sessionId)
+        } else if let writer = writers[.gps] {
             let location = LocationSource(writer: writer) { [weak self] line in
                 Task { @MainActor in self?.ingestFix(line, session: sessionId) }
             }
             location.start()
             self.location = location
         }
-        if let writer = writers[.motion] {
+        if !demo, let writer = writers[.motion] {
             let motion = MotionSource(writer: writer)
             motion.start(rate: Self.motionRate)
             self.motion = motion
         }
-        if let writer = writers[.heading] {
+        if !demo, let writer = writers[.heading] {
             let heading = HeadingSource(writer: writer)
             heading.start()
             self.heading = heading
@@ -308,6 +311,25 @@ final class SessionRecorder {
             let newest = trackPoints.removeLast()
             trackPoints = trackPoints.enumerated().filter { $0.offset.isMultiple(of: 2) }.map(\.element) + [newest]
         }
+    }
+
+    /// Feeds the synthetic route through the same path as real sensors (see `DemoFeed`).
+    private func startDemoFeed(session: UUID) {
+        loops.append(
+            Task { [weak self] in
+                var second = 0
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .seconds(1 / DemoFeed.timeScale))
+                    guard let self, self.isRecording else { return }
+                    let fix = DemoFeed.fix(second: second, startUnix: self.startUnix)
+                    let hr = DemoFeed.heartRate(second: second, startUnix: self.startUnix)
+                    self.writers[.gps]?.append(fix)
+                    self.writers[.hr]?.append(hr)
+                    self.ingestFix(fix, session: session)
+                    self.ingestHeartRate(hr, session: session)
+                    second += 1
+                }
+            })
     }
 
     private func startLoops() {

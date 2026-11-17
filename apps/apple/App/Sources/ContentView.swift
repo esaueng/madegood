@@ -74,6 +74,7 @@ private struct RecordControls: View {
             } label: {
                 Label("Start recording", systemImage: "record.circle")
             }
+            .accessibilityIdentifier("control.start")
             if let error = recorder.lastError {
                 Text(error).font(.footnote).foregroundStyle(.red)
             }
@@ -102,11 +103,13 @@ private struct RecordControls: View {
                     recorder.isPaused ? "Resume" : "Pause",
                     systemImage: recorder.isPaused ? "play.circle" : "pause.circle")
             }
+            .accessibilityIdentifier("control.pause")
             Button {
                 recorder.lap()
             } label: {
                 Label("Lap", systemImage: "stopwatch")
             }
+            .accessibilityIdentifier("control.lap")
             Button {
                 recorder.mark()
             } label: {
@@ -117,6 +120,7 @@ private struct RecordControls: View {
             } label: {
                 Label("Stop", systemImage: "stop.circle")
             }
+            .accessibilityIdentifier("control.stop")
         }
     }
 }
@@ -130,19 +134,28 @@ private struct LiveMetricsGrid: View {
         Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 4) {
             GridRow {
                 Text(display.speed(metrics?.speed)).font(.largeTitle.monospacedDigit().bold())
+                    .accessibilityIdentifier("metric.speed")
                     .gridCellColumns(2)
             }
             GridRow {
                 Text("Distance \(display.distance(metrics?.distance ?? 0))")
+                    .accessibilityIdentifier("metric.distance")
                 Text("Avg \(display.speed(metrics?.averageSpeed))")
             }
             GridRow {
                 Text("Max 10 s \(display.speed(metrics?.maxSpeed10s))")
                 Text("HR \(LiveDisplay.heartRate(metrics?.heartRate))")
             }
+            if let lap = LiveDisplay.lapLabel(metrics) {
+                GridRow {
+                    Text(lap).gridCellColumns(2)
+                        .accessibilityIdentifier("metric.lap")
+                }
+            }
             if let state = metrics?.pauseState, let label = LiveDisplay.pauseLabel(state) {
                 GridRow {
                     Text(label).foregroundStyle(.yellow).gridCellColumns(2)
+                        .accessibilityIdentifier("pauseBadge")
                 }
             }
         }
