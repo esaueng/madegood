@@ -5,16 +5,16 @@ import Synchronization
 import WaterKit
 
 // Sensor sources for the raw recorder. Each writes sensor-native timestamps straight to
-// its StreamWriter (docs/formats.md) and never touches the main actor from a callback.
+// its RawStreamWriter (docs/formats.md) and never touches the main actor from a callback.
 
 // MARK: Location
 
 /// 1 Hz location via `CLLocationUpdate.liveUpdates(.fitness)`.
 final class LocationSource: Sendable {
-    private let writer: StreamWriter
+    private let writer: RawStreamWriter
     private let task = Mutex<Task<Void, Never>?>(nil)
 
-    init(writer: StreamWriter) {
+    init(writer: RawStreamWriter) {
         self.writer = writer
     }
 
@@ -73,9 +73,9 @@ final class MotionSource {
         queue.qualityOfService = .userInitiated
         return queue
     }()
-    private let writer: StreamWriter
+    private let writer: RawStreamWriter
 
-    init(writer: StreamWriter) {
+    init(writer: RawStreamWriter) {
         self.writer = writer
     }
 
@@ -93,7 +93,7 @@ final class MotionSource {
 
     /// Built outside the main actor so the closure is not main-actor isolated: CoreMotion
     /// calls it on `queue`.
-    nonisolated private static func handler(writer: StreamWriter) -> CMDeviceMotionHandler {
+    nonisolated private static func handler(writer: RawStreamWriter) -> CMDeviceMotionHandler {
         { motion, _ in
             guard let motion else { return }
             let g = RawFormat.standardGravity
@@ -118,9 +118,9 @@ final class MotionSource {
 @MainActor
 final class HeadingSource: NSObject, CLLocationManagerDelegate {
     private let manager = CLLocationManager()
-    private let writer: StreamWriter
+    private let writer: RawStreamWriter
 
-    init(writer: StreamWriter) {
+    init(writer: RawStreamWriter) {
         self.writer = writer
         super.init()
         manager.delegate = self

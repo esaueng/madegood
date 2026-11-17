@@ -36,7 +36,7 @@ final class SessionRecorder {
     var onFinish: ((URL) -> Void)?
 
     private let healthStore = HKHealthStore()
-    private var writers: [RawFormat.Stream: StreamWriter] = [:]
+    private var writers: [RawFormat.Stream: RawStreamWriter] = [:]
     private var meta: RawFormat.Meta?
     private var folder: URL?
     private var location: LocationSource?
@@ -75,10 +75,13 @@ final class SessionRecorder {
         let sessionId = UUID()
         let startedAt = Date()
         let folder = RecordingStore.folder(for: sessionId)
+        // Before the folder exists, so the watch never sends or deletes it while recording.
+        RecordingTransfer.shared.markActive(folder, true)
         do {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         } catch {
             lastError = "Could not create the recording folder: \(error.localizedDescription)"
+            RecordingTransfer.shared.markActive(folder, false)
             state = .idle
             return
         }
@@ -94,12 +97,14 @@ final class SessionRecorder {
         writeMeta()
 
         let writers = Dictionary(
-            uniqueKeysWithValues: RawFormat.Stream.allCases.map { ($0, StreamWriter(stream: $0, folder: folder)) })
+            uniqueKeysWithValues: RawFormat.Stream.allCases.map { ($0, RawStreamWriter(stream: $0, folder: folder)) })
         self.writers = writers
 
         // A workout session keeps the app running with the screen off (watch and iPhone).
         if WorkoutSource.isAvailable, let hrWriter = writers[.hr] {
-            let workout = WorkoutSource(store: healthStore, writer: hrWriter)
+            let workout = WorkoutSource(store: healthStore, writer: hrWriter) { [weak self] message in
+                Task { @MainActor in await self?.workoutInterrupted(message) }
+            }
             do {
                 try await workout.start(sport: sport, at: startedAt)
                 self.workout = workout
@@ -107,6 +112,15 @@ final class SessionRecorder {
                 lastError = "Workout session failed: \(error.localizedDescription)"
             }
         }
+        #if os(watchOS)
+            // Without a workout the watch suspends the app when the wrist drops, so a
+            // recording would silently stop. Don't start one.
+            if workout == nil {
+                if lastError == nil { lastError = "Health is unavailable, so the watch can't record in the background." }
+                abandonStart(folder: folder)
+                return
+            }
+        #endif
         #if os(iOS)
             backgroundActivity = CLBackgroundActivitySession()
         #endif
@@ -135,6 +149,30 @@ final class SessionRecorder {
             MainActor.assumeIsolated { self?.writeClockAnchor() }
         }
         state = .recording(sessionId: sessionId, startedAt: startedAt, sport: sport)
+    }
+
+    /// Undoes a start that cannot continue: nothing has been recorded yet.
+    private func abandonStart(folder: URL) {
+        writers = [:]
+        meta = nil
+        self.folder = nil
+        try? FileManager.default.removeItem(at: folder)
+        RecordingTransfer.shared.markActive(folder, false)
+        serviceSession?.invalidate()
+        serviceSession = nil
+        state = .idle
+    }
+
+    /// The workout failed or ended on its own. On the watch that means no more background
+    /// time, so the recording is finished cleanly with what it has; the iPhone keeps
+    /// recording on its background location session and shows the warning.
+    private func workoutInterrupted(_ message: String) async {
+        guard isRecording else { return }
+        lastError = message
+        #if os(watchOS)
+            await stop()
+            lastError = message + " The recording was saved up to this point."
+        #endif
     }
 
     // MARK: During
@@ -175,12 +213,16 @@ final class SessionRecorder {
     }
 
     private func refreshCounts() {
-        func lines(_ stream: RawFormat.Stream) -> Int { writers[stream]?.counts.lines ?? 0 }
+        func lines(_ stream: RawFormat.Stream) -> Int { writers[stream]?.status.lines ?? 0 }
         counts.gps = lines(.gps)
         counts.motion = lines(.motion)
         counts.hr = lines(.hr)
         counts.heading = lines(.heading)
-        counts.dropped = writers.values.reduce(0) { $0 + $1.counts.dropped }
+        let statuses = writers.values.map(\.status)
+        counts.dropped = statuses.reduce(0) { $0 + $1.dropped }
+        if let error = statuses.compactMap(\.lastError).first {
+            lastError = "Saving data failed (retrying): \(error)"
+        }
     }
 
     // MARK: Stop
@@ -209,14 +251,22 @@ final class SessionRecorder {
         writeClockAnchor()
         refreshCounts()
         let writers = Array(writers.values)
-        await Task.detached(priority: .userInitiated) {
-            for writer in writers { writer.flushAndWait() }
+        let savedEverything = await Task.detached(priority: .userInitiated) {
+            writers.map { $0.flushAndWait() }.allSatisfy { $0 }
         }.value
+        refreshCounts()
 
-        meta?.endedAt = endedAt.timeIntervalSince1970
-        writeMeta()
+        // endedAt marks a clean, complete recording. If data is missing, leave it out so
+        // readers treat the recording as interrupted.
+        if savedEverything {
+            meta?.endedAt = endedAt.timeIntervalSince1970
+            writeMeta()
+        } else {
+            lastError = "Some data could not be saved (storage full?). The recording is marked as incomplete."
+        }
 
         let folder = folder
+        if let folder { RecordingTransfer.shared.markActive(folder, false) }
         location = nil
         motion = nil
         heading = nil

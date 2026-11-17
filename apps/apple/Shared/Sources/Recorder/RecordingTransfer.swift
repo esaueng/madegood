@@ -3,27 +3,37 @@ import Synchronization
 import WatchConnectivity
 import WaterKit
 
-/// Moves finished recordings from the watch to the phone with `WCSession.transferFile`,
-/// one file per transfer (each stream is already gzipped). The watch keeps a recording
-/// until every file has been delivered, and re-sends unfinished ones on the next launch;
-/// the phone overwrites duplicates, so re-sending is safe.
+/// Moves finished recordings from the watch to the phone.
+///
+/// - The watch sends each file with `WCSession.transferFile` (each stream is already
+///   gzipped), `meta.json` last.
+/// - The phone stores each file durably (atomic replace for duplicates) and only then
+///   acknowledges it with `transferUserInfo`, which is queued and delivered even if the
+///   watch app isn't running.
+/// - The watch deletes a recording only when the phone has acknowledged **every** file in
+///   it. A transfer that "finished" but wasn't stored is never acknowledged, so the watch
+///   keeps the recording and sends it again on the next launch.
+/// - The recording in progress is never sent or deleted (`markActive`).
 ///
 /// The watch never talks to the API (docs/PLAN.md §4.1); the phone is the hub.
 final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
     static let shared = RecordingTransfer()
 
-    /// Posted on the main queue when the phone has received a file.
+    /// Posted on the main queue when the phone has stored a file.
     static let didReceiveFile = Notification.Name("RecordingTransfer.didReceiveFile")
-    /// Posted on the main queue when the watch has delivered every file of a recording.
+    /// Posted on the main queue when the watch has removed a fully delivered recording.
     static let didDeliverRecording = Notification.Name("RecordingTransfer.didDeliverRecording")
 
     private enum Key {
         static let sessionId = "sessionId"
         static let file = "file"
+        static let stored = "stored"
     }
 
-    /// Files still in flight, by session folder name (watch side).
-    private let pending = Mutex<[String: Set<String>]>([:])
+    /// Folder names of recordings being written right now; never sent or deleted.
+    private let active = Mutex<Set<String>>([])
+    /// Files the phone has confirmed storing, by folder name (watch side).
+    private let acknowledged = Mutex<[String: Set<String>]>([:])
 
     func activate() {
         guard WCSession.isSupported() else { return }
@@ -31,15 +41,25 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
         WCSession.default.activate()
     }
 
+    /// Marks a recording as in progress (or not). Called by SessionRecorder on both devices.
+    func markActive(_ folder: URL, _ isActive: Bool) {
+        active.withLock { set in
+            if isActive { set.insert(folder.lastPathComponent) } else { set.remove(folder.lastPathComponent) }
+        }
+    }
+
+    private func isActive(_ name: String) -> Bool {
+        active.withLock { $0.contains(name) }
+    }
+
     // MARK: Watch: sending
 
     #if os(watchOS)
-        /// Queues every file of `folder`. Call after a recording stops, and on launch for
-        /// recordings that were not fully delivered.
+        /// Queues every file of `folder` that is not already in flight.
         func send(folder: URL) {
             let session = WCSession.default
-            guard session.activationState == .activated else { return }
             let sessionId = folder.lastPathComponent
+            guard session.activationState == .activated, !isActive(sessionId) else { return }
             let files = ((try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? [])
                 .filter(RecordingStore.isRecordingFileName)
             guard !files.isEmpty else { return }
@@ -48,8 +68,6 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
                 session.outstandingFileTransfers
                     .filter { $0.file.metadata?[Key.sessionId] as? String == sessionId }
                     .compactMap { $0.file.metadata?[Key.file] as? String })
-            pending.withLock { $0[sessionId, default: []].formUnion(files) }
-            // meta.json last: the phone lists a recording once its meta.json arrives.
             let ordered = files.filter { $0 != RawFormat.metaFileName } + files.filter { $0 == RawFormat.metaFileName }
             for name in ordered where !inFlight.contains(name) {
                 session.transferFile(
@@ -58,7 +76,8 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
             }
         }
 
-        /// Re-sends every recording still on the watch.
+        /// Sends every finished recording still on the watch, including ones interrupted
+        /// in an earlier launch (they have no `endedAt`, which readers handle).
         func sendAllPending() {
             for entry in RecordingStore.list() {
                 send(folder: entry.folder)
@@ -68,22 +87,37 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
         nonisolated func session(
             _ session: WCSession, didFinish fileTransfer: WCSessionFileTransfer, error: (any Error)?
         ) {
-            guard error == nil,
-                  let sessionId = fileTransfer.file.metadata?[Key.sessionId] as? String,
-                  let name = fileTransfer.file.metadata?[Key.file] as? String
-            else {
-                if let error { print("RecordingTransfer: transfer failed: \(error)") }
+            // Delivery is not storage: only the phone's acknowledgement allows deleting.
+            if let error { print("RecordingTransfer: transfer failed, will retry on next launch: \(error)") }
+        }
+
+        nonisolated func session(_ session: WCSession, didReceiveUserInfo userInfo: [String: Any]) {
+            guard userInfo[Key.stored] as? Bool == true,
+                let sessionId = userInfo[Key.sessionId] as? String,
+                let name = userInfo[Key.file] as? String,
+                UUID(uuidString: sessionId) != nil
+            else { return }
+            let all = acknowledged.withLock { acked -> Set<String> in
+                acked[sessionId, default: []].insert(name)
+                return acked[sessionId] ?? []
+            }
+            deleteIfFullyAcknowledged(sessionId: sessionId, acknowledged: all)
+        }
+
+        private func deleteIfFullyAcknowledged(sessionId: String, acknowledged acked: Set<String>) {
+            guard !isActive(sessionId) else { return }
+            let folder = RecordingStore.root.appendingPathComponent(sessionId, isDirectory: true)
+            let files = Set(
+                ((try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? [])
+                    .filter(RecordingStore.isRecordingFileName))
+            guard !files.isEmpty, files.isSubset(of: acked) else { return }
+            do {
+                try FileManager.default.removeItem(at: folder)
+            } catch {
+                print("RecordingTransfer: could not remove delivered recording: \(error)")
                 return
             }
-            let done = pending.withLock { pending -> Bool in
-                pending[sessionId, default: []].remove(name)
-                guard pending[sessionId]?.isEmpty == true else { return false }
-                pending[sessionId] = nil
-                return true
-            }
-            guard done else { return }
-            // Delivered: the phone now holds the copy.
-            try? FileManager.default.removeItem(at: RecordingStore.root.appendingPathComponent(sessionId))
+            acknowledged.withLock { $0[sessionId] = nil }
             DispatchQueue.main.async {
                 NotificationCenter.default.post(name: Self.didDeliverRecording, object: nil)
             }
@@ -93,27 +127,37 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
     // MARK: Phone: receiving
 
     #if os(iOS)
-        /// Must move the file before returning: WatchConnectivity deletes it afterwards.
+        /// Stores the file before returning (WatchConnectivity deletes it afterwards), then
+        /// acknowledges it. Nothing is acknowledged unless it is safely on disk.
         nonisolated func session(_ session: WCSession, didReceive file: WCSessionFile) {
-            guard let sessionId = file.metadata?[Key.sessionId] as? String,
-                  let name = file.metadata?[Key.file] as? String,
-                  UUID(uuidString: sessionId) != nil,
-                  RecordingStore.isRecordingFileName(name)
+            guard let sessionId = (file.metadata?[Key.sessionId] as? String)?.lowercased(),
+                let name = file.metadata?[Key.file] as? String,
+                UUID(uuidString: sessionId) != nil,
+                RecordingStore.isRecordingFileName(name)
             else {
                 print("RecordingTransfer: ignoring unexpected file \(file.fileURL.lastPathComponent)")
                 return
             }
             let fm = FileManager.default
-            let folder = RecordingStore.root.appendingPathComponent(sessionId.lowercased(), isDirectory: true)
+            let folder = RecordingStore.root.appendingPathComponent(sessionId, isDirectory: true)
             let destination = folder.appendingPathComponent(name)
+            // Stage next to the destination (same volume) so replacing is atomic and an old
+            // copy survives if anything fails.
+            let staged = folder.appendingPathComponent(".incoming-\(UUID().uuidString)-\(name)")
             do {
                 try fm.createDirectory(at: folder, withIntermediateDirectories: true)
-                if fm.fileExists(atPath: destination.path) { try fm.removeItem(at: destination) }
-                try fm.moveItem(at: file.fileURL, to: destination)
+                try fm.moveItem(at: file.fileURL, to: staged)
+                if fm.fileExists(atPath: destination.path) {
+                    _ = try fm.replaceItemAt(destination, withItemAt: staged)
+                } else {
+                    try fm.moveItem(at: staged, to: destination)
+                }
             } catch {
-                print("RecordingTransfer: could not store \(name): \(error)")
+                try? fm.removeItem(at: staged)
+                print("RecordingTransfer: could not store \(name); the watch keeps its copy: \(error)")
                 return
             }
+            session.transferUserInfo([Key.stored: true, Key.sessionId: sessionId, Key.file: name])
             DispatchQueue.main.async {
                 NotificationCenter.default.post(name: Self.didReceiveFile, object: nil)
             }
@@ -130,7 +174,8 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
     // MARK: Both
 
     nonisolated func session(
-        _ session: WCSession, activationDidCompleteWith activationState: WCSessionActivationState, error: (any Error)?
+        _ session: WCSession, activationDidCompleteWith activationState: WCSessionActivationState,
+        error: (any Error)?
     ) {
         if let error { print("RecordingTransfer: activation failed: \(error)") }
         #if os(watchOS)

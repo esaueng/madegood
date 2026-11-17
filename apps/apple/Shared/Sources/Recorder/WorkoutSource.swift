@@ -10,13 +10,18 @@ import WaterKit
 /// work and should not appear in the Health app. Saving workouts arrives in Phase 1.
 final class WorkoutSource: NSObject, HKWorkoutSessionDelegate, HKLiveWorkoutBuilderDelegate, Sendable {
     private let store: HKHealthStore
-    private let writer: StreamWriter
+    private let writer: RawStreamWriter
     private let lastHeartRateDate = Mutex<Date?>(nil)
     private let state = Mutex<(session: HKWorkoutSession?, builder: HKLiveWorkoutBuilder?)>((nil, nil))
+    private let isStopping = Mutex(false)
+    /// Called (on an arbitrary queue) if the workout fails or ends without `stop`, which
+    /// means the app no longer has guaranteed background time.
+    private let onInterruption: @Sendable (String) -> Void
 
-    init(store: HKHealthStore, writer: StreamWriter) {
+    init(store: HKHealthStore, writer: RawStreamWriter, onInterruption: @escaping @Sendable (String) -> Void) {
         self.store = store
         self.writer = writer
+        self.onInterruption = onInterruption
     }
 
     static var isAvailable: Bool { HKHealthStore.isHealthDataAvailable() }
@@ -43,6 +48,7 @@ final class WorkoutSource: NSObject, HKWorkoutSessionDelegate, HKLiveWorkoutBuil
     }
 
     func stop(at date: Date) async {
+        isStopping.withLock { $0 = true }
         let (session, builder) = state.withLock { state in
             let current = state
             state = (nil, nil)
@@ -93,9 +99,13 @@ final class WorkoutSource: NSObject, HKWorkoutSessionDelegate, HKLiveWorkoutBuil
     nonisolated func workoutSession(
         _ workoutSession: HKWorkoutSession, didChangeTo toState: HKWorkoutSessionState,
         from fromState: HKWorkoutSessionState, date: Date
-    ) {}
+    ) {
+        guard toState == .ended || toState == .stopped, !isStopping.withLock({ $0 }) else { return }
+        onInterruption("The workout session ended unexpectedly.")
+    }
 
     nonisolated func workoutSession(_ workoutSession: HKWorkoutSession, didFailWithError error: any Error) {
-        print("WorkoutSource: session failed: \(error)")
+        guard !isStopping.withLock({ $0 }) else { return }
+        onInterruption("The workout session failed: \(error.localizedDescription)")
     }
 }
