@@ -16,6 +16,9 @@ On Linux, install the zlib headers first (`apt-get install zlib1g-dev`).
 - **Track v1:** `TrackCodec` reads and writes `track.json.gz`.
 - **Raw recording v1:** `RawFormat` defines the files the recorder writes, and
   `RawSessionReader` loads a session folder onto one timeline.
+- **GPX export:** `GPXWriter` writes a track as GPX 1.1.
+- **Display units:** `SpeedUnit` and `DistanceUnit` convert SI values for display and
+  format them with sensible precision.
 - **Gzip:** `Gzip` compresses to and decompresses from the gzip container, using the
   system zlib.
 

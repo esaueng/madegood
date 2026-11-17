@@ -3,15 +3,16 @@ import WaterKit
 
 // waterkit-replay: print basic statistics for a raw recording folder or a track file.
 //
-//   swift run waterkit-replay <session-folder | track.json[.gz]> [--sport <sport>] [--json]
+//   swift run waterkit-replay <session-folder | track.json[.gz]> [--sport <sport>] [--json] [--gpx <out-path>]
 
 let usage = """
-    Usage: waterkit-replay <path> [--sport <sport>] [--json]
+    Usage: waterkit-replay <path> [--sport <sport>] [--json] [--gpx <out-path>]
 
       <path>           A raw recording folder (with meta.json; unzip a shared .zip first)
                        or a track v1 file (track.json or track.json.gz).
       --sport <sport>  Treat the session as this sport: \(Sport.allCases.map(\.rawValue).joined(separator: ", ")).
       --json           Print machine-readable JSON instead of text.
+      --gpx <out-path> Also write the session's track as GPX 1.1 to <out-path>.
 
     """
 
@@ -30,6 +31,7 @@ var arguments = Array(CommandLine.arguments.dropFirst())
 var path: String?
 var sportOverride: Sport?
 var asJSON = false
+var gpxPath: String?
 
 while !arguments.isEmpty {
     let argument = arguments.removeFirst()
@@ -44,6 +46,10 @@ while !arguments.isEmpty {
         arguments.removeFirst()
         guard let sport = Sport(rawValue: value) else { fail("Unknown sport \"\(value)\"\n\n" + usage, .usage) }
         sportOverride = sport
+    case "--gpx":
+        guard let value = arguments.first else { fail("--gpx needs an output path\n\n" + usage, .usage) }
+        arguments.removeFirst()
+        gpxPath = value
     default:
         if argument.hasPrefix("-") { fail("Unknown option \(argument)\n\n" + usage, .usage) }
         if path != nil { fail("Only one path is allowed\n\n" + usage, .usage) }
@@ -61,14 +67,23 @@ guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory
 
 do {
     var stats: SessionStats
+    var track: Track
     if isDirectory.boolValue {
         var session = try RawSessionReader.read(folder: url)
         if let sportOverride { session.meta.sport = sportOverride }
         stats = SessionStats(session: session)
+        track = session.track()
     } else {
-        var track = try TrackCodec.decode(Data(contentsOf: url))
+        track = try TrackCodec.decode(Data(contentsOf: url))
         if let sportOverride { track.sport = sportOverride }
         stats = SessionStats(track: track)
+    }
+    if let gpxPath {
+        do {
+            try GPXWriter().data(for: track).write(to: URL(fileURLWithPath: gpxPath), options: .atomic)
+        } catch {
+            fail("Could not write \(gpxPath): \(error)", .failed)
+        }
     }
     if asJSON {
         FileHandle.standardOutput.write(try stats.jsonReport())
