@@ -29,7 +29,7 @@ Run the checks for every area you touch before you push.
 | Replay a session | `swift run --package-path packages/WaterKit waterkit-replay <path>` |
 | Anonymize a track | `scripts/anonymize-track <in> <out>` |
 | Apple project | `mise install` (pins Tuist), then `cd apps/apple && tuist install && tuist generate --no-open` |
-| Apple build | see `.github/workflows/apple.yml` for the exact `xcodebuild` lines |
+| Apple build | see the `apple` job in `.github/workflows/ci.yml` for the exact `xcodebuild` lines |
 | Web install | `pnpm install` |
 | Web lint/format | `pnpm check` (Biome) |
 | Web typecheck/test | `pnpm -C web typecheck && pnpm -C web test` |
@@ -65,6 +65,13 @@ because its files don't exist yet, say so rather than inventing a replacement.
   threshold to make a test pass.
 - **Labels:** routes and charts are "not for navigation"; never present OpenSeaMap
   or NOAA data as official charts.
+
+## CI
+
+`.github/workflows/ci.yml` runs only the jobs whose files changed (see
+`scripts/ci-changes.sh`) and ends in one `CI` job that passes when every job that ran
+passed. Require `CI` (plus `DCO sign-off`) on `main`, not the individual jobs, which are
+skipped when their area is untouched. Changing `ci.yml` or the script runs everything.
 
 ## Pull requests
 
