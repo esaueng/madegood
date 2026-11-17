@@ -84,6 +84,40 @@ const putTrack = (
 
 const trackKey = (userId: string, id: string) => `users/${userId}/sessions/${id}/track.v1.gz`;
 
+/**
+ * Starts a track upload whose body stops after its first bytes. `reading` resolves once
+ * the handler asks for more, which it does only after checking the session, so a test can
+ * act while the upload is known to be mid-body; `finish` sends the rest.
+ */
+function pausedUpload(token: string, id: string, bytes: Uint8Array) {
+  let reading: () => void = () => {};
+  const readingStarted = new Promise<void>((resolve) => {
+    reading = resolve;
+  });
+  let release: () => void = () => {};
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let sent = false;
+  const body = new ReadableStream<Uint8Array>(
+    {
+      async pull(controller) {
+        if (!sent) {
+          sent = true;
+          controller.enqueue(bytes.slice(0, 10));
+          return;
+        }
+        reading();
+        await released;
+        controller.enqueue(bytes.slice(10));
+        controller.close();
+      },
+    },
+    { highWaterMark: 0 },
+  );
+  return { reading: readingStarted, finish: release, response: putTrack(token, id, body) };
+}
+
 async function sessionWithTrack(owner: SignIn, visibility?: string) {
   const id = crypto.randomUUID();
   expect((await putSession(owner.accessToken, id)).status).toBe(201);
@@ -522,24 +556,13 @@ describe("DELETE /api/sessions/:id", () => {
     const id = crypto.randomUUID();
     expect((await putSession(owner.accessToken, id)).status).toBe(201);
 
-    let send: (bytes: Uint8Array) => void = () => {};
-    let finish: () => void = () => {};
-    const body = new ReadableStream<Uint8Array>({
-      start(controller) {
-        send = (bytes) => controller.enqueue(bytes);
-        finish = () => controller.close();
-      },
-    });
-    const bytes = await gzip(trackJson(id));
-    const upload = putTrack(owner.accessToken, id, body);
-    send(bytes.slice(0, 10)); // the handler has checked ownership and is reading the body
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    const upload = pausedUpload(owner.accessToken, id, await gzip(trackJson(id)));
+    await upload.reading;
 
     expect((await deleteSession(owner.accessToken, id)).status).toBe(204);
-    send(bytes.slice(10));
-    finish();
+    upload.finish();
 
-    expect((await upload).status).toBe(404);
+    expect((await upload.response).status).toBe(404);
     expect(await env.TRACKS.head(trackKey(owner.user.id, id))).toBeNull();
   });
 });
@@ -552,5 +575,22 @@ describe("account deletion", () => {
     expect(response.status).toBe(204);
     for (const id of ids) expect(await env.TRACKS.head(trackKey(owner.user.id, id))).toBeNull();
     expect((await getSession(null, ids[1] as string)).status).toBe(404);
+  });
+
+  // Regression test from review of #37: an upload still in flight when the account is
+  // deleted must not leave its track in R2.
+  it("leaves no track behind when the account is deleted during an upload", async () => {
+    const owner = await signIn();
+    const id = crypto.randomUUID();
+    expect((await putSession(owner.accessToken, id)).status).toBe(201);
+    const upload = pausedUpload(owner.accessToken, id, await gzip(trackJson(id)));
+    await upload.reading;
+
+    const response = await api("/me", { method: "DELETE", headers: bearer(owner.accessToken) });
+    expect(response.status).toBe(204);
+    upload.finish();
+
+    expect((await upload.response).status).toBe(404);
+    expect(await env.TRACKS.head(trackKey(owner.user.id, id))).toBeNull();
   });
 });
