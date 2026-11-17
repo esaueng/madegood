@@ -135,17 +135,22 @@ me.openapi(patchRoute, async (c) => {
 me.openapi(deleteRoute, async (c) => {
   const userId = c.var.userId;
   const db = drizzle(c.env.DB);
-  // R2 first: if it fails, the D1 rows remain and a retry finds everything again. Deleting
-  // the rows first could strand objects with nothing left pointing at them.
-  await deletePrefix(c.env.TRACKS, userPrefix(userId));
-  // Track keys outside the user prefix, in case any were ever written elsewhere.
+  // Track keys outside the user prefix, in case any were ever written elsewhere; read
+  // them before the rows that point at them are gone.
   const tracks = await db
     .select({ key: sessions.trackKey })
     .from(sessions)
     .where(and(eq(sessions.userId, userId), isNotNull(sessions.trackKey)));
-  const keys = tracks.flatMap((t) => (t.key ? [t.key] : []));
-  for (let i = 0; i < keys.length; i += 1000) await c.env.TRACKS.delete(keys.slice(i, i + 1000));
+  const keys = tracks.flatMap((t) =>
+    t.key && !t.key.startsWith(userPrefix(userId)) ? [t.key] : [],
+  );
+  // Rows first, then objects (review of #37). A track upload attaches only to a live
+  // session and otherwise deletes its object, so with this order an upload that overlaps
+  // the deletion cannot leave a track behind. The prefix is deleted on every call, even
+  // with the rows already gone, so retrying after an R2 failure still cleans up.
   // Sessions, refresh tokens and privacy zones go with the user (ON DELETE CASCADE).
   await db.delete(users).where(eq(users.id, userId));
+  await deletePrefix(c.env.TRACKS, userPrefix(userId));
+  for (let i = 0; i < keys.length; i += 1000) await c.env.TRACKS.delete(keys.slice(i, i + 1000));
   return c.body(null, 204);
 });

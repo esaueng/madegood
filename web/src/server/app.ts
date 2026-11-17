@@ -4,6 +4,7 @@ import { apiError } from "./lib/errors";
 import { auth } from "./routes/auth";
 import { health } from "./routes/health";
 import { me } from "./routes/me";
+import { sessionRoutes } from "./routes/sessions";
 
 export type AppEnv = { Bindings: Env };
 
@@ -13,6 +14,7 @@ export function createApp() {
   api.route("/", health);
   api.route("/", auth);
   api.route("/", me);
+  api.route("/", sessionRoutes);
 
   api.openAPIRegistry.registerComponent("securitySchemes", "bearerAuth", {
     type: "http",

@@ -14,6 +14,11 @@ export const errorCodes = [
   "refresh_token_reused",
   "handle_taken",
   "not_found",
+  "forbidden",
+  "session_id_taken",
+  "unsupported_media_type",
+  "payload_too_large",
+  "invalid_track",
   "internal",
 ] as const;
 export type ErrorCode = (typeof errorCodes)[number];

@@ -1,0 +1,660 @@
+import { createRoute, z } from "@hono/zod-openapi";
+import { and, desc, eq, isNull, lt, or } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/d1";
+import type { Context } from "hono";
+import { optionalAuth, requireAuth } from "../auth/middleware";
+import { privacyZones, type Session, sessions, users } from "../db/schema";
+import { apiError, errorResponse } from "../lib/errors";
+import { createRouter } from "../lib/router";
+import { deletePrefix, userPrefix } from "../lib/storage";
+import { checkTrack, readBody, TRACK_CONTENT_TYPE, TRACK_MAX_BYTES, trackKey } from "../lib/track";
+
+type SessionsEnv = {
+  Bindings: Env;
+  // `userId` is set by requireAuth, `viewerId` by optionalAuth; each route uses one.
+  Variables: { userId: string; viewerId: string | null };
+};
+
+const security = [{ bearerAuth: [] }];
+/** Routes anyone may call; a token, when sent, identifies the viewer. */
+const optionalSecurity: Record<string, string[]>[] = [{ bearerAuth: [] }, {}];
+
+const SPORTS = ["sailing", "windsurfing", "motorboating", "kayak", "canoe", "sup"] as const;
+const VISIBILITIES = ["private", "unlisted", "public"] as const;
+
+/** Longest session the API accepts: 7 days. Multi-day passages are Voyages (Phase 5). */
+const MAX_DURATION_S = 7 * 24 * 3600;
+/** Fastest plausible speed: WaterKit's GPS filter rejects Doppler speeds above 50 m/s. */
+const MAX_SPEED_MPS = 50;
+const MAX_DISTANCE_M = 10_000_000;
+const MAX_SUMMARY_BYTES = 64 * 1024;
+/** Earliest accepted start; later starts may be at most a day ahead of the server clock. */
+const MIN_STARTED_AT = Date.UTC(2000, 0, 1);
+const MAX_CLOCK_SKEW_MS = 24 * 3600 * 1000;
+
+const PAGE_DEFAULT = 20;
+const PAGE_MAX = 100;
+
+// Any RFC 4122 layout, in either case; stored lowercase like track v1's `sessionId`.
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+const SessionParams = z.object({
+  id: z
+    .string()
+    .regex(UUID_PATTERN, "must be a UUID")
+    .transform((s) => s.toLowerCase())
+    .openapi({
+      param: { name: "id", in: "path" },
+      type: "string",
+      format: "uuid",
+      description: "The device-generated session UUID. Either case; stored lowercase.",
+      example: "6f1c2a3e-8a5b-4c1d-9e2f-0a1b2c3d4e5f",
+    }),
+});
+
+const isoTime = z.iso.datetime({ offset: true }).openapi({ format: "date-time" });
+const seconds = z.number().min(0).max(MAX_DURATION_S);
+const speed = z.number().min(0).max(MAX_SPEED_MPS);
+
+const PutSessionRequest = z
+  .object({
+    sport: z.enum(SPORTS),
+    startedAt: isoTime,
+    endedAt: isoTime.nullable().optional(),
+    durationS: seconds.nullable().optional().openapi({ description: "Elapsed time, s." }),
+    movingS: seconds.nullable().optional().openapi({ description: "Moving time, s." }),
+    distanceM: z.number().min(0).max(MAX_DISTANCE_M).nullable().optional(),
+    maxSpeedMps: speed.nullable().optional().openapi({ description: "Best 2 s window, m/s." }),
+    avgSpeedMps: speed.nullable().optional().openapi({ description: "Distance / moving time." }),
+    summary: z
+      .record(z.string(), z.unknown())
+      .nullable()
+      .optional()
+      .openapi({ description: "The track v1 summary (docs/metrics.md). At most 64 KiB." }),
+    analyzerVersion: z
+      .string()
+      .regex(/^\d{1,4}\.\d{1,4}\.\d{1,4}$/, "must be a version such as 1.0.0")
+      .nullable()
+      .optional(),
+  })
+  .strict()
+  .superRefine((body, ctx) => {
+    const started = Date.parse(body.startedAt);
+    if (started < MIN_STARTED_AT || started > Date.now() + MAX_CLOCK_SKEW_MS) {
+      ctx.addIssue({ code: "custom", path: ["startedAt"], message: "is out of range" });
+    }
+    if (body.endedAt != null) {
+      const ended = Date.parse(body.endedAt);
+      if (ended < started || ended - started > MAX_DURATION_S * 1000) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["endedAt"],
+          message: "must be after startedAt, within 7 days",
+        });
+      }
+    }
+    if (body.movingS != null && body.durationS != null && body.movingS > body.durationS) {
+      ctx.addIssue({ code: "custom", path: ["movingS"], message: "exceeds durationS" });
+    }
+    if (body.summary != null && JSON.stringify(body.summary).length > MAX_SUMMARY_BYTES) {
+      ctx.addIssue({ code: "custom", path: ["summary"], message: "is larger than 64 KiB" });
+    }
+  })
+  .openapi("PutSessionRequest", {
+    description:
+      "A session's metadata and analysis summary, as the device computed them. SI units. " +
+      "Every PUT replaces all of these fields; omitted ones become null. Title, notes and " +
+      "visibility are not changed here (PATCH them).",
+  });
+
+const UpdateSessionRequest = z
+  .object({
+    title: z
+      .string()
+      .max(100)
+      .nullable()
+      .optional()
+      .openapi({ description: "Blank or null clears it." }),
+    notes: z
+      .string()
+      .max(5000)
+      .nullable()
+      .optional()
+      .openapi({ description: "Blank or null clears it." }),
+    visibility: z.enum(VISIBILITIES).optional(),
+  })
+  .strict()
+  .openapi("UpdateSessionRequest");
+
+const SessionBody = z
+  .object({
+    id: z.string().openapi({ format: "uuid" }),
+    sport: z.enum(SPORTS),
+    title: z.string().nullable(),
+    notes: z.string().nullable(),
+    visibility: z.enum(VISIBILITIES),
+    startedAt: isoTime,
+    endedAt: isoTime.nullable(),
+    durationS: z.number().nullable(),
+    movingS: z.number().nullable(),
+    distanceM: z.number().nullable(),
+    maxSpeedMps: z.number().nullable(),
+    avgSpeedMps: z.number().nullable(),
+    summary: z.record(z.string(), z.unknown()).nullable(),
+    analyzerVersion: z.string().nullable(),
+    hasTrack: z.boolean().openapi({ description: "Whether a track file has been uploaded." }),
+    isOwner: z.boolean().openapi({ description: "Whether the caller owns the session." }),
+    createdAt: isoTime,
+    updatedAt: isoTime,
+  })
+  .openapi("Session");
+
+const SessionList = z
+  .object({
+    sessions: z.array(SessionBody),
+    nextCursor: z
+      .string()
+      .nullable()
+      .openapi({ description: "Pass as `cursor` for the next page; null on the last page." }),
+  })
+  .openapi("SessionList");
+
+const iso = (ms: number) => new Date(ms).toISOString();
+
+// Summary keys anyone may see on a public or unlisted session (docs/metrics.md). The
+// summary is whatever the device sent, so other viewers get only these numbers, never the
+// whole object: a key holding a position would otherwise bypass privacy zones and the
+// track's restrictions (review of #37). Heart rate stays with the owner.
+const SHARED_SUMMARY_NUMBERS = [
+  "distance",
+  "movingTime",
+  "elapsed",
+  "averageSpeed",
+  "maxSpeed2s",
+  "maxSpeed10s",
+] as const;
+const SHARED_LAP_NUMBERS = ["start", "end", "distance", "movingTime"] as const;
+const MAX_SHARED_LAPS = 1000;
+
+const isNumber = (value: unknown): value is number =>
+  typeof value === "number" && Number.isFinite(value);
+
+/** The owner's summary as stored; for anyone else, only the shared numbers. */
+export function viewSummary(
+  session: Pick<Session, "summaryJson" | "userId">,
+  viewerId: string | null,
+): Record<string, unknown> | null {
+  if (session.summaryJson === null) return null;
+  const summary: unknown = JSON.parse(session.summaryJson);
+  if (session.userId === viewerId) return summary as Record<string, unknown>;
+  if (typeof summary !== "object" || summary === null || Array.isArray(summary)) return null;
+  const source = summary as Record<string, unknown>;
+
+  const shared: Record<string, unknown> = {};
+  for (const key of SHARED_SUMMARY_NUMBERS) {
+    if (isNumber(source[key])) shared[key] = source[key];
+  }
+  if (Array.isArray(source.laps)) {
+    shared.laps = source.laps.slice(0, MAX_SHARED_LAPS).flatMap((lap: unknown) => {
+      if (typeof lap !== "object" || lap === null) return [];
+      const fields = lap as Record<string, unknown>;
+      const out: Record<string, unknown> = {};
+      for (const key of SHARED_LAP_NUMBERS) if (isNumber(fields[key])) out[key] = fields[key];
+      if (typeof fields.auto === "boolean") out.auto = fields.auto;
+      return [out];
+    });
+  }
+  return shared;
+}
+
+function toSessionBody(session: Session, viewerId: string | null): z.infer<typeof SessionBody> {
+  return {
+    id: session.id,
+    sport: session.sport,
+    title: session.title,
+    notes: session.notes,
+    visibility: session.visibility,
+    startedAt: iso(session.startedAt),
+    endedAt: session.endedAt === null ? null : iso(session.endedAt),
+    durationS: session.durationS,
+    movingS: session.movingS,
+    distanceM: session.distanceM,
+    maxSpeedMps: session.maxSpeedMps,
+    avgSpeedMps: session.avgSpeedMps,
+    summary: viewSummary(session, viewerId),
+    analyzerVersion: session.analyzerVersion,
+    hasTrack: session.trackKey !== null,
+    isOwner: session.userId === viewerId,
+    createdAt: iso(session.createdAt),
+    updatedAt: iso(session.updatedAt),
+  };
+}
+
+// Cursors are opaque to clients: base64url JSON of the last item's [startedAt, id].
+const Cursor = z.tuple([z.number().int(), z.string().regex(UUID_PATTERN)]);
+
+function encodeCursor(session: Session): string {
+  return btoa(JSON.stringify([session.startedAt, session.id]))
+    .replaceAll("+", "-")
+    .replaceAll("/", "_")
+    .replace(/=+$/, "");
+}
+
+function decodeCursor(cursor: string): [number, string] | null {
+  try {
+    const json = atob(cursor.replaceAll("-", "+").replaceAll("_", "/"));
+    const parsed = Cursor.safeParse(JSON.parse(json));
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
+}
+
+const notFound = (c: Context) => apiError(c, 404, "not_found", "No such session.");
+const unknownUser = (c: Context) =>
+  apiError(c, 401, "unauthorized", "The account no longer exists.");
+
+/** A live (not deleted) session by ID, whoever owns it. */
+async function findSession(db: ReturnType<typeof drizzle>, id: string) {
+  const [session] = await db
+    .select()
+    .from(sessions)
+    .where(and(eq(sessions.id, id), isNull(sessions.deletedAt)));
+  return session;
+}
+
+/** Owners see everything; others see public and unlisted sessions. Private ones 404. */
+const canView = (session: Session, viewerId: string | null) =>
+  session.userId === viewerId || session.visibility !== "private";
+
+// ---- Routes ------------------------------------------------------------------------
+
+const listRoute = createRoute({
+  method: "get",
+  path: "/sessions",
+  summary: "The signed-in user's sessions, newest first",
+  tags: ["sessions"],
+  security,
+  middleware: [requireAuth] as const,
+  request: {
+    query: z.object({
+      cursor: z.string().max(200).optional().openapi({ description: "From `nextCursor`." }),
+      limit: z.coerce
+        .number()
+        .int()
+        .min(1)
+        .max(PAGE_MAX)
+        .optional()
+        .openapi({ type: "integer", description: `Page size, ${PAGE_DEFAULT} by default.` }),
+    }),
+  },
+  responses: {
+    200: {
+      description: "A page of sessions.",
+      content: { "application/json": { schema: SessionList } },
+    },
+    400: errorResponse("The cursor or limit is invalid."),
+    401: errorResponse("Missing or invalid access token."),
+  },
+});
+
+const putRoute = createRoute({
+  method: "put",
+  path: "/sessions/{id}",
+  summary: "Create or replace a session's metadata and summary",
+  description:
+    "Idempotent: the ID is generated on the device, so retrying an upload is safe. A new " +
+    "session takes the user's default visibility.",
+  tags: ["sessions"],
+  security,
+  middleware: [requireAuth] as const,
+  request: {
+    params: SessionParams,
+    body: { required: true, content: { "application/json": { schema: PutSessionRequest } } },
+  },
+  responses: {
+    200: {
+      description: "The session was updated.",
+      content: { "application/json": { schema: SessionBody } },
+    },
+    201: {
+      description: "The session was created.",
+      content: { "application/json": { schema: SessionBody } },
+    },
+    400: errorResponse("The ID or body is invalid."),
+    401: errorResponse("Missing or invalid access token, or the account no longer exists."),
+    409: errorResponse("Another account has a session with this ID (`session_id_taken`)."),
+  },
+});
+
+const getRoute = createRoute({
+  method: "get",
+  path: "/sessions/{id}",
+  summary: "A session",
+  description:
+    "The owner always sees it. Anyone else, signed in or not, sees only public and " +
+    "unlisted sessions; a private one is reported as not found.",
+  tags: ["sessions"],
+  security: optionalSecurity,
+  middleware: [optionalAuth] as const,
+  request: { params: SessionParams },
+  responses: {
+    200: { description: "The session.", content: { "application/json": { schema: SessionBody } } },
+    400: errorResponse("The ID is not a UUID."),
+    401: errorResponse("An access token was sent but is invalid."),
+    404: errorResponse("No such session, or the caller may not see it."),
+  },
+});
+
+const putTrackRoute = createRoute({
+  method: "put",
+  path: "/sessions/{id}/track",
+  summary: "Upload a session's track file",
+  description:
+    `The body is the gzipped track v1 file (docs/formats.md), sent as \`${TRACK_CONTENT_TYPE}\` ` +
+    `with no Content-Encoding, at most ${TRACK_MAX_BYTES} bytes. PUT the session's metadata ` +
+    "first. Repeating the upload replaces the file.",
+  tags: ["sessions"],
+  security,
+  middleware: [requireAuth] as const,
+  request: {
+    params: SessionParams,
+    body: {
+      required: true,
+      content: { [TRACK_CONTENT_TYPE]: { schema: z.string().openapi({ format: "binary" }) } },
+    },
+  },
+  responses: {
+    204: { description: "The track is stored." },
+    400: errorResponse("The ID is invalid, or the body is not a gzipped track (`invalid_track`)."),
+    401: errorResponse("Missing or invalid access token."),
+    404: errorResponse("The caller has no session with this ID; PUT its metadata first."),
+    413: errorResponse(`The body is larger than ${TRACK_MAX_BYTES} bytes.`),
+    415: errorResponse(`The body is not sent as ${TRACK_CONTENT_TYPE}.`),
+  },
+});
+
+const getTrackRoute = createRoute({
+  method: "get",
+  path: "/sessions/{id}/track",
+  summary: "Download a session's track file",
+  description:
+    `The gzipped track v1 file as \`${TRACK_CONTENT_TYPE}\`. Visibility works as for the ` +
+    "session. Privacy zones are not cut out yet, so while the owner has any privacy zone, " +
+    "only the owner can download the track; others get 403.",
+  tags: ["sessions"],
+  security: optionalSecurity,
+  middleware: [optionalAuth] as const,
+  request: { params: SessionParams },
+  responses: {
+    200: {
+      description: "The track file.",
+      content: { [TRACK_CONTENT_TYPE]: { schema: z.string().openapi({ format: "binary" }) } },
+    },
+    400: errorResponse("The ID is not a UUID."),
+    401: errorResponse("An access token was sent but is invalid."),
+    403: errorResponse("The owner has privacy zones, which are not applied to tracks yet."),
+    404: errorResponse("No such session or track, or the caller may not see it."),
+  },
+});
+
+const patchRoute = createRoute({
+  method: "patch",
+  path: "/sessions/{id}",
+  summary: "Change a session's title, notes or visibility",
+  tags: ["sessions"],
+  security,
+  middleware: [requireAuth] as const,
+  request: {
+    params: SessionParams,
+    body: { required: true, content: { "application/json": { schema: UpdateSessionRequest } } },
+  },
+  responses: {
+    200: {
+      description: "The updated session.",
+      content: { "application/json": { schema: SessionBody } },
+    },
+    400: errorResponse("The ID or body is invalid."),
+    401: errorResponse("Missing or invalid access token."),
+    404: errorResponse("The caller has no session with this ID."),
+  },
+});
+
+const deleteRoute = createRoute({
+  method: "delete",
+  path: "/sessions/{id}",
+  summary: "Delete a session and its track",
+  description: "Idempotent: deleting a session the caller does not have also returns 204.",
+  tags: ["sessions"],
+  security,
+  middleware: [requireAuth] as const,
+  request: { params: SessionParams },
+  responses: {
+    204: { description: "The caller has no session with this ID any more." },
+    400: errorResponse("The ID is not a UUID."),
+    401: errorResponse("Missing or invalid access token."),
+  },
+});
+
+export const sessionRoutes = createRouter<SessionsEnv>();
+
+sessionRoutes.openapi(listRoute, async (c) => {
+  const { cursor, limit = PAGE_DEFAULT } = c.req.valid("query");
+  const after = cursor === undefined ? null : decodeCursor(cursor);
+  if (cursor !== undefined && !after) return apiError(c, 400, "invalid_request", "Bad cursor.");
+
+  const owned = eq(sessions.userId, c.var.userId);
+  const live = isNull(sessions.deletedAt);
+  // Newest first; the ID breaks ties between sessions that started at the same time.
+  const page = after
+    ? or(
+        lt(sessions.startedAt, after[0]),
+        and(eq(sessions.startedAt, after[0]), lt(sessions.id, after[1])),
+      )
+    : undefined;
+  const rows = await drizzle(c.env.DB)
+    .select()
+    .from(sessions)
+    .where(and(owned, live, page))
+    .orderBy(desc(sessions.startedAt), desc(sessions.id))
+    .limit(limit + 1);
+
+  const items = rows.slice(0, limit);
+  const last = items.at(-1);
+  return c.json(
+    {
+      sessions: items.map((s) => toSessionBody(s, c.var.userId)),
+      nextCursor: rows.length > limit && last ? encodeCursor(last) : null,
+    },
+    200,
+  );
+});
+
+sessionRoutes.openapi(putRoute, async (c) => {
+  const { id } = c.req.valid("param");
+  const body = c.req.valid("json");
+  const userId = c.var.userId;
+  const db = drizzle(c.env.DB);
+
+  const fields = {
+    sport: body.sport,
+    startedAt: Date.parse(body.startedAt),
+    endedAt: body.endedAt == null ? null : Date.parse(body.endedAt),
+    durationS: body.durationS ?? null,
+    movingS: body.movingS ?? null,
+    distanceM: body.distanceM ?? null,
+    maxSpeedMps: body.maxSpeedMps ?? null,
+    avgSpeedMps: body.avgSpeedMps ?? null,
+    summaryJson: body.summary == null ? null : JSON.stringify(body.summary),
+    analyzerVersion: body.analyzerVersion ?? null,
+  };
+
+  // Replace the caller's own session. The user_id condition means another account's
+  // session with this ID is never touched.
+  const [updated] = await db
+    .update(sessions)
+    .set({ ...fields, updatedAt: Date.now() })
+    .where(and(eq(sessions.id, id), eq(sessions.userId, userId), isNull(sessions.deletedAt)))
+    .returning();
+  if (updated) return c.json(toSessionBody(updated, userId), 200);
+
+  const [user] = await db
+    .select({ defaultVisibility: users.defaultVisibility })
+    .from(users)
+    .where(eq(users.id, userId));
+  if (!user) return unknownUser(c);
+
+  const [created] = await db
+    .insert(sessions)
+    .values({ id, userId, visibility: user.defaultVisibility, ...fields })
+    .onConflictDoNothing({ target: sessions.id })
+    .returning();
+  if (created) return c.json(toSessionBody(created, userId), 201);
+
+  // The ID exists. It is either another account's, or the caller's own from a concurrent
+  // first upload, which a retry of the update above handles.
+  const [raced] = await db
+    .update(sessions)
+    .set({ ...fields, updatedAt: Date.now() })
+    .where(and(eq(sessions.id, id), eq(sessions.userId, userId), isNull(sessions.deletedAt)))
+    .returning();
+  if (raced) return c.json(toSessionBody(raced, userId), 200);
+  return apiError(c, 409, "session_id_taken", "This session ID is already in use.");
+});
+
+sessionRoutes.openapi(getRoute, async (c) => {
+  const { id } = c.req.valid("param");
+  const session = await findSession(drizzle(c.env.DB), id);
+  if (!session || !canView(session, c.var.viewerId)) return notFound(c);
+  return c.json(toSessionBody(session, c.var.viewerId), 200);
+});
+
+sessionRoutes.openapi(putTrackRoute, async (c) => {
+  const { id } = c.req.valid("param");
+  const userId = c.var.userId;
+  const db = drizzle(c.env.DB);
+
+  const contentType = c.req.header("content-type")?.split(";")[0]?.trim().toLowerCase();
+  const encoding = c.req.header("content-encoding")?.trim().toLowerCase();
+  if (contentType !== TRACK_CONTENT_TYPE || (encoding && encoding !== "identity")) {
+    return apiError(
+      c,
+      415,
+      "unsupported_media_type",
+      `Send the gzipped track as ${TRACK_CONTENT_TYPE}, without Content-Encoding.`,
+    );
+  }
+  const tooLarge = () =>
+    apiError(c, 413, "payload_too_large", `A track may be at most ${TRACK_MAX_BYTES} bytes.`);
+  if (Number(c.req.header("content-length") ?? 0) > TRACK_MAX_BYTES) return tooLarge();
+
+  const session = await findSession(db, id);
+  if (!session || session.userId !== userId) {
+    return notFound(c);
+  }
+
+  const bytes = await readBody(c.req.raw.body, TRACK_MAX_BYTES);
+  if (!bytes) return tooLarge();
+  const problem = await checkTrack(bytes);
+  if (problem) return apiError(c, 400, "invalid_track", problem);
+
+  const key = trackKey(userPrefix(userId), id);
+  const object = await c.env.TRACKS.put(key, bytes, {
+    httpMetadata: { contentType: TRACK_CONTENT_TYPE },
+  });
+  const [attached] = await db
+    .update(sessions)
+    .set({ trackKey: key, updatedAt: Date.now() })
+    .where(and(eq(sessions.id, id), eq(sessions.userId, userId), isNull(sessions.deletedAt)))
+    .returning({ id: sessions.id });
+  if (!attached) {
+    // The session was deleted while the body was uploading (review of #37). DELETE removes
+    // the row before the objects, so either it already deleted this object or it will
+    // find none; remove ours so no track outlives its session.
+    await c.env.TRACKS.delete(key);
+    return notFound(c);
+  }
+
+  // TODO(post-processing): enqueue the session for the queue consumer (docs/PLAN.md §7),
+  // which reads the whole track, checks `v` and `sessionId`, computes the bbox and start
+  // geohash, and fetches wind. There is no Queue binding yet.
+
+  c.header("ETag", object.httpEtag);
+  return c.body(null, 204);
+});
+
+sessionRoutes.openapi(getTrackRoute, async (c) => {
+  const { id } = c.req.valid("param");
+  const viewerId = c.var.viewerId;
+  const db = drizzle(c.env.DB);
+  const session = await findSession(db, id);
+  if (!session || !canView(session, viewerId)) return notFound(c);
+
+  if (session.userId !== viewerId) {
+    // Privacy zones are not cut out of tracks yet. Until they are, never hand a track to
+    // anyone but its owner while the owner has a zone.
+    const [zone] = await db
+      .select({ id: privacyZones.id })
+      .from(privacyZones)
+      .where(eq(privacyZones.userId, session.userId))
+      .limit(1);
+    if (zone) {
+      return apiError(c, 403, "forbidden", "This track is only available to its owner.");
+    }
+  }
+
+  const object = session.trackKey ? await c.env.TRACKS.get(session.trackKey) : null;
+  if (!object) return apiError(c, 404, "not_found", "This session has no track.");
+  return new Response(object.body, {
+    headers: {
+      "content-type": TRACK_CONTENT_TYPE,
+      "content-length": String(object.size),
+      etag: object.httpEtag,
+      // Visibility can change at any time, so shared caches must not keep a copy.
+      "cache-control": "private, no-cache",
+    },
+  });
+});
+
+sessionRoutes.openapi(patchRoute, async (c) => {
+  const { id } = c.req.valid("param");
+  const body = c.req.valid("json");
+  const userId = c.var.userId;
+  const db = drizzle(c.env.DB);
+
+  const clean = (text: string | null | undefined) => text?.trim() || null;
+  const changes: Partial<typeof sessions.$inferInsert> = {};
+  if (body.title !== undefined) changes.title = clean(body.title);
+  if (body.notes !== undefined) changes.notes = clean(body.notes);
+  if (body.visibility !== undefined) changes.visibility = body.visibility;
+
+  const mine = and(eq(sessions.id, id), eq(sessions.userId, userId), isNull(sessions.deletedAt));
+  if (Object.keys(changes).length === 0) {
+    const [session] = await db.select().from(sessions).where(mine);
+    return session ? c.json(toSessionBody(session, userId), 200) : notFound(c);
+  }
+  const [session] = await db
+    .update(sessions)
+    .set({ ...changes, updatedAt: Date.now() })
+    .where(mine)
+    .returning();
+  return session ? c.json(toSessionBody(session, userId), 200) : notFound(c);
+});
+
+sessionRoutes.openapi(deleteRoute, async (c) => {
+  const { id } = c.req.valid("param");
+  const userId = c.var.userId;
+  const db = drizzle(c.env.DB);
+  // The row goes first, then the objects (review of #37). A track upload attaches its
+  // object only if the row still exists and otherwise deletes it, so with this order no
+  // upload that overlaps the delete can leave a track behind. The objects are deleted even
+  // when there is no row, so retrying after an R2 failure still cleans up.
+  const deleted = await db
+    .delete(sessions)
+    .where(and(eq(sessions.id, id), eq(sessions.userId, userId)))
+    .returning({ trackKey: sessions.trackKey });
+  await deletePrefix(c.env.TRACKS, `${userPrefix(userId)}sessions/${id}/`);
+  const keys = deleted.flatMap((row) => (row.trackKey ? [row.trackKey] : []));
+  if (keys.length > 0) await c.env.TRACKS.delete(keys);
+  return c.body(null, 204);
+});
