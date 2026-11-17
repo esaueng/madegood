@@ -26,6 +26,10 @@ Local.xcconfig
 *.mobileprovision
 *.provisionprofile
 AuthKey_*.p8
+*.key
+*.pem
+*.jks
+*.keystore
 
 # Node / web
 node_modules/

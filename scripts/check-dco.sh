@@ -9,9 +9,15 @@ head="${2:?usage: check-dco.sh BASE HEAD}"
 
 lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 
+# Resolve the range first so an unknown revision fails the check instead of
+# silently yielding zero commits.
+git rev-parse --verify --quiet "$base^{commit}" >/dev/null || { echo "Unknown base revision: $base"; exit 2; }
+git rev-parse --verify --quiet "$head^{commit}" >/dev/null || { echo "Unknown head revision: $head"; exit 2; }
+shas=$(git rev-list --no-merges "$base..$head")
+
 failed=0
 checked=0
-for sha in $(git rev-list --no-merges "$base..$head"); do
+for sha in $shas; do
   checked=$((checked + 1))
   name=$(git show -s --format='%an' "$sha")
   email=$(git show -s --format='%ae' "$sha")
@@ -29,7 +35,7 @@ for sha in $(git rev-list --no-merges "$base..$head"); do
       found=1
       break
     fi
-  done < <(git show -s --format='%(trailers:key=Signed-off-by)' "$sha")
+  done < <(git show -s --format='%(trailers:key=Signed-off-by,unfold=true)' "$sha")
 
   if [ "$found" -eq 1 ]; then
     echo "ok    ${sha:0:12} $subject"
