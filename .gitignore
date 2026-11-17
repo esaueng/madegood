@@ -1,0 +1,49 @@
+# OS / editors
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Swift / Xcode / Tuist (the Xcode project is generated, never committed)
+.build/
+.swiftpm/
+DerivedData/
+*.xcodeproj/
+*.xcworkspace/
+xcuserdata/
+apps/apple/Derived/
+apps/apple/Tuist/.build/
+*.xcresult
+
+# Local Apple signing config and signing material
+Local.xcconfig
+*.p8
+*.p12
+*.cer
+*.certSigningRequest
+*.mobileprovision
+*.provisionprofile
+AuthKey_*.p8
+*.key
+*.pem
+*.jks
+*.keystore
+
+# Node / web
+node_modules/
+dist/
+coverage/
+.wrangler/
+.dev.vars*
+!.dev.vars.example
+.env
+.env.*
+!.env.example
+*.tsbuildinfo
+
+# Raw recordings and exports: anonymize before committing (scripts/anonymize-track)
+recordings/
+*.mgsession.zip
+fixtures/**/raw-original/

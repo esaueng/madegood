@@ -1,0 +1,30 @@
+name: Feature request
+description: Suggest an idea or improvement.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Check [docs/PLAN.md](https://github.com/esaueng/madegood/blob/main/docs/PLAN.md)
+        first: it lists what's planned and what's out of scope.
+  - type: dropdown
+    id: sport
+    attributes:
+      label: Sport or mode
+      multiple: true
+      options: [Sailing, Windsurfing / wing / kite, Motorboating, Kayak, Canoe, SUP, Voyages, All]
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+      description: Describe the situation on the water or in the app.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like to happen?
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives or other apps that do this well

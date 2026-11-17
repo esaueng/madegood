@@ -1,0 +1,53 @@
+name: Metric accuracy
+description: A metric (strokes, tacks, wind, speed, VMG...) is wrong for a real session.
+labels: [metric-accuracy]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Real sessions with known ground truth are the best way to improve the
+        algorithms. Anonymize the track with `scripts/anonymize-track` before
+        attaching it; that hides where and when you were on the water but keeps
+        speed and heading.
+  - type: dropdown
+    id: sport
+    attributes:
+      label: Sport
+      options: [Sailing, Windsurfing / wing / kite, Motorboating, Kayak, Canoe, SUP]
+    validations:
+      required: true
+  - type: input
+    id: metric
+    attributes:
+      label: Metric
+      placeholder: e.g. stroke count, tack count, wind direction, 10 s max speed
+    validations:
+      required: true
+  - type: input
+    id: values
+    attributes:
+      label: App value vs true value
+      placeholder: e.g. app said 812 strokes, I counted 860 from video
+    validations:
+      required: true
+  - type: textarea
+    id: truth
+    attributes:
+      label: How was the true value measured?
+      description: Video, manual count, boat instruments, another device...
+  - type: textarea
+    id: setup
+    attributes:
+      label: Setup
+      description: Watch model, which wrist, boat or board type, conditions.
+  - type: textarea
+    id: track
+    attributes:
+      label: Anonymized track
+      description: Attach the anonymized track.json.gz or raw session zip.
+  - type: checkboxes
+    id: consent
+    attributes:
+      label: Fixture consent
+      options:
+        - label: The maintainers may add this anonymized track to the public test fixtures under CC BY 4.0.
