@@ -337,6 +337,9 @@ final class SessionRecorder {
         engine.advance(to: Date().timeIntervalSince1970 - startUnix)
         self.engine = engine
         metrics = engine.snapshot
+        #if os(iOS)
+            if let liveSport { liveActivity.update(metrics, sport: liveSport) }
+        #endif
     }
 
     static func location(_ line: RawFormat.GPSLine) -> CLLocation {

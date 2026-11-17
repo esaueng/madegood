@@ -12,6 +12,14 @@
         private var activity: Activity<SessionActivityAttributes>?
         private var lastUpdate = Date.distantPast
         private var lastState: SessionActivityAttributes.ContentState?
+        /// Activity operations run one after another, in the order the recorder made them.
+        private var queue: Task<Void, Never>?
+
+        /// Ends activities left by an earlier run of the app (for example after iOS ended
+        /// the process mid-session): a session never resumes after a relaunch.
+        init() {
+            enqueue { await Self.endAll(except: nil) }
+        }
 
         func start(sport: Sport, startedAt: Date) {
             guard ActivityAuthorizationInfo().areActivitiesEnabled, activity == nil else { return }
@@ -19,13 +27,21 @@
                 sportName: sport.displayName, sportSymbol: sport.symbolName, startedAt: startedAt)
             let state = Self.state(nil, sport: sport)
             do {
-                activity = try Activity.request(attributes: attributes, content: .init(state: state, staleDate: nil))
+                let activity = try Activity.request(
+                    attributes: attributes, content: .init(state: state, staleDate: nil))
+                self.activity = activity
                 lastState = state
+                lastUpdate = Date()
+                let id = activity.id
+                enqueue { await Self.endAll(except: id) }
             } catch {
                 print("SessionActivityController: could not start: \(error)")
             }
         }
 
+        /// Called with every new snapshot, including the recorder's 1 s tick, so a state
+        /// held back by the throttle (or a speed blanked when GPS goes quiet) goes out on a
+        /// later call.
         func update(_ metrics: LiveMetrics?, sport: Sport) {
             guard let activity else { return }
             let state = Self.state(metrics, sport: sport)
@@ -36,7 +52,7 @@
             lastUpdate = Date()
             lastState = state
             let id = activity.id
-            Task.detached {
+            enqueue {
                 // Look the activity up inside the task: Activity is not Sendable.
                 for activity in Activity<SessionActivityAttributes>.activities where activity.id == id {
                     await activity.update(.init(state: state, staleDate: nil))
@@ -50,10 +66,24 @@
             lastState = nil
             let final = Self.state(metrics, sport: sport)
             let id = activity.id
-            Task.detached {
+            enqueue {
                 for activity in Activity<SessionActivityAttributes>.activities where activity.id == id {
                     await activity.end(.init(state: final, staleDate: nil), dismissalPolicy: .default)
                 }
+            }
+        }
+
+        private func enqueue(_ operation: @escaping @Sendable () async -> Void) {
+            let previous = queue
+            queue = Task.detached {
+                await previous?.value
+                await operation()
+            }
+        }
+
+        private nonisolated static func endAll(except keep: String?) async {
+            for activity in Activity<SessionActivityAttributes>.activities where activity.id != keep {
+                await activity.end(nil, dismissalPolicy: .immediate)
             }
         }
 
