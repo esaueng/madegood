@@ -50,6 +50,15 @@ final class WatchSessionUITests: XCTestCase {
         goToPage(1, app)
         XCTAssertTrue(app.buttons["control.end"].waitForExistence(timeout: 10))
 
+        // Man-overboard: marks the position and shows the way back on its own page.
+        app.buttons["control.mob"].tap()
+        XCTAssertTrue(app.staticTexts["mob.distance"].waitForExistence(timeout: 10))
+        attachScreenshot("6 man overboard")
+        app.buttons["mob.clear"].tap()
+        XCTAssertTrue(app.staticTexts["mob.distance"].waitForNonExistence(timeout: 10))
+        goToPage(1, app)
+        XCTAssertTrue(app.buttons["control.end"].waitForExistence(timeout: 10))
+
         app.buttons["control.end"].tap()
         let confirm = app.buttons.matching(
             NSPredicate(format: "label == 'End' AND identifier != 'control.end'")
@@ -68,7 +77,7 @@ final class WatchSessionUITests: XCTestCase {
         XCTAssertEqual(time.count, 2)
         let seconds = (time.first ?? 0) * 60 + (time.last ?? 0)
         XCTAssertLessThanOrEqual(seconds, ended.timeIntervalSince(started) + 2)
-        attachScreenshot("6 summary")
+        attachScreenshot("7 summary")
         done.tap()
         XCTAssertTrue(kayak.waitForExistence(timeout: 10))
     }

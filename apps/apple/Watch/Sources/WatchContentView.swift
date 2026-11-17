@@ -104,13 +104,16 @@ private struct SessionPages: View {
     let sport: Sport
     @State private var page = Page.metrics
 
-    enum Page { case controls, metrics, map }
+    enum Page { case manOverboard, controls, metrics, map }
 
     var body: some View {
         TabView(selection: $page) {
-            ControlsPage(recorder: recorder).tag(Page.controls)
+            if recorder.manOverboard != nil {
+                ManOverboardPage(recorder: recorder, sport: sport).tag(Page.manOverboard)
+            }
+            ControlsPage(recorder: recorder) { page = .manOverboard }.tag(Page.controls)
             MetricsPage(recorder: recorder, startedAt: startedAt, sport: sport).tag(Page.metrics)
-            MapPage(points: recorder.trackPoints).tag(Page.map)
+            MapPage(points: recorder.trackPoints, manOverboard: recorder.manOverboard?.point).tag(Page.map)
         }
         .tabViewStyle(.verticalPage)
     }
@@ -120,6 +123,7 @@ private struct MetricsPage: View {
     let recorder: SessionRecorder
     let startedAt: Date
     let sport: Sport
+    @Environment(\.isLuminanceReduced) private var isLuminanceReduced
 
     var body: some View {
         let display = UserSettings.display(for: sport)
@@ -136,8 +140,10 @@ private struct MetricsPage: View {
                         .accessibilityIdentifier("metric.lap")
                 }
                 Spacer()
-                TimelineView(.periodic(from: startedAt, by: 1)) { context in
-                    Text(Formatting.elapsed(context.date.timeIntervalSince(startedAt)))
+                // Always-on updates about once a minute, so seconds would just be wrong.
+                TimelineView(.periodic(from: startedAt, by: isLuminanceReduced ? 60 : 1)) { context in
+                    let elapsed = context.date.timeIntervalSince(startedAt)
+                    Text(isLuminanceReduced ? Formatting.duration(elapsed) : Formatting.elapsed(elapsed))
                         .monospacedDigit()
                 }
             }
@@ -148,9 +154,11 @@ private struct MetricsPage: View {
                 .lineLimit(1)
                 .accessibilityIdentifier("metric.speed")
             Field(label: "Distance", value: display.distance(metrics?.distance ?? 0))
-            Field(label: "Avg", value: display.speed(metrics?.averageSpeed))
-            Field(label: "Max 10 s", value: display.speed(metrics?.maxSpeed10s))
-            Field(label: "HR", value: LiveDisplay.heartRate(metrics?.heartRate))
+            if !isLuminanceReduced {
+                Field(label: "Avg", value: display.speed(metrics?.averageSpeed))
+                Field(label: "Max 10 s", value: display.speed(metrics?.maxSpeed10s))
+                Field(label: "HR", value: LiveDisplay.heartRate(metrics?.heartRate))
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -173,6 +181,7 @@ private struct Field: View {
 
 private struct MapPage: View {
     let points: [SessionRecorder.TrackPoint]
+    let manOverboard: SessionRecorder.TrackPoint?
 
     var body: some View {
         let coordinates = points.map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
@@ -182,6 +191,14 @@ private struct MapPage: View {
             if coordinates.count > 1 {
                 MapPolyline(coordinates: coordinates).stroke(.cyan, lineWidth: 3)
             }
+            if let manOverboard {
+                Marker(
+                    "MOB", systemImage: "figure.wave",
+                    coordinate: CLLocationCoordinate2D(
+                        latitude: manOverboard.latitude, longitude: manOverboard.longitude)
+                )
+                .tint(.red)
+            }
             UserAnnotation()
         }
         .accessibilityIdentifier("page.map")
@@ -190,10 +207,11 @@ private struct MapPage: View {
 
 private struct ControlsPage: View {
     let recorder: SessionRecorder
+    let showManOverboard: () -> Void
     @State private var confirmEnd = false
 
     var body: some View {
-        Grid(horizontalSpacing: 8, verticalSpacing: 8) {
+        Grid(horizontalSpacing: 6, verticalSpacing: 6) {
             GridRow {
                 ControlButton(
                     title: recorder.isPaused ? "Resume" : "Pause",
@@ -208,7 +226,21 @@ private struct ControlsPage: View {
                 }
             }
             GridRow {
-                ControlButton(title: "Mark", symbol: "flag.fill", tint: .teal) { recorder.mark() }
+                ControlButton(title: "MOB", symbol: "figure.wave", tint: .red) {
+                    recorder.markManOverboard()
+                    WKInterfaceDevice.current().play(.notification)
+                    if recorder.manOverboard != nil { showManOverboard() }
+                }
+                ControlButton(title: "Lock", symbol: "drop.fill", tint: .cyan) {
+                    // Water lock ignores taps until the user turns the Digital Crown.
+                    WKInterfaceDevice.current().enableWaterLock()
+                }
+            }
+            GridRow {
+                ControlButton(title: "Mark", symbol: "flag.fill", tint: .teal) {
+                    recorder.mark()
+                    WKInterfaceDevice.current().play(.click)
+                }
                 ControlButton(title: "End", symbol: "xmark", tint: .red) { confirmEnd = true }
             }
         }
@@ -216,6 +248,39 @@ private struct ControlsPage: View {
             Button("End", role: .destructive) {
                 Task { await recorder.stop() }
             }
+        }
+    }
+}
+
+/// Bearing and distance back to the man-overboard mark. The arrow points relative to the
+/// course over ground while moving, and to true north when stopped.
+private struct ManOverboardPage: View {
+    let recorder: SessionRecorder
+    let sport: Sport
+
+    var body: some View {
+        let display = UserSettings.display(for: sport)
+        let vector = recorder.manOverboardVector
+        let course = recorder.metrics?.course
+        VStack(spacing: 4) {
+            if let vector {
+                Image(systemName: "location.north.fill")
+                    .font(.system(size: 44))
+                    .foregroundStyle(.red)
+                    .rotationEffect(.degrees(vector.bearing - (course ?? 0)))
+                    .accessibilityLabel("Bearing \(Int(vector.bearing.rounded())) degrees")
+                Text(display.distance(vector.distance))
+                    .font(.title2.weight(.semibold).monospacedDigit())
+                    .accessibilityIdentifier("mob.distance")
+                Text("Man overboard · \(Int(vector.bearing.rounded()))°\(course == nil ? " true" : "")")
+                    .font(.footnote.weight(.semibold).monospacedDigit())
+                    .foregroundStyle(.red)
+            }
+            if let at = recorder.manOverboard?.at {
+                Text(at, style: .relative).font(.footnote).foregroundStyle(.secondary)
+            }
+            Button("Clear", role: .destructive) { recorder.clearManOverboard() }
+                .accessibilityIdentifier("mob.clear")
         }
     }
 }
