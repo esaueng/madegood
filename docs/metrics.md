@@ -96,3 +96,20 @@ over moving time).
 
 Current heart rate is the latest reading. Average is the mean of the readings, and max
 the highest. Readings that are not positive and finite are ignored.
+
+## Session summary
+
+Track v1 stores the analysis as `summary`, with `analyzerVersion` (currently `1.0.0`,
+bumped whenever a definition on this page changes):
+
+| Key | Meaning |
+|---|---|
+| `distance` | Distance, m |
+| `movingTime`, `elapsed` | Moving time and total time, s |
+| `averageSpeed`, `maxSpeed2s`, `maxSpeed10s` | m/s; left out when unknown |
+| `heartRateAverage`, `heartRateMax` | bpm; left out without heart rate |
+| `laps` | Each lap's `start`, `end`, `distance`, `movingTime` and `auto`; empty with no laps |
+
+The track's events are the user's events plus the regenerated auto-pause, auto-resume
+and auto-lap events.
+

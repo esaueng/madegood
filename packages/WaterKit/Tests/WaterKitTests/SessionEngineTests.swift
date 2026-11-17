@@ -338,4 +338,25 @@ private func approx(_ a: Double?, _ b: Double, tolerance: Double = 0.01) -> Bool
         fixes[5].horizontalAccuracy = 80
         #expect(SessionReplay(track: track(fixes)).fixes.map(\.t) == [0, 1, 2, 3, 4, 6, 7, 8, 9, 10])
     }
+
+    @Test func analyzedTrackCarriesSummaryAndRoundTrips() throws {
+        let fixes = Run(speed: { t in t < 60 || t >= 100 ? 1.5 : 0 }).fixes(0...159)
+        let recorded = track(fixes, events: [SessionEvent(t: 30, type: .lap)])
+        let replay = SessionReplay(track: recorded)
+        let analyzed = replay.analyzedTrack(from: recorded)
+        #expect(analyzed.analyzerVersion == SessionReplay.analyzerVersion)
+        #expect(analyzed.events.map(\.type) == [.lap, .pause, .resume])
+        guard case .object(let summary) = analyzed.summary else {
+            Issue.record("summary is not an object")
+            return
+        }
+        #expect(summary["movingTime"] == .number(replay.metrics.movingTime))
+        #expect(summary["distance"] == .number(replay.metrics.distance))
+        #expect(summary["heartRateAverage"] == nil)
+        if case .array(let laps) = summary["laps"] { #expect(laps.count == 2) } else { Issue.record("no laps") }
+        let decoded = try TrackCodec.decode(TrackCodec.encode(analyzed))
+        #expect(decoded.summary == analyzed.summary)
+        #expect(decoded.analyzerVersion == "1.0.0")
+        #expect(decoded.events.map(\.type) == analyzed.events.map(\.type))
+    }
 }

@@ -8,6 +8,9 @@ enum RecordingStore {
         return documents.appendingPathComponent("Recordings", isDirectory: true)
     }
 
+    /// The track v1 file the phone writes next to a finished raw recording.
+    static let trackFileName = "track.json.gz"
+
     static func folder(for sessionId: UUID) -> URL {
         root.appendingPathComponent(sessionId.uuidString.lowercased(), isDirectory: true)
     }

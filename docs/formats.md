@@ -152,7 +152,9 @@ types are kept as they are. `data` is optional and free-form.
 
 ## Track v1
 
-Gzipped JSON (`track.json.gz`), column-oriented. Times are `t`, seconds since
+Gzipped JSON (`track.json.gz`), column-oriented. The iPhone writes it into a finished
+recording's folder, next to the raw streams, when it first analyzes the session, and
+rewrites it when the analysis changes. Times are `t`, seconds since
 `startedAt`.
 
 ```json
