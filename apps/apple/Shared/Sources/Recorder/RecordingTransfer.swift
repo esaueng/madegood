@@ -176,6 +176,12 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
 
     #if os(iOS)
         /// Sends the phone's settings to the watch; the latest context replaces older ones.
+        /// Resends settings when the watch app is installed (or the pairing changes): an
+        /// earlier push returns early while the app is missing.
+        nonisolated func sessionWatchStateDidChange(_ session: WCSession) {
+            pushSettings()
+        }
+
         func pushSettings() {
             let session = WCSession.default
             guard WCSession.isSupported(), session.activationState == .activated, session.isPaired,

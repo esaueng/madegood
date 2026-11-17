@@ -63,16 +63,21 @@ final class WorkoutSource: NSObject, HKWorkoutSessionDelegate, HKLiveWorkoutBuil
 
     /// Adds accepted positions to the workout route (inserted in the background).
     func addRoute(_ locations: [CLLocation]) {
-        guard let builder = route.withLock({ $0 }), !locations.isEmpty else { return }
-        routeInserts.withLock { chain in
-            let previous = chain
-            chain = Task.detached { [self] in
-                await previous?.value
-                do {
-                    try await builder.insertRouteData(locations)
-                    self.routePoints.withLock { $0 += locations.count }
-                } catch {
-                    print("WorkoutSource: route insert failed: \(error)")
+        guard !locations.isEmpty else { return }
+        // Admission happens while holding the route lock: once `stop` has taken the
+        // builder, no insert can join the chain it drains.
+        route.withLock { builder in
+            guard let builder else { return }
+            routeInserts.withLock { chain in
+                let previous = chain
+                chain = Task.detached { [self] in
+                    await previous?.value
+                    do {
+                        try await builder.insertRouteData(locations)
+                        self.routePoints.withLock { $0 += locations.count }
+                    } catch {
+                        print("WorkoutSource: route insert failed: \(error)")
+                    }
                 }
             }
         }
