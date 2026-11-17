@@ -31,5 +31,5 @@ if [ "$(matches '^(\.github/workflows/ci\.yml|scripts/ci-changes\.sh)$')" = true
 
 echo "waterkit=$(matches '^(packages/WaterKit/|fixtures/|scripts/anonymize-track$)')"
 # WaterKit tests and fixtures don't affect the apps; its package and sources do.
-echo "apple=$(matches '^(apps/apple/|packages/WaterKit/(Package\.swift$|Sources/)|\.mise\.toml$)')"
+echo "apple=$(matches '^(apps/apple/|packages/WaterKit/(Package\.swift$|Sources/)|\.mise\.toml$|scripts/pick-simulator$)')"
 echo "web=$(matches '^(web/|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|biome\.json$|\.nvmrc$)')"
