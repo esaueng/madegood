@@ -32,12 +32,8 @@ public enum FixtureCheck {
         if let data = try? Data(contentsOf: folder.appendingPathComponent(RawFormat.metaFileName)) {
             problems += unknownFields(in: data, allowed: metaFields, context: RawFormat.metaFileName)
         }
-        // labels.json is reviewed by people (its description is free text); only its shape is checked.
-        if names.contains(labelsFileName),
-            let data = try? Data(contentsOf: folder.appendingPathComponent(labelsFileName)),
-            let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        {
-            problems += unknownKeys(Set(object.keys), allowed: labelsFields, context: labelsFileName)
+        if names.contains(labelsFileName) {
+            problems += labelsProblems(folder.appendingPathComponent(labelsFileName))
         }
         for stream in RawFormat.Stream.allCases {
             for name in [stream.fileName, stream.gzippedFileName] where names.contains(name) {
@@ -56,7 +52,7 @@ public enum FixtureCheck {
 
     /// Checks a track file's JSON shape, then its decoded content.
     public static func problems(inTrackFile data: Data) -> [String] {
-        var problems: [String] = []
+        var problems = gzipHeaderProblems(data, context: "track")
         guard let json = try? (Gzip.isGzipped(data) ? Gzip.decompress(data) : data),
             let object = try? JSONSerialization.jsonObject(with: json) as? [String: Any]
         else { return ["not a readable track file"] }
@@ -185,9 +181,11 @@ public enum FixtureCheck {
     private static func checkLines(of url: URL, allowed: Set<String>, context: String) -> [String] {
         guard let raw = try? Data(contentsOf: url) else { return ["\(context): unreadable"] }
         let data: Data
+        var problems: [String] = []
         if url.pathExtension == "gz" {
             guard let decoded = try? Gzip.decompress(raw) else { return ["\(context): damaged gzip data"] }
             data = decoded
+            problems += gzipHeaderProblems(raw, context: context)
         } else {
             data = raw
         }
@@ -200,9 +198,74 @@ public enum FixtureCheck {
             }
             unknown.formUnion(Set(object.keys).subtracting(allowed))
         }
-        var problems: [String] = []
         if invalid > 0 { problems.append("\(context): \(invalid) lines are not JSON objects") }
         if !unknown.isEmpty { problems.append("\(context): unknown fields \(unknown.sorted())") }
+        return problems
+    }
+
+    /// Gzip headers can carry a file name, comment, extra data, and a modification time,
+    /// none of which survive decompression, so they are checked on the raw bytes.
+    static func gzipHeaderProblems(_ data: Data, context: String) -> [String] {
+        guard Gzip.isGzipped(data) else { return [] }
+        guard let headers = try? Gzip.memberHeaders(data) else { return ["\(context): damaged gzip data"] }
+        var problems: [String] = []
+        if headers.contains(where: \.hasOptionalFields) {
+            problems.append("\(context): gzip header stores a file name, comment, or extra field")
+        }
+        if headers.contains(where: { $0.modificationTime != 0 }) {
+            problems.append("\(context): gzip header stores a modification time")
+        }
+        return problems
+    }
+
+    static let labelsSources: Set<String> = ["video", "manual-count", "instruments", "synthetic"]
+    static let labelsLicenses: Set<String> = ["CC-BY-4.0", "CC0-1.0"]
+    static let labelsTruthFields: Set<String> = ["strokes", "maneuvers", "windDirectionDeg", "distanceM"]
+
+    /// labels.json must match the documented schema exactly (fixtures/README.md). Its
+    /// `description` is the only free text, and people review it.
+    static func labelsProblems(_ url: URL) -> [String] {
+        let context = labelsFileName
+        guard let data = try? Data(contentsOf: url),
+            case .object(let object)? = try? JSONDecoder().decode(JSONValue.self, from: data)
+        else { return ["\(context): not a JSON object"] }
+        var problems = unknownKeys(Set(object.keys), allowed: labelsFields, context: context)
+        func isNumber(_ value: JSONValue?) -> Bool {
+            if case .number(let number)? = value { number.isFinite } else { false }
+        }
+        if !isNumber(object["v"]) { problems.append("\(context): v must be a number") }
+        if let sport = object["sport"], sport.stringValue.flatMap(Sport.init(rawValue:)) == nil {
+            problems.append("\(context): sport must be a known sport")
+        }
+        if let source = object["source"], !labelsSources.contains(source.stringValue ?? "") {
+            problems.append("\(context): source must be one of \(labelsSources.sorted())")
+        }
+        if let license = object["license"], !labelsLicenses.contains(license.stringValue ?? "") {
+            problems.append("\(context): license must be one of \(labelsLicenses.sorted())")
+        }
+        if let description = object["description"], description.stringValue == nil {
+            problems.append("\(context): description must be text")
+        }
+        guard let truthValue = object["truth"] else { return problems }
+        guard case .object(let truth) = truthValue else { return problems + ["\(context): truth must be an object"] }
+        problems += unknownKeys(Set(truth.keys), allowed: labelsTruthFields, context: "\(context) truth")
+        for key in ["strokes", "windDirectionDeg", "distanceM"] where truth[key] != nil && !isNumber(truth[key]) {
+            problems.append("\(context): truth.\(key) must be a number")
+        }
+        if let maneuvers = truth["maneuvers"] {
+            var valid = false
+            if case .array(let items) = maneuvers {
+                valid = items.allSatisfy { item in
+                    guard case .object(let entry) = item, Set(entry.keys).isSubset(of: ["t", "type"]),
+                        isNumber(entry["t"]), let type = entry["type"]?.stringValue
+                    else { return false }
+                    return Anonymizer.allowedEventTypes.contains(EventType(type))
+                }
+            }
+            if !valid {
+                problems.append("\(context): truth.maneuvers must be a list of {t, type} with allowed types")
+            }
+        }
         return problems
     }
 
