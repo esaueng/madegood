@@ -1,0 +1,83 @@
+name: Apple
+
+on:
+  pull_request:
+    paths: &apple-paths
+      - apps/apple/**
+      - packages/WaterKit/**
+      - .mise.toml
+      - .github/workflows/apple.yml
+  push:
+    branches: [main]
+    paths: *apple-paths
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: apple-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: iOS + watchOS build (simulator)
+    runs-on: macos-26
+    timeout-minutes: 30
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      TUIST_DISABLE_ANALYTICS: "1"
+      MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}
+    defaults:
+      run:
+        working-directory: apps/apple
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d # v5.2.9
+        with:
+          install: true
+          cache: true
+
+      - name: Toolchain versions
+        run: |
+          xcodebuild -version
+          swift --version
+          tuist version
+
+      - name: Generate Xcode project
+        run: tuist generate --no-open
+
+      # The iOS scheme embeds the watch app, so one build covers both platforms.
+      - name: Build
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -workspace MadeGood.xcworkspace \
+            -scheme MadeGood \
+            -configuration Debug \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            -resultBundlePath "$RUNNER_TEMP/MadeGood.xcresult" \
+            CODE_SIGNING_ALLOWED=NO \
+            | tee "$RUNNER_TEMP/xcodebuild.log" \
+            | grep -E '(error|warning):|\*\* BUILD' || true
+          grep -q '\*\* BUILD SUCCEEDED \*\*' "$RUNNER_TEMP/xcodebuild.log"
+
+      - name: Check the watch app was built and embedded
+        run: |
+          app="$RUNNER_TEMP/DerivedData/Build/Products/Debug-iphonesimulator/MadeGood.app"
+          ls "$app/Watch"
+          test -d "$app/Watch/MadeGoodWatch.app"
+
+      - name: Upload build logs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: apple-build-logs
+          path: |
+            ${{ runner.temp }}/xcodebuild.log
+            ${{ runner.temp }}/MadeGood.xcresult
+          retention-days: 7
