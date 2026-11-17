@@ -85,13 +85,24 @@ final class SessionLibrary {
         // A finished recording also gets its track v1 file (docs/formats.md), the form
         // that is stored and uploaded. Rewritten when the analysis changes.
         if session.meta.endedAt != nil {
-            writeTrackFile(replay.analyzedTrack(from: track), folder: entry.folder)
+            writeTrackFile(replay.analyzedTrack(from: track), folder: entry.folder, analyzedBytes: entry.bytes)
         }
         return Summary(sport: session.meta.sport, startedAt: session.startedAt, metrics: replay.metrics)
     }
 
-    nonisolated static func writeTrackFile(_ track: Track, folder: URL) {
+    /// Serializes track-file writes, so the freshness check and the write happen together.
+    private nonisolated static let trackWrites = NSLock()
+
+    /// Writes the track only if the recording still has the size it was analyzed at: an
+    /// analysis of a recording that has since grown (still arriving from the watch) must
+    /// not replace a newer track, and a deleted recording must not be recreated.
+    nonisolated static func writeTrackFile(_ track: Track, folder: URL, analyzedBytes: Int64) {
         let url = folder.appendingPathComponent(RecordingStore.trackFileName)
+        trackWrites.lock()
+        defer { trackWrites.unlock() }
+        guard FileManager.default.fileExists(atPath: folder.path),
+            RecordingStore.contents(of: folder).bytes == analyzedBytes
+        else { return }
         do {
             let data = try TrackCodec.encode(track)
             if (try? Data(contentsOf: url)) != data { try data.write(to: url, options: .atomic) }
