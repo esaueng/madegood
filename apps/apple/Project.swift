@@ -64,6 +64,8 @@ let project = Project(
                 // Location keeps recording with the screen off; workout-processing lets
                 // the phone run its own workout session (iOS 26).
                 "UIBackgroundModes": ["location", "workout-processing"],
+                // Lock Screen and Dynamic Island while recording (Widgets/).
+                "NSSupportsLiveActivities": true,
                 // Recordings in Documents are visible in the Files app.
                 "UIFileSharingEnabled": true,
                 "LSSupportsOpeningDocumentsInPlace": true,
@@ -73,6 +75,7 @@ let project = Project(
             entitlements: healthKit,
             dependencies: [
                 .target(name: "MadeGoodWatch"),
+                .target(name: "MadeGoodWidgets"),
                 .external(name: "WaterKit"),
             ]
         ),
@@ -95,6 +98,17 @@ let project = Project(
             dependencies: [
                 .external(name: "WaterKit"),
             ]
+        ),
+        .target(
+            name: "MadeGoodWidgets",
+            destinations: [.iPhone],
+            product: .appExtension,
+            bundleId: "$(BUNDLE_ID_PREFIX).widgets",
+            deploymentTargets: iOSTarget,
+            infoPlist: plist(versionKeys, [
+                "NSExtension": ["NSExtensionPointIdentifier": "com.apple.widgetkit-extension"],
+            ]),
+            sources: ["Widgets/Sources/**", "Shared/Sources/LiveActivity/SessionActivityAttributes.swift"]
         ),
         // UI tests run the apps in demo mode (DemoFeed): no GPS, Health or prompts.
         .target(

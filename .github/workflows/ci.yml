@@ -228,6 +228,9 @@ jobs:
             | grep -E '(error|warning):|Test Case|\*\* TEST'
 
       - name: Watch UI tests
+        env:
+          # Passed to the test runner as CI: skips tests the CI simulator cannot run.
+          TEST_RUNNER_CI: "1"
         run: |
           set -o pipefail
           xcodebuild test -workspace MadeGood.xcworkspace -scheme MadeGoodWatch \
