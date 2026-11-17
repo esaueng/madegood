@@ -9,7 +9,8 @@ let package = Package(
         .macOS(.v15),
     ],
     products: [
-        .library(name: "WaterKit", targets: ["WaterKit"])
+        .library(name: "WaterKit", targets: ["WaterKit"]),
+        .executable(name: "waterkit-replay", targets: ["waterkit-replay"]),
     ],
     targets: [
         // Thin C shim over the system zlib (macOS/iOS/watchOS SDKs; zlib1g-dev on Linux).
@@ -20,6 +21,10 @@ let package = Package(
         .target(
             name: "WaterKit",
             dependencies: ["CZlib"]
+        ),
+        .executableTarget(
+            name: "waterkit-replay",
+            dependencies: ["WaterKit"]
         ),
         .testTarget(
             name: "WaterKitTests",
