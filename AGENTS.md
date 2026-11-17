@@ -35,6 +35,7 @@ Run the checks for every area you touch before you push.
 | Web lint/format | `pnpm check` (Biome) |
 | Web typecheck/test | `pnpm -C web typecheck && pnpm -C web test` |
 | Web dev server | `pnpm -C web dev` |
+| OpenAPI document | `scripts/generate-openapi` after changing API routes; commit `openapi/openapi.json` (a web test fails when it is stale) |
 
 Each row works once the Phase 0 task that adds it has merged. If a command fails
 because its files don't exist yet, say so rather than inventing a replacement.

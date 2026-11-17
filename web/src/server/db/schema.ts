@@ -1,9 +1,9 @@
 import { sql } from "drizzle-orm";
-import { integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { index, integer, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
-// D1 schema. Phase 0 creates only the users table; sessions, tokens and the rest
-// arrive with the API work in Phase 3 (docs/PLAN.md §7). Applied migrations are never
-// edited: change this file, then run `pnpm db:generate` to add a new migration.
+// D1 schema (docs/PLAN.md §7). Applied migrations are never edited: change this file,
+// then run `pnpm db:generate` to add a new migration, and keep each change compatible
+// with the version already deployed (docs/self-hosting.md).
 
 /** Unix epoch milliseconds. */
 const timestamp = (name: string) => integer(name, { mode: "number" });
@@ -31,3 +31,87 @@ export const users = sqliteTable(
 );
 
 export type User = typeof users.$inferSelect;
+
+/** Refresh tokens, stored as SHA-256 hashes and rotated on every use. */
+export const refreshTokens = sqliteTable(
+  "refresh_tokens",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    tokenHash: text("token_hash").notNull(),
+    expiresAt: timestamp("expires_at").notNull(),
+    createdAt: timestamp("created_at").notNull().default(sql`(unixepoch('subsec') * 1000)`),
+    revokedAt: timestamp("revoked_at"),
+  },
+  (table) => [
+    uniqueIndex("refresh_tokens_hash_unique").on(table.tokenHash),
+    index("refresh_tokens_user").on(table.userId),
+  ],
+);
+
+/**
+ * One recorded session. `id` is the device-generated UUID, so uploads are idempotent
+ * (AGENTS.md). Units are SI; times are epoch milliseconds. The track itself is in R2 at
+ * `track_key`; `summary_json` is the track v1 summary (docs/metrics.md).
+ */
+export const sessions = sqliteTable(
+  "sessions",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    sport: text("sport", {
+      enum: ["sailing", "windsurfing", "motorboating", "kayak", "canoe", "sup"],
+    }).notNull(),
+    title: text("title"),
+    notes: text("notes"),
+    visibility: text("visibility", { enum: ["private", "unlisted", "public"] })
+      .notNull()
+      .default("private"),
+    startedAt: timestamp("started_at").notNull(),
+    endedAt: timestamp("ended_at"),
+    durationS: real("duration_s"),
+    movingS: real("moving_s"),
+    distanceM: real("distance_m"),
+    maxSpeedMps: real("max_speed_mps"),
+    avgSpeedMps: real("avg_speed_mps"),
+    minLat: real("min_lat"),
+    minLon: real("min_lon"),
+    maxLat: real("max_lat"),
+    maxLon: real("max_lon"),
+    startGeohash: text("start_geohash"),
+    summaryJson: text("summary_json"),
+    analyzerVersion: text("analyzer_version"),
+    trackKey: text("track_key"),
+    windJson: text("wind_json"),
+    createdAt: timestamp("created_at").notNull().default(sql`(unixepoch('subsec') * 1000)`),
+    updatedAt: timestamp("updated_at").notNull().default(sql`(unixepoch('subsec') * 1000)`),
+    deletedAt: timestamp("deleted_at"),
+  },
+  (table) => [
+    index("sessions_user_started").on(table.userId, table.startedAt),
+    index("sessions_public_started").on(table.visibility, table.startedAt),
+  ],
+);
+
+/** Areas around a user's home or launch spots, cut from tracks that others can see. */
+export const privacyZones = sqliteTable(
+  "privacy_zones",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    lat: real("lat").notNull(),
+    lon: real("lon").notNull(),
+    radiusM: real("radius_m").notNull(),
+  },
+  (table) => [index("privacy_zones_user").on(table.userId)],
+);
+
+export type Session = typeof sessions.$inferSelect;
+export type RefreshToken = typeof refreshTokens.$inferSelect;
+export type PrivacyZone = typeof privacyZones.$inferSelect;
