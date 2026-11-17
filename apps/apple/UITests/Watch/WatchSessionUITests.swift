@@ -54,9 +54,8 @@ final class WatchSessionUITests: XCTestCase {
         app.buttons["control.mob"].tap()
         XCTAssertTrue(app.staticTexts["mob.distance"].waitForExistence(timeout: 10))
         attachScreenshot("6 man overboard")
-        app.buttons["mob.clear"].tap()
-        XCTAssertTrue(app.staticTexts["mob.distance"].waitForNonExistence(timeout: 10))
-        goToPage(1, app)
+        // The MOB page is now page 1, so the controls are page 2.
+        goToPage(2, app)
         XCTAssertTrue(app.buttons["control.end"].waitForExistence(timeout: 10))
 
         app.buttons["control.end"].tap()
@@ -79,7 +78,17 @@ final class WatchSessionUITests: XCTestCase {
         XCTAssertLessThanOrEqual(seconds, ended.timeIntervalSince(started) + 2)
         attachScreenshot("7 summary")
         done.tap()
-        XCTAssertTrue(kayak.waitForExistence(timeout: 10))
+
+        // Regression checks from review: an uncleared mark outlives the session and a
+        // relaunch, with its own location updates.
+        let clear = app.buttons["mob.clear"]
+        XCTAssertTrue(clear.waitForExistence(timeout: 10))
+        attachScreenshot("8 man overboard after session")
+        app.terminate()
+        let relaunched = launchDemoApp()
+        XCTAssertTrue(relaunched.buttons["mob.clear"].waitForExistence(timeout: 15))
+        relaunched.buttons["mob.clear"].tap()
+        XCTAssertTrue(relaunched.buttons["sport.kayak"].waitForExistence(timeout: 10))
     }
 
     /// Moves the vertical page view to `page` (1-based) by dragging. XCUITest's quick

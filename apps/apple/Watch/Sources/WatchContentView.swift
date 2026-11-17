@@ -9,6 +9,7 @@ struct WatchContentView: View {
     @State private var recorder = SessionRecorder()
     @State private var waiting: [RecordingStore.Entry] = []
     @State private var summary: Summary?
+    @State private var manOverboard = ManOverboard.shared
     @AppStorage("watch.lastSport") private var lastSportRaw = ""
 
     struct Summary: Identifiable {
@@ -20,6 +21,11 @@ struct WatchContentView: View {
     var body: some View {
         NavigationStack {
             switch recorder.state {
+            case .idle where manOverboard.mark != nil:
+                // An active mark outlives the session (and relaunches) until cleared.
+                ManOverboardPage(manOverboard: manOverboard, sport: Sport(rawValue: lastSportRaw) ?? .sailing)
+                    .onAppear { manOverboard.startOwnUpdates() }
+                    .onDisappear { manOverboard.stopOwnUpdates() }
             case .idle:
                 SportPicker(recorder: recorder, waiting: waiting, lastSport: Sport(rawValue: lastSportRaw)) { sport in
                     lastSportRaw = sport.rawValue
@@ -103,17 +109,18 @@ private struct SessionPages: View {
     let startedAt: Date
     let sport: Sport
     @State private var page = Page.metrics
+    @State private var manOverboard = ManOverboard.shared
 
     enum Page { case manOverboard, controls, metrics, map }
 
     var body: some View {
         TabView(selection: $page) {
-            if recorder.manOverboard != nil {
-                ManOverboardPage(recorder: recorder, sport: sport).tag(Page.manOverboard)
+            if manOverboard.mark != nil {
+                ManOverboardPage(manOverboard: manOverboard, sport: sport).tag(Page.manOverboard)
             }
             ControlsPage(recorder: recorder) { page = .manOverboard }.tag(Page.controls)
             MetricsPage(recorder: recorder, startedAt: startedAt, sport: sport).tag(Page.metrics)
-            MapPage(points: recorder.trackPoints, manOverboard: recorder.manOverboard?.point).tag(Page.map)
+            MapPage(points: recorder.trackPoints, manOverboard: manOverboard.mark).tag(Page.map)
         }
         .tabViewStyle(.verticalPage)
     }
@@ -181,7 +188,7 @@ private struct Field: View {
 
 private struct MapPage: View {
     let points: [SessionRecorder.TrackPoint]
-    let manOverboard: SessionRecorder.TrackPoint?
+    let manOverboard: ManOverboard.Mark?
 
     var body: some View {
         let coordinates = points.map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
@@ -229,7 +236,7 @@ private struct ControlsPage: View {
                 ControlButton(title: "MOB", symbol: "figure.wave", tint: .red) {
                     recorder.markManOverboard()
                     WKInterfaceDevice.current().play(.notification)
-                    if recorder.manOverboard != nil { showManOverboard() }
+                    if ManOverboard.shared.mark != nil { showManOverboard() }
                 }
                 ControlButton(title: "Lock", symbol: "drop.fill", tint: .cyan) {
                     // Water lock ignores taps until the user turns the Digital Crown.
@@ -252,35 +259,48 @@ private struct ControlsPage: View {
     }
 }
 
-/// Bearing and distance back to the man-overboard mark. The arrow points relative to the
-/// course over ground while moving, and to true north when stopped.
-private struct ManOverboardPage: View {
-    let recorder: SessionRecorder
+/// Bearing and distance back to the man-overboard mark. Guidance needs a position from
+/// the last 10 s; the arrow is relative to the course only while moving at 0.5 m/s or
+/// more, and points from true north otherwise.
+struct ManOverboardPage: View {
+    let manOverboard: ManOverboard
     let sport: Sport
 
     var body: some View {
         let display = UserSettings.display(for: sport)
-        let vector = recorder.manOverboardVector
-        let course = recorder.metrics?.course
-        VStack(spacing: 4) {
-            if let vector {
-                Image(systemName: "location.north.fill")
-                    .font(.system(size: 44))
-                    .foregroundStyle(.red)
-                    .rotationEffect(.degrees(vector.bearing - (course ?? 0)))
-                    .accessibilityLabel("Bearing \(Int(vector.bearing.rounded())) degrees")
-                Text(display.distance(vector.distance))
-                    .font(.title2.weight(.semibold).monospacedDigit())
-                    .accessibilityIdentifier("mob.distance")
-                Text("Man overboard · \(Int(vector.bearing.rounded()))°\(course == nil ? " true" : "")")
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            VStack(spacing: 4) {
+                if let guidance = manOverboard.guidance(at: context.date) {
+                    Image(systemName: "location.north.fill")
+                        .font(.system(size: 44))
+                        .foregroundStyle(.red)
+                        .rotationEffect(.degrees(guidance.arrow))
+                        .accessibilityLabel("Bearing \(Int(guidance.bearing.rounded())) degrees")
+                    Text(display.distance(guidance.distance))
+                        .font(.title2.weight(.semibold).monospacedDigit())
+                        .accessibilityIdentifier("mob.distance")
+                    Text(
+                        "Man overboard · \(Int(guidance.bearing.rounded()))°\(guidance.isCourseRelative ? "" : " true")"
+                    )
                     .font(.footnote.weight(.semibold).monospacedDigit())
                     .foregroundStyle(.red)
+                } else {
+                    Image(systemName: "location.slash").font(.title).foregroundStyle(.red)
+                    Text("Man overboard").font(.headline).foregroundStyle(.red)
+                    Text("Waiting for GPS").font(.footnote).foregroundStyle(.secondary)
+                        .accessibilityIdentifier("mob.waiting")
+                }
+                if let mark = manOverboard.mark {
+                    if mark.positionAge > ManOverboard.freshFor {
+                        Text("Marked from a fix \(Formatting.duration(mark.positionAge)) old")
+                            .font(.footnote)
+                            .foregroundStyle(.orange)
+                    }
+                    Text(mark.markedAt, style: .relative).font(.footnote).foregroundStyle(.secondary)
+                }
+                Button("Clear", role: .destructive) { manOverboard.clear() }
+                    .accessibilityIdentifier("mob.clear")
             }
-            if let at = recorder.manOverboard?.at {
-                Text(at, style: .relative).font(.footnote).foregroundStyle(.secondary)
-            }
-            Button("Clear", role: .destructive) { recorder.clearManOverboard() }
-                .accessibilityIdentifier("mob.clear")
         }
     }
 }

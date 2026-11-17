@@ -45,8 +45,6 @@ final class SessionRecorder {
     private(set) var metrics: LiveMetrics?
     /// Accepted positions for the live map, oldest first.
     private(set) var trackPoints: [TrackPoint] = []
-    /// Where and when man-overboard was marked, until cleared.
-    private(set) var manOverboard: (point: TrackPoint, at: Date)?
     private(set) var lastError: String?
     /// Called with the session folder after a recording stops.
     var onFinish: ((URL) -> Void)?
@@ -129,7 +127,6 @@ final class SessionRecorder {
         writtenGeneratedEvents = 0
         metrics = engine?.snapshot
         trackPoints = []
-        manOverboard = nil
 
         let writers = Dictionary(
             uniqueKeysWithValues: RawFormat.Stream.allCases.map { ($0, RawStreamWriter(stream: $0, folder: folder)) })
@@ -244,33 +241,21 @@ final class SessionRecorder {
 
     func lap() { userEvent(.lap) }
 
-    /// Marks man-overboard at the latest position (PLAN §5): a `mob` event with the
-    /// position, kept on screen with bearing and distance back until cleared. Returns
-    /// false when there is no position yet; the event is still recorded.
-    @discardableResult
-    func markManOverboard() -> Bool {
-        guard isRecording else { return false }
-        let now = Date().timeIntervalSince1970
-        let point = trackPoints.last
+    /// Marks man-overboard (PLAN §5) at the latest position in `ManOverboard`, and
+    /// records a `mob` event with that position and how old it was.
+    func markManOverboard() {
+        guard isRecording else { return }
+        let now = Date()
+        let mark = ManOverboard.shared.markNow(at: now)
         var data: [String: JSONValue]?
-        if let point { data = ["lat": .number(point.latitude), "lon": .number(point.longitude)] }
-        writers[.events]?.append(RawFormat.EventLine(ts: now, type: .mob, data: data))
-        ingest(.event(SessionEvent(t: now - startUnix, type: .mob, data: data)))
-        if let point { manOverboard = (point, Date()) }
-        return point != nil
-    }
-
-    func clearManOverboard() {
-        manOverboard = nil
-    }
-
-    /// Distance (m) and true bearing (degrees) from the latest position to the MOB mark.
-    var manOverboardVector: (distance: Double, bearing: Double)? {
-        guard let mob = manOverboard?.point, let here = trackPoints.last else { return nil }
-        return (
-            Geo.distance(lat1: here.latitude, lon1: here.longitude, lat2: mob.latitude, lon2: mob.longitude),
-            Geo.bearing(lat1: here.latitude, lon1: here.longitude, lat2: mob.latitude, lon2: mob.longitude)
-        )
+        if let mark {
+            data = [
+                "lat": .number(mark.latitude), "lon": .number(mark.longitude),
+                "positionAge": .number((mark.positionAge * 10).rounded() / 10),
+            ]
+        }
+        writers[.events]?.append(RawFormat.EventLine(ts: now.timeIntervalSince1970, type: .mob, data: data))
+        ingest(.event(SessionEvent(t: now.timeIntervalSince1970 - startUnix, type: .mob, data: data)))
     }
 
     func pause() { userEvent(.pause) }
@@ -305,6 +290,10 @@ final class SessionRecorder {
         ingest(.gps(fix))
         if let after = engine?.snapshot.acceptedFixes, after > before {
             appendTrackPoint(TrackPoint(latitude: line.lat, longitude: line.lon))
+            ManOverboard.shared.update(
+                ManOverboard.Position(
+                    latitude: line.lat, longitude: line.lon, at: Date(timeIntervalSince1970: line.ts),
+                    speed: line.spd, course: line.crs))
         }
     }
 
