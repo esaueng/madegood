@@ -26,7 +26,14 @@ struct ContentView: View {
                 SettingsView()
             }
         }
+        // Above every tab, without covering a navigation bar's Back button.
+        .safeAreaInset(edge: .top, spacing: 0) {
+            AnchorAlarmBanner()
+                .padding(.vertical, 4)
+        }
         .onAppear {
+            // Resumes watching a saved anchor after a relaunch.
+            _ = AnchorWatch.shared
             voyageRecorder.liveSharing = PrivateVoyageSync.shared?.liveSharing
             controller.onFinish = { _, _, _ in library.reload() }
             library.reload()
@@ -127,6 +134,12 @@ private struct StartView: View {
                                 .accessibilityIdentifier("sport.hide.\(sport.rawValue)")
                         }
                     }
+                }
+            }
+
+            if !store[.motorboating].isHidden || AnchorWatch.shared.isArmed {
+                Section {
+                    AnchorAlarmRow()
                 }
             }
 
@@ -550,11 +563,15 @@ private struct LiveView: View {
         }
     }
 
-    /// The motorboat trip log (PLAN §5), under the headline metrics.
+    /// The motorboat log and the anchor alarm (PLAN §5), under the headline metrics.
     @ViewBuilder
     private func motorboatPage(display: LiveDisplay, readings: LiveReadings) -> some View {
         if sport == .motorboating {
             MotorboatLiveCard(readings: readings, display: display, savedTrips: MotorboatStats.savedTrips(library))
+            AnchorAlarmRow()
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(.background.secondary, in: .rect(cornerRadius: 12))
         }
     }
 
