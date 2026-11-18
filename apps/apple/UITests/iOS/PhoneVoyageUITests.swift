@@ -2,15 +2,7 @@ import CoreLocation
 import XCTest
 
 final class PhoneVoyageUITests: XCTestCase {
-    @MainActor func testRecoversTheActiveLegAndShowsTheGapAfterResume() throws {
-        try recoverActiveLeg(simulateBackgroundLaunch: false)
-    }
-
-    @MainActor func testBackgroundLaunchRestartsTheActiveLeg() throws {
-        try recoverActiveLeg(simulateBackgroundLaunch: true)
-    }
-
-    @MainActor private func recoverActiveLeg(simulateBackgroundLaunch: Bool) throws {
+    @MainActor func testRelaunchRestartsTheActiveLegAndShowsTheGap() throws {
         continueAfterFailure = false
         defer { XCUIDevice.shared.location = nil }
 
@@ -41,21 +33,21 @@ final class PhoneVoyageUITests: XCTestCase {
         XCTAssertGreaterThan(countBeforeRestart, 0)
 
         app.terminate()
-        if simulateBackgroundLaunch { app.launchArguments.append("-demoVoyageBackgroundLaunch") }
         app.launch()
         openVoyages(in: app)
         let activeLeg = element("voyage.activeLeg", in: app)
         XCTAssertTrue(activeLeg.waitForExistence(timeout: 10))
-        XCTAssertEqual(activeLeg.value as? String, simulateBackgroundLaunch ? "Recording" : "Capture interrupted")
+        XCTAssertEqual(activeLeg.value as? String, "Recording")
         activeLeg.tap()
         let resume = app.buttons["Resume Leg"]
-        if !simulateBackgroundLaunch { XCTAssertTrue(resume.waitForExistence(timeout: 10)) }
         XCTAssertTrue(lastFix.exists)
         let recoveredCount = try XCTUnwrap((savedCount.value as? String).flatMap(Int.init))
         XCTAssertGreaterThanOrEqual(recoveredCount, countBeforeRestart)
-        if !simulateBackgroundLaunch { resume.tap() }
         simulatePosition(longitude: -29.999)
         XCTAssertTrue(app.staticTexts["Latest Capture Gap"].waitForExistence(timeout: 20))
+        let countAdvanced = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value != %@", String(recoveredCount)), object: savedCount)
+        XCTAssertEqual(XCTWaiter().wait(for: [countAdvanced], timeout: 15), .completed)
         let resumedCount = try XCTUnwrap((savedCount.value as? String).flatMap(Int.init))
         XCTAssertGreaterThan(resumedCount, recoveredCount)
         XCTAssertFalse(resume.exists)

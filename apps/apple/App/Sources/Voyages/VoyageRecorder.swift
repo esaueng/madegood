@@ -60,7 +60,7 @@ final class VoyageRecorder {
         if perform({ try store?.resumeLeg(at: Self.now) }) != nil { startUpdates() }
     }
 
-    func resumeForBackgroundLocation() {
+    func resumeAfterLaunch() {
         openLibrary()
         guard !isCapturing, activeLeg != nil,
             [.authorizedAlways, .authorizedWhenInUse].contains(CLLocationManager().authorizationStatus)
@@ -185,13 +185,9 @@ class VoyageLaunchDelegate: NSObject, UIApplicationDelegate {
         _ application: UIApplication,
         didFinishLaunchingWithOptions options: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
-        let backgroundLaunch = options?[.location] != nil || application.applicationState == .background
-        #if DEBUG
-            let demo = ProcessInfo.processInfo.arguments.contains("-demoVoyageBackgroundLaunch")
-        #else
-            let demo = false
-        #endif
-        if backgroundLaunch || demo { VoyageRecorder.shared.resumeForBackgroundLocation() }
+        // Recreate the location sessions promptly for an authorized, unfinished leg.
+        // Core Location can deliver queued fixes after any kind of process launch.
+        VoyageRecorder.shared.resumeAfterLaunch()
         return true
     }
 }
