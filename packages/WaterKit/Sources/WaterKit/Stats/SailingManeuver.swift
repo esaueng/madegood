@@ -14,6 +14,10 @@ extension SessionSelection {
         guard track.sport == .sailing, let wind, (0...360).contains(wind) else { return [] }
 
         let timeline = SessionReplayTimeline(replay: replay, recordedFixes: track.gps, endTime: duration)
+        var unreliableCourses = track.gps.lazy.filter {
+            $0.t.isFinite && !SailingManeuverDetector.reliableCourseAccuracy($0.courseAccuracy)
+        }.makeIterator()
+        var unreliableCourse = unreliableCourses.next()
         var transitions = replay.events.lazy.filter {
             $0.t.isFinite && ($0.type == .start || $0.type == .pause || $0.type == .resume)
         }.makeIterator()
@@ -29,6 +33,12 @@ extension SessionSelection {
             var routeSegment: Int?
             var detector = SailingManeuverDetector()
             for (fix, point) in zip(span, timeline.points[span.indices]) {
+                // A discarded GPS fix can still indicate that course was unreliable
+                // between otherwise accepted positions.
+                while let uncertain = unreliableCourse, uncertain.t <= fix.t {
+                    detector.finishRun()
+                    unreliableCourse = unreliableCourses.next()
+                }
                 if point.routeSegment != routeSegment {
                     detector.finishRun()
                     routeSegment = point.routeSegment
@@ -40,7 +50,7 @@ extension SessionSelection {
                 }
                 guard !paused, fix.t >= 0, fix.t <= duration,
                     let course = fix.course, (0...360).contains(course),
-                    fix.courseAccuracy.map({ (0...SailingManeuverDetector.axisProximity).contains($0) }) ?? true,
+                    SailingManeuverDetector.reliableCourseAccuracy(fix.courseAccuracy),
                     let speed = point.speed, speed >= SailingManeuverDetector.minimumCourseSpeed
                 else {
                     detector.finishRun()
@@ -65,6 +75,10 @@ private struct SailingManeuverDetector {
     static let maximumCourseStep = 45.0
     static let maximumCounterturn = 20.0
     static let minimumSpeedDipFraction = 0.10
+
+    static func reliableCourseAccuracy(_ accuracy: Double?) -> Bool {
+        accuracy.map { (0...axisProximity).contains($0) } ?? true
+    }
 
     private struct Observation {
         let t: Double

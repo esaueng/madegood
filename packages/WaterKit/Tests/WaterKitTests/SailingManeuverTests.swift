@@ -100,6 +100,18 @@ import Testing
         #expect(try SessionSelection(session: session(gps)).sailingManeuvers(windFromDegreesTrue: 0).count == 1)
     }
 
+    @Test func aRejectedGPSFixCanStillInterruptUnreliableCourseEvidence() throws {
+        var gps = tackTrack
+        var rejected = gps[15]
+        rejected.t = 15.5
+        rejected.horizontalAccuracy = 100
+        rejected.courseAccuracy = 180
+        gps.insert(rejected, at: 16)
+        let selection = try SessionSelection(session: session(gps))
+        #expect(selection.replay.metrics.rejectedFixes == 1)
+        #expect(selection.sailingManeuvers(windFromDegreesTrue: 0).isEmpty)
+    }
+
     @Test func requiresExplicitWindAndSailingSport() throws {
         let selection = try SessionSelection(session: session(tackTrack))
         for wind: Double? in [nil, .nan, .infinity, -.infinity, -1, 361, 90] {
