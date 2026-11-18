@@ -48,6 +48,32 @@ final class PhoneSportCardsUITests: XCTestCase {
         XCTAssertTrue(sailing.waitForExistence(timeout: 20))
     }
 
+    /// Swiping a sport row offers Hide; it leaves the list, and Undo brings it back.
+    func testSwipeHidesSport() {
+        let app = launchDemoApp()
+        let canoe = app.buttons["sport.canoe"]
+        XCTAssertTrue(canoe.waitForExistence(timeout: 15))
+        canoe.swipeLeft()
+        let hide = app.buttons["sport.hide.canoe"]
+        XCTAssertTrue(hide.waitForExistence(timeout: 5))
+        attachScreenshot("swipe to hide")
+        hide.tap()
+        XCTAssertTrue(canoe.waitForNonExistence(timeout: 5))
+        let undo = app.buttons["sport.undoHide"]
+        XCTAssertTrue(undo.waitForExistence(timeout: 5))
+        attachScreenshot("hidden with undo")
+        undo.tap()
+        XCTAssertTrue(canoe.waitForExistence(timeout: 5))
+
+        // Hidden for real: it stays gone after the toast, and Settings shows it as hidden.
+        canoe.swipeLeft()
+        hide.tap()
+        XCTAssertTrue(undo.waitForNonExistence(timeout: 10))
+        XCTAssertFalse(canoe.exists)
+        app.tabBars.buttons["Settings"].tap()
+        XCTAssertTrue(app.staticTexts["Hidden"].waitForExistence(timeout: 10))
+    }
+
     /// Hiding a sport in Settings removes its card; the last visible sport cannot be hidden.
     func testHiddenSportLeavesTheGrid() {
         let app = launchDemoApp()
