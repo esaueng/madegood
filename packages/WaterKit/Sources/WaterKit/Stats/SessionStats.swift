@@ -138,7 +138,7 @@ extension SessionStats {
 /// fix, with the other edge interpolated. That is exact for evenly spaced fixes (1 Hz
 /// GPS); for uneven spacing a window starting between fixes can do slightly better. The
 /// final metric definitions are documented in docs/metrics.md as they are built.
-struct SpeedProfile {
+struct SpeedProfile: Sendable {
     let t: [Double]
     let v: [Double]
 
@@ -191,6 +191,15 @@ struct SpeedProfile {
             if i >= t.count - 1 && position < b { return nil }
         }
         return area
+    }
+
+    func interpolatedValue(at time: Double, maxGap: Double) -> Double? {
+        guard let first = t.first, let last = t.last, time >= first, time <= last else { return nil }
+        if time == last { return v.last }
+        let i = segment(containing: time)
+        if time == t[i] { return v[i] }
+        guard t[i + 1] - t[i] <= maxGap else { return nil }
+        return value(at: time, segment: i)
     }
 
     /// Index i of the segment [t[i], t[i+1]] that contains `time` (t.first <= time < t.last).

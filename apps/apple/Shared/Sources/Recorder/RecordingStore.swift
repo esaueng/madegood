@@ -17,16 +17,14 @@ enum RecordingStore {
 
     /// File names a recording folder may contain (used to validate transferred files).
     static func isRecordingFileName(_ name: String) -> Bool {
-        if name == RawFormat.metaFileName { return true }
-        return RawFormat.Stream.allCases.contains { name == $0.fileName || name == $0.gzippedFileName }
+        RawSessionReader.isRecordingFileName(name)
     }
 
     struct Entry: Identifiable, Hashable, Sendable {
         var id: URL { folder }
         var folder: URL
         var meta: RawFormat.Meta?
-        var bytes: Int64
-        var files: [String]
+        var revision: [RawSessionReader.FileRevision]
 
         var startedAt: Date? { meta.map { Date(timeIntervalSince1970: $0.startedAt) } }
         var duration: TimeInterval? { meta.flatMap { meta in meta.endedAt.map { $0 - meta.startedAt } } }
@@ -41,22 +39,11 @@ enum RecordingStore {
             guard fm.fileExists(atPath: folder.path, isDirectory: &isDirectory), isDirectory.boolValue else {
                 return nil
             }
-            let (files, bytes) = contents(of: folder)
+            let revision = RawSessionReader.revision(of: folder)
             let meta = try? RawSessionReader.readMeta(folder: folder)
-            return Entry(folder: folder, meta: meta, bytes: bytes, files: files)
+            return Entry(folder: folder, meta: meta, revision: revision)
         }
         .sorted { ($0.startedAt ?? .distantPast) > ($1.startedAt ?? .distantPast) }
-    }
-
-    /// The recording files in a folder and their total size, bytes.
-    static func contents(of folder: URL) -> (files: [String], bytes: Int64) {
-        let fm = FileManager.default
-        let files = ((try? fm.contentsOfDirectory(atPath: folder.path)) ?? []).filter(isRecordingFileName).sorted()
-        let bytes = files.reduce(Int64(0)) { total, name in
-            let attributes = try? fm.attributesOfItem(atPath: folder.appendingPathComponent(name).path)
-            return total + ((attributes?[.size] as? NSNumber)?.int64Value ?? 0)
-        }
-        return (files, bytes)
     }
 
     static func delete(_ entry: Entry) throws {

@@ -36,9 +36,12 @@ final class PhoneSportCardsUITests: XCTestCase {
         XCTAssertTrue(["60 seconds to start", "59 seconds to start"].contains(time.label), "after sync: \(time.label)")
         app.buttons["countdown.startNow"].tap()
 
-        let distance = app.staticTexts["metric.distance"]
+        let distance = element("metric.distance", in: app)
         XCTAssertTrue(distance.waitForExistence(timeout: 15))
-        waitForLabel(app.staticTexts["stat.Speed"], "4.9 kn")
+        XCTAssertEqual(distance.label, "Distance")
+        let speed = element("metric.speed", in: app)
+        waitForMetricValue(speed, "4.9 knots")
+        XCTAssertLessThan(distance.frame.maxY, speed.frame.minY)
         attachScreenshot("live distance first")
 
         endSession(app)

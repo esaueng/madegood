@@ -1,6 +1,6 @@
 # File formats
 
-MadeGood has two on-disk formats. Both are versioned contracts: WaterKit
+MadeGood has two recording formats. Both are versioned contracts: WaterKit
 (`packages/WaterKit`) is the single implementation, and the recorder app writes files
 through the same types the readers use.
 
@@ -259,6 +259,30 @@ Rules:
   does not allow are dropped. Numbers use `.` as the decimal separator and never an
   exponent.
 - A track with no valid fixes is written as a `<trk>` with no segments.
+
+---
+
+## Local trim metadata
+
+The trim store keeps one JSON file per session, named `<lowercase-session-id>.json`
+in an app-owned directory outside the recording folders. The file contains
+`{"version":1,"start":1.25,"end":5.5}`. Bounds are inclusive and use seconds from
+the original recording start. The store atomically replaces the file when an edit
+changes. Restore Original removes it. Raw recording v1 and track v1 keep their
+existing contents and schemas, and the trim metadata stays on the device.
+
+The selected track's start date shifts by the lower bound. Its GPS, heart rate
+and events use that shifted origin. GPX writes each retained fix's timestamp from
+the original recording clock. Preview uses the same replay as the original. It
+carries forward an active manual pause and recalculates auto-pause and auto-laps
+from the retained samples.
+
+Future middle cuts should produce ordered, disjoint spans on the original clock.
+Replay each span independently and give GPX, maps and charts explicit span
+boundaries, including for gaps shorter than their usual split thresholds. Combine
+distance and time from the individual replays and take speed bests from windows
+within a span. Keep off-water suggestions on the original clock until the user
+accepts them as edits.
 
 ---
 

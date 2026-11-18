@@ -175,12 +175,63 @@ private func approx(_ a: Double?, _ b: Double, tolerance: Double = 0.01) -> Bool
     }
 
     @Test func liveMaxSpeedMatchesPostSessionStats() {
-        // The same windowed definition live and after the session (docs/metrics.md).
+        // At 1 Hz the causal and offline candidate windows coincide (docs/metrics.md).
         let run = Run(speed: { t in (40..<46).contains(t) ? 4.5 : (t < 70 ? 1.8 : 2.4) })
         let fixes = run.fixes(0...119)
         let m = simulate(.windsurfing, fixes.map(Sample.gps)).snapshot
         #expect(approx(m.maxSpeed2s, SessionStats.bestAverageSpeed(fixes, window: 2)!, tolerance: 1e-9))
         #expect(approx(m.maxSpeed10s, SessionStats.bestAverageSpeed(fixes, window: 10)!, tolerance: 1e-9))
+    }
+
+    @Test func maxSpeedWindowsKeepTheEarliestExactTie() {
+        // This run outlasts the recent speed buffer. The original winners remain available.
+        let fixes = Run(speed: { _ in 2 }).fixes(0...60)
+        let m = simulate(.sailing, fixes.map(Sample.gps)).snapshot
+        #expect(m.maxSpeed2s == 2)
+        #expect(m.maxSpeed2sRange == 0...2)
+        #expect(m.maxSpeed10s == 2)
+        #expect(m.maxSpeed10sRange == 0...10)
+    }
+
+    @Test func maxSpeedWindowsRespectTheirOwnGapLimits() {
+        var engine = SessionEngine(sport: .sailing)
+        let run = Run(speed: { $0 < 50 ? 8 : 10 })
+        for t in [0.0, 3] { engine.ingest(.gps(run.fix(t))) }
+        #expect(engine.snapshot.maxSpeed2s == nil)
+        #expect(engine.snapshot.maxSpeed2sRange == nil)
+        #expect(engine.snapshot.maxSpeed10s == nil)
+        #expect(engine.snapshot.maxSpeed10sRange == nil)
+
+        // Both early gaps exceed 2 s but are within the 10 s window's gap limit.
+        engine.ingest(.gps(run.fix(10)))
+        #expect(engine.snapshot.maxSpeed2sRange == nil)
+        #expect(engine.snapshot.maxSpeed10s == 8)
+        #expect(engine.snapshot.maxSpeed10sRange == 0...10)
+
+        // A GPS re-anchor after a long gap cannot improve either best by interpolation.
+        engine.ingest(.gps(run.fix(50)))
+        #expect(engine.snapshot.maxSpeed2sRange == nil)
+        #expect(engine.snapshot.maxSpeed10sRange == 0...10)
+
+        for t in [51.0, 52] { engine.ingest(.gps(run.fix(t))) }
+        #expect(engine.snapshot.maxSpeed2s == 10)
+        #expect(engine.snapshot.maxSpeed2sRange == 50...52)
+        #expect(engine.snapshot.maxSpeed10sRange == 0...10)
+
+        engine.ingest(.gps(run.fix(60)))
+        #expect(engine.snapshot.maxSpeed10s == 10)
+        #expect(engine.snapshot.maxSpeed10sRange == 50...60)
+    }
+
+    @Test func overridingMaxSpeedClearsItsRange() {
+        let fixes = Run(speed: { _ in 2 }).fixes(0...10)
+        var m = simulate(.sailing, fixes.map(Sample.gps)).snapshot
+        m.maxSpeed2s = 3
+        #expect(m.maxSpeed2s == 3)
+        #expect(m.maxSpeed2sRange == nil)
+        #expect(m.maxSpeed10sRange == 0...10)
+        m.maxSpeed10s = nil
+        #expect(m.maxSpeed10sRange == nil)
     }
 
     @Test func currentSpeedBlanksWhenGPSGoesQuiet() {
@@ -313,6 +364,26 @@ private func approx(_ a: Double?, _ b: Double, tolerance: Double = 0.01) -> Bool
         #expect(replay.fixes.count == 160)
     }
 
+    @Test(arguments: [2.0, 10.0]) func irregularFixesKeepTheRangeOfTheDisplayedCausalBest(window: Double) {
+        let scale = window / 2
+        let fixes = [(0.0, 2.0), (1, 6), (2.5, 0)].map { time, speed in
+            GPSFix(t: time * scale, latitude: 0, longitude: 0, horizontalAccuracy: 5, speed: speed)
+        }
+        let recording = track(fixes, sport: .windsurfing)
+        let replay = SessionReplay(track: recording)
+        let offline = SessionStats(track: recording)
+        let isShort = window == 2
+        let mean = isShort ? replay.metrics.maxSpeed2s : replay.metrics.maxSpeed10s
+        let range = isShort ? replay.metrics.maxSpeed2sRange : replay.metrics.maxSpeed10sRange
+
+        #expect(replay.fixes == fixes)
+        // The causal window ends at the last fix, with an interpolated start at 4 m/s.
+        #expect(mean == 3.5)
+        #expect(range == (0.5 * scale)...(2.5 * scale))
+        // The offline diagnostic can instead start at the first fix, averaging 4 m/s.
+        #expect((isShort ? offline.maxSpeed2s : offline.maxSpeed10s) == 4)
+    }
+
     @Test func storedAutoEventsAreRegeneratedNotReplayed() {
         let fixes = Run(speed: { t in t < 60 || t >= 100 ? 1.5 : 0 }).fixes(0...159)
         let stored = [
@@ -336,7 +407,13 @@ private func approx(_ a: Double?, _ b: Double, tolerance: Double = 0.01) -> Bool
     @Test func rejectedFixesAreLeftOut() {
         var fixes = Run(speed: { _ in 2 }).fixes(0...10)
         fixes[5].horizontalAccuracy = 80
-        #expect(SessionReplay(track: track(fixes)).fixes.map(\.t) == [0, 1, 2, 3, 4, 6, 7, 8, 9, 10])
+        fixes[5].speed = 20
+        let replay = SessionReplay(track: track(fixes))
+        #expect(replay.fixes.map(\.t) == [0, 1, 2, 3, 4, 6, 7, 8, 9, 10])
+        #expect(replay.metrics.maxSpeed2s == 2)
+        #expect(replay.metrics.maxSpeed2sRange == 0...2)
+        #expect(replay.metrics.maxSpeed10s == 2)
+        #expect(replay.metrics.maxSpeed10sRange == 0...10)
     }
 
     @Test func analyzedTrackCarriesSummaryAndRoundTrips() throws {
@@ -352,7 +429,12 @@ private func approx(_ a: Double?, _ b: Double, tolerance: Double = 0.01) -> Bool
         }
         #expect(summary["movingTime"] == .number(replay.metrics.movingTime))
         #expect(summary["distance"] == .number(replay.metrics.distance))
-        #expect(summary["heartRateAverage"] == nil)
+        #expect(summary["maxSpeed2s"] == replay.metrics.maxSpeed2s.map(JSONValue.number))
+        #expect(summary["maxSpeed10s"] == replay.metrics.maxSpeed10s.map(JSONValue.number))
+        let expectedKeys: Set = [
+            "distance", "movingTime", "elapsed", "laps", "averageSpeed", "maxSpeed2s", "maxSpeed10s",
+        ]
+        #expect(Set(summary.keys) == expectedKeys)
         if case .array(let laps) = summary["laps"] { #expect(laps.count == 2) } else { Issue.record("no laps") }
         let decoded = try TrackCodec.decode(TrackCodec.encode(analyzed))
         #expect(decoded.summary == analyzed.summary)

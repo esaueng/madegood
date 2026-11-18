@@ -4,6 +4,32 @@ import Foundation
 /// empty. Damaged lines and truncated gzip files become `RawSession.issues` rather than
 /// errors, so a recording cut short by a crash or a dead battery still opens.
 public enum RawSessionReader {
+    public struct FileRevision: Hashable, Sendable {
+        let name: String
+        let size: Int64?
+        let modifiedAt: Date?
+        let fileNumber: UInt64?
+    }
+
+    public static func isRecordingFileName(_ name: String) -> Bool {
+        name == RawFormat.metaFileName
+            || RawFormat.Stream.allCases.contains { name == $0.fileName || name == $0.gzippedFileName }
+    }
+
+    /// A cheap cache identity for the raw inputs, excluding derived track files.
+    /// Track each file individually because replacement need not change its size.
+    public static func revision(of folder: URL) -> [FileRevision] {
+        let fm = FileManager.default
+        let files = ((try? fm.contentsOfDirectory(atPath: folder.path)) ?? []).filter(isRecordingFileName).sorted()
+        return files.map { name in
+            let attributes = try? fm.attributesOfItem(atPath: folder.appendingPathComponent(name).path)
+            return FileRevision(
+                name: name, size: (attributes?[.size] as? NSNumber)?.int64Value,
+                modifiedAt: attributes?[.modificationDate] as? Date,
+                fileNumber: (attributes?[.systemFileNumber] as? NSNumber)?.uint64Value)
+        }
+    }
+
     public enum Error: Swift.Error, CustomStringConvertible {
         case missingMeta(URL)
         case invalidMeta(String)

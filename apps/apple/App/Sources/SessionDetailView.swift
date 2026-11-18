@@ -1,5 +1,4 @@
 import Charts
-import MapKit
 import SwiftUI
 import WaterKit
 
@@ -10,6 +9,11 @@ struct SessionDetailView: View {
     let library: SessionLibrary
 
     @State private var analysis: Analysis?
+    @State private var selectedReplayElapsed: Double?
+    @State private var isPlaying = false
+    @State private var replayHighlight: SessionReplayView.Highlight?
+    @State private var editing: Analysis?
+    @State private var operationError: String?
     @State private var failed = false
     @State private var share: ShareFile?
     @State private var confirmDelete = false
@@ -17,9 +21,32 @@ struct SessionDetailView: View {
     @State private var reloads = 0
     @Environment(\.dismiss) private var dismiss
 
-    struct Analysis {
-        var session: RawSession
-        var replay: SessionReplay
+    struct Presentation: Sendable {
+        let selection: SessionSelection
+        let replayData: SessionReplayView.Data
+        let summary: SessionLibrary.Summary
+
+        init(
+            selection: SessionSelection, display: LiveDisplay, isTrimmed: Bool, trimUnavailable: Bool = false
+        ) {
+            self.selection = selection
+            let timeline = SessionReplayTimeline(
+                replay: selection.replay, recordedFixes: selection.track.gps, endTime: selection.duration)
+            replayData = SessionReplayView.Data(timeline: timeline, speedUnit: display.speed)
+            summary = SessionLibrary.Summary(
+                selection: selection, isTrimmed: isTrimmed, trimUnavailable: trimUnavailable)
+        }
+    }
+
+    struct Analysis: Identifiable, Sendable {
+        var id: SessionLibrary.Source { source }
+        var source: SessionLibrary.Source
+        let session: RawSession
+        let profile: SportProfile
+        let original: Presentation
+        var current: Presentation
+        var trim: SessionTrim?
+        let display: LiveDisplay
     }
 
     struct ShareFile: Identifiable {
@@ -30,7 +57,9 @@ struct SessionDetailView: View {
     var body: some View {
         Group {
             if let analysis {
-                content(analysis)
+                ScrollViewReader { scroll in
+                    content(analysis, scroll: scroll)
+                }
             } else if failed {
                 ContentUnavailableView(
                     "Can't read this recording", systemImage: "exclamationmark.triangle",
@@ -45,35 +74,128 @@ struct SessionDetailView: View {
         .onReceive(NotificationCenter.default.publisher(for: RecordingTransfer.didReceiveFile)) { _ in
             reloads += 1
         }
+        .onReceive(NotificationCenter.default.publisher(for: UserSettings.didChangeRemotely)) { _ in
+            reloads += 1
+        }
+        .sheet(item: $editing) { analysis in
+            SessionTrimEditor(analysis: analysis) { trim, preview in
+                try applyTrim(trim, preview: preview, to: analysis)
+            }
+        }
         .sheet(item: $share) { file in
             ShareSheet(url: file.url)
         }
         .confirmationDialog("Delete this session?", isPresented: $confirmDelete, titleVisibility: .visible) {
             Button("Delete", role: .destructive) {
-                library.delete(item)
-                dismiss()
+                do {
+                    try library.delete(item)
+                    dismiss()
+                } catch {
+                    operationError = "Couldn't delete this session or its local trim."
+                }
             }
         } message: {
             Text("The recording is removed from this iPhone.")
+        }
+        .alert(
+            "Session",
+            isPresented: Binding(
+                get: { operationError != nil }, set: { if !$0 { operationError = nil } })
+        ) {
+            Button("OK") { operationError = nil }
+        } message: {
+            Text(operationError ?? "")
         }
     }
 
     private func load() async {
         let folder = item.entry.folder
         let result = await Task.detached(priority: .userInitiated) { () -> Analysis? in
-            guard let session = try? RawSessionReader.read(folder: folder, includeMotion: false) else { return nil }
-            let replay = SessionReplay(track: session.track(), profile: UserSettings.profile(for: session.meta.sport))
-            return Analysis(session: session, replay: replay)
+            guard let source = SessionLibrary.source(for: folder), let loaded = source.analyze() else { return nil }
+            let display = UserSettings.display(for: loaded.session.meta.sport)
+            let original = Presentation(selection: loaded.original, display: display, isTrimmed: false)
+            let current =
+                loaded.trim != nil || loaded.trimUnavailable
+                ? Presentation(
+                    selection: loaded.selection, display: display, isTrimmed: loaded.trim != nil,
+                    trimUnavailable: loaded.trimUnavailable)
+                : original
+            return Analysis(
+                source: source, session: loaded.session, profile: loaded.profile, original: original,
+                current: current, trim: loaded.trim, display: display)
         }.value
+        guard !Task.isCancelled else { return }
+        if let result, SessionLibrary.source(for: folder) != result.source {
+            reloads += 1
+            return
+        }
+        if analysis?.source != result?.source { clearReplay() }
         analysis = result
         failed = result == nil
     }
 
+    private func applyTrim(_ trim: SessionTrim?, preview: Presentation, to original: Analysis) throws {
+        var edited = original
+        edited.source = try library.updateTrim(
+            trim, for: original.session, source: original.source, summary: preview.summary)
+        edited.trim = trim
+        edited.current = preview
+        clearReplay()
+        analysis = edited
+    }
+
+    private func clearReplay() {
+        isPlaying = false
+        selectedReplayElapsed = nil
+        replayHighlight = nil
+    }
+
+    private func selectRange(
+        _ range: ClosedRange<Double>, title: String, data: SessionReplayView.Data, scroll: ScrollViewProxy,
+        showsSpeedWindow: Bool = false
+    ) {
+        isPlaying = false
+        replayHighlight = SessionReplayView.Highlight(
+            title: title, range: range, data: data, showsSpeedWindow: showsSpeedWindow)
+        selectedReplayElapsed = range.lowerBound
+        scroll.scrollTo("session.replay", anchor: .top)
+    }
+
     @ViewBuilder
-    private func content(_ analysis: Analysis) -> some View {
+    private func speedTile(
+        _ title: String, value: Double?, range: ClosedRange<Double>?, analysis: Analysis, scroll: ScrollViewProxy
+    ) -> some View {
+        let tile = StatTile(title: title, value: analysis.display.speed(value))
+        if let range, !analysis.current.replayData.timeline.points.isEmpty {
+            Button {
+                selectRange(
+                    range, title: title, data: analysis.current.replayData, scroll: scroll, showsSpeedWindow: true)
+            } label: {
+                tile.overlay(alignment: .topTrailing) {
+                    Image(systemName: "arrow.up.left")
+                        .font(.caption)
+                        .foregroundStyle(Color.accentColor)
+                        .accessibilityHidden(true)
+                }
+            }
+            .buttonStyle(.borderless)
+            .accessibilityLabel("\(title), \(analysis.display.speed(value))")
+            .accessibilityHint("Show this interval in replay")
+            .accessibilityAddTraits(replayHighlight?.title == title ? .isSelected : [])
+            .accessibilityIdentifier("replay.\(title)")
+        } else {
+            tile
+        }
+    }
+
+    @ViewBuilder
+    private func content(_ analysis: Analysis, scroll: ScrollViewProxy) -> some View {
         let sport = analysis.session.meta.sport
-        let display = UserSettings.display(for: sport)
-        let metrics = analysis.replay.metrics
+        let display = analysis.display
+        let selectedTrack = analysis.current.selection.track
+        let selectedTrackDuration = analysis.current.selection.duration
+        let metrics = analysis.current.selection.replay.metrics
+        let replayData = analysis.current.replayData
         List {
             Section {
                 HStack(spacing: 12) {
@@ -85,29 +207,26 @@ struct SessionDetailView: View {
                         Text(analysis.session.startedAt, format: .dateTime.hour().minute())
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
+                        if analysis.trim != nil {
+                            Label("Trimmed", systemImage: "scissors")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
                 .padding(.vertical, 2)
                 .accessibilityElement(children: .combine)
-                if analysis.replay.fixes.count > 1 {
-                    SpeedMap(fixes: analysis.replay.fixes)
-                        .frame(height: 260)
-                        .listRowInsets(EdgeInsets())
-                    if let range = SpeedSegments.range(analysis.replay.fixes), range.high > range.low {
-                        HStack(spacing: 8) {
-                            Text(display.speed(range.low))
-                            Capsule()
-                                .fill(
-                                    LinearGradient(colors: Theme.speedScale, startPoint: .leading, endPoint: .trailing)
-                                )
-                                .frame(height: 6)
-                            Text(display.speed(range.high))
-                        }
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                        .accessibilityIdentifier("map.legend")
-                    }
+            }
+
+            if !replayData.timeline.points.isEmpty {
+                SessionReplayView(
+                    data: replayData, display: display, elapsed: $selectedReplayElapsed, isPlaying: $isPlaying,
+                    highlight: replayHighlight
+                ) { time in
+                    if replayHighlight?.range.contains(time) == false { replayHighlight = nil }
                 }
+                .id(analysis.source)
+                .id("session.replay")
             }
 
             Section {
@@ -118,11 +237,15 @@ struct SessionDetailView: View {
                     }
                     GridRow {
                         StatTile(title: "Average", value: display.speed(metrics.averageSpeed))
-                        StatTile(title: "Total time", value: Formatting.elapsed(metrics.elapsed))
+                        StatTile(title: "Total time", value: Formatting.elapsed(selectedTrackDuration))
                     }
                     GridRow {
-                        StatTile(title: "Max 10 s", value: display.speed(metrics.maxSpeed10s))
-                        StatTile(title: "Max 2 s", value: display.speed(metrics.maxSpeed2s))
+                        speedTile(
+                            "Max 10 s", value: metrics.maxSpeed10s, range: metrics.maxSpeed10sRange,
+                            analysis: analysis, scroll: scroll)
+                        speedTile(
+                            "Max 2 s", value: metrics.maxSpeed2s, range: metrics.maxSpeed2sRange,
+                            analysis: analysis, scroll: scroll)
                     }
                     if metrics.heartRateAverage != nil {
                         GridRow {
@@ -134,27 +257,25 @@ struct SessionDetailView: View {
                 .padding(.vertical, 6)
             }
 
-            let speeds = ChartSeries.speed(analysis.replay.fixes, display: display)
-            if speeds.count > 1 {
-                Section("Speed (\(display.speed.symbol))") {
-                    Chart(speeds) { point in
-                        AreaMark(x: .value("Minutes", point.minutes), y: .value("Speed", point.value))
-                            .foregroundStyle(Color.accentColor.opacity(0.15))
-                        LineMark(x: .value("Minutes", point.minutes), y: .value("Speed", point.value))
-                            .foregroundStyle(Color.accentColor)
-                    }
-                    .chartXAxisLabel("min")
-                    .frame(height: 160)
-                    .accessibilityIdentifier("chart.speed")
-                }
-            }
-            let heartRate = ChartSeries.heartRate(analysis.session.hr)
+            let heartRate = ChartSeries.heartRate(selectedTrack.hr)
             if heartRate.count > 1 {
+                let start = min(replayData.timeline.start / 60, heartRate.first?.minutes ?? 0)
+                let end = max(heartRate.last?.minutes ?? 0, selectedTrackDuration / 60)
                 Section("Heart rate (bpm)") {
-                    Chart(heartRate) { point in
-                        LineMark(x: .value("Minutes", point.minutes), y: .value("bpm", point.value))
-                            .foregroundStyle(Theme.coral)
+                    Chart {
+                        if let range = replayHighlight?.range {
+                            RectangleMark(
+                                xStart: .value("Start", range.lowerBound / 60),
+                                xEnd: .value("End", range.upperBound / 60)
+                            )
+                            .foregroundStyle(Color.accentColor.opacity(0.2))
+                        }
+                        ForEach(heartRate) { point in
+                            LineMark(x: .value("Minutes", point.minutes), y: .value("bpm", point.value))
+                                .foregroundStyle(Theme.coral)
+                        }
                     }
+                    .chartXScale(domain: start...end)
                     .chartYScale(domain: .automatic(includesZero: false))
                     .chartXAxisLabel("min")
                     .frame(height: 140)
@@ -164,19 +285,55 @@ struct SessionDetailView: View {
             if !metrics.laps.isEmpty {
                 Section("Laps") {
                     ForEach(metrics.laps + [metrics.currentLap], id: \.index) { lap in
-                        HStack {
-                            Text("Lap \(lap.index)").font(.body.weight(.medium))
+                        let title = "Lap \(lap.index)"
+                        let row = HStack {
+                            Text(title).font(.body.weight(.medium))
                             if lap.isAuto { Text("auto").font(.caption).foregroundStyle(.secondary) }
                             Spacer()
                             Text(display.distance(lap.distance)).monospacedDigit()
                             Text(Formatting.elapsed(lap.movingTime)).monospacedDigit().foregroundStyle(.secondary)
                                 .frame(minWidth: 56, alignment: .trailing)
                         }
+                        if lap.start <= lap.end, !replayData.timeline.points.isEmpty {
+                            Button {
+                                selectRange(lap.start...lap.end, title: title, data: replayData, scroll: scroll)
+                            } label: {
+                                row.contentShape(.rect)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityHint("Show this interval in replay")
+                            .accessibilityAddTraits(replayHighlight?.title == title ? .isSelected : [])
+                            .accessibilityIdentifier("replay.lap.\(lap.index)")
+                        } else {
+                            row
+                        }
                     }
                 }
             }
 
             Section {
+                if analysis.current.summary.trimUnavailable {
+                    Label(
+                        "Couldn't read the saved trim. Showing the original recording.",
+                        systemImage: "exclamationmark.triangle"
+                    )
+                    .font(.footnote)
+                    Button("Restore Original") {
+                        do {
+                            try applyTrim(nil, preview: analysis.original, to: analysis)
+                        } catch {
+                            operationError = "Couldn't remove the local trim."
+                        }
+                    }
+                } else if SessionTrim.availableEnd(in: analysis.session) > 0 {
+                    Button {
+                        isPlaying = false
+                        editing = analysis
+                    } label: {
+                        Label(analysis.trim == nil ? "Trim Session" : "Edit Trim", systemImage: "scissors")
+                    }
+                    .accessibilityIdentifier("session.trim")
+                }
                 Button {
                     exportGPX(analysis)
                 } label: {
@@ -203,94 +360,28 @@ struct SessionDetailView: View {
                     .font(.footnote)
                 }
                 LabeledContent("Device", value: analysis.session.meta.device.model)
-                LabeledContent("GPS fixes", value: "\(analysis.session.gps.count) (\(metrics.rejectedFixes) rejected)")
+                LabeledContent("GPS fixes", value: "\(selectedTrack.gps.count) (\(metrics.rejectedFixes) rejected)")
                 Button("Delete session", role: .destructive) { confirmDelete = true }
             }
         }
     }
 
     private func exportGPX(_ analysis: Analysis) {
-        let track = analysis.session.track()
+        isPlaying = false
+        let track = analysis.current.selection.track
         let name = "\(track.sport.rawValue)-\(Int(track.startedAt.timeIntervalSince1970)).gpx"
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(name)
         do {
-            try GPXWriter().data(for: track).write(to: url, options: .atomic)
+            try GPXWriter().data(for: analysis.current.selection).write(to: url, options: .atomic)
             share = ShareFile(url: url)
         } catch {
-            failed = true
+            operationError = "Couldn't export this GPX file."
         }
     }
 
     private func exportZip() {
+        isPlaying = false
         if let url = try? ZipExport.zip(folder: item.entry.folder) { share = ShareFile(url: url) }
-    }
-}
-
-/// The track as polylines colored from slow to fast (Theme.speedScale).
-private struct SpeedMap: View {
-    let fixes: [GPSFix]
-
-    var body: some View {
-        Map(initialPosition: fitted) {
-            ForEach(Array(SpeedSegments.make(fixes).enumerated()), id: \.offset) { _, segment in
-                MapPolyline(coordinates: segment.coordinates)
-                    .stroke(Theme.speedScale[segment.level], style: StrokeStyle(lineWidth: 4, lineCap: .round))
-            }
-        }
-        .mapStyle(.standard(elevation: .flat, pointsOfInterest: .excludingAll))
-    }
-
-    /// The track's bounding box with a margin, so short sessions fill the map.
-    private var fitted: MapCameraPosition {
-        let points = fixes.map { MKMapPoint(CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude)) }
-        guard let first = points.first else { return .automatic }
-        var rect = MKMapRect(origin: first, size: MKMapSize(width: 0, height: 0))
-        for point in points.dropFirst() { rect = rect.union(MKMapRect(origin: point, size: MKMapSize())) }
-        let margin = max(rect.size.width, rect.size.height) * 0.25 + 200
-        return .rect(rect.insetBy(dx: -margin, dy: -margin))
-    }
-}
-
-/// Splits a track into runs of similar speed for coloring. Levels span the session's
-/// own range, from the 5th to the 95th percentile, so the colors show variation within
-/// a session and one spike or stop does not wash them out.
-enum SpeedSegments {
-    struct Segment {
-        var level: Int
-        var coordinates: [CLLocationCoordinate2D]
-    }
-
-    static func make(_ fixes: [GPSFix]) -> [Segment] {
-        guard fixes.count > 1, let (low, high) = range(fixes) else {
-            return [Segment(level: 1, coordinates: fixes.map(coordinate))]
-        }
-        let levels = Theme.speedScale.count
-        func level(_ fix: GPSFix) -> Int {
-            guard high > low else { return levels / 2 }
-            let fraction = ((fix.speed ?? low) - low) / (high - low)
-            return min(levels - 1, max(0, Int(fraction * Double(levels))))
-        }
-        var segments: [Segment] = []
-        for (previous, fix) in zip(fixes, fixes.dropFirst()) {
-            let current = level(fix)
-            if let last = segments.last, last.level == current {
-                segments[segments.count - 1].coordinates.append(coordinate(fix))
-            } else {
-                segments.append(Segment(level: current, coordinates: [coordinate(previous), coordinate(fix)]))
-            }
-        }
-        return segments
-    }
-
-    /// The 5th and 95th percentile Doppler speeds, m/s.
-    static func range(_ fixes: [GPSFix]) -> (low: Double, high: Double)? {
-        let speeds = fixes.compactMap(\.speed).sorted()
-        guard speeds.count > 1 else { return nil }
-        return (speeds[Int(Double(speeds.count - 1) * 0.05)], speeds[Int(Double(speeds.count - 1) * 0.95)])
-    }
-
-    private static func coordinate(_ fix: GPSFix) -> CLLocationCoordinate2D {
-        CLLocationCoordinate2D(latitude: fix.latitude, longitude: fix.longitude)
     }
 }
 
@@ -300,10 +391,6 @@ enum ChartSeries {
         var id: Double { minutes }
         var minutes: Double
         var value: Double
-    }
-
-    static func speed(_ fixes: [GPSFix], display: LiveDisplay) -> [Point] {
-        bucket(fixes.compactMap { fix in fix.speed.map { (fix.t, display.speed.fromSI($0)) } })
     }
 
     static func heartRate(_ samples: [HRSample]) -> [Point] {
