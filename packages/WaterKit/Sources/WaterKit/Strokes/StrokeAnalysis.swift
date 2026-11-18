@@ -2,7 +2,9 @@
 /// stroke rate over time, average rate, distance per stroke and side switches.
 ///
 /// It runs `StrokeDetector` over the recording's motion stream; tracks do not keep motion,
-/// so this needs the raw recording.
+/// so this needs the raw recording. Detection runs on one monotonic clock (the motion
+/// sensor's uptime when the recording has it), so a wall-clock correction cannot reorder a
+/// pause and the strokes around it. Results are then put on the session clock.
 public struct StrokeAnalysis: Sendable, Hashable {
     public struct Stroke: Sendable, Hashable {
         /// s, on the caller's clock (the replay clock for a selection).
@@ -33,16 +35,30 @@ public struct StrokeAnalysis: Sendable, Hashable {
 
     public var strokeCount: Int { strokes.count }
 
-    /// Every wrist cycle in `motion` (session time), for `init(cycles:…)`. Detect once and
-    /// keep the cycles, rather than the motion stream, to re-analyze after a trim. `events`
-    /// are the session's events: cycles during a manual pause do not count (auto-pause
-    /// events are ignored).
-    public static func cycles(
-        in motion: [MotionSample], sport: Sport, events: [SessionEvent] = [],
-        config: StrokeDetector.Config = StrokeDetector.Config()
-    ) -> [StrokeDetector.Cycle] {
+    /// Strokes found in a recording, on the session clock: detect once and keep this (not
+    /// the motion stream) to re-analyze after a trim.
+    public struct Detection: Sendable, Hashable {
+        /// Every counted wrist cycle.
+        public var cycles: [StrokeDetector.Cycle]
+        /// Every counted stroke: two per kayak cycle, none inside a manual pause.
+        public var strokes: [Stroke]
+
+        public init(cycles: [StrokeDetector.Cycle], strokes: [Stroke]) {
+            self.cycles = cycles
+            self.strokes = strokes
+        }
+    }
+
+    /// Detects strokes in `motion`. `events` carry the user's pause and resume (auto-pause
+    /// events are ignored) on the same clock as the motion. `toSessionTime` maps that clock
+    /// to session time.
+    public static func detect(
+        motion: [MotionSample], sport: Sport, events: [SessionEvent] = [],
+        config: StrokeDetector.Config = StrokeDetector.Config(),
+        toSessionTime: (Double) -> Double = { $0 }
+    ) -> Detection {
         var detector = StrokeDetector(sport: sport, config: config, recordsCycles: true)
-        let pauses = events.filter { $0.type == .pause || $0.type == .resume }.sorted { $0.t < $1.t }
+        let pauses = events.filter { $0.type == .pause || $0.type == .resume }
         var next = pauses.startIndex
         for sample in motion {
             while next < pauses.endIndex, pauses[next].t <= sample.t {
@@ -56,56 +72,89 @@ public struct StrokeAnalysis: Sendable, Hashable {
             closing.t += config.binInterval
             detector.ingest(closing)
         }
-        return detector.cycles
+        for event in pauses[next...] { detector.ingest(event) }
+        let cycles = detector.cycles
+        let strokes = expand(cycles, strokesPerCycle: detector.strokesPerCycle) { detector.isPaused(at: $0) }
+        return Detection(
+            cycles: cycles.map { cycle in
+                var cycle = cycle
+                cycle.t = toSessionTime(cycle.t)
+                return cycle
+            },
+            strokes: strokes.map { Stroke(t: toSessionTime($0.t), side: $0.side) })
     }
 
-    /// Analyzes `motion` (session time) for `sport`. See `init(cycles:…)`.
+    /// Detects strokes in a recording. Motion read from files carries its uptime, and the
+    /// session's pause events are kept on that clock, so detection runs on uptime and is
+    /// then converted to session time with the clock anchors.
+    public static func detect(session: RawSession, config: StrokeDetector.Config = StrokeDetector.Config()) -> Detection {
+        let sport = session.meta.sport
+        guard let pauseEvents = session.pauseEventsOnUptime, !session.motion.isEmpty,
+            session.motion.allSatisfy({ $0.uptime != nil })
+        else {
+            return detect(motion: session.motion, sport: sport, events: session.events, config: config)
+        }
+        let origin = session.meta.clock.uptime
+        // Uptime order is recording order, whatever the wall clock did.
+        let motion = session.motion.map { sample in
+            var sample = sample
+            sample.t = (sample.uptime ?? 0) - origin
+            return sample
+        }.sorted { $0.t < $1.t }
+        let clock = SessionClock(
+            startedAt: session.meta.startedAt, anchors: session.clockAnchors.sorted { $0.uptime < $1.uptime })
+        return detect(motion: motion, sport: sport, events: pauseEvents, config: config) {
+            clock.fromUptime($0 + origin)
+        }
+    }
+
+    /// Strokes from cycles: the cycle's own, plus for kayak the other blade's stroke half a
+    /// cycle later. A stroke inside a manual pause is left out.
+    static func expand(
+        _ cycles: [StrokeDetector.Cycle], strokesPerCycle: Int, isPaused: (Double) -> Bool = { _ in false }
+    ) -> [Stroke] {
+        var strokes: [Stroke] = []
+        for (index, cycle) in cycles.enumerated() {
+            if !isPaused(cycle.t) { strokes.append(Stroke(t: cycle.t, side: cycle.side)) }
+            guard strokesPerCycle == 2 else { continue }
+            let next = index + 1 < cycles.count ? cycles[index + 1].period : nil
+            let half = (next ?? cycle.period ?? 1.5) / 2
+            if !isPaused(cycle.t + half) { strokes.append(Stroke(t: cycle.t + half, side: nil)) }
+        }
+        return strokes
+    }
+
+    /// Analyzes `motion` (session time) for `sport`. See `init(detection:…)`.
     public init(
         motion: [MotionSample], sport: Sport, events: [SessionEvent] = [], distance: Double?,
         retained: [ClosedRange<Double>]? = nil, clock: (Double) -> Double = { $0 },
         config: StrokeDetector.Config = StrokeDetector.Config()
     ) {
         self.init(
-            cycles: Self.cycles(in: motion, sport: sport, events: events, config: config), sport: sport,
+            detection: Self.detect(motion: motion, sport: sport, events: events, config: config), sport: sport,
             distance: distance, retained: retained, clock: clock)
     }
 
-    /// Analyzes detected cycles. Only strokes inside `retained` count when it is given (each
-    /// kayak stroke on its own time), and only periods with both ends in the same range
-    /// count toward rates. `clock` maps session time to the output clock. `distance` is the
-    /// distance paddled, m.
+    /// Analyzes a detection. Only strokes inside `retained` count when it is given (each on
+    /// its own time), and only periods with both ends in the same range count toward rates.
+    /// `clock` maps session time to the output clock. `distance` is the distance paddled, m.
     public init(
-        cycles detected: [StrokeDetector.Cycle], sport: Sport, distance: Double?,
-        retained: [ClosedRange<Double>]? = nil, clock: (Double) -> Double = { $0 }
+        detection: Detection, sport: Sport, distance: Double?, retained: [ClosedRange<Double>]? = nil,
+        clock: (Double) -> Double = { $0 }
     ) {
         let strokesPerCycle = sport == .kayak ? 2 : 1
         func isRetained(_ t: Double) -> Bool { retained?.contains { $0.contains(t) } ?? true }
+        let strokes = detection.strokes.filter { isRetained($0.t) }.map { Stroke(t: clock($0.t), side: $0.side) }
 
-        // Expand cycles into strokes first, then apply the trim to each stroke.
-        var strokes: [Stroke] = []
-        for (index, cycle) in detected.enumerated() {
-            if isRetained(cycle.t) { strokes.append(Stroke(t: clock(cycle.t), side: cycle.side)) }
-            if strokesPerCycle == 2 {
-                // The other blade's stroke, half a cycle later.
-                let next = index + 1 < detected.count ? detected[index + 1].period : nil
-                let half = (next ?? cycle.period ?? 1.5) / 2
-                if isRetained(cycle.t + half) { strokes.append(Stroke(t: clock(cycle.t + half), side: nil)) }
-            }
-        }
-
-        var cycles: [StrokeDetector.Cycle] = []
-        for var cycle in detected {
-            if let retained {
-                guard let owner = retained.first(where: { $0.contains(cycle.t) }) else { continue }
-                if let period = cycle.period, !owner.contains(cycle.t - period) { cycle.period = nil }
-            }
-            cycles.append(cycle)
-        }
         var rates: [RatePoint] = []
         var recent: [Double] = []
         var countedTime = 0.0
         var countedStrokes = 0
-        for cycle in cycles {
+        for var cycle in detection.cycles {
+            if let retained {
+                guard let owner = retained.first(where: { $0.contains(cycle.t) }) else { continue }
+                if let period = cycle.period, !owner.contains(cycle.t - period) { cycle.period = nil }
+            }
             if let period = cycle.period {
                 countedTime += period
                 countedStrokes += strokesPerCycle
@@ -135,15 +184,13 @@ public struct StrokeAnalysis: Sendable, Hashable {
     /// Strokes for a selection of a recording (trimmed or not), on the replay clock, with
     /// distance per stroke from the selection's moving distance.
     public init(session: RawSession, selection: SessionSelection) {
-        self.init(
-            cycles: Self.cycles(in: session.motion, sport: session.meta.sport, events: session.events),
-            sport: session.meta.sport, selection: selection)
+        self.init(detection: Self.detect(session: session), sport: session.meta.sport, selection: selection)
     }
 
-    /// As `init(session:selection:)`, from cycles detected earlier with `cycles(in:sport:)`.
-    public init(cycles: [StrokeDetector.Cycle], sport: Sport, selection: SessionSelection) {
+    /// As `init(session:selection:)`, from a detection made earlier with `detect(session:)`.
+    public init(detection: Detection, sport: Sport, selection: SessionSelection) {
         self.init(
-            cycles: cycles, sport: sport, distance: selection.replay.metrics.distance,
+            detection: detection, sport: sport, distance: selection.replay.metrics.distance,
             retained: selection.retainedRanges, clock: { selection.replayTime(forSourceTime: $0) })
     }
 }

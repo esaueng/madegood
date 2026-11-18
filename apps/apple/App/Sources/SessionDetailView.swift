@@ -47,9 +47,9 @@ struct SessionDetailView: View {
         var current: Presentation
         var trim: SessionTrim?
         let display: LiveDisplay
-        /// Wrist cycles over the whole recording (kayak, canoe, SUP), detected once from the
-        /// motion stream; nil for other sports. Trims re-derive `strokes` from them.
-        let strokeCycles: [StrokeDetector.Cycle]?
+        /// Strokes over the whole recording (kayak, canoe, SUP), detected once from the
+        /// motion stream; nil for other sports. Trims re-derive `strokes` from it.
+        let strokeDetection: StrokeAnalysis.Detection?
         /// Whether the recording has a motion stream at all.
         let hasMotion: Bool
         var strokes: StrokeAnalysis?
@@ -132,18 +132,18 @@ struct SessionDetailView: View {
                     trimUnavailable: loaded.trimUnavailable)
                 : original
             let sport = loaded.session.meta.sport
-            var cycles: [StrokeDetector.Cycle]?
+            var detection: StrokeAnalysis.Detection?
             var hasMotion = false
             if sport.isPaddling {
                 let full = try? RawSessionReader.read(folder: folder)
-                let motion = full?.motion ?? []
-                hasMotion = !motion.isEmpty
-                cycles = StrokeAnalysis.cycles(in: motion, sport: sport, events: full?.events ?? [])
+                hasMotion = !(full?.motion.isEmpty ?? true)
+                detection = full.map { StrokeAnalysis.detect(session: $0) } ?? .init(cycles: [], strokes: [])
             }
             return Analysis(
                 source: source, session: loaded.session, profile: loaded.profile, original: original,
-                current: current, trim: loaded.trim, display: display, strokeCycles: cycles, hasMotion: hasMotion,
-                strokes: cycles.map { StrokeAnalysis(cycles: $0, sport: sport, selection: current.selection) })
+                current: current, trim: loaded.trim, display: display, strokeDetection: detection,
+                hasMotion: hasMotion,
+                strokes: detection.map { StrokeAnalysis(detection: $0, sport: sport, selection: current.selection) })
         }.value
         guard !Task.isCancelled else { return }
         if let result, SessionLibrary.source(for: folder) != result.source {
@@ -161,8 +161,8 @@ struct SessionDetailView: View {
             trim, for: original.session, source: original.source, summary: preview.summary)
         edited.trim = trim
         edited.current = preview
-        edited.strokes = original.strokeCycles.map {
-            StrokeAnalysis(cycles: $0, sport: original.session.meta.sport, selection: preview.selection)
+        edited.strokes = original.strokeDetection.map {
+            StrokeAnalysis(detection: $0, sport: original.session.meta.sport, selection: preview.selection)
         }
         clearReplay()
         analysis = edited

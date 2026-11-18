@@ -105,10 +105,15 @@ public struct StrokeDetector: LiveAnalyzer {
     private var lastBin: [Double]?
     /// Missing bins waiting for the next bin, to be interpolated when it closes.
     private var pendingGap: (firstIndex: Int, count: Int)?
-    /// Manual pause (docs/metrics.md "Strokes"): cycles with a peak at or after
-    /// `pausedSince` do not count, nor do cycles with a peak before `resumedAt`.
+    /// Manual pause (docs/metrics.md "Strokes"): a cycle whose peak falls in a pause
+    /// interval [pause, resume) does not count, and no period spans a pause.
     private var pausedSince: Double?
-    private var resumedAt: Double?
+    /// Closed manual pauses, oldest first, on the samples' clock.
+    public private(set) var manualPauses: [Range<Double>] = []
+    // Gaps
+    private var lastSampleTime: Double?
+    /// Restarts after sensor gaps (for tests).
+    private(set) var restarts = 0
     // Filtering
     private var highPass: [Biquad] = []
     private var lowPass: [Biquad] = []
@@ -165,19 +170,28 @@ public struct StrokeDetector: LiveAnalyzer {
         case .pause:
             if pausedSince == nil { pausedSince = event.t }
         case .resume:
-            guard pausedSince != nil else { return }
+            guard let start = pausedSince else { return }
             pausedSince = nil
-            resumedAt = event.t
-            // The interval across the pause is not a stroke period.
-            lastPeak = nil
-            periods.removeAll()
+            manualPauses.append(start..<max(start, event.t))
         default:
             break
         }
     }
 
-    /// Whether the user's manual pause covers `t`.
+    /// Whether the user's manual pause is on.
     public var isPaused: Bool { pausedSince != nil }
+
+    /// Whether `t` is inside a manual pause [pause, resume).
+    public func isPaused(at t: Double) -> Bool {
+        if let pausedSince, t >= pausedSince { return true }
+        return manualPauses.contains { $0.contains(t) }
+    }
+
+    /// Whether a manual pause lies between two times.
+    func pauseSpans(_ from: Double, _ to: Double) -> Bool {
+        if let pausedSince, pausedSince < to { return true }
+        return manualPauses.contains { $0.lowerBound < to && $0.upperBound > from }
+    }
 
     public mutating func ingest(_ sample: MotionSample) {
         let values = [
@@ -189,13 +203,16 @@ public struct StrokeDetector: LiveAnalyzer {
         ]
         guard sample.t.isFinite, values.allSatisfy(\.isFinite) else { return }
         let index = Int((sample.t / config.binInterval).rounded(.down))
+        if let current = binIndex, index < current { return }
         latestTime = max(latestTime ?? sample.t, sample.t)
+        // The real time since the previous sample, not the count of empty bins.
+        let gap = lastSampleTime.map { sample.t - $0 } ?? 0
+        lastSampleTime = max(lastSampleTime ?? sample.t, sample.t)
         if let current = binIndex {
-            if index < current { return }
             if index > current {
                 closeBin(current)
                 let missing = index - current - 1
-                if Double(missing) * config.binInterval > config.restartAfterGap {
+                if gap > config.restartAfterGap {
                     restart(at: Double(index) * config.binInterval)
                 } else if missing > 0 {
                     pendingGap = (current + 1, missing)
@@ -257,6 +274,7 @@ public struct StrokeDetector: LiveAnalyzer {
     }
 
     private mutating func restart(at t: Double) {
+        restarts += 1
         resetFilters()
         window.removeAll(keepingCapacity: true)
         windowHead = 0
@@ -365,7 +383,7 @@ public struct StrokeDetector: LiveAnalyzer {
     }
 
     private mutating func cycleEnded(peak: Double) {
-        if (pausedSince.map { peak >= $0 } ?? false) || (resumedAt.map { peak < $0 } ?? false) {
+        if isPaused(at: peak) {
             // Paddled during a manual pause: not counted, and not a period either side.
             gravitySum = .zero
             gravityCount = 0
@@ -380,7 +398,7 @@ public struct StrokeDetector: LiveAnalyzer {
         var period: Double?
         if let lastPeak {
             let interval = peak - lastPeak
-            if interval <= config.maxCyclePeriod {
+            if interval <= config.maxCyclePeriod, !pauseSpans(lastPeak, peak) {
                 period = interval
                 periods.append(interval)
                 if periods.count > config.rateCycles { periods.removeFirst(periods.count - config.rateCycles) }
@@ -456,21 +474,8 @@ public struct StrokeDetector: LiveAnalyzer {
         }
         // Too little movement to define an axis: keep the last one.
         guard trace > 1e-9 else { return }
-        // Power iteration, starting from the previous axis so it changes smoothly.
-        // Seeded from the covariance column with the most energy, which cannot be orthogonal
-        // to the main axis the way the previous axis can be after the motion changes plane.
-        // The previous axis only sets the sign.
-        let strongest = (0..<6).max { a, b in
-            covariance[a].reduce(0) { $0 + $1 * $1 } < covariance[b].reduce(0) { $0 + $1 * $1 }
-        } ?? 0
-        var vector = covariance[strongest]
-        for _ in 0..<30 {
-            var next = [Double](repeating: 0, count: 6)
-            for i in 0..<6 { for j in 0..<6 { next[i] += covariance[i][j] * vector[j] } }
-            let norm = next.reduce(0) { $0 + $1 * $1 }.squareRoot()
-            guard norm > 0, norm.isFinite else { return }
-            vector = next.map { $0 / norm }
-        }
+        guard var vector = Self.principalAxis(of: covariance) else { return }
+        // The previous axis only sets the sign, so the projection does not flip.
         if let axis, zip(axis, vector).reduce(0, { $0 + $1.0 * $1.1 }) < 0 {
             vector = vector.map { -$0 }
         }
@@ -478,6 +483,52 @@ public struct StrokeDetector: LiveAnalyzer {
     }
 
     // MARK: - Helpers
+
+    /// The unit eigenvector of a symmetric matrix with the largest eigenvalue, by the cyclic
+    /// Jacobi method: robust whatever the matrix, unlike power iteration, which stalls when
+    /// its seed is orthogonal to the answer. Nil for a non-finite matrix.
+    static func principalAxis(of matrix: [[Double]]) -> [Double]? {
+        let n = matrix.count
+        guard n > 0, matrix.allSatisfy({ $0.count == n && $0.allSatisfy(\.isFinite) }) else { return nil }
+        var a = matrix
+        var v = (0..<n).map { i in (0..<n).map { j in i == j ? 1.0 : 0.0 } }
+        for _ in 0..<50 {
+            var off = 0.0
+            for i in 0..<n { for j in (i + 1)..<n { off += a[i][j] * a[i][j] } }
+            if off < 1e-22 { break }
+            for p in 0..<n {
+                for q in (p + 1)..<n where abs(a[p][q]) > 1e-300 {
+                    let theta = (a[q][q] - a[p][p]) / (2 * a[p][q])
+                    let t = (theta >= 0 ? 1.0 : -1.0) / (abs(theta) + (theta * theta + 1).squareRoot())
+                    let c = 1 / (t * t + 1).squareRoot()
+                    let s = t * c
+                    for k in 0..<n {
+                        let akp = a[k][p]
+                        let akq = a[k][q]
+                        a[k][p] = c * akp - s * akq
+                        a[k][q] = s * akp + c * akq
+                    }
+                    for k in 0..<n {
+                        let apk = a[p][k]
+                        let aqk = a[q][k]
+                        a[p][k] = c * apk - s * aqk
+                        a[q][k] = s * apk + c * aqk
+                    }
+                    for k in 0..<n {
+                        let vkp = v[k][p]
+                        let vkq = v[k][q]
+                        v[k][p] = c * vkp - s * vkq
+                        v[k][q] = s * vkp + c * vkq
+                    }
+                }
+            }
+        }
+        let largest = (0..<n).max { a[$0][$0] < a[$1][$1] } ?? 0
+        let vector = (0..<n).map { v[$0][largest] }
+        let norm = vector.reduce(0) { $0 + $1 * $1 }.squareRoot()
+        guard norm > 0, norm.isFinite else { return nil }
+        return vector.map { $0 / norm }
+    }
 
     static func median(_ values: [Double]) -> Double {
         let sorted = values.sorted()

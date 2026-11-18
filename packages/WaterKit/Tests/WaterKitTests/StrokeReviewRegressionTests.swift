@@ -72,7 +72,7 @@ import Testing
             SessionEvent(t: 60.1, type: .pause, data: ["auto": true]),
             SessionEvent(t: 70.1, type: .resume, data: ["auto": true]),
         ]
-        let cycles = StrokeAnalysis.cycles(in: samples, sport: .sup, events: events)
+        let cycles = StrokeAnalysis.detect(motion: samples, sport: .sup, events: events).cycles
         #expect(cycles.allSatisfy { !(30.1..<40.1).contains($0.t) })
         #expect(cycles.contains { (60.1..<70.1).contains($0.t) })
         #expect(abs(cycles.count - 80) <= 2)
@@ -97,9 +97,11 @@ import Testing
             StrokeDetector.Cycle(t: 8, period: nil, side: nil), StrokeDetector.Cycle(t: 10, period: 2, side: nil),
             StrokeDetector.Cycle(t: 12, period: 2, side: nil),
         ]
-        let ending = StrokeAnalysis(cycles: cycles, sport: .kayak, distance: nil, retained: [0...10.5])
+        let detection = StrokeAnalysis.Detection(
+            cycles: cycles, strokes: StrokeAnalysis.expand(cycles, strokesPerCycle: 2))
+        let ending = StrokeAnalysis(detection: detection, sport: .kayak, distance: nil, retained: [0...10.5])
         #expect(ending.strokes.map(\.t) == [8, 9, 10])
-        let starting = StrokeAnalysis(cycles: cycles, sport: .kayak, distance: nil, retained: [10.5...20])
+        let starting = StrokeAnalysis(detection: detection, sport: .kayak, distance: nil, retained: [10.5...20])
         #expect(starting.strokes.map(\.t) == [11, 12, 13])
     }
 }

@@ -66,7 +66,7 @@ extension SessionStats {
             duration: session.duration, issues: session.issues.map(\.description))
         if session.meta.sport.isPaddling, !session.motion.isEmpty {
             let analysis = StrokeAnalysis(
-                motion: session.motion, sport: session.meta.sport, events: session.events, distance: distance)
+                detection: StrokeAnalysis.detect(session: session), sport: session.meta.sport, distance: distance)
             let singleBlade = session.meta.sport != .kayak
             strokes = StrokeStats(
                 count: analysis.strokeCount, averageRate: analysis.averageStrokeRate,
