@@ -24,6 +24,16 @@ extension SessionStats {
                 + "accuracy worse than \(Int(Self.maxHorizontalAccuracy)) m)")
         lines.append("Avg speed \(Self.speed(averageSpeed))")
         lines.append("Max speed 2 s: \(Self.speed(maxSpeed2s))   10 s: \(Self.speed(maxSpeed10s))")
+        if let categories = speedCategories {
+            let rows = [
+                ("5 × 10 s", "best5x10s"), ("100 m", "best100m"), ("500 m", "best500m"),
+                ("Nautical mile", "bestNauticalMile"), ("1 hour", "best1h"), ("Alpha 500", "alpha500"),
+            ]
+            for (label, key) in rows {
+                let padded = label.padding(toLength: 14, withPad: " ", startingAt: 0)
+                lines.append("  \(padded)\(Self.speed(categories[key]))")
+            }
+        }
         if let average = heartRateAverage, let max = heartRateMax {
             lines.append("Heart rate avg \(Self.fixed(average, 0)) bpm, max \(Self.fixed(max, 0)) bpm")
         }

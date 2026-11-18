@@ -29,11 +29,16 @@ public struct SessionStats: Sendable, Hashable, Codable {
     /// Fixes used for distance and speed (horizontal accuracy within the limit).
     public var acceptedFixes: Int
     public var rejectedFixes: Int
-    /// Time-weighted mean Doppler speed over accepted fixes, excluding gaps, m/s.
+    /// Time-weighted mean Doppler speed over the fixes the live GPS filter accepts,
+    /// excluding gaps, m/s.
     public var averageSpeed: Double?
-    /// Best time-weighted average Doppler speed over any 2 s and 10 s window, m/s.
+    /// The live engine's max speeds: best time-weighted mean Doppler speed over 2 s and
+    /// 10 s windows ending at a fix, over GPS-filtered fixes, m/s.
     public var maxSpeed2s: Double?
     public var maxSpeed10s: Double?
+    /// Windsurfing only: speedsurfing categories over the live engine's accepted fixes, m/s,
+    /// keyed like the track summary (docs/metrics.md). Missing categories are left out.
+    public var speedCategories: [String: Double]?
     public var heartRateAverage: Double?
     public var heartRateMax: Double?
     public var events: [String: Int]
@@ -108,11 +113,13 @@ extension SessionStats {
                     lat2: pair.1.latitude, lon2: pair.1.longitude)
         }
         // Speeds come from the receiver's Doppler values, never from position changes
-        // (docs/PLAN.md §4.2), so position noise cannot inflate them.
-        let profile = SpeedProfile(accepted)
-        averageSpeed = profile.mean(maxGap: Self.maxSpeedGap)
-        maxSpeed2s = profile.bestMean(window: 2)
-        maxSpeed10s = profile.bestMean(window: 10)
+        // (docs/PLAN.md §4.2), over the fixes the live engine's GPS filter accepts, so
+        // every speed shown here matches live and session detail.
+        let replay = SessionReplay(track: track)
+        averageSpeed = SpeedProfile(replay.fixes).mean(maxGap: Self.maxSpeedGap)
+        maxSpeed2s = replay.metrics.maxSpeed2s
+        maxSpeed10s = replay.metrics.maxSpeed10s
+        speedCategories = track.sport == .windsurfing ? replay.metrics.speedCategories?.summaryFields : nil
 
         let bpm = hr.map(\.bpm)
         heartRateAverage = bpm.isEmpty ? nil : bpm.reduce(0, +) / Double(bpm.count)

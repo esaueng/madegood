@@ -175,11 +175,12 @@ struct SessionDetailView: View {
     }
 
     private func selectRange(
-        _ range: ClosedRange<Double>, title: String, data: SessionReplayView.Data, scroll: ScrollViewProxy,
-        showsSpeedWindow: Bool = false
+        _ range: ClosedRange<Double>, ranges: [ClosedRange<Double>]? = nil, title: String,
+        data: SessionReplayView.Data, scroll: ScrollViewProxy, showsSpeedWindow: Bool = false
     ) {
         selectHighlight(
-            SessionReplayView.Highlight(title: title, range: range, data: data, showsSpeedWindow: showsSpeedWindow),
+            SessionReplayView.Highlight(
+                title: title, range: range, ranges: ranges, data: data, showsSpeedWindow: showsSpeedWindow),
             scroll: scroll)
     }
 
@@ -192,13 +193,17 @@ struct SessionDetailView: View {
 
     @ViewBuilder
     private func speedTile(
-        _ title: String, value: Double?, range: ClosedRange<Double>?, analysis: Analysis, scroll: ScrollViewProxy
+        _ title: String, value: Double?, range: ClosedRange<Double>?, ranges: [ClosedRange<Double>]? = nil,
+        analysis: Analysis, scroll: ScrollViewProxy
     ) -> some View {
         let tile = StatTile(title: title, value: analysis.display.speed(value))
         if let range, !analysis.current.replayData.timeline.points.isEmpty {
             Button {
+                // Several windows (5 × 10 s) are highlighted on the route; the speed window
+                // view is for one span.
                 selectRange(
-                    range, title: title, data: analysis.current.replayData, scroll: scroll, showsSpeedWindow: true)
+                    range, ranges: ranges, title: title, data: analysis.current.replayData, scroll: scroll,
+                    showsSpeedWindow: ranges == nil)
             } label: {
                 tile.overlay(alignment: .topTrailing) {
                     Image(systemName: "arrow.up.left")
@@ -215,6 +220,46 @@ struct SessionDetailView: View {
         } else {
             tile
         }
+    }
+
+    /// Windsurfing: the speedsurfing categories beyond the 2 s and 10 s maxima above.
+    private func speedBests(_ categories: SpeedCategories, analysis: Analysis, scroll: ScrollViewProxy) -> some View {
+        let fiveByTen = categories.best5x10sRanges
+        let fiveByTenSpan = fiveByTen.first.flatMap { first in fiveByTen.last.map { first.lowerBound...$0.upperBound } }
+        return Section {
+            Grid(horizontalSpacing: 16, verticalSpacing: 14) {
+                GridRow {
+                    speedTile(
+                        "5 × 10 s", value: categories.best5x10s, range: fiveByTenSpan, ranges: fiveByTen,
+                        analysis: analysis, scroll: scroll)
+                    speedTile(
+                        "100 m", value: categories.best100m?.speed, range: categories.best100m?.range,
+                        analysis: analysis, scroll: scroll)
+                }
+                GridRow {
+                    speedTile(
+                        "500 m", value: categories.best500m?.speed, range: categories.best500m?.range,
+                        analysis: analysis, scroll: scroll)
+                    speedTile(
+                        "Nautical mile", value: categories.nauticalMile?.speed, range: categories.nauticalMile?.range,
+                        analysis: analysis, scroll: scroll)
+                }
+                GridRow {
+                    speedTile(
+                        "1 hour", value: categories.hour?.speed, range: categories.hour?.range,
+                        analysis: analysis, scroll: scroll)
+                    speedTile(
+                        "Alpha 500", value: categories.alpha500?.speed, range: categories.alpha500?.range,
+                        analysis: analysis, scroll: scroll)
+                }
+            }
+            .padding(.vertical, 6)
+        } header: {
+            Text("Speed bests")
+        } footer: {
+            Text("From Doppler speed. Alpha 500 is the fastest 500 m that ends within 50 m of its start.")
+        }
+        .id("session.speedBests")
     }
 
     @ViewBuilder
@@ -303,6 +348,10 @@ struct SessionDetailView: View {
                 }
                 .padding(.vertical, 6)
                 .id("session.stats")
+            }
+
+            if let categories = metrics.speedCategories {
+                speedBests(categories, analysis: analysis, scroll: scroll)
             }
 
             let heartRate = ChartSeries.heartRate(selectedTrack.hr, cuts: replayData.timeline.removedIntervals)

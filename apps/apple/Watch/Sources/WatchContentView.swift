@@ -48,6 +48,17 @@ struct WatchContentView: View {
                 }
             }
         }
+        #if DEBUG
+            // UI tests can't press the Action button: `-uiTestActionButton` adds a stand-in.
+            .overlay(alignment: .topLeading) {
+                if UserDefaults.standard.bool(forKey: "uiTestActionButton") {
+                    Button("Action") { SessionController.shared.actionButtonPressed() }
+                        .accessibilityIdentifier("debug.actionButton")
+                        .font(.caption2)
+                        .buttonStyle(.plain)
+                }
+            }
+        #endif
         .sheet(item: $summary) { summary in
             SummaryView(summary: summary)
         }
@@ -380,7 +391,7 @@ private struct SessionPages: View {
     @State private var banner: SessionRecorder.DistanceAlertEvent?
     private let hero: LiveScreen
 
-    enum Page { case manOverboard, controls, metrics, strokes, map }
+    enum Page { case manOverboard, controls, metrics, strokes, speed, map }
 
     init(recorder: SessionRecorder, startedAt: Date, sport: Sport) {
         self.recorder = recorder
@@ -402,6 +413,9 @@ private struct SessionPages: View {
             if sport.isPaddling {
                 StrokesPage(recorder: recorder, startedAt: startedAt, sport: sport).tag(Page.strokes)
             }
+            if UserSettings.profile(for: sport).tracksSpeedCategories {
+                SpeedPage(recorder: recorder, sport: sport).tag(Page.speed)
+            }
             MapPage(points: recorder.trackPoints, manOverboard: manOverboard.mark).tag(Page.map)
         }
         .tabViewStyle(.verticalPage)
@@ -413,6 +427,12 @@ private struct SessionPages: View {
             }
         }
         .animation(.snappy, value: banner)
+        // A new mark from anywhere (the controls or the Action button), including one that
+        // replaces an earlier mark, shows the way back.
+        .onChange(of: manOverboard.mark) { old, new in
+            // Wait a turn: the page only exists once the mark has redrawn the pages.
+            if let new, new != old { Task { @MainActor in page = .manOverboard } }
+        }
         .onChange(of: recorder.distanceAlert) { _, alert in
             guard let alert else { return }
             Haptics.play(.distanceAlert)
@@ -538,6 +558,48 @@ private struct StrokesPage: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+}
+
+/// Windsurfing: the speedsurfing categories (docs/metrics.md), two columns so all eight
+/// fit without scrolling, which would fight the vertical page swipes.
+private struct SpeedPage: View {
+    let recorder: SessionRecorder
+    let sport: Sport
+    @Environment(\.isLuminanceReduced) private var isLuminanceReduced
+
+    var body: some View {
+        let display = UserSettings.display(for: sport)
+        let categories = recorder.metrics?.speedCategories ?? SpeedCategories()
+        let rows = SpeedCategoryReadings(categories).rows
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Speed bests")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(Theme.brightTeal)
+                .accessibilityIdentifier("page.speed")
+            ForEach(0..<(rows.count + 1) / 2, id: \.self) { line in
+                HStack(alignment: .top, spacing: 8) {
+                    ForEach(rows[(line * 2)..<min(rows.count, line * 2 + 2)]) { row in
+                        VStack(alignment: .leading, spacing: -2) {
+                            Text(row.shortTitle)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                            Text(display.speed(row.value))
+                                .font(.system(size: 22, weight: .semibold, design: .rounded).monospacedDigit())
+                                .foregroundStyle(isLuminanceReduced ? .secondary : .primary)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.7)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel(row.title)
+                        .accessibilityValue(display.speed(row.value))
+                        .accessibilityIdentifier(row.id)
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }
 
@@ -731,6 +793,16 @@ private struct SummaryView: View {
                     Field(
                         label: "Per stroke",
                         value: display.distancePerStroke(distance: metrics.distance, strokes: strokes.strokeCount))
+                }
+                if let categories = metrics.speedCategories {
+                    Text("Speed bests")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(Theme.brightTeal)
+                        .padding(.top, 4)
+                    // The 2 s and 10 s bests are the max speeds above.
+                    ForEach(SpeedCategoryReadings(categories).rows.dropFirst(2)) { row in
+                        Field(label: row.title, value: display.speed(row.value))
+                    }
                 }
                 if !metrics.laps.isEmpty {
                     Field(label: "Laps", value: "\(metrics.laps.count + 1)")
