@@ -31,6 +31,22 @@ final class PhoneAppearanceUITests: XCTestCase {
         attachScreenshot("settings system")
     }
 
+    /// `-resetSettings` clears a saved choice, so one test's Dark can't leak into the next.
+    func testResetSettingsClearsAppearance() {
+        var app = launchDemoApp()
+        var picker = openAppearance(app)
+        let systemIsDark = isDark(app)
+        let opposite = systemIsDark ? "Light" : "Dark"
+        picker.buttons[opposite].tap()
+        expectDark(!systemIsDark, app)
+
+        app.terminate()
+        app = launchDemoApp()
+        picker = openAppearance(app)
+        XCTAssertTrue(picker.buttons["System"].isSelected)
+        expectDark(systemIsDark, app)
+    }
+
     private func openAppearance(_ app: XCUIApplication) -> XCUIElement {
         XCTAssertTrue(app.tabBars.buttons["Settings"].waitForExistence(timeout: 15))
         app.tabBars.buttons["Settings"].tap()
