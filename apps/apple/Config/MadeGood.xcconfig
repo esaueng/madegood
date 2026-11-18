@@ -5,6 +5,8 @@ BUNDLE_ID_PREFIX = app.madegood
 DEVELOPMENT_TEAM =
 CODE_SIGN_STYLE = Automatic
 
+// TestFlight builds keep the major.minor and replace the patch with the commit count
+// (scripts/testflight), so only change this to start a new minor or major version.
 MARKETING_VERSION = 0.1.0
 CURRENT_PROJECT_VERSION = 1
 

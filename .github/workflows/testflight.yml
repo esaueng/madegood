@@ -5,7 +5,8 @@ name: TestFlight
 # processed it (about 10–30 minutes).
 #
 # Runs when someone with write access starts it (Actions > TestFlight > Run workflow) or
-# pushes a version tag (v0.1.0, ...). Uses scripts/testflight with these repository
+# pushes a version tag (v0.2.0, ...). Each build's version is the major.minor from
+# MadeGood.xcconfig plus the commit count, so it goes up with every merge. Uses scripts/testflight with these repository
 # secrets: APPLE_TEAM_ID, APP_STORE_CONNECT_KEY_ID, APP_STORE_CONNECT_ISSUER_ID and
 # APP_STORE_CONNECT_API_KEY (the .p8 contents). See docs/self-hosting.md.
 
@@ -34,6 +35,19 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # Full history: the version's patch number is the commit count (scripts/testflight).
+          fetch-depth: 0
+
+      # The version's patch number is the commit count, so an upload from any commit
+      # other than main's current tip (another branch, or a re-run of an older run)
+      # would ship a lower version than one already uploaded.
+      - name: Require main's current tip
+        run: |
+          tip="$(git ls-remote origin refs/heads/main | cut -f1)"
+          if [ "$(git rev-parse HEAD)" != "$tip" ]; then
+            echo "::error::This commit is not main's current tip ($tip); run the workflow from main."
+            exit 1
+          fi
 
       - uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d # v5.2.9
         with:
