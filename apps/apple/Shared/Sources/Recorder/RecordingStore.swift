@@ -3,7 +3,30 @@ import WaterKit
 
 /// Where raw recordings live on this device: `Documents/Recordings/<sessionId>/`.
 enum RecordingStore {
+    static var demoNamespace: UUID? {
+        #if DEBUG
+            let arguments = ProcessInfo.processInfo.arguments
+            if arguments.contains("-demoHistory"),
+                let index = arguments.firstIndex(of: "-demoHistoryNamespace"),
+                arguments.indices.contains(index + 1)
+            {
+                return UUID(uuidString: arguments[index + 1])
+            }
+        #endif
+        return nil
+    }
+
     static var root: URL {
+        if let demoNamespace {
+            let documents = recordingsRoot.deletingLastPathComponent()
+            return documents.appendingPathComponent("DemoHistory", isDirectory: true)
+                .appendingPathComponent(demoNamespace.uuidString, isDirectory: true)
+        }
+        return recordingsRoot
+    }
+
+    /// Watch transfers always land in the normal library, even during a demo.
+    static var recordingsRoot: URL {
         let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         return documents.appendingPathComponent("Recordings", isDirectory: true)
     }

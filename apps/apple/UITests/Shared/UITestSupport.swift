@@ -12,6 +12,12 @@ extension XCTestCase {
         return app
     }
 
+    /// An independent synthetic library for each test, preserved across that test's relaunches.
+    func launchDemoHistory(extraArguments: [String] = []) -> XCUIApplication {
+        launchDemoApp(
+            extraArguments: ["-demoHistory", "-demoHistoryNamespace", UUID().uuidString] + extraArguments)
+    }
+
     /// Ends an iPhone recording the way a user does: Pause, then Save.
     func endSession(_ app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
         app.buttons["control.pause"].tap()

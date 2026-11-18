@@ -17,7 +17,7 @@ final class PhoneScreensUITests: XCTestCase {
     }
 
     private func tourScreens(appearance: String) {
-        let app = launchDemoApp(extraArguments: ["-demoHistory", "-app.appearance", appearance])
+        let app = launchDemoHistory(extraArguments: ["-app.appearance", appearance])
         XCTAssertTrue(app.buttons["sport.sailing"].waitForExistence(timeout: 15))
         sleep(2)  // last-session lines come from the history summaries
         XCTAssertTrue(app.descendants(matching: .any)["start.header"].exists)
@@ -33,17 +33,18 @@ final class PhoneScreensUITests: XCTestCase {
         sleep(2)  // let the summaries finish computing
         attachScreenshot("\(appearance) history")
 
-        // Open the demo sailing session (other rows may be left by earlier test runs).
-        let sailing = rows.containing(.staticText, identifier: "Sailing").firstMatch
-        for _ in 0..<6 where !sailing.isHittable { app.swipeUp() }
-        XCTAssertTrue(sailing.isHittable)
+        // Open the 48-minute sailing fixture.
+        let sailing = rows.containing(.staticText, identifier: "Sailing")
+            .containing(.staticText, identifier: "48:00").firstMatch
+        scrollTo(sailing, in: app)
         sailing.tap()
-        XCTAssertTrue(app.staticTexts["stat.Distance"].waitForExistence(timeout: 20))
+        XCTAssertTrue(element("replay.map", in: app).waitForExistence(timeout: 20))
         sleep(2)  // map tiles
         attachScreenshot("\(appearance) detail top")
-        app.swipeUp()
+        scrollTo(element("chart.speed", in: app), in: app)
         attachScreenshot("\(appearance) detail charts")
-        app.swipeUp()
+        scrollTo(app.staticTexts["stat.Distance"], in: app)
+        scrollTo(app.buttons["replay.lap.1"], in: app)
         attachScreenshot("\(appearance) detail laps")
         app.navigationBars.buttons.firstMatch.tap()
 
@@ -66,7 +67,7 @@ final class HistoryFiltersUITests: XCTestCase {
 
     @MainActor
     func testSportAndDatesFilterRowsAndTotalsTogether() {
-        let app = launchDemoApp(extraArguments: ["-demoHistory"])
+        let app = launchDemoHistory()
         app.tabBars.buttons["History"].tap()
         XCTAssertTrue(app.navigationBars["History"].waitForExistence(timeout: 10))
         let totals = app.staticTexts["history.totals"]
@@ -117,7 +118,7 @@ final class HistorySettingsUITests: XCTestCase {
         // The demo kayak session (35 min) has a 2 min stop: auto-pause on gives 33:01
         // moving, off gives the full 35:00. The setting is changed in the app, as a user
         // would (a launch argument would pin it).
-        let app = launchDemoApp(extraArguments: ["-demoHistory"])
+        let app = launchDemoHistory()
         setKayakAutoPause(true, app)
         expectHistory(showing: "33:01", app)
         setKayakAutoPause(false, app)

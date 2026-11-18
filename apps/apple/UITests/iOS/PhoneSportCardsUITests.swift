@@ -61,9 +61,9 @@ final class PhoneSportCardsUITests: XCTestCase {
         XCTAssertTrue(canoe.waitForNonExistence(timeout: 5))
         let undo = app.buttons["sport.undoHide"]
         XCTAssertTrue(undo.waitForExistence(timeout: 5))
-        attachScreenshot("hidden with undo")
         undo.tap()
         XCTAssertTrue(canoe.waitForExistence(timeout: 5))
+        attachScreenshot("restored with undo")
 
         // Hidden for real: it stays gone after the toast, and Settings shows it as hidden.
         canoe.swipeLeft()

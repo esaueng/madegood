@@ -7,7 +7,7 @@ final class PhoneReplayUITests: XCTestCase {
 
     @MainActor
     func testChartAndMapShareTheReplayCursor() {
-        let app = launchDemoApp(extraArguments: ["-demoHistory"])
+        let app = launchDemoHistory()
         app.tabBars.buttons["History"].tap()
         let rows = app.buttons.matching(identifier: "session.row")
         let sailing = rows.containing(.staticText, identifier: "Sailing")
@@ -21,6 +21,7 @@ final class PhoneReplayUITests: XCTestCase {
         let speed = app.staticTexts["stat.GPS speed"]
         let distance = app.staticTexts["stat.Route distance"]
         let marker = element("replay.position", in: app)
+        let map = element("replay.map", in: app)
         XCTAssertTrue(elapsed.waitForExistence(timeout: 10))
         XCTAssertTrue(chart.waitForExistence(timeout: 10))
         XCTAssertGreaterThan(chart.frame.width, 0)
@@ -29,6 +30,14 @@ final class PhoneReplayUITests: XCTestCase {
         let initialDistance = distance.label
         XCTAssertTrue(marker.waitForExistence(timeout: 10))
         let startFrame = marker.frame
+        let startMapFrame = map.frame
+        XCTAssertGreaterThan(startMapFrame.width, 0)
+        XCTAssertGreaterThan(startMapFrame.height, 0)
+        // Scrubbing can scroll the list. Preserve the fix's position within the
+        // map, so the tap follows the map instead of reusing a screen coordinate.
+        let startOffset = CGVector(
+            dx: (startFrame.midX - startMapFrame.minX) / startMapFrame.width,
+            dy: (startFrame.midY - startMapFrame.minY) / startMapFrame.height)
 
         let from = chart.coordinate(withNormalizedOffset: CGVector(dx: 0.1, dy: 0.4))
         let to = chart.coordinate(withNormalizedOffset: CGVector(dx: 0.75, dy: 0.4))
@@ -46,10 +55,7 @@ final class PhoneReplayUITests: XCTestCase {
         XCTAssertEqual(marker.value as? String, elapsed.label)
         XCTAssertNotEqual(marker.frame, startFrame)
 
-        let map = element("replay.map", in: app)
-        let center = map.coordinate(withNormalizedOffset: .zero)
-            .withOffset(CGVector(dx: startFrame.midX - map.frame.minX, dy: startFrame.midY - map.frame.minY))
-        center.tap()
+        map.coordinate(withNormalizedOffset: startOffset).tap()
         XCTAssertNotEqual(elapsed.label, scrubbedTime)
         XCTAssertTrue(elapsed.label.hasPrefix("0:"), "Route tap should return to the start of the sailing route")
         XCTAssertEqual(marker.value as? String, elapsed.label)
@@ -64,11 +70,10 @@ final class PhoneReplayUITests: XCTestCase {
 
     @MainActor
     func testSelectWindowsAndSaveAndRestoreTrim() {
-        let app = launchDemoApp(extraArguments: ["-demoHistory"])
+        let app = launchDemoHistory()
         app.tabBars.buttons["History"].tap()
         let sailingRows = app.buttons.matching(identifier: "session.row")
             .containing(.staticText, identifier: "Sailing")
-        // A recording test can leave a shorter sailing session on this simulator.
         let sailing = sailingRows.containing(.staticText, identifier: "48:00").firstMatch
         let trimmedSailing = sailingRows.containing(.staticText, identifier: "Trimmed").firstMatch
         XCTAssertTrue(sailing.waitForExistence(timeout: 15))
@@ -105,13 +110,17 @@ final class PhoneReplayUITests: XCTestCase {
         let play = app.buttons["replay.playPause"]
         XCTAssertTrue(play.isHittable)
         let beforePlaying = elapsed.label
-        play.tap()
-        waitForLabel(play, "Pause")
-        let advanced = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "label != %@", beforePlaying), object: elapsed)
-        XCTAssertEqual(XCTWaiter().wait(for: [advanced], timeout: 5), .completed)
-        play.tap()
-        waitForLabel(play, "Play")
+        // Playback updates the chart continuously. Compare the settled snapshots
+        // and allow another interval if the simulator hasn't published a tick yet.
+        for interval in [1.5, 2.5] {
+            play.tap()
+            waitForLabel(play, "Pause")
+            Thread.sleep(forTimeInterval: interval)
+            play.tap()
+            waitForLabel(play, "Play")
+            if secondsInTime(elapsed.label) > secondsInTime(beforePlaying) { break }
+        }
+        XCTAssertGreaterThan(secondsInTime(elapsed.label), secondsInTime(beforePlaying))
 
         let lap = app.buttons["replay.lap.1"]
         scrollTo(lap, in: app)

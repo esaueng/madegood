@@ -140,7 +140,7 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
                 return
             }
             let fm = FileManager.default
-            let folder = RecordingStore.root.appendingPathComponent(sessionId, isDirectory: true)
+            let folder = RecordingStore.recordingsRoot.appendingPathComponent(sessionId, isDirectory: true)
             let destination = folder.appendingPathComponent(name)
             // Stage next to the destination (same volume) so replacing is atomic and an old
             // copy survives if anything fails.
