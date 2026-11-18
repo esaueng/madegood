@@ -85,7 +85,11 @@ final class SessionLibrary {
 
     private nonisolated static var trimStore: SessionTrimStore {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        return SessionTrimStore(directory: support.appendingPathComponent("SessionTrims", isDirectory: true))
+        let trims = support.appendingPathComponent("SessionTrims", isDirectory: true)
+        if let namespace = RecordingStore.demoNamespace {
+            return SessionTrimStore(directory: trims.appendingPathComponent(namespace.uuidString, isDirectory: true))
+        }
+        return SessionTrimStore(directory: trims)
     }
 
     private var cache: [URL: (key: Source, summary: Summary)] = [:]

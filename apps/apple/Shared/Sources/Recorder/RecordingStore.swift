@@ -3,8 +3,25 @@ import WaterKit
 
 /// Where raw recordings live on this device: `Documents/Recordings/<sessionId>/`.
 enum RecordingStore {
+    static var demoNamespace: UUID? {
+        #if DEBUG
+            let arguments = ProcessInfo.processInfo.arguments
+            if arguments.contains("-demoHistory"),
+                let index = arguments.firstIndex(of: "-demoHistoryNamespace"),
+                arguments.indices.contains(index + 1)
+            {
+                return UUID(uuidString: arguments[index + 1])
+            }
+        #endif
+        return nil
+    }
+
     static var root: URL {
         let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        if let demoNamespace {
+            return documents.appendingPathComponent("DemoHistory", isDirectory: true)
+                .appendingPathComponent(demoNamespace.uuidString, isDirectory: true)
+        }
         return documents.appendingPathComponent("Recordings", isDirectory: true)
     }
 
