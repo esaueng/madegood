@@ -24,7 +24,7 @@ const putJson = (body: unknown, token?: string): RequestInit => ({
   body: JSON.stringify(body),
 });
 async function trackBytes(id: string, latitude = 0.001, startedAt = leg.startedAt) {
-  const track = JSON.stringify({
+  return gzipJSON({
     v: 1,
     sessionId: id,
     startedAt,
@@ -33,7 +33,11 @@ async function trackBytes(id: string, latitude = 0.001, startedAt = leg.startedA
     hr: { t: [], bpm: [] },
     events: [],
   });
-  const gzip = new Blob([track]).stream().pipeThrough(new CompressionStream("gzip"));
+}
+async function gzipJSON(value: unknown) {
+  const gzip = new Blob([JSON.stringify(value)])
+    .stream()
+    .pipeThrough(new CompressionStream("gzip"));
   return new Uint8Array(await new Response(gzip).arrayBuffer());
 }
 const putTrack = (bytes: Uint8Array, token: string): RequestInit => ({
@@ -210,6 +214,29 @@ describe("private voyage sync", () => {
     ).toBe(413);
   });
 
+  it("rejects malformed or foreign tracks before the immutable slot is used", async () => {
+    const { accessToken } = await signIn();
+    const { legId, trackPath } = await createLeg(accessToken);
+    const malformed = await gzipJSON({ v: 1, sessionId: legId });
+    const foreign = await trackBytes(crypto.randomUUID());
+    const brokenColumn = await gzipJSON({
+      v: 1,
+      sessionId: legId,
+      sport: "sailing",
+      startedAt: leg.startedAt,
+      gps: { t: [0], lat: [], lon: [0], spd: [null], crs: [null], hacc: [5] },
+      hr: { t: [], bpm: [] },
+      events: [],
+    });
+    for (const bytes of [malformed, foreign, brokenColumn]) {
+      const result = await api(trackPath, putTrack(bytes, accessToken));
+      expect(result.status).toBe(400);
+      expect(await result.json()).toMatchObject({ error: "invalid_track" });
+    }
+    expect((await api(trackPath, { headers: bearer(accessToken) })).status).toBe(404);
+    expect((await api(trackPath, putTrack(await trackBytes(legId), accessToken))).status).toBe(204);
+  });
+
   it("stores exact gzip bytes once and refuses a competing upload", async () => {
     const { accessToken, user } = await signIn();
     const { legId, trackPath } = await createLeg(accessToken);
@@ -333,31 +360,51 @@ describe("private voyage sync", () => {
     ).toBeNull();
   });
 
-  it("removes a track whose R2 put lands after account deletion and its prefix sweep", async () => {
-    const { accessToken, user } = await signIn();
-    const { legId, trackPath } = await createLeg(accessToken);
-    let latePut = false;
-    const bucket = new Proxy(env.TRACKS, {
-      get(target, property) {
-        if (property === "put") {
-          return async (key: string, bytes: Uint8Array, options: R2PutOptions) => {
-            expect((await deleteAccount(accessToken)).status).toBe(204);
-            const stored = await target.put(key, bytes, options);
-            latePut = stored !== null;
-            return stored;
-          };
-        }
-        const value = Reflect.get(target, property);
-        return typeof value === "function" ? value.bind(target) : value;
-      },
-    });
-    const response = await createApp().request(
-      `/api${trackPath}`,
-      putTrack(await trackBytes(legId), accessToken),
-      { ...env, TRACKS: bucket },
-    );
-    expect(latePut).toBe(true);
-    expect(response.status).toBe(404);
-    expect((await env.TRACKS.list({ prefix: userPrefix(user.id) })).objects).toEqual([]);
-  });
+  it.each([false, true])(
+    "removes a late track after account deletion, lookup failure %s",
+    async (failLookup) => {
+      const { accessToken, user } = await signIn();
+      const { legId, trackPath } = await createLeg(accessToken);
+      let latePut = false;
+      let lookupFailed = false;
+      const bucket = new Proxy(env.TRACKS, {
+        get(target, property) {
+          if (property === "put") {
+            return async (key: string, bytes: Uint8Array, options: R2PutOptions) => {
+              expect((await deleteAccount(accessToken)).status).toBe(204);
+              const stored = await target.put(key, bytes, options);
+              latePut = stored !== null;
+              return stored;
+            };
+          }
+          const value = Reflect.get(target, property);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+      const db = new Proxy(env.DB, {
+        get(target, property) {
+          if (property === "prepare") {
+            return (statement: string) => {
+              if (failLookup && latePut && !lookupFailed) {
+                lookupFailed = true;
+                throw new Error("Synthetic ownership read failure");
+              }
+              return target.prepare(statement);
+            };
+          }
+          const value = Reflect.get(target, property);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+      const response = await createApp().request(
+        `/api${trackPath}`,
+        putTrack(await trackBytes(legId), accessToken),
+        { ...env, DB: db, TRACKS: bucket },
+      );
+      expect(latePut).toBe(true);
+      expect(lookupFailed).toBe(failLookup);
+      expect(response.status).toBe(404);
+      expect((await env.TRACKS.list({ prefix: userPrefix(user.id) })).objects).toEqual([]);
+    },
+  );
 });

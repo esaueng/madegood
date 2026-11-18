@@ -11,10 +11,24 @@ enum VoyageRecorderSync {
         else { throw PreparationError.unfinishedLeg }
         return CompletedVoyageLeg(
             voyageID: voyage.id,
-            voyage: VoyageSnapshot(title: voyage.name, startedAt: date(firstLeg.startedAt)),
+            voyage: VoyageSnapshot(title: uploadTitle(voyage.name), startedAt: date(firstLeg.startedAt)),
             legID: leg.id,
             leg: VoyageLegSnapshot(startedAt: date(leg.startedAt), endedAt: date(end))
         )
+    }
+
+    static func uploadTitle(_ title: String) -> String {
+        // The API limits the title to 100 UTF-16 code units. Keep graphemes intact
+        // and leave room for an ellipsis when shortening an existing local name.
+        guard title.utf16.count > 100 else { return title }
+        var remaining = 99
+        let prefix = title.prefix { character in
+            let length = String(character).utf16.count
+            guard length <= remaining else { return false }
+            remaining -= length
+            return true
+        }
+        return String(prefix) + "…"
     }
 
     static func encodeTrack(leg: VoyageLeg, points: [VoyageTrackPoint]) throws -> Data {

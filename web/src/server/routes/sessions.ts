@@ -7,7 +7,14 @@ import { privacyZones, type Session, sessions, users } from "../db/schema";
 import { apiError, errorResponse } from "../lib/errors";
 import { createRouter } from "../lib/router";
 import { deletePrefix, userPrefix } from "../lib/storage";
-import { checkTrack, readBody, TRACK_CONTENT_TYPE, TRACK_MAX_BYTES, trackKey } from "../lib/track";
+import {
+  checkTrack,
+  readBody,
+  TRACK_CONTENT_TYPE,
+  TRACK_MAX_BYTES,
+  TRACK_SPORTS,
+  trackKey,
+} from "../lib/track";
 
 type SessionsEnv = {
   Bindings: Env;
@@ -19,7 +26,6 @@ const security = [{ bearerAuth: [] }];
 /** Routes anyone may call; a token, when sent, identifies the viewer. */
 const optionalSecurity: Record<string, string[]>[] = [{ bearerAuth: [] }, {}];
 
-const SPORTS = ["sailing", "windsurfing", "motorboating", "kayak", "canoe", "sup"] as const;
 const VISIBILITIES = ["private", "unlisted", "public"] as const;
 
 /** Longest session the API accepts: 7 days. Multi-day passages are Voyages (Phase 5). */
@@ -58,7 +64,7 @@ const speed = z.number().min(0).max(MAX_SPEED_MPS);
 
 const PutSessionRequest = z
   .object({
-    sport: z.enum(SPORTS),
+    sport: z.enum(TRACK_SPORTS),
     startedAt: isoTime,
     endedAt: isoTime.nullable().optional(),
     durationS: seconds.nullable().optional().openapi({ description: "Elapsed time, s." }),
@@ -129,7 +135,7 @@ const UpdateSessionRequest = z
 const SessionBody = z
   .object({
     id: z.string().openapi({ format: "uuid" }),
-    sport: z.enum(SPORTS),
+    sport: z.enum(TRACK_SPORTS),
     title: z.string().nullable(),
     notes: z.string().nullable(),
     visibility: z.enum(VISIBILITIES),

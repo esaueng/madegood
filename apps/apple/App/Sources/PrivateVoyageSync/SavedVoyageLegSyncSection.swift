@@ -33,7 +33,12 @@ struct SavedVoyageLegSyncSection: View {
             Button("Sync Privately", action: enqueue)
             Button("Cancel", role: .cancel) { consentBinding = nil }
         } message: {
-            Text("The voyage details and recorded track will be saved to your MadeGood account.")
+            let title = VoyageRecorderSync.uploadTitle(voyage.name)
+            if title == voyage.name {
+                Text("The voyage details and recorded track will be saved to your MadeGood account.")
+            } else {
+                Text("The recorded track will be saved to your MadeGood account under “\(title)”.")
+            }
         }
     }
 

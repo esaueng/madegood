@@ -11,6 +11,8 @@ uses the owner's voyage routes and is independent of live sharing.
 The voyage start is the first recorded leg's start. The recorder supplies
 neither a whole-voyage end nor boat, port or distance metadata. Track v1
 preserves the leg UUID, start and relative fix times at millisecond precision.
+Consent shows the shorter upload title when a local name exceeds the API’s
+100 UTF-16 code unit limit. The original name stays in the local recording.
 A `recording_gap` event starts at `t` and carries the gap end in `data.endT`, also
 in seconds since leg start. This includes gaps before a saved fix and an ending
 gap. The local voyage index and position journal remain the recorder's source

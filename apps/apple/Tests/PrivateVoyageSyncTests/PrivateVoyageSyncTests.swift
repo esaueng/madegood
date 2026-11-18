@@ -6,6 +6,22 @@ import WaterKit
 
 @MainActor
 struct PrivateVoyageSyncTests {
+    @Test func shortensAnExistingLongTitleBeforeFreezingTheUpload() throws {
+        let rig = try Rig()
+        defer { rig.cleanUp() }
+        var recorder = try VoyageStore(root: rig.root.appending(path: "recordings"))
+        let localTitle = String(repeating: "🧭", count: 51)
+        let voyage = try recorder.createVoyage(named: localTitle)
+        let now = rig.now.timeIntervalSince1970
+        try recorder.startLeg(in: voyage.id, at: now)
+        let leg = try recorder.endLeg(at: now + 1)
+        let saved = try #require(recorder.voyages.first)
+        let completed = try VoyageRecorderSync.prepare(voyage: saved, leg: leg)
+        #expect(saved.name == localTitle)
+        #expect(completed.voyage.title == String(repeating: "🧭", count: 49) + "…")
+        #expect(completed.voyage.title.utf16.count <= 100)
+    }
+
     @Test func restoredRecordingUploadsOriginalTimesAndGapsWithoutEditingTheLibrary() async throws {
         let rig = try Rig()
         defer { rig.cleanUp() }

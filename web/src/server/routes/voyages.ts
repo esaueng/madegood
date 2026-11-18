@@ -8,7 +8,7 @@ import { legs, users, voyages } from "../db/schema";
 import { apiError, errorResponse } from "../lib/errors";
 import { createRouter } from "../lib/router";
 import { userPrefix } from "../lib/storage";
-import { checkTrack, readBody, TRACK_CONTENT_TYPE, TRACK_MAX_BYTES } from "../lib/track";
+import { checkLegTrack, readBody, TRACK_CONTENT_TYPE, TRACK_MAX_BYTES } from "../lib/track";
 
 const VoyageCollection = "/voyages";
 const VoyageItem = "/voyages/{voyageId}";
@@ -458,7 +458,7 @@ voyageRoutes.openapi(putTrack, async (c) => {
   }
   const bytes = await readBody(c.req.raw.body, TRACK_MAX_BYTES);
   if (!bytes) return apiError(c, 413, "payload_too_large");
-  const problem = await checkTrack(bytes);
+  const problem = await checkLegTrack(bytes, legId);
   if (problem) return apiError(c, 400, "invalid_track", problem);
 
   const digest = await crypto.subtle.digest("SHA-256", bytes);
@@ -473,14 +473,15 @@ voyageRoutes.openapi(putTrack, async (c) => {
     httpMetadata: { contentType: TRACK_CONTENT_TYPE },
     customMetadata: { sha256 },
   });
-  const object = stored ?? (await c.env.TRACKS.head(key));
-  if (!(await hasLeg(db, userId, voyageId, legId))) {
+  const readOwnership = async () => hasLeg(db, userId, voyageId, legId);
+  if (!(await readOwnership().catch(readOwnership))) {
     // Account deletion cascades D1 rows before sweeping R2. If this PUT landed after
     // the sweep, remove the late object. This account and its storage key are never reused.
     await c.env.TRACKS.delete(key);
     return notFound(c);
   }
 
+  const object = stored ?? (await c.env.TRACKS.head(key));
   if (!object) return apiError(c, 500, "internal");
   if (object.customMetadata?.sha256 !== sha256) return syncConflict(c);
   c.header("ETag", object.httpEtag);
