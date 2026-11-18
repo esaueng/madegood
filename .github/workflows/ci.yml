@@ -221,6 +221,19 @@ jobs:
           echo "iphone=$(../../scripts/pick-simulator iOS iPhone)" >> "$GITHUB_OUTPUT"
           echo "watch=$(../../scripts/pick-simulator watchOS 'Apple Watch')" >> "$GITHUB_OUTPUT"
 
+      # Cold-booting the watch simulator inside `xcodebuild test` made the first app
+      # launch time out ("Application info provider returned nil"). Boot both now, in
+      # parallel, and wait until each has finished booting.
+      - name: Boot simulators
+        env:
+          IPHONE: ${{ steps.sims.outputs.iphone }}
+          WATCH: ${{ steps.sims.outputs.watch }}
+        run: |
+          xcrun simctl bootstatus "$IPHONE" -b & iphone=$!
+          xcrun simctl bootstatus "$WATCH" -b & watch=$!
+          wait "$iphone"
+          wait "$watch"
+
       # The tests launch the apps with -demoSession: a synthetic route, no GPS, Health
       # or permission prompts. Ad-hoc signing keeps the apps' entitlements.
       - name: iPhone UI tests
@@ -232,6 +245,8 @@ jobs:
             CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual \
             | grep -E '(error|warning):|Test Case|\*\* TEST'
 
+      # One retry absorbs the watch simulator's occasional failed launch; a test still has
+      # to pass on its own run.
       - name: Watch UI tests
         env:
           # Passed to the test runner as CI: skips tests the CI simulator cannot run.
@@ -240,6 +255,7 @@ jobs:
           set -o pipefail
           xcodebuild test -workspace MadeGood.xcworkspace -scheme MadeGoodWatch \
             -destination "id=${{ steps.sims.outputs.watch }}" -only-testing:MadeGoodWatchUITests \
+            -retry-tests-on-failure -test-iterations 2 \
             -derivedDataPath "$RUNNER_TEMP/DerivedData" -resultBundlePath "$RUNNER_TEMP/WatchUITests.xcresult" \
             CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual \
             | grep -E '(error|warning):|Test Case|\*\* TEST'
