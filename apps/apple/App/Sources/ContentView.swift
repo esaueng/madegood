@@ -108,9 +108,12 @@ private struct StartView: View {
             }
 
             if let error = controller.recorder.lastError {
-                Label(error, systemImage: "exclamationmark.triangle.fill")
+                Label {
+                    Text(error).foregroundStyle(.primary)
+                } icon: {
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                }
                     .font(.footnote.weight(.medium))
-                    .foregroundStyle(.orange)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)
@@ -218,9 +221,12 @@ private struct StartHeader: View {
                     .fontDesign(.rounded)
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
-                Text(.now, format: .dateTime.weekday(.wide).month(.wide).day())
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(.secondary)
+                // Ticks so the date rolls over at midnight while the screen stays open.
+                TimelineView(.everyMinute) { context in
+                    Text(context.date, format: .dateTime.weekday(.wide).month(.wide).day())
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.secondary)
+                }
             }
         }
         .accessibilityElement(children: .combine)
