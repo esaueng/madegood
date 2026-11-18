@@ -47,6 +47,17 @@ struct WatchContentView: View {
                 }
             }
         }
+        #if DEBUG
+            // UI tests can't press the Action button: `-uiTestActionButton` adds a stand-in.
+            .overlay(alignment: .topLeading) {
+                if UserDefaults.standard.bool(forKey: "uiTestActionButton") {
+                    Button("Action") { SessionController.shared.actionButtonPressed() }
+                        .accessibilityIdentifier("debug.actionButton")
+                        .font(.caption2)
+                        .buttonStyle(.plain)
+                }
+            }
+        #endif
         .sheet(item: $summary) { summary in
             SummaryView(summary: summary)
         }
@@ -408,6 +419,11 @@ private struct SessionPages: View {
             }
         }
         .animation(.snappy, value: banner)
+        // A new mark from anywhere (the controls or the Action button) shows the way back.
+        .onChange(of: manOverboard.mark) { old, new in
+            // Wait a turn: the page only exists once the mark has redrawn the pages.
+            if old == nil, new != nil { Task { @MainActor in page = .manOverboard } }
+        }
         .onChange(of: recorder.distanceAlert) { _, alert in
             guard let alert else { return }
             Haptics.play(.distanceAlert)

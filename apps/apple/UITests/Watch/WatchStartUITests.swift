@@ -130,4 +130,33 @@ final class WatchStartUITests: XCTestCase {
         attachScreenshot("distance alert")
         endWatchSession(app)
     }
+
+    /// The Action button (a stand-in, since UI tests can't press it): during a countdown a
+    /// press starts recording now (kayak can't sync), then each press does the sport's
+    /// action, here man-overboard, which opens the way-back page.
+    func testActionButtonSkipsCountdownThenMarksManOverboard() {
+        let app = launchDemoApp(extraArguments: [
+            "-uiTestActionButton", "YES",
+            "-settings.countdown.kayak", "1", "-demoCountdownSeconds", "60",
+            "-settings.actionButton.kayak", "manOverboard",
+        ])
+        let kayak = app.buttons["sport.kayak"]
+        XCTAssertTrue(kayak.waitForExistence(timeout: 15))
+        kayak.tap()
+        let action = app.buttons["debug.actionButton"]
+        XCTAssertTrue(action.waitForExistence(timeout: 10))
+        XCTAssertFalse(app.staticTexts["metric.speed"].exists, "still counting down")
+        action.tap()
+        XCTAssertTrue(app.staticTexts["metric.speed"].waitForExistence(timeout: 15))
+        action.tap()
+        XCTAssertTrue(app.staticTexts["mob.distance"].waitForExistence(timeout: 10))
+        attachScreenshot("action button man overboard")
+        // The MOB page comes first, so the controls are page 2.
+        endWatchSession(app, controlsPage: 2)
+        // The mark outlives the session; clear it so later tests start on the sport cards.
+        let clear = app.buttons["mob.clear"]
+        XCTAssertTrue(clear.waitForExistence(timeout: 10))
+        clear.tap()
+        XCTAssertTrue(app.buttons["sport.kayak"].waitForExistence(timeout: 10))
+    }
 }

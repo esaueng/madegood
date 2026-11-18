@@ -131,6 +131,31 @@ final class SessionController {
         Haptics.play(.lap)
     }
 
+    /// One press of the Action button after the one that started the session: works the
+    /// countdown, or runs the sport's chosen action while recording (`ActionButtonPress`).
+    @discardableResult
+    func actionButtonPressed() -> ActionButtonPress {
+        let recordingSport: Sport? =
+            if case .recording(_, _, let sport) = recorder.state { sport } else { nil }
+        let press = ActionButtonPress.resolve(
+            countingDown: countdown != nil, canSync: countdown?.canSync ?? false,
+            isRecording: recorder.isRecording,
+            action: UserSettings.settings(for: recordingSport ?? sport ?? .sailing).actionButton)
+        switch press {
+        case .syncCountdown: sync()
+        case .startNow: startNow()
+        case .lap: lap()
+        case .mark:
+            recorder.mark()
+            Haptics.play(.mark)
+        case .manOverboard:
+            recorder.markManOverboard()
+            Haptics.play(.manOverboard)
+        case .ignore: break
+        }
+        return press
+    }
+
     /// Monotonic seconds, so a clock change during the countdown cannot move the start.
     static var now: Double { ProcessInfo.processInfo.systemUptime }
 
