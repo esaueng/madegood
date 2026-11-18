@@ -162,9 +162,9 @@ private struct PhoneSportCard: View {
         HStack(spacing: 0) {
             Button(action: start) {
                 HStack(spacing: 12) {
-                    SportIcon(sport: sport, size: 32)
+                    SportIcon(sport: sport, size: 38)
                         .foregroundStyle(Theme.cream)
-                        .frame(width: 44, height: 44)
+                        .frame(width: 52, height: 52)
                         .background(Color.accentColor, in: .circle)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(sport.displayName)
@@ -188,7 +188,7 @@ private struct PhoneSportCard: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.leading, 12)
-                .padding(.vertical, 9)
+                .padding(.vertical, 8)
                 .contentShape(.rect)
             }
             .buttonStyle(.plain)
