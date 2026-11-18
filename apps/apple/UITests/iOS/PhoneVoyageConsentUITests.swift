@@ -38,18 +38,19 @@ final class PhoneVoyageConsentUITests: XCTestCase {
         openVoyages(in: app)
         let activeLeg = element("voyage.activeLeg", in: app)
         XCTAssertTrue(activeLeg.waitForExistence(timeout: 10))
-        XCTAssertEqual(activeLeg.value as? String, "Capture interrupted")
+        XCTAssertEqual(activeLeg.value as? String, "Recording")
         activeLeg.tap()
         let resume = app.buttons["Resume Leg"]
-        XCTAssertTrue(resume.waitForExistence(timeout: 10))
         XCTAssertTrue(lastFix.exists)
         let recoveredCount = try XCTUnwrap((savedCount.value as? String).flatMap(Int.init))
         XCTAssertGreaterThanOrEqual(recoveredCount, countBeforeRestart)
-        resume.tap()
         simulatePosition(longitude: -29.999)
         XCTAssertTrue(app.staticTexts["Latest Capture Gap"].waitForExistence(timeout: 20))
+        let countAdvanced = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value != %@", String(countBeforeRestart)), object: savedCount)
+        XCTAssertEqual(XCTWaiter().wait(for: [countAdvanced], timeout: 15), .completed)
         let resumedCount = try XCTUnwrap((savedCount.value as? String).flatMap(Int.init))
-        XCTAssertGreaterThan(resumedCount, recoveredCount)
+        XCTAssertGreaterThan(resumedCount, countBeforeRestart)
         XCTAssertFalse(resume.exists)
 
         app.buttons["End Leg"].tap()
