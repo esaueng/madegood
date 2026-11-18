@@ -158,20 +158,26 @@ worse than 25 m, or none, are ignored.
 |---|---|
 | Clear | No anchor set |
 | Armed | Watching; the boat is inside or the evidence is inconclusive |
-| Alarming: dragging | ≥ 3 clearly-outside fixes spanning ≥ 10 s, all in the last 15 s, with no inside fix since the first. Latches until silenced |
+| Alarming: dragging | ≥ 3 clearly-outside fixes spanning ≥ 10 s in one excursion, at any fix cadence. Latches until silenced |
 | Alarming: no GPS | No usable fix for 120 s, by the clock or found when a fix arrives after such a gap (the app was suspended). The next usable fix returns to Armed |
 
 A fix is **clearly outside** when its distance minus its accuracy radius exceeds the
 radius, and **inside** when its distance is within the radius; an inside fix clears the
 evidence. A fix in between is inconclusive: it neither counts nor clears, so one noisy
-reading cannot hide a drag. Outside readings older than 15 s expire, so two separate
-excursions are never joined into one drag.
+reading cannot hide a drag. Clearly-outside fixes form one **excursion** while no inside
+fix comes between them, at most 2 inconclusive fixes come between consecutive ones, and
+consecutive ones are less than 120 s apart; otherwise a new excursion starts. Counting
+fixes rather than a fixed time window keeps the rule the same whether fixes come every
+second or every 30 s (as iOS may deliver them in the background).
 
-Times are on a monotonic clock (on the iPhone, when each fix arrived), so changing the
+Times are on a monotonic clock (on the iPhone, when each fix was measured: its arrival
+time minus its age from its own timestamp, so a cached fix is old on arrival and fixes
+older than 60 s are dropped), so changing the
 device clock cannot fake a GPS gap or make fixes look out of order. After a relaunch the
 saved alarm moves onto the new clock: GPS counts as fresh from launch (no "no GPS" until
-120 s pass without a fix), the drag evidence and any silence start over, and a saved alarm
-keeps sounding. Silencing returns to Armed
+120 s pass without a fix), except that a no-GPS time the previous process had scheduled
+is kept when it is earlier, so relaunching during an outage never postpones the alert.
+The drag evidence and any silence start over, and a saved alarm keeps sounding. Silencing returns to Armed
 and suppresses alarms for 60 s; if the boat is still outside after that, it sounds
 again. Changing the radius restarts the evidence. Distances and bearings (true, from
 the boat to the anchor) are shown in whole metres and degrees whatever the distance
@@ -183,7 +189,9 @@ fixes arrive (within 10 s), so lost GPS alerts a locked phone even if iOS suspen
 app. While alarming, the next 20 repeat notifications on a 30 s cadence from the alarm's
 start stay scheduled, plus one notification repeating every 60 s that lasts until the
 alarm is silenced or the anchor raised; an alarm restored after a relaunch sounds at
-once. Every anchor notification has an identifier from a fixed set, so Silence, Raise and
+once. A request iOS rejects (notifications off) is not counted as scheduled, and every
+alert is scheduled again when notifications become allowed. Every anchor notification has
+an identifier from a fixed set, so Silence, Raise and
 each launch cancel anything an earlier process scheduled. Remaining iOS limits: a
 force-quit stops location until the app is opened (scheduled notifications still fire),
 and Focus or Do Not Disturb can hold notifications back. The screen warns,

@@ -164,8 +164,8 @@ private func swing(_ t: Double) -> (distance: Double, bearing: Double) {
     @Test func separateExcursionsAreNotBridged() {
         // Radius 30 m, hacc 10 m: 35 m is inconclusive (35 − 10 < 30 but 35 > 30).
         // Review regression: 50 m (s 1–2), 35 m (s 3–20), 50 m (s 21) used to alarm by
-        // bridging two separate outside readings across the inconclusive ones. They
-        // are now more than the 15 s evidence window apart.
+        // bridging two separate outside readings across the inconclusive ones. More
+        // than two inconclusive fixes in a row separate them.
         var alarm = armed(radius: 30)
         var random = SeededRandom(state: 5)
         alarm.ingest(fix(t: 1, distance: 50, bearing: 0, hacc: 10, random: &random))
@@ -324,6 +324,94 @@ private func swing(_ t: Double) -> (distance: Double, bearing: Double) {
         let lost = quiet.advance(to: 120)
         #expect(lost)
         #expect(quiet.state == .alarming(.gpsLost))
+    }
+
+    /// Extra-round regression: at sparse cadences (8 s) a fixed 15 s window never held
+    /// three fixes, so a sustained drag never alarmed. Holding for 30 min, then dragging
+    /// at 0.4 m/s, with fixes every `cadence` seconds.
+    @Test(arguments: [1.0, 6.0, 8.0, 15.0, 30.0])
+    func dragAlarmsAtAnyFixCadence(cadence: Double) throws {
+        var alarm = armed(radius: 40)
+        var random = SeededRandom(state: 53)
+        var crossedAt: Double?
+        var alarmAt: Double?
+        var t = 0.0
+        while t < 2 * 3600 {
+            t += cadence
+            let holding = swing(t)
+            let distance = holding.distance + max(0, t - 1800) * 0.4
+            if crossedAt == nil, distance - 8 > 40 { crossedAt = t }
+            alarm.ingest(fix(t: t, distance: distance, bearing: 200, hacc: 8, noise: 3, random: &random))
+            #expect(alarm.state != .alarming(.gpsLost))
+            if alarm.state.isAlarming {
+                alarmAt = t
+                break
+            }
+        }
+        let alarmed = try #require(alarmAt, "no alarm at a \(cadence) s cadence")
+        let crossed = try #require(crossedAt)
+        #expect(alarmed > 1800)
+        // Three outside fixes spanning ≥ 10 s, plus noise: about three fixes after leaving.
+        #expect(alarmed - crossed <= max(3 * cadence, 10) + 20)
+    }
+
+    @Test(arguments: [1.0, 6.0, 8.0, 15.0, 30.0])
+    func noisySwingingNeverAlarmsAtAnyFixCadence(cadence: Double) {
+        var alarm = armed(radius: 40)
+        var random = SeededRandom(state: 59)
+        var t = 0.0
+        while t < 4 * 3600 {
+            t += cadence
+            let (distance, bearing) = swing(t)
+            alarm.ingest(
+                fix(t: t, distance: distance, bearing: bearing, hacc: 4 + 8 * random.next(), noise: 5, random: &random))
+            if alarm.state != .armed { break }
+        }
+        #expect(alarm.state == .armed)
+    }
+
+    @Test func outsideReadingsFarApartInTimeAreSeparate() {
+        // Outside fixes more than the GPS-lost limit apart never join (that gap raises the
+        // GPS alarm instead).
+        var alarm = armed(radius: 30)
+        var random = SeededRandom(state: 61)
+        alarm.ingest(fix(t: 1, distance: 50, bearing: 0, random: &random))
+        alarm.ingest(fix(t: 100, distance: 50, bearing: 0, random: &random))
+        #expect(alarm.state == .armed)
+        alarm.ingest(fix(t: 230, distance: 50, bearing: 0, random: &random))
+        #expect(alarm.state == .alarming(.gpsLost))
+        alarm.ingest(fix(t: 231, distance: 50, bearing: 0, random: &random))
+        #expect(alarm.state == .armed)
+    }
+
+    @Test func relaunchNeverPostponesAPendingNoGPSDeadline() {
+        // Extra-round regression: no fix for 119 s, then a relaunch, used to move the
+        // first no-GPS alert to about 239 s; repeated relaunches postponed it forever.
+        var alarm = armed(radius: 30, at: 1000)
+        var random = SeededRandom(state: 67)
+        alarm.ingest(fix(t: 1001, distance: 5, bearing: 0, random: &random))
+        let saved = alarm
+        // Relaunched 119 s later; the previous deadline is 2 s away on the new clock.
+        var restored = saved
+        restored.resume(at: 50, gpsLostDeadline: 52)
+        #expect(restored.gpsLostDeadline == 52)
+        let early = restored.advance(to: 51)
+        #expect(!early)
+        let lost = restored.advance(to: 52)
+        #expect(lost)
+        // A deadline already passed alarms at once.
+        var late = saved
+        late.resume(at: 50, gpsLostDeadline: 10)
+        let now = late.advance(to: 50)
+        #expect(now)
+        // A later deadline is never adopted; a usable fix moves it later as usual.
+        var later = saved
+        later.resume(at: 50, gpsLostDeadline: 500)
+        #expect(later.gpsLostDeadline == 170)
+        var fixed = saved
+        fixed.resume(at: 50, gpsLostDeadline: 52)
+        fixed.ingest(fix(t: 51, distance: 5, bearing: 0, random: &random))
+        #expect(fixed.gpsLostDeadline == 171)
     }
 
     @Test func anchorPointNeverUsesAnOldPosition() {

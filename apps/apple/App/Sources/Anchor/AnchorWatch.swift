@@ -44,11 +44,15 @@ final class AnchorWatch {
 
     private static let storageKey = "anchorWatch.alarm"
     private static let radiusKey = "anchorWatch.radius"
+    /// The wall-clock time the scheduled no-GPS notification fires, so a relaunch never
+    /// moves it later.
+    private static let noGPSFireDateKey = "anchorWatch.noGPSFireDate"
 
     private(set) var alarm: AnchorAlarm
     private(set) var position: Position?
     /// Why alerts may not reach the user; empty when notifications and location are allowed.
     private(set) var issues: [AnchorReadiness.Issue] = []
+    private var readinessChecked = false
     /// The radius picked for the next anchor, m.
     var radius: Double {
         didSet { UserDefaults.standard.set(radius, forKey: Self.radiusKey) }
@@ -72,7 +76,9 @@ final class AnchorWatch {
 
     private init() {
         let defaults = UserDefaults.standard
-        alarm = Self.restored(from: defaults.data(forKey: Self.storageKey), at: Self.clock())
+        alarm = Self.restored(
+            from: defaults.data(forKey: Self.storageKey), at: Self.clock(),
+            pendingNoGPS: defaults.object(forKey: Self.noGPSFireDateKey) as? Date, wallNow: Date())
         let saved = defaults.double(forKey: Self.radiusKey)
         radius = AnchorAlarm.radiusRange.contains(saved) ? saved : AnchorAlarm.defaultRadius
         #if DEBUG
@@ -80,6 +86,7 @@ final class AnchorWatch {
                 alarm = AnchorAlarm()
                 radius = AnchorAlarm.defaultRadius
                 defaults.removeObject(forKey: Self.storageKey)
+                defaults.removeObject(forKey: Self.noGPSFireDateKey)
             }
         #endif
         NotificationCenter.default.addObserver(
@@ -103,13 +110,29 @@ final class AnchorWatch {
     static func clock() -> Double { ProcessInfo.processInfo.systemUptime }
 
     /// A saved alarm moved onto this process's clock: GPS counts as fresh from `now`, so a
-    /// relaunch never raises "no GPS" from a fix time saved long ago.
-    static func restored(from data: Data?, at now: Double) -> AnchorAlarm {
+    /// relaunch never raises "no GPS" from a fix time saved long ago. A no-GPS notification
+    /// the previous process scheduled (`pendingNoGPS`, wall clock) keeps its time, so
+    /// relaunching during an outage never postpones the alert.
+    static func restored(
+        from data: Data?, at now: Double, pendingNoGPS: Date? = nil, wallNow: Date = Date()
+    ) -> AnchorAlarm {
         guard let data, var alarm = try? JSONDecoder().decode(AnchorAlarm.self, from: data) else {
             return AnchorAlarm()
         }
-        alarm.resume(at: now)
+        alarm.resume(at: now, gpsLostDeadline: pendingNoGPS.map { now + $0.timeIntervalSince(wallNow) })
         return alarm
+    }
+
+    /// A location as a fix on the alarm's clock: stamped when it was measured (its age at
+    /// arrival taken from its own timestamp), not when it arrived, so a cached position
+    /// is old on arrival and can never be averaged into the anchor point. Nil for an
+    /// invalid or long-cached location.
+    static func fix(from location: CLLocation, arrivedAt uptime: Double, wallNow: Date = Date()) -> GPSFix? {
+        let age = max(0, wallNow.timeIntervalSince(location.timestamp))
+        guard location.horizontalAccuracy >= 0, age <= 60 else { return nil }
+        return GPSFix(
+            t: uptime - age, latitude: location.coordinate.latitude, longitude: location.coordinate.longitude,
+            horizontalAccuracy: location.horizontalAccuracy, speed: location.speed >= 0 ? location.speed : nil)
     }
 
     var isArmed: Bool { alarm.isArmed }
@@ -189,18 +212,10 @@ final class AnchorWatch {
                 do {
                     for try await update in CLLocationUpdate.liveUpdates(.otherNavigation) {
                         if Task.isCancelled { break }
-                        guard let location = update.location, location.horizontalAccuracy >= 0,
-                            // A cached position from before the updates started is not
-                            // current. Both times follow the system clock together.
-                            location.timestamp.timeIntervalSinceNow > -60
+                        guard let location = update.location,
+                            let fix = AnchorWatch.fix(from: location, arrivedAt: AnchorWatch.clock())
                         else { continue }
-                        // Stamped on arrival on the monotonic clock (see the type comment).
-                        self?.ingest(
-                            GPSFix(
-                                t: AnchorWatch.clock(), latitude: location.coordinate.latitude,
-                                longitude: location.coordinate.longitude,
-                                horizontalAccuracy: location.horizontalAccuracy,
-                                speed: location.speed >= 0 ? location.speed : nil))
+                        self?.ingest(fix)
                     }
                 } catch {
                     print("AnchorWatch: location updates ended: \(error)")
@@ -297,10 +312,23 @@ final class AnchorWatch {
             UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: stale)
             for id in stale { scheduled[id] = nil }
         }
+        // The no-GPS time on the wall clock, for the next launch (`restored`).
+        if let noGPS = wanted.first(where: { $0.id == AnchorAlertSchedule.gpsLostID }) {
+            UserDefaults.standard.set(
+                Date().addingTimeInterval(noGPS.fireAt - Self.clock()), forKey: Self.noGPSFireDateKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: Self.noGPSFireDateKey)
+        }
         for alert in wanted {
             if let current = scheduled[alert.id], abs(current - alert.fireAt) <= Self.rescheduleTolerance { continue }
-            post(id: alert.id, reason: alert.reason, at: alert.fireAt, repeatsEvery: alert.repeatsEvery)
             scheduled[alert.id] = alert.fireAt
+            post(id: alert.id, reason: alert.reason, at: alert.fireAt, repeatsEvery: alert.repeatsEvery) {
+                [weak self] succeeded in
+                // A rejected request (notifications off) is not scheduled: forget it so
+                // the next sync tries again.
+                guard !succeeded, let self, self.scheduled[alert.id] == alert.fireAt else { return }
+                self.scheduled[alert.id] = nil
+            }
         }
     }
 
@@ -315,7 +343,10 @@ final class AnchorWatch {
 
     /// Posts a notification now (`at` nil) or schedules it, once or repeating; the same ID
     /// replaces it. `fireAt` is on the alarm's clock.
-    private func post(id: String, reason: AnchorAlarm.Reason, at fireAt: Double?, repeatsEvery: Double? = nil) {
+    private func post(
+        id: String, reason: AnchorAlarm.Reason, at fireAt: Double?, repeatsEvery: Double? = nil,
+        completion: @escaping @MainActor (Bool) -> Void = { _ in }
+    ) {
         guard !DemoFeed.isEnabled else { return }
         let content = UNMutableNotificationContent()
         switch reason {
@@ -340,7 +371,10 @@ final class AnchorWatch {
             } else {
                 fireAt.map { UNTimeIntervalNotificationTrigger(timeInterval: max(1, $0 - Self.clock()), repeats: false) }
             }
-        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: id, content: content, trigger: trigger))
+        let request = UNNotificationRequest(identifier: id, content: content, trigger: trigger)
+        UNUserNotificationCenter.current().add(request) { error in
+            Task { @MainActor in completion(error == nil) }
+        }
     }
 
     private func requestNotificationPermission() {
@@ -364,8 +398,18 @@ final class AnchorWatch {
         let accuracy = locationManager.accuracyAuthorization
         Task {
             let settings = await UNUserNotificationCenter.current().notificationSettings()
-            issues = AnchorReadiness.issues(
+            let updated = AnchorReadiness.issues(
                 notifications: settings.authorizationStatus, location: location, accuracy: accuracy)
+            let reschedule = AnchorReadiness.notificationsBecameAllowed(
+                before: readinessChecked ? issues : nil, after: updated)
+            issues = updated
+            readinessChecked = true
+            if reschedule {
+                // Everything asked for while notifications were off was rejected.
+                scheduled = [:]
+                needsFullReconcile = true
+                syncNotifications()
+            }
         }
     }
 
@@ -419,6 +463,12 @@ enum AnchorReadiness {
                 "Precise Location is off. The alarm needs precise positions to tell a drag from a swing."
             }
         }
+    }
+
+    /// Whether notifications were just allowed, so every pending alert must be scheduled
+    /// again. `before` is nil when it was never checked: schedule then too.
+    static func notificationsBecameAllowed(before: [Issue]?, after: [Issue]) -> Bool {
+        !after.contains(.notificationsOff) && (before?.contains(.notificationsOff) ?? true)
     }
 
     static func issues(

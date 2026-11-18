@@ -13,8 +13,8 @@ import Foundation
 /// - `clear`: no anchor set.
 /// - `armed`: watching; the boat is inside the circle or the evidence is not conclusive.
 /// - `alarming(.dragging)`: the boat has been clearly outside the circle for at least
-///   `confirmFixes` clearly-outside fixes spanning `confirmSeconds`, all within the last
-///   `evidenceWindow` and with no inside fix since the first of them. It latches: coming
+///   `confirmFixes` clearly-outside fixes spanning `confirmSeconds` in one excursion (see
+///   `ingest`), whatever the fix cadence. It latches: coming
 ///   back inside does not silence it, because a dragging anchor can swing back in.
 /// - `alarming(.gpsLost)`: no usable fix for `gpsLostAfter`, noticed either by the clock
 ///   (`advance`) or by a fix that arrives after such a gap (the app was suspended). The
@@ -25,11 +25,12 @@ public struct AnchorAlarm: Sendable, Hashable, Codable {
         public var maxHorizontalAccuracy = 25.0
         /// Clearly-outside fixes needed before alarming.
         public var confirmFixes = 3
-        /// ...the time they must span, s: a short delay that rides out a GPS jump...
+        /// ...and the time they must span, s: a short delay that rides out a GPS jump.
         public var confirmSeconds = 10.0
-        /// ...and the window they must all fall in, s. Older outside readings expire, so
-        /// two separate excursions are never joined into one drag.
-        public var evidenceWindow = 15.0
+        /// Clearly-outside fixes belong to one excursion when at most this many
+        /// inconclusive fixes come between consecutive ones (and no inside fix, and no gap
+        /// of `gpsLostAfter`). More, and the earlier readings are a separate excursion.
+        public var maxInconclusiveBetween = 2
         /// No usable fix for this long raises a GPS alarm, s.
         public var gpsLostAfter = 120.0
         /// After the user silences an alarm, it does not sound again for this long, s.
@@ -93,8 +94,10 @@ public struct AnchorAlarm: Sendable, Hashable, Codable {
     /// When the current alarm started; nil unless alarming.
     public private(set) var alarmingSince: Double?
 
-    /// Times of the clearly-outside fixes since the last inside fix, within the window.
+    /// Times of the clearly-outside fixes in the current excursion.
     private var outsideTimes: [Double] = []
+    /// Inconclusive fixes since the latest clearly-outside one.
+    private var inconclusiveSince = 0
 
     public init(config: Config = Config()) {
         self.config = config
@@ -175,13 +178,20 @@ public struct AnchorAlarm: Sendable, Hashable, Codable {
             alarmingSince = nil
         }
 
-        // Accuracy-aware evidence. "Clearly outside": even the near edge of the accuracy
-        // circle is outside. "Inside": the fix itself is inside, which clears the
-        // evidence. Anything else is inconclusive and neither counts nor clears, so one
-        // noisy fix cannot hide a drag; the window keeps separate excursions apart.
+        // Accuracy-aware evidence, independent of the fix cadence. "Clearly outside": even
+        // the near edge of the accuracy circle is outside. "Inside": the fix itself is
+        // inside, which ends the excursion. Anything else is inconclusive: it neither
+        // counts nor ends it, unless more than `maxInconclusiveBetween` come in a row (the
+        // readings on either side are then separate excursions). A gap of `gpsLostAfter`
+        // between outside fixes also starts a new excursion.
         if distance - hacc > anchor.radius {
+            if let last = outsideTimes.last,
+                inconclusiveSince > config.maxInconclusiveBetween || fix.t - last >= config.gpsLostAfter
+            {
+                resetEvidence()
+            }
             outsideTimes.append(fix.t)
-            outsideTimes.removeAll { fix.t - $0 > config.evidenceWindow }
+            inconclusiveSince = 0
             if state == .armed, outsideTimes.count >= config.confirmFixes,
                 let first = outsideTimes.first, fix.t - first >= config.confirmSeconds, !isSilenced(at: fix.t)
             {
@@ -189,6 +199,8 @@ public struct AnchorAlarm: Sendable, Hashable, Codable {
             }
         } else if distance <= anchor.radius {
             resetEvidence()
+        } else if !outsideTimes.isEmpty {
+            inconclusiveSince += 1
         }
         return state != before
     }
@@ -209,10 +221,17 @@ public struct AnchorAlarm: Sendable, Hashable, Codable {
     /// period before "no GPS"; the app's pending notification covered the time it was not
     /// running), the drag evidence and any silence start over, and a restored alarm keeps
     /// sounding with its repeats counted from `t`.
-    public mutating func resume(at t: Double) {
+    ///
+    /// `gpsLostDeadline`, when known, is the no-GPS deadline the previous process had
+    /// scheduled, converted to the new clock. It is never pushed later: relaunching during
+    /// a real outage must not postpone the alert. Only a usable fix moves it later.
+    public mutating func resume(at t: Double, gpsLostDeadline previous: Double? = nil) {
         guard state != .clear, t.isFinite else { return }
         anchor?.setAt = t
         lastFixTime = t
+        if let previous, previous.isFinite, previous < t + config.gpsLostAfter {
+            lastFixTime = previous - config.gpsLostAfter
+        }
         silencedUntil = nil
         resetEvidence()
         if state.isAlarming { alarmingSince = t }
@@ -281,6 +300,7 @@ public struct AnchorAlarm: Sendable, Hashable, Codable {
 
     private mutating func resetEvidence() {
         outsideTimes.removeAll()
+        inconclusiveSince = 0
     }
 
     static func validCoordinate(latitude: Double, longitude: Double) -> Bool {

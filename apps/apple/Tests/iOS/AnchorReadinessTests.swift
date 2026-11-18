@@ -39,4 +39,15 @@ final class AnchorReadinessTests: XCTestCase {
                 notifications: .authorized, location: .authorizedWhenInUse, accuracy: .reducedAccuracy),
             [.approximateLocation])
     }
+
+    /// Extra-round regression: alerts rejected while notifications were off were never
+    /// scheduled again once they were allowed.
+    func testAllowingNotificationsReschedulesEverything() {
+        XCTAssertTrue(AnchorReadiness.notificationsBecameAllowed(before: [.notificationsOff], after: []))
+        XCTAssertTrue(AnchorReadiness.notificationsBecameAllowed(before: nil, after: [.locationOff]))
+        XCTAssertFalse(AnchorReadiness.notificationsBecameAllowed(before: [], after: []))
+        XCTAssertFalse(
+            AnchorReadiness.notificationsBecameAllowed(before: [.notificationsOff], after: [.notificationsOff]))
+        XCTAssertFalse(AnchorReadiness.notificationsBecameAllowed(before: nil, after: [.notificationsOff]))
+    }
 }
