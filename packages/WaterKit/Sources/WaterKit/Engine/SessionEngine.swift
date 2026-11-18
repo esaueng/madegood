@@ -40,9 +40,23 @@ public struct LiveMetrics: Sendable, Hashable {
     public var speed: Double?
     /// Distance over moving time, m/s.
     public var averageSpeed: Double?
-    /// Best mean Doppler speed over any 2 s and 10 s window so far, m/s.
-    public var maxSpeed2s: Double?
-    public var maxSpeed10s: Double?
+    /// Best time-weighted mean Doppler speeds over 2 s and 10 s windows ending at a fix, m/s.
+    public var maxSpeed2s: Double? {
+        didSet {
+            if maxSpeed2s != oldValue { maxSpeed2sRange = nil }
+        }
+    }
+    public var maxSpeed10s: Double? {
+        didSet {
+            if maxSpeed10s != oldValue { maxSpeed10sRange = nil }
+        }
+    }
+    /// Winning window bounds in seconds since session start. The start may be between
+    /// fixes. Exact ties keep the earliest window. Nil when there is no winning window
+    /// or the corresponding speed has been overridden.
+    public fileprivate(set) var maxSpeed2sRange: ClosedRange<Double>? = nil
+    /// The 10 s winning window, with the same time and tie conventions as `maxSpeed2sRange`.
+    public fileprivate(set) var maxSpeed10sRange: ClosedRange<Double>? = nil
     /// Smoothed course over ground, degrees true.
     public var course: Double?
     public var latitude: Double?
@@ -101,8 +115,9 @@ public struct SessionEngine: LiveAnalyzer {
     private var fast: Mark?
     /// Recent accepted fixes with a speed, for the current and windowed speeds.
     private var recent: [GPSFix] = []
-    private var maxSpeed2s: Double?
-    private var maxSpeed10s: Double?
+    private typealias SpeedBest = (mean: Double, range: ClosedRange<Double>)
+    private var best2s: SpeedBest?
+    private var best10s: SpeedBest?
     private var latestTime = 0.0
     private var heartRate: Double?
     private var heartRateSum = 0.0
@@ -149,7 +164,8 @@ public struct SessionEngine: LiveAnalyzer {
         LiveMetrics(
             elapsed: latestTime, movingTime: movingTime, distance: distance,
             speed: currentSpeed, averageSpeed: movingTime > 0 ? distance / movingTime : nil,
-            maxSpeed2s: maxSpeed2s, maxSpeed10s: maxSpeed10s, course: course,
+            maxSpeed2s: best2s?.mean, maxSpeed10s: best10s?.mean,
+            maxSpeed2sRange: best2s?.range, maxSpeed10sRange: best10s?.range, course: course,
             latitude: lastAccepted?.latitude, longitude: lastAccepted?.longitude,
             heartRate: heartRate, heartRateAverage: heartRateCount > 0 ? heartRateSum / Double(heartRateCount) : nil,
             heartRateMax: heartRateMax,
@@ -265,11 +281,13 @@ public struct SessionEngine: LiveAnalyzer {
         }
         let profile = SpeedProfile(recent)
         for (window, keyPath) in [
-            (Self.maxSpeedWindows.short, \SessionEngine.maxSpeed2s), (Self.maxSpeedWindows.long, \.maxSpeed10s),
+            (Self.maxSpeedWindows.short, \SessionEngine.best2s), (Self.maxSpeedWindows.long, \.best10s),
         ] {
-            guard let area = profile.integral(from: fix.t - window, to: fix.t, maxGap: window) else { continue }
+            let start = fix.t - window
+            guard let area = profile.integral(from: start, to: fix.t, maxGap: window) else { continue }
             let mean = area / window
-            self[keyPath: keyPath] = max(self[keyPath: keyPath] ?? mean, mean)
+            if let best = self[keyPath: keyPath], !(best.mean < mean) { continue }
+            self[keyPath: keyPath] = (mean, start...fix.t)
         }
     }
 

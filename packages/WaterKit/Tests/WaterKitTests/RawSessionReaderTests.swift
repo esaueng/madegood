@@ -25,6 +25,28 @@ import Testing
             gravity: Vector3(x: 0, y: 0, z: -RawFormat.standardGravity), rotationRate: .zero, attitude: .identity)
     }
 
+    @Test func sameSizeRawReplacementInvalidatesTheRevision() throws {
+        let folder = try TempFolder()
+        let name = RawFormat.Stream.gps.fileName
+        let url = folder.url.appendingPathComponent(name)
+        let original = try lines([RawFormat.GPSLine(ts: Self.startUnix + 4, lat: 0, lon: 0, hacc: 3)])
+        let replacement = try lines([RawFormat.GPSLine(ts: Self.startUnix + 6, lat: 0, lon: 0, hacc: 3)])
+        #expect(original.count == replacement.count)
+        try folder.write(name, original)
+        let revision = RawSessionReader.revision(of: folder.url)
+        #expect(revision.map(\.name) == [name])
+
+        try folder.write("track.json.gz", Data("derived".utf8))
+        #expect(RawSessionReader.revision(of: folder.url) == revision)
+
+        try folder.write(name, replacement)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: Self.startUnix)], ofItemAtPath: url.path)
+        let replaced = RawSessionReader.revision(of: folder.url)
+        #expect(replaced.map(\.size) == revision.map(\.size))
+        #expect(replaced != revision)
+    }
+
     @Test func canSkipTheMotionStream() throws {
         let folder = try TempFolder()
         try folder.write(RawFormat.metaFileName, RawFormat.encodeMeta(Self.meta()))

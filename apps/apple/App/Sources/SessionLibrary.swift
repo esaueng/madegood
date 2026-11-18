@@ -2,10 +2,8 @@ import Foundation
 import Observation
 import WaterKit
 
-/// The recordings on this phone with their analyzed summaries, newest first. Summaries
-/// come from replaying each recording through the session engine (without the motion
-/// stream) in the background, and are cached until the recording's files or the
-/// sport's auto-pause setting change.
+/// The recordings on this phone, newest first. Summaries and History previews share
+/// a background analysis and cache keyed by the recording, auto-pause setting and trim.
 @MainActor
 @Observable
 final class SessionLibrary {
@@ -13,6 +11,18 @@ final class SessionLibrary {
         var sport: Sport
         var startedAt: Date
         var metrics: LiveMetrics
+        var historyRoute: HistoryRoute?
+        var isTrimmed: Bool
+        var trimUnavailable: Bool
+
+        init(selection: SessionSelection, isTrimmed: Bool, trimUnavailable: Bool = false) {
+            sport = selection.track.sport
+            startedAt = selection.track.startedAt
+            metrics = selection.replay.metrics
+            historyRoute = HistoryRoute(fixes: selection.replay.fixes)
+            self.isTrimmed = isTrimmed
+            self.trimUnavailable = trimUnavailable
+        }
     }
 
     struct Item: Identifiable, Hashable {
@@ -22,40 +32,125 @@ final class SessionLibrary {
     }
 
     private(set) var items: [Item] = []
-    /// What a cached summary was computed from; it is reused only while both still hold.
-    private struct CacheKey: Equatable {
-        var bytes: Int64
-        var autoPause: Bool
-    }
+    enum SavedTrim: Hashable, Sendable {
+        case original
+        case trimmed(SessionTrim)
+        case unreadable
 
-    private var cache: [URL: (key: CacheKey, summary: Summary)] = [:]
-
-    func reload() {
-        let entries = RecordingStore.list()
-        items = entries.map { Item(entry: $0, summary: cachedSummary(for: $0)) }
-        let missing = entries.filter { $0.meta != nil && cachedSummary(for: $0) == nil }
-        guard !missing.isEmpty else { return }
-        Task {
-            let results = await Task.detached(priority: .userInitiated) {
-                missing.map { entry in (entry, Self.summarize(entry)) }
-            }.value
-            // Files may have changed while this ran (a recording arriving from the watch),
-            // and a newer reload may already have finished. Keep a result only if it
-            // still describes the recording as it is now.
-            let current = RecordingStore.list()
-            let currentBytes = Dictionary(current.map { ($0.folder, $0.bytes) }, uniquingKeysWith: { a, _ in a })
-            for (entry, summary) in results {
-                guard let summary, currentBytes[entry.folder] == entry.bytes else { continue }
-                cache[entry.folder] = (key(for: entry, sport: summary.sport), summary)
-            }
-            items = current.map { Item(entry: $0, summary: cachedSummary(for: $0)) }
+        var trim: SessionTrim? {
+            if case .trimmed(let trim) = self { return trim }
+            return nil
         }
     }
 
-    func delete(_ item: Item) {
-        try? RecordingStore.delete(item.entry)
-        cache[item.entry.folder] = nil
+    struct Source: Hashable, Sendable {
+        var entry: RecordingStore.Entry
+        var autoPause: Bool
+        var savedTrim: SavedTrim
+
+        func analyze() -> LoadedSession? {
+            guard let session = try? RawSessionReader.read(folder: entry.folder, includeMotion: false),
+                session.meta == entry.meta
+            else { return nil }
+            var profile = SportProfile.standard(for: session.meta.sport)
+            profile.autoPause.enabled = autoPause
+            guard let original = try? SessionSelection(session: session, profile: profile) else { return nil }
+            let trimmed = savedTrim.trim.flatMap {
+                try? SessionSelection(session: session, trim: $0, profile: profile)
+            }
+            if session.meta.endedAt != nil {
+                SessionLibrary.writeTrackFile(
+                    original.replay.analyzedTrack(from: original.track), folder: entry.folder,
+                    analyzedRevision: entry.revision, analyzedAutoPause: autoPause)
+            }
+            return LoadedSession(
+                session: session, profile: profile, original: original, selection: trimmed ?? original,
+                trim: trimmed == nil ? nil : savedTrim.trim,
+                trimUnavailable: savedTrim == .unreadable || (savedTrim.trim != nil && trimmed == nil))
+        }
+    }
+
+    struct LoadedSession: Sendable {
+        let session: RawSession
+        let profile: SportProfile
+        let original: SessionSelection
+        var selection: SessionSelection
+        var trim: SessionTrim?
+        var trimUnavailable: Bool
+    }
+
+    enum EditError: Error {
+        case recordingChanged
+    }
+
+    private nonisolated static var trimStore: SessionTrimStore {
+        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        return SessionTrimStore(directory: support.appendingPathComponent("SessionTrims", isDirectory: true))
+    }
+
+    private var cache: [URL: (key: Source, summary: Summary)] = [:]
+    private var inFlight: Set<Source> = []
+
+    func reload() {
+        let entries = RecordingStore.list()
+        let folders = Set(entries.map(\.folder))
+        cache = cache.filter { folders.contains($0.key) }
+        let currentKeys = Self.sources(for: entries)
+        updateItems(entries, sources: currentKeys)
+        let missing = currentKeys.values.filter { key in
+            cache[key.entry.folder]?.key != key && inFlight.insert(key).inserted
+        }
+        guard !missing.isEmpty else { return }
+        Task {
+            let results = await Task.detached(priority: .userInitiated) {
+                missing.map { key in
+                    let summary = key.analyze().map {
+                        Summary(selection: $0.selection, isTrimmed: $0.trim != nil, trimUnavailable: $0.trimUnavailable)
+                    }
+                    return (key, summary)
+                }
+            }.value
+            let current = RecordingStore.list()
+            let currentKeys = Self.sources(for: current)
+            // A recording, setting or trim can change while the replay is running.
+            for (key, summary) in results {
+                inFlight.remove(key)
+                let folder = key.entry.folder
+                guard let summary, currentKeys[folder] == key else { continue }
+                cache[folder] = (key, summary)
+            }
+            updateItems(current, sources: currentKeys)
+        }
+    }
+
+    func updateTrim(
+        _ trim: SessionTrim?, for session: RawSession, source: Source, summary: Summary
+    ) throws -> Source {
+        guard Self.source(for: source.entry.folder) == source else { throw EditError.recordingChanged }
+        if let trim {
+            try Self.trimStore.save(trim, for: session)
+        } else {
+            try Self.trimStore.restoreOriginal(sessionId: session.meta.sessionId)
+        }
+        var updated = source
+        updated.savedTrim = trim.map(SavedTrim.trimmed) ?? .original
+        cache[source.entry.folder] = (updated, summary)
         reload()
+        return updated
+    }
+
+    func delete(_ item: Item) throws {
+        let sessionId =
+            (try? RawSessionReader.readMeta(folder: item.entry.folder))?.sessionId
+            ?? UUID(uuidString: item.entry.folder.lastPathComponent)
+        try RecordingStore.delete(item.entry)
+        defer {
+            cache[item.entry.folder] = nil
+            reload()
+        }
+        if let sessionId, !FileManager.default.fileExists(atPath: item.entry.folder.path) {
+            try Self.trimStore.restoreOriginal(sessionId: sessionId)
+        }
     }
 
     /// Totals over the given items with summaries.
@@ -67,41 +162,50 @@ final class SessionLibrary {
         )
     }
 
-    private func cachedSummary(for entry: RecordingStore.Entry) -> Summary? {
-        guard let cached = cache[entry.folder], cached.key == key(for: entry, sport: cached.summary.sport) else {
-            return nil
+    private func updateItems(_ entries: [RecordingStore.Entry], sources: [URL: Source]) {
+        items = entries.map { entry in
+            let cached = cache[entry.folder]
+            let summary = cached?.key == sources[entry.folder] ? cached?.summary : nil
+            return Item(entry: entry, summary: summary)
         }
-        return cached.summary
     }
 
-    private func key(for entry: RecordingStore.Entry, sport: Sport) -> CacheKey {
-        CacheKey(bytes: entry.bytes, autoPause: UserSettings.profile(for: sport).autoPause.enabled)
+    nonisolated static func source(for folder: URL) -> Source? {
+        RecordingStore.list().first { $0.folder == folder }.flatMap(source(for:))
     }
 
-    nonisolated static func summarize(_ entry: RecordingStore.Entry) -> Summary? {
-        guard let session = try? RawSessionReader.read(folder: entry.folder, includeMotion: false) else { return nil }
-        let track = session.track()
-        let replay = SessionReplay(track: track, profile: UserSettings.profile(for: session.meta.sport))
-        // A finished recording also gets its track v1 file (docs/formats.md), the form
-        // that is stored and uploaded. Rewritten when the analysis changes.
-        if session.meta.endedAt != nil {
-            writeTrackFile(replay.analyzedTrack(from: track), folder: entry.folder, analyzedBytes: entry.bytes)
+    private nonisolated static func sources(for entries: [RecordingStore.Entry]) -> [URL: Source] {
+        Dictionary(
+            uniqueKeysWithValues: entries.compactMap { entry in
+                source(for: entry).map { (entry.folder, $0) }
+            })
+    }
+
+    private nonisolated static func source(for entry: RecordingStore.Entry) -> Source? {
+        guard let meta = entry.meta else { return nil }
+        let savedTrim: SavedTrim
+        do {
+            savedTrim = try trimStore.load(sessionId: meta.sessionId).map(SavedTrim.trimmed) ?? .original
+        } catch {
+            savedTrim = .unreadable
         }
-        return Summary(sport: session.meta.sport, startedAt: session.startedAt, metrics: replay.metrics)
+        return Source(
+            entry: entry, autoPause: UserSettings.profile(for: meta.sport).autoPause.enabled, savedTrim: savedTrim)
     }
 
     /// Serializes track-file writes, so the freshness check and the write happen together.
     private nonisolated static let trackWrites = NSLock()
 
-    /// Writes the track only if the recording still has the size it was analyzed at: an
-    /// analysis of a recording that has since grown (still arriving from the watch) must
-    /// not replace a newer track, and a deleted recording must not be recreated.
-    nonisolated static func writeTrackFile(_ track: Track, folder: URL, analyzedBytes: Int64) {
+    /// Only publish a track for the raw files and settings used by its analysis.
+    private nonisolated static func writeTrackFile(
+        _ track: Track, folder: URL, analyzedRevision: [RawSessionReader.FileRevision], analyzedAutoPause: Bool
+    ) {
         let url = folder.appendingPathComponent(RecordingStore.trackFileName)
         trackWrites.lock()
         defer { trackWrites.unlock() }
         guard FileManager.default.fileExists(atPath: folder.path),
-            RecordingStore.contents(of: folder).bytes == analyzedBytes
+            RawSessionReader.revision(of: folder) == analyzedRevision,
+            analyzedAutoPause == UserSettings.profile(for: track.sport).autoPause.enabled
         else { return }
         do {
             let data = try TrackCodec.encode(track)

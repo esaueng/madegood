@@ -59,6 +59,53 @@ final class PhoneScreensUITests: XCTestCase {
     }
 }
 
+final class HistoryFiltersUITests: XCTestCase {
+    override func setUp() {
+        continueAfterFailure = false
+    }
+
+    @MainActor
+    func testSportAndDatesFilterRowsAndTotalsTogether() {
+        let app = launchDemoApp(extraArguments: ["-demoHistory"])
+        app.tabBars.buttons["History"].tap()
+        XCTAssertTrue(app.navigationBars["History"].waitForExistence(timeout: 10))
+        let totals = app.staticTexts["history.totals"]
+        XCTAssertTrue(totals.waitForExistence(timeout: 15))
+        let ready = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "label CONTAINS %@", " km"), object: totals)
+        XCTAssertEqual(XCTWaiter().wait(for: [ready], timeout: 15), .completed)
+        let allTotals = totals.label
+
+        let rows = app.buttons.matching(identifier: "session.row")
+        app.buttons["history.sportFilter"].tap()
+        app.buttons["Windsurfing"].tap()
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertTrue(rows.firstMatch.staticTexts["Windsurfing"].exists)
+        XCTAssertTrue(totals.label.hasPrefix("1 session · "))
+        XCTAssertTrue(totals.label.contains(" nm"))
+        XCTAssertTrue(totals.label.hasSuffix("25 min"))
+        XCTAssertEqual(app.staticTexts["month.totals"].firstMatch.label, totals.label)
+        attachScreenshot("Windsurfing history with route preview")
+
+        let dateFilter = app.buttons["history.dateFilter"]
+        dateFilter.tap()
+        app.buttons["Last 7 Days"].tap()
+        XCTAssertTrue(app.staticTexts["No matching sessions"].exists)
+        XCTAssertFalse(totals.exists)
+        XCTAssertEqual(rows.count, 0)
+
+        dateFilter.tap()
+        app.buttons["Choose Dates…"].tap()
+        XCTAssertTrue(app.navigationBars["Choose Dates"].waitForExistence(timeout: 5))
+        app.buttons["Apply"].tap()
+        XCTAssertTrue(app.staticTexts["No matching sessions"].exists)
+
+        app.buttons["Clear Filters"].tap()
+        waitForLabel(totals, allTotals)
+        XCTAssertGreaterThanOrEqual(rows.count, 3)
+    }
+}
+
 /// Regression test from the PR #26 review: History kept showing summaries computed with
 /// the old auto-pause setting after it changed.
 final class HistorySettingsUITests: XCTestCase {

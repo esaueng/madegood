@@ -97,7 +97,7 @@ import Testing
 
     @Test func omitsInvalidSpeedCourseAndAltitude() {
         let point = GPXWriter.trackPoint(
-            GPSFix(t: 0, latitude: 1, longitude: 2, altitude: .nan, speed: -1, course: .infinity), startedAt: Self.start
+            GPSFix(t: 0, latitude: 1, longitude: 2, altitude: .nan, speed: -1, course: .infinity), at: Self.start
         )
         #expect(point == #"<trkpt lat="1" lon="2"><time>2000-01-01T12:00:00.000Z</time></trkpt>"#)
     }
@@ -192,7 +192,7 @@ import Testing
         #expect(GPXWriter.longitudeText(179.99999999) == "-180")
         #expect(GPXWriter.longitudeText(179.9999999) == "179.9999999")
         #expect(GPXWriter.longitudeText(-180) == "-180")
-        #expect(GPXWriter.trackPoint(Self.fix(0, lon: 179.99999999), startedAt: Self.start).contains("lon=\"-180\""))
+        #expect(GPXWriter.trackPoint(Self.fix(0, lon: 179.99999999), at: Self.start).contains("lon=\"-180\""))
     }
 }
 

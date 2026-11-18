@@ -425,6 +425,7 @@ private struct LiveView: View {
     let startedAt: Date
     let sport: Sport
     @State private var banner: SessionRecorder.DistanceAlertEvent?
+    @ScaledMetric(relativeTo: .largeTitle) private var primarySize = 64.0
 
     /// The sport's first screen, read once when the session opens.
     private let first: LiveScreen
@@ -439,39 +440,12 @@ private struct LiveView: View {
     /// The metric shown large: the first screen, or speed when that is the map.
     private var heroScreen: LiveScreen { first == .map ? .speed : first }
 
-    private func heroValue(_ hero: LiveScreen, display: LiveDisplay, metrics: LiveMetrics?, time: String) -> String {
-        switch hero {
-        case .speed, .map: display.speed(metrics?.speed)
-        case .distance: display.distance(metrics?.distance ?? 0)
-        case .time: time
-        case .heartRate: LiveDisplay.heartRate(metrics?.heartRate)
-        }
-    }
-
     var body: some View {
         let display = UserSettings.display(for: sport)
         let metrics = recorder.metrics
         ScrollView {
             VStack(spacing: 16) {
-                HStack {
-                    Label {
-                        Text(sport.displayName)
-                    } icon: {
-                        SportIcon(sport: sport, size: 22)
-                    }
-                    .font(.headline)
-                    Spacer()
-                    if let state = metrics?.pauseState, let label = LiveDisplay.pauseLabel(state) {
-                        Text(label)
-                            .font(.subheadline.weight(.semibold))
-                            .padding(.horizontal, 10).padding(.vertical, 4)
-                            .background(.yellow.opacity(0.25), in: .capsule)
-                            .accessibilityIdentifier("pauseBadge")
-                    } else if let lap = LiveDisplay.lapLabel(metrics) {
-                        Text(lap).font(.subheadline.weight(.semibold))
-                            .accessibilityIdentifier("metric.lap")
-                    }
-                }
+                status(metrics)
 
                 if first == .map {
                     LiveTrackMap(points: recorder.trackPoints)
@@ -481,48 +455,26 @@ private struct LiveView: View {
                 }
 
                 TimelineView(.periodic(from: startedAt, by: 1)) { context in
-                    let time = Formatting.elapsed(context.date.timeIntervalSince(startedAt))
-                    let hero = heroScreen
-                    VStack(spacing: 0) {
-                        Text(heroValue(hero, display: display, metrics: metrics, time: time))
-                            .font(.system(size: 64, weight: .bold, design: .rounded).monospacedDigit())
-                            .minimumScaleFactor(0.5)
-                            .lineLimit(1)
-                            .accessibilityHint(hero.title)
-                            .accessibilityIdentifier("metric.\(hero.rawValue)")
-                        Text(hero == .time ? display.speed(metrics?.speed) : time)
-                            .font(.title2.monospacedDigit())
-                            .foregroundStyle(.secondary)
-                            .accessibilityIdentifier(hero == .time ? "metric.speed" : "metric.time")
+                    let elapsed = context.date.timeIntervalSince(startedAt)
+                    let readings = liveMetrics(display: display, metrics: metrics, elapsed: elapsed)
+                    let primaryID = "metric.\(heroScreen.rawValue)"
+                    let supporting = readings.filter { $0.id != primaryID }
+                    VStack(spacing: 16) {
+                        if let primary = readings.first(where: { $0.id == primaryID }) {
+                            primaryMetric(primary)
+                        }
+                        supportingMetrics(Array(supporting.prefix(3)))
+                        DisclosureGroup("More metrics") {
+                            VStack(spacing: 12) {
+                                ForEach(supporting.dropFirst(3)) { metric in
+                                    metricRow(metric)
+                                }
+                            }
+                            .padding(.top, 12)
+                        }
+                        .font(.subheadline)
                     }
                 }
-
-                Grid(horizontalSpacing: 16, verticalSpacing: 14) {
-                    GridRow {
-                        if heroScreen == .distance {
-                            StatTile(title: "Speed", value: display.speed(metrics?.speed))
-                        } else {
-                            StatTile(
-                                title: "Distance", value: display.distance(metrics?.distance ?? 0),
-                                identifier: "metric.distance")
-                        }
-                        StatTile(title: "Moving", value: Formatting.elapsed(metrics?.movingTime ?? 0))
-                    }
-                    GridRow {
-                        StatTile(title: "Average", value: display.speed(metrics?.averageSpeed))
-                        StatTile(title: "Max 10 s", value: display.speed(metrics?.maxSpeed10s))
-                    }
-                    GridRow {
-                        if heroScreen == .heartRate {
-                            StatTile(title: "Speed", value: display.speed(metrics?.speed))
-                        } else {
-                            StatTile(title: "Heart rate", value: LiveDisplay.heartRate(metrics?.heartRate))
-                        }
-                        StatTile(title: "Course", value: LiveDisplay.course(metrics?.course))
-                    }
-                }
-                .padding()
-                .background(.background.secondary, in: .rect(cornerRadius: 12))
 
                 if first != .map {
                     LiveTrackMap(points: recorder.trackPoints)
@@ -546,7 +498,7 @@ private struct LiveView: View {
             LiveControls(recorder: recorder, sport: sport, display: display)
         }
         .toolbar(.hidden, for: .tabBar)
-        .navigationTitle("Recording")
+        .navigationTitle(sport.displayName)
         .navigationBarTitleDisplayMode(.inline)
         .overlay(alignment: .top) {
             if let banner {
@@ -567,6 +519,146 @@ private struct LiveView: View {
             guard banner != nil else { return }
             try? await Task.sleep(for: .seconds(5))
             if !Task.isCancelled { banner = nil }
+        }
+    }
+
+    private func status(_ metrics: LiveMetrics?) -> some View {
+        let pause = metrics.flatMap { LiveDisplay.pauseLabel($0.pauseState) }
+        return HStack {
+            Label {
+                Text(pause ?? "Recording")
+            } icon: {
+                Image(systemName: pause == nil ? "record.circle.fill" : "pause.circle.fill")
+                    .foregroundStyle(pause == nil ? Color.red : Color.orange)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+            .background(.background.secondary, in: .capsule)
+            .accessibilityIdentifier(pause == nil ? "recordingBadge" : "pauseBadge")
+            Spacer(minLength: 8)
+            if let lap = LiveDisplay.lapLabel(metrics) {
+                Text(lap)
+                    .accessibilityIdentifier("metric.lap")
+            }
+        }
+        .font(.subheadline.weight(.semibold))
+    }
+
+    private func liveMetrics(display: LiveDisplay, metrics: LiveMetrics?, elapsed: TimeInterval) -> [LiveMetric] {
+        let heartRate = LiveMetric(
+            id: "metric.heartRate", title: "Heart rate", text: LiveDisplay.heartRate(metrics?.heartRate))
+        let course = LiveMetric(id: "metric.course", title: "Course", text: LiveDisplay.course(metrics?.course))
+        return [
+            LiveMetric(id: "metric.speed", title: "Speed", text: display.speed(metrics?.speed)),
+            LiveMetric(id: "metric.time", title: "Elapsed time", text: Formatting.elapsed(elapsed)),
+            LiveMetric(id: "metric.distance", title: "Distance", text: display.distance(metrics?.distance ?? 0)),
+            sport.isPaddling ? heartRate : course,
+            sport.isPaddling ? course : heartRate,
+            LiveMetric(id: "metric.moving", title: "Moving time", text: Formatting.elapsed(metrics?.movingTime ?? 0)),
+            LiveMetric(id: "metric.average", title: "Average speed", text: display.speed(metrics?.averageSpeed)),
+            LiveMetric(id: "metric.max", title: "Max speed (10 s)", text: display.speed(metrics?.maxSpeed10s)),
+        ]
+    }
+
+    private func primaryMetric(_ metric: LiveMetric) -> some View {
+        VStack(spacing: 2) {
+            metric.caption.font(.headline)
+            // Leave room for a supporting reading above the pinned controls on short screens.
+            metric.reading(
+                numberFont: .system(size: min(primarySize, 96), weight: .bold, design: .rounded),
+                unitFont: .title2.weight(.semibold))
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private func supportingMetrics(_ metrics: [LiveMetric]) -> some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .top, spacing: 14) {
+                ForEach(metrics) { metric in
+                    VStack(alignment: .leading, spacing: 4) {
+                        metric.caption.font(.subheadline)
+                        metric.reading(numberFont: .title2.weight(.semibold), unitFont: .subheadline)
+                    }
+                    .fixedSize(horizontal: true, vertical: false)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            VStack(spacing: 12) {
+                ForEach(metrics) { metric in
+                    metricRow(metric)
+                }
+            }
+        }
+        .padding(12)
+        .background(.background.secondary, in: .rect(cornerRadius: 12))
+    }
+
+    private func metricRow(_ metric: LiveMetric) -> some View {
+        let reading = metric.reading(numberFont: .title2.weight(.semibold), unitFont: .footnote)
+        return ViewThatFits(in: .horizontal) {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                metric.caption.font(.caption).fixedSize()
+                Spacer(minLength: 0)
+                reading.fixedSize(horizontal: true, vertical: false)
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                metric.caption.font(.caption)
+                reading
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
+/// A formatted live reading and its spoken label. Display units and rounding come from LiveDisplay.
+private struct LiveMetric: Identifiable {
+    let id: String
+    let title: String
+    let text: String
+
+    var caption: some View {
+        Text(title)
+            .foregroundStyle(.secondary)
+            .accessibilityHidden(true)
+    }
+
+    func reading(numberFont: Font, unitFont: Font) -> some View {
+        // LiveDisplay renders a quantity with its unit after a space, except degrees.
+        let parts = text.split(separator: " ", maxSplits: 1).map(String.init)
+        let degrees = text.hasSuffix("°")
+        let number = degrees ? String(text.dropLast()) : parts.first ?? text
+        let unit = degrees ? "°" : parts.dropFirst().first
+        return HStack(alignment: .firstTextBaseline, spacing: 5) {
+            Text(number)
+                .font(numberFont.monospacedDigit())
+                .lineLimit(1)
+                .minimumScaleFactor(0.5)
+            if let unit {
+                Text(unit)
+                    .font(unitFont)
+                    .foregroundStyle(.secondary)
+                    .fixedSize()
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(title)
+        .accessibilityValue(spokenValue(number: number, unit: unit))
+        .accessibilityIdentifier(id)
+    }
+
+    private func spokenValue(number: String, unit: String?) -> String {
+        switch unit {
+        case "kn": "\(number) knots"
+        case "km/h": "\(number) kilometers per hour"
+        case "mph": "\(number) miles per hour"
+        case "m/s": "\(number) meters per second"
+        case "m": "\(number) meters"
+        case "km": "\(number) kilometers"
+        case "nm": "\(number) nautical miles"
+        case "mi": "\(number) miles"
+        case "bpm": "\(number) beats per minute"
+        case "°": "\(number) degrees true"
+        default: text == "–" ? "Unavailable" : text
         }
     }
 }
@@ -602,13 +694,13 @@ private struct LiveControls: View {
                 Button {
                     SessionController.shared.lap()
                 } label: {
-                    Label("Lap", systemImage: "stopwatch").frame(maxWidth: .infinity, minHeight: 36)
+                    recordingActionLabel("Lap", systemImage: "stopwatch")
                 }
                 .accessibilityIdentifier("control.lap")
                 Button {
                     recorder.mark()
                 } label: {
-                    Label("Mark", systemImage: "flag").frame(maxWidth: .infinity, minHeight: 36)
+                    recordingActionLabel("Mark", systemImage: "flag")
                 }
                 .accessibilityIdentifier("control.mark")
             }
@@ -627,6 +719,14 @@ private struct LiveControls: View {
             .buttonBorderShape(.capsule)
             .accessibilityIdentifier("control.pause")
         }
+    }
+
+    private func recordingActionLabel(_ title: String, systemImage: String) -> some View {
+        ViewThatFits(in: .horizontal) {
+            Label(title, systemImage: systemImage).fixedSize()
+            Text(title).lineLimit(1).minimumScaleFactor(0.75)
+        }
+        .frame(maxWidth: .infinity, minHeight: 36)
     }
 
     @ViewBuilder private var pausedButtons: some View {

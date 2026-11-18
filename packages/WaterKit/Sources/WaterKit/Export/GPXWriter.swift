@@ -40,8 +40,17 @@ public struct GPXWriter: Sendable {
         Data(string(for: track).utf8)
     }
 
+    /// The selected GPX document, with the retained fixes' original timestamps.
+    public func data(for selection: SessionSelection) -> Data {
+        Data(string(for: selection.track, originalClock: selection.originalGPSClock).utf8)
+    }
+
     /// The GPX document.
     public func string(for track: Track) -> String {
+        string(for: track, originalClock: nil)
+    }
+
+    private func string(for track: Track, originalClock: SessionSelection.OriginalGPSClock?) -> String {
         let name = Self.escape(name ?? Self.displayName(track.sport))
         var xml = """
             <?xml version="1.0" encoding="UTF-8"?>
@@ -60,11 +69,14 @@ public struct GPXWriter: Sendable {
                 <type>\(Self.escape(track.sport.rawValue))</type>
 
             """
-        for segment in segments(of: track) {
+        for segment in indexedSegments(of: track) {
             xml += "    <trkseg>\n"
-            for fix in segment {
+            for (offset, fix) in segment {
+                let date =
+                    originalClock.map { $0.startedAt.addingTimeInterval($0.times[offset]) }
+                    ?? track.startedAt.addingTimeInterval(fix.t)
                 xml += "      "
-                xml += Self.trackPoint(fix, startedAt: track.startedAt)
+                xml += Self.trackPoint(fix, at: date)
                 xml += "\n"
             }
             xml += "    </trkseg>\n"
@@ -76,17 +88,21 @@ public struct GPXWriter: Sendable {
     /// The exportable fixes in time order, split into segments as described above.
     /// Fixes with equal times keep their stored order.
     public func segments(of track: Track) -> [[GPSFix]] {
+        indexedSegments(of: track).map { $0.map(\.element) }
+    }
+
+    private func indexedSegments(of track: Track) -> [[(offset: Int, element: GPSFix)]] {
         let fixes = track.gps.enumerated()
             .filter { Self.isExportable($0.element) }
             .sorted { $0.element.t != $1.element.t ? $0.element.t < $1.element.t : $0.offset < $1.offset }
-            .map(\.element)
         let resumes = Self.resumeTimes(track.events)
 
-        var segments: [[GPSFix]] = []
-        var current: [GPSFix] = []
+        var segments: [[(offset: Int, element: GPSFix)]] = []
+        var current: [(offset: Int, element: GPSFix)] = []
         var nextResume = 0
-        for fix in fixes {
-            if let last = current.last {
+        for indexed in fixes {
+            let fix = indexed.element
+            if let last = current.last?.element {
                 while nextResume < resumes.count && resumes[nextResume] <= last.t { nextResume += 1 }
                 let resumedBetween = nextResume < resumes.count && resumes[nextResume] <= fix.t
                 if resumedBetween || fix.t - last.t > segmentGap {
@@ -94,7 +110,7 @@ public struct GPXWriter: Sendable {
                     current = []
                 }
             }
-            current.append(fix)
+            current.append(indexed)
         }
         if !current.isEmpty { segments.append(current) }
         return segments
@@ -134,13 +150,13 @@ public struct GPXWriter: Sendable {
         return text == "180" ? "-180" : text
     }
 
-    static func trackPoint(_ fix: GPSFix, startedAt: Date) -> String {
+    static func trackPoint(_ fix: GPSFix, at date: Date) -> String {
         var point = "<trkpt lat=\"\(DecimalText.fixed(fix.latitude, digits: 7, trimZeros: true))\""
         point += " lon=\"\(longitudeText(fix.longitude))\">"
         if let altitude = fix.altitude, altitude.isFinite {
             point += "<ele>\(DecimalText.fixed(altitude, digits: 1, trimZeros: true))</ele>"
         }
-        point += "<time>\(Timestamp.format(startedAt.addingTimeInterval(fix.t)))</time>"
+        point += "<time>\(Timestamp.format(date))</time>"
 
         var fields = ""
         if let speed = fix.speed, speed.isFinite, speed >= 0 {
