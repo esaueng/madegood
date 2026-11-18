@@ -135,9 +135,10 @@ struct SessionDetailView: View {
             var cycles: [StrokeDetector.Cycle]?
             var hasMotion = false
             if sport.isPaddling {
-                let motion = (try? RawSessionReader.read(folder: folder).motion) ?? []
+                let full = try? RawSessionReader.read(folder: folder)
+                let motion = full?.motion ?? []
                 hasMotion = !motion.isEmpty
-                cycles = StrokeAnalysis.cycles(in: motion, sport: sport)
+                cycles = StrokeAnalysis.cycles(in: motion, sport: sport, events: full?.events ?? [])
             }
             return Analysis(
                 source: source, session: loaded.session, profile: loaded.profile, original: original,

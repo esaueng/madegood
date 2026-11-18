@@ -124,10 +124,10 @@ so post-session strokes need the raw recording.
 
 | Step | Definition |
 |---|---|
-| Resampling | Samples are averaged into 40 ms bins (25 Hz), whatever the sensor rate. Missing bins up to 1 s repeat the last bin; a longer gap restarts the filters and the rate |
+| Resampling | Samples are averaged into 40 ms bins (25 Hz), whatever the sensor rate. Missing bins up to 0.2 s are interpolated between the bins either side (never held at the last value); a longer gap restarts the filters, the main axis and the rate |
 | Signal | Rotation rate (rad/s) and user acceleration divided by 4 m/s² per rad/s, six channels |
 | Band-pass | 0.3–3 Hz per channel (second-order Butterworth high-pass and low-pass) |
-| Main axis | First principal component of the filtered channels over the last 3 s, refreshed every 0.5 s and kept pointing the same way. PLAN §5 suggests 5 s; 3 s follows a side switch within about a stroke |
+| Main axis | First principal component of the filtered channels over the last 3 s, refreshed every 0.5 s. Power iteration starts from the covariance column with the most energy, so a change of movement plane is always found; the previous axis only keeps the sign. After a restart the axis is found afresh and detection runs over the bins that waited for it. PLAN §5 suggests 5 s; 3 s follows a side switch within about a stroke |
 | Cycle | A positive lobe of the projected signal above max(0.25, 0.5 × running RMS (3 s time constant)), ended by a swing below −0.3 × that threshold. The peak time is refined with a parabola through the top three bins |
 | Minimum gap | Peaks closer than max(0.33 s, 0.45 × median recent period) are one cycle |
 | Strokes | Kayak: two per wrist cycle (left and right). Canoe and SUP: one |
@@ -148,9 +148,15 @@ row, each within 30° of their mean, confirm a switch, and those cycles move to 
 side. Side 0 is the side paddled first: the watch cannot tell left from right. Side
 balance is the share of strokes on side 0.
 
-Strokes are counted through pauses: the detector sees only motion. A trimmed selection
-keeps the cycles inside its retained ranges, and a period counts only when both of its
-ends are in the same range.
+**Pauses.** A manual pause stops stroke counting, like all other accounting: cycles
+peaking between the user's `pause` and `resume` do not count, and the interval across the
+pause is not a period. Auto-pause (events with `{"auto": true}`) does not stop counting:
+paddling slowly below the auto-pause speed is still paddling. Live, the detector runs on
+device uptime (the motion clock), so a system clock change does not affect the rate.
+
+**Trims.** Kayak cycles are expanded into their two strokes first, then each stroke is kept
+if its own time is inside a retained range. Rates use the cycles inside the retained
+ranges, and a period counts only when both of its ends are in the same range.
 
 **Accuracy.** No labeled paddling recordings exist yet, so the PLAN §5 targets (count
 within ±3 %, rate within ±2 SPM) are checked in `StrokeDetectorTests` against

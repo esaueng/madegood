@@ -47,8 +47,10 @@ public struct StrokeDetector: LiveAnalyzer {
         public var maxCyclePeriod = 4.0
         /// The rate uses the median of up to this many recent cycle periods.
         public var rateCycles = 6
-        /// A sensor gap longer than this restarts the filters, s.
-        public var restartAfterGap = 1.0
+        /// A sensor gap longer than this restarts the filters, the principal axis and the
+        /// rate, s. Shorter gaps are filled by interpolating between the bins either side,
+        /// never by holding the last value, which can turn a single spike into a lobe.
+        public var restartAfterGap = 0.2
         /// Side switches (canoe, SUP): a cycle whose mean gravity direction is further than
         /// this from the current side's is a candidate, degrees...
         public var sideSwitchAngle = 40.0
@@ -101,6 +103,12 @@ public struct StrokeDetector: LiveAnalyzer {
     private var binSum = [Double](repeating: 0, count: 9)
     private var binCount = 0
     private var lastBin: [Double]?
+    /// Missing bins waiting for the next bin, to be interpolated when it closes.
+    private var pendingGap: (firstIndex: Int, count: Int)?
+    /// Manual pause (docs/metrics.md "Strokes"): cycles with a peak at or after
+    /// `pausedSince` do not count, nor do cycles with a peak before `resumedAt`.
+    private var pausedSince: Double?
+    private var resumedAt: Double?
     // Filtering
     private var highPass: [Biquad] = []
     private var lowPass: [Biquad] = []
@@ -140,9 +148,36 @@ public struct StrokeDetector: LiveAnalyzer {
         resetFilters()
     }
 
+    /// Motion samples, and the user's pause and resume events. Pause events the engine
+    /// generated (`{"auto": true}`, auto-pause) are ignored: strokes count through
+    /// auto-pause. Feed events in time order with the motion.
     public mutating func ingest(_ sample: Sample) {
-        if case .motion(let motion) = sample { ingest(motion) }
+        switch sample {
+        case .motion(let motion): ingest(motion)
+        case .event(let event): ingest(event)
+        default: break
+        }
     }
+
+    public mutating func ingest(_ event: SessionEvent) {
+        guard event.t.isFinite, event.data?["auto"] != .bool(true) else { return }
+        switch event.type {
+        case .pause:
+            if pausedSince == nil { pausedSince = event.t }
+        case .resume:
+            guard pausedSince != nil else { return }
+            pausedSince = nil
+            resumedAt = event.t
+            // The interval across the pause is not a stroke period.
+            lastPeak = nil
+            periods.removeAll()
+        default:
+            break
+        }
+    }
+
+    /// Whether the user's manual pause covers `t`.
+    public var isPaused: Bool { pausedSince != nil }
 
     public mutating func ingest(_ sample: MotionSample) {
         let values = [
@@ -162,8 +197,8 @@ public struct StrokeDetector: LiveAnalyzer {
                 let missing = index - current - 1
                 if Double(missing) * config.binInterval > config.restartAfterGap {
                     restart(at: Double(index) * config.binInterval)
-                } else if let held = lastBin {
-                    for gap in 0..<missing { process(held, at: Double(current + 1 + gap) * config.binInterval) }
+                } else if missing > 0 {
+                    pendingGap = (current + 1, missing)
                 }
                 binIndex = index
             }
@@ -209,6 +244,14 @@ public struct StrokeDetector: LiveAnalyzer {
         let mean = binSum.map { $0 / Double(binCount) }
         binSum = [Double](repeating: 0, count: binSum.count)
         binCount = 0
+        if let gap = pendingGap, let before = lastBin {
+            for offset in 0..<gap.count {
+                let fraction = Double(offset + 1) / Double(gap.count + 1)
+                let filled = zip(before, mean).map { $0 + ($1 - $0) * fraction }
+                process(filled, at: (Double(gap.firstIndex + offset) + 0.5) * config.binInterval)
+            }
+        }
+        pendingGap = nil
         lastBin = mean
         process(mean, at: (Double(index) + 0.5) * config.binInterval)
     }
@@ -222,6 +265,10 @@ public struct StrokeDetector: LiveAnalyzer {
         previous = nil
         meanSquare = 0
         lastBin = nil
+        pendingGap = nil
+        // The watch may sit differently after a gap: find the axis afresh from the new
+        // window (and run detection over it once it exists).
+        axis = nil
         // A gap is a pause: the next cycle's period does not count.
         lastPeak = nil
         periods.removeAll()
@@ -318,6 +365,12 @@ public struct StrokeDetector: LiveAnalyzer {
     }
 
     private mutating func cycleEnded(peak: Double) {
+        if (pausedSince.map { peak >= $0 } ?? false) || (resumedAt.map { peak < $0 } ?? false) {
+            // Paddled during a manual pause: not counted, and not a period either side.
+            gravitySum = .zero
+            gravityCount = 0
+            return
+        }
         let typical = periods.isEmpty ? nil : Self.median(periods)
         let minimumGap = max(config.minCycleGap, config.minGapFraction * (typical ?? 0))
         if let lastPeak, peak - lastPeak < minimumGap {
@@ -404,7 +457,13 @@ public struct StrokeDetector: LiveAnalyzer {
         // Too little movement to define an axis: keep the last one.
         guard trace > 1e-9 else { return }
         // Power iteration, starting from the previous axis so it changes smoothly.
-        var vector = axis ?? (0..<6).map { covariance[$0][$0] + 1e-6 }
+        // Seeded from the covariance column with the most energy, which cannot be orthogonal
+        // to the main axis the way the previous axis can be after the motion changes plane.
+        // The previous axis only sets the sign.
+        let strongest = (0..<6).max { a, b in
+            covariance[a].reduce(0) { $0 + $1 * $1 } < covariance[b].reduce(0) { $0 + $1 * $1 }
+        } ?? 0
+        var vector = covariance[strongest]
         for _ in 0..<30 {
             var next = [Double](repeating: 0, count: 6)
             for i in 0..<6 { for j in 0..<6 { next[i] += covariance[i][j] * vector[j] } }

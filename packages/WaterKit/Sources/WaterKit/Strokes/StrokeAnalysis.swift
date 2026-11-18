@@ -34,12 +34,23 @@ public struct StrokeAnalysis: Sendable, Hashable {
     public var strokeCount: Int { strokes.count }
 
     /// Every wrist cycle in `motion` (session time), for `init(cycles:…)`. Detect once and
-    /// keep the cycles, rather than the motion stream, to re-analyze after a trim.
+    /// keep the cycles, rather than the motion stream, to re-analyze after a trim. `events`
+    /// are the session's events: cycles during a manual pause do not count (auto-pause
+    /// events are ignored).
     public static func cycles(
-        in motion: [MotionSample], sport: Sport, config: StrokeDetector.Config = StrokeDetector.Config()
+        in motion: [MotionSample], sport: Sport, events: [SessionEvent] = [],
+        config: StrokeDetector.Config = StrokeDetector.Config()
     ) -> [StrokeDetector.Cycle] {
         var detector = StrokeDetector(sport: sport, config: config, recordsCycles: true)
-        for sample in motion { detector.ingest(sample) }
+        let pauses = events.filter { $0.type == .pause || $0.type == .resume }.sorted { $0.t < $1.t }
+        var next = pauses.startIndex
+        for sample in motion {
+            while next < pauses.endIndex, pauses[next].t <= sample.t {
+                detector.ingest(pauses[next])
+                next += 1
+            }
+            detector.ingest(sample)
+        }
         // Close the last bin, so a cycle that ended in it is not lost.
         if var closing = motion.last {
             closing.t += config.binInterval
@@ -50,21 +61,38 @@ public struct StrokeAnalysis: Sendable, Hashable {
 
     /// Analyzes `motion` (session time) for `sport`. See `init(cycles:…)`.
     public init(
-        motion: [MotionSample], sport: Sport, distance: Double?, retained: [ClosedRange<Double>]? = nil,
-        clock: (Double) -> Double = { $0 }, config: StrokeDetector.Config = StrokeDetector.Config()
+        motion: [MotionSample], sport: Sport, events: [SessionEvent] = [], distance: Double?,
+        retained: [ClosedRange<Double>]? = nil, clock: (Double) -> Double = { $0 },
+        config: StrokeDetector.Config = StrokeDetector.Config()
     ) {
         self.init(
-            cycles: Self.cycles(in: motion, sport: sport, config: config), sport: sport, distance: distance,
-            retained: retained, clock: clock)
+            cycles: Self.cycles(in: motion, sport: sport, events: events, config: config), sport: sport,
+            distance: distance, retained: retained, clock: clock)
     }
 
-    /// Analyzes detected cycles. Only cycles inside `retained` count when it is given, and
-    /// only periods with both ends in the same range count toward rates. `clock` maps
-    /// session time to the output clock. `distance` is the distance paddled, m.
+    /// Analyzes detected cycles. Only strokes inside `retained` count when it is given (each
+    /// kayak stroke on its own time), and only periods with both ends in the same range
+    /// count toward rates. `clock` maps session time to the output clock. `distance` is the
+    /// distance paddled, m.
     public init(
         cycles detected: [StrokeDetector.Cycle], sport: Sport, distance: Double?,
         retained: [ClosedRange<Double>]? = nil, clock: (Double) -> Double = { $0 }
     ) {
+        let strokesPerCycle = sport == .kayak ? 2 : 1
+        func isRetained(_ t: Double) -> Bool { retained?.contains { $0.contains(t) } ?? true }
+
+        // Expand cycles into strokes first, then apply the trim to each stroke.
+        var strokes: [Stroke] = []
+        for (index, cycle) in detected.enumerated() {
+            if isRetained(cycle.t) { strokes.append(Stroke(t: clock(cycle.t), side: cycle.side)) }
+            if strokesPerCycle == 2 {
+                // The other blade's stroke, half a cycle later.
+                let next = index + 1 < detected.count ? detected[index + 1].period : nil
+                let half = (next ?? cycle.period ?? 1.5) / 2
+                if isRetained(cycle.t + half) { strokes.append(Stroke(t: clock(cycle.t + half), side: nil)) }
+            }
+        }
+
         var cycles: [StrokeDetector.Cycle] = []
         for var cycle in detected {
             if let retained {
@@ -73,21 +101,11 @@ public struct StrokeAnalysis: Sendable, Hashable {
             }
             cycles.append(cycle)
         }
-
-        let strokesPerCycle = sport == .kayak ? 2 : 1
-        var strokes: [Stroke] = []
         var rates: [RatePoint] = []
         var recent: [Double] = []
         var countedTime = 0.0
         var countedStrokes = 0
-        for (index, cycle) in cycles.enumerated() {
-            strokes.append(Stroke(t: clock(cycle.t), side: cycle.side))
-            if strokesPerCycle == 2 {
-                // The other blade's stroke, half a cycle later.
-                let next = index + 1 < cycles.count ? cycles[index + 1].period : nil
-                let half = (next ?? cycle.period ?? 1.5) / 2
-                strokes.append(Stroke(t: clock(cycle.t + half), side: nil))
-            }
+        for cycle in cycles {
             if let period = cycle.period {
                 countedTime += period
                 countedStrokes += strokesPerCycle
@@ -118,8 +136,8 @@ public struct StrokeAnalysis: Sendable, Hashable {
     /// distance per stroke from the selection's moving distance.
     public init(session: RawSession, selection: SessionSelection) {
         self.init(
-            cycles: Self.cycles(in: session.motion, sport: session.meta.sport), sport: session.meta.sport,
-            selection: selection)
+            cycles: Self.cycles(in: session.motion, sport: session.meta.sport, events: session.events),
+            sport: session.meta.sport, selection: selection)
     }
 
     /// As `init(session:selection:)`, from cycles detected earlier with `cycles(in:sport:)`.

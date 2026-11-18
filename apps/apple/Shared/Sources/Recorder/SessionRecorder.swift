@@ -223,7 +223,7 @@ final class SessionRecorder {
         metrics = engine?.snapshot
         let liveStrokes = sport.isPaddling ? LiveStrokes(sport: sport, startUptime: anchor.uptime) : nil
         self.liveStrokes = liveStrokes
-        strokes = liveStrokes?.snapshot(at: 0)
+        strokes = liveStrokes?.snapshot()
         trackPoints = []
         distanceAlert = nil
         let settings = UserSettings.settings(for: sport)
@@ -417,6 +417,7 @@ final class SessionRecorder {
         let now = Date().timeIntervalSince1970
         writers[.events]?.append(RawFormat.EventLine(ts: now, type: type))
         ingest(.event(SessionEvent(t: now - startUnix, type: type)))
+        if type == .pause || type == .resume { liveStrokes?.userEvent(type) }
     }
 
     // MARK: Live analysis
@@ -479,7 +480,7 @@ final class SessionRecorder {
         engine.advance(to: now)
         self.engine = engine
         metrics = engine.snapshot
-        if let liveStrokes { strokes = liveStrokes.snapshot(at: now) }
+        if let liveStrokes { strokes = liveStrokes.snapshot() }
         #if os(iOS)
             if let liveSport { liveActivity.update(metrics, sport: liveSport) }
         #endif
@@ -604,7 +605,7 @@ final class SessionRecorder {
         serviceSession = nil
 
         ingest(.event(SessionEvent(t: endedAt.timeIntervalSince1970 - startUnix, type: .stop)))
-        if let liveStrokes { strokes = liveStrokes.snapshot(at: endedAt.timeIntervalSince1970 - startUnix) }
+        if let liveStrokes { strokes = liveStrokes.snapshot() }
         writers[.events]?.append(RawFormat.EventLine(ts: endedAt.timeIntervalSince1970, type: .stop))
         #if os(iOS)
             if let liveSport { liveActivity.end(metrics, sport: liveSport) }
