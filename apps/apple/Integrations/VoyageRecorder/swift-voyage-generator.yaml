@@ -1,0 +1,9 @@
+generate: [types, client]
+filter:
+  paths:
+    - /auth/apple
+    - /auth/refresh
+  operations:
+    - putVoyage
+    - putVoyageLeg
+    - putVoyageLegTrack

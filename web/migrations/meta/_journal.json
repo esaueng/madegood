@@ -15,6 +15,13 @@
       "when": 1794904603404,
       "tag": "0001_sessions_tokens_privacy_zones",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1794999589763,
+      "tag": "0002_private_voyages",
+      "breakpoints": true
     }
   ]
 }

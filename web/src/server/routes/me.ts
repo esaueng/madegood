@@ -148,7 +148,7 @@ me.openapi(deleteRoute, async (c) => {
   // session and otherwise deletes its object, so with this order an upload that overlaps
   // the deletion cannot leave a track behind. The prefix is deleted on every call, even
   // with the rows already gone, so retrying after an R2 failure still cleans up.
-  // Sessions, refresh tokens and privacy zones go with the user (ON DELETE CASCADE).
+  // Sessions, voyages and their legs, refresh tokens and privacy zones cascade from the user.
   await db.delete(users).where(eq(users.id, userId));
   await deletePrefix(c.env.TRACKS, userPrefix(userId));
   for (let i = 0; i < keys.length; i += 1000) await c.env.TRACKS.delete(keys.slice(i, i + 1000));

@@ -5,6 +5,7 @@ import { auth } from "./routes/auth";
 import { health } from "./routes/health";
 import { me } from "./routes/me";
 import { sessionRoutes } from "./routes/sessions";
+import { voyageRoutes } from "./routes/voyages";
 
 export type AppEnv = { Bindings: Env };
 
@@ -15,6 +16,7 @@ export function createApp() {
   api.route("/", auth);
   api.route("/", me);
   api.route("/", sessionRoutes);
+  api.route("/", voyageRoutes);
 
   api.openAPIRegistry.registerComponent("securitySchemes", "bearerAuth", {
     type: "http",

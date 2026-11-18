@@ -24,10 +24,14 @@ let usageKeys: [String: Plist.Value] = [
         "MadeGood runs a workout session so recording continues with the screen off.",
 ]
 
-let healthKit: Entitlements = .dictionary([
+let healthKitEntitlements: [String: Plist.Value] = [
     "com.apple.developer.healthkit": true,
     "com.apple.developer.healthkit.access": [],
-])
+]
+let healthKit: Entitlements = .dictionary(healthKitEntitlements)
+let iPhoneEntitlements: Entitlements = .dictionary(
+    healthKitEntitlements.merging(["com.apple.developer.applesignin": ["Default"]]) { _, new in new }
+)
 
 func plist(_ parts: [String: Plist.Value]...) -> InfoPlist {
     .extendingDefault(with: parts.reduce(into: [:]) { result, part in
@@ -75,11 +79,14 @@ let project = Project(
             ]),
             sources: ["App/Sources/**", "Shared/Sources/**"],
             resources: ["App/Resources/**", "Shared/Resources/**"],
-            entitlements: healthKit,
+            entitlements: iPhoneEntitlements,
             dependencies: [
                 .target(name: "MadeGoodWatch"),
                 .target(name: "MadeGoodWidgets"),
                 .external(name: "WaterKit"),
+                .external(name: "OpenAPIRuntime"),
+                .external(name: "HTTPTypes"),
+                .external(name: "HTTPTypesFoundation"),
             ]
         ),
         .target(

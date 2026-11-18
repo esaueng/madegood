@@ -102,7 +102,7 @@ private struct VoyageDetailView: View {
                     Section("Saved Legs") {
                         ForEach(finished.reversed()) { leg in
                             NavigationLink {
-                                SavedVoyageLegView(leg: leg, recorder: recorder)
+                                SavedVoyageLegView(voyage: voyage, leg: leg, recorder: recorder)
                             } label: {
                                 Label {
                                     Text(
@@ -154,6 +154,8 @@ private struct VoyageDetailView: View {
 }
 
 private struct SavedVoyageLegView: View {
+    @Environment(PrivateVoyageSync.self) private var voyageSync: PrivateVoyageSync?
+    let voyage: Voyage
     let leg: VoyageLeg
     let recorder: VoyageRecorder
     @State private var track: [VoyageTrackPoint]?
@@ -184,6 +186,9 @@ private struct SavedVoyageLegView: View {
                 Label(loadError, systemImage: "exclamationmark.triangle")
             } else {
                 ProgressView()
+            }
+            if voyageSync != nil {
+                SavedVoyageLegSyncSection(voyage: voyage, leg: leg, recorder: recorder)
             }
         }
         .navigationTitle("Saved Leg")
