@@ -419,10 +419,11 @@ private struct SessionPages: View {
             }
         }
         .animation(.snappy, value: banner)
-        // A new mark from anywhere (the controls or the Action button) shows the way back.
+        // A new mark from anywhere (the controls or the Action button), including one that
+        // replaces an earlier mark, shows the way back.
         .onChange(of: manOverboard.mark) { old, new in
             // Wait a turn: the page only exists once the mark has redrawn the pages.
-            if old == nil, new != nil { Task { @MainActor in page = .manOverboard } }
+            if let new, new != old { Task { @MainActor in page = .manOverboard } }
         }
         .onChange(of: recorder.distanceAlert) { _, alert in
             guard let alert else { return }

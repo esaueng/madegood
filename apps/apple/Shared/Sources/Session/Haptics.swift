@@ -18,6 +18,8 @@ enum Haptics {
         case distanceAlert
         case mark
         case manOverboard
+        /// The press did nothing it could confirm (no position for a MOB mark).
+        case failure
     }
 
     @MainActor
@@ -29,6 +31,7 @@ enum Haptics {
                 case .countdownMinute, .distanceAlert, .manOverboard: .notification
                 case .countdownSecond, .lap, .mark: .click
                 case .sync: .directionUp
+                case .failure: .failure
                 }
             WKInterfaceDevice.current().play(type)
         #else
@@ -37,6 +40,8 @@ enum Haptics {
                 UINotificationFeedbackGenerator().notificationOccurred(.success)
             case .manOverboard:
                 UINotificationFeedbackGenerator().notificationOccurred(.warning)
+            case .failure:
+                UINotificationFeedbackGenerator().notificationOccurred(.error)
             case .countdownMinute, .sync:
                 UIImpactFeedbackGenerator(style: .heavy).impactOccurred()
             case .countdownSecond, .lap, .mark:

@@ -70,7 +70,9 @@ final class SessionController {
     }
 
     /// Starts `sport`, through its countdown if it has one. Ignored while busy.
-    func begin(_ sport: Sport) {
+    /// `fromActionButton`: the workout session runs from the press, even during the
+    /// countdown, as Apple requires of the Action button's start intent.
+    func begin(_ sport: Sport, fromActionButton: Bool = false) {
         guard !isBusy else { return }
         self.sport = sport
         SettingsStore.shared.markUsed(sport)
@@ -96,7 +98,9 @@ final class SessionController {
         // On the watch, a prepared workout session keeps the app running with the wrist
         // down, so the buzzes and the start stay on time.
         Task { [weak self] in
-            guard let self, let prepareID = await self.recorder.prepare(sport: sport) else { return }
+            guard let self,
+                let prepareID = await self.recorder.prepare(sport: sport, startWorkout: fromActionButton)
+            else { return }
             // Cancelled before the session was ready: don't leave it running. Only this
             // preparation is ended; a newer countdown's is left alone.
             if self.countdown?.id != countdownID { self.recorder.cancelPrepared(prepareID) }
@@ -149,8 +153,8 @@ final class SessionController {
             recorder.mark()
             Haptics.play(.mark)
         case .manOverboard:
-            recorder.markManOverboard()
-            Haptics.play(.manOverboard)
+            // Before the first GPS fix there is nothing to mark: say so with a failure buzz.
+            Haptics.play(recorder.markManOverboard() ? .manOverboard : .failure)
         case .ignore: break
         }
         return press

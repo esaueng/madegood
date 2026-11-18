@@ -151,6 +151,12 @@ final class WatchStartUITests: XCTestCase {
         action.tap()
         XCTAssertTrue(app.staticTexts["mob.distance"].waitForExistence(timeout: 10))
         attachScreenshot("action button man overboard")
+        // Regression check from review: a press while a mark exists moves it and shows the
+        // way back again, even from another page. MOB is page 1, so metrics is page 3.
+        goToPage(3, app)
+        XCTAssertTrue(app.staticTexts["metric.speed"].waitForExistence(timeout: 10))
+        action.tap()
+        XCTAssertTrue(app.staticTexts["mob.distance"].waitForExistence(timeout: 10))
         // The MOB page comes first, so the controls are page 2.
         endWatchSession(app, controlsPage: 2)
         // The mark outlives the session; clear it so later tests start on the sport cards.

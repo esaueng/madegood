@@ -109,8 +109,10 @@ final class SessionRecorder {
     /// keeps the watch app running (and its countdown haptics on time) with the wrist
     /// down. `start` begins this session; `cancelPrepared` ends it. Returns this
     /// preparation's ID for `cancelPrepared(_:)`, or nil if it did nothing.
+    /// `startWorkout` also starts the session's activity now (an Action button press must
+    /// start a workout within 30 s); data is still collected only from `start`.
     @discardableResult
-    func prepare(sport: Sport) async -> UUID? {
+    func prepare(sport: Sport, startWorkout: Bool = false) async -> UUID? {
         guard state == .idle, WorkoutSource.isAvailable, !DemoFeed.isEnabled else { return nil }
         cancelPrepared()
         let id = UUID()
@@ -121,7 +123,7 @@ final class SessionRecorder {
         prepareID = nil
         let workout = makeWorkout()
         do {
-            try workout.prepare(sport: sport)
+            try workout.prepare(sport: sport, startActivity: startWorkout)
             prepared = (id, sport, workout)
         } catch {
             // Not fatal: `start` creates the session itself.
@@ -377,8 +379,10 @@ final class SessionRecorder {
 
     /// Marks man-overboard (PLAN §5) at the latest position in `ManOverboard`, and
     /// records a `mob` event with that position and how old it was.
-    func markManOverboard() {
-        guard isRecording else { return }
+    /// Returns whether a position was marked (false before the first fix).
+    @discardableResult
+    func markManOverboard() -> Bool {
+        guard isRecording else { return false }
         let now = Date()
         let mark = ManOverboard.shared.markNow(at: now)
         var data: [String: JSONValue]?
@@ -390,6 +394,7 @@ final class SessionRecorder {
         }
         writers[.events]?.append(RawFormat.EventLine(ts: now.timeIntervalSince1970, type: .mob, data: data))
         ingest(.event(SessionEvent(t: now.timeIntervalSince1970 - startUnix, type: .mob, data: data)))
+        return mark != nil
     }
 
     func pause() { userEvent(.pause) }

@@ -38,7 +38,7 @@
         func perform() async throws -> some IntentResult {
             // Busy (a countdown or a recording already running): leave it alone, but keep
             // the next press working on it.
-            SessionController.shared.begin(workoutStyle.sport)
+            SessionController.shared.begin(workoutStyle.sport, fromActionButton: true)
             return .result(actionButtonIntent: SessionActionButtonIntent())
         }
     }
@@ -57,33 +57,36 @@
         }
     }
 
-    /// Action and side buttons pressed together while recording.
+    // Action and side buttons pressed together. The system picks Pause or Resume from the
+    // workout session's state, but MadeGood pauses its own clock and keeps the session
+    // running (sensors stay on), so the system may send Pause again while paused. Both
+    // intents toggle, so each chord flips pause.
+
     struct PauseSessionIntent: PauseWorkoutIntent {
         static let title: LocalizedStringResource = "Pause Session"
 
         @MainActor
         func perform() async throws -> some IntentResult {
-            let recorder = SessionController.shared.recorder
-            if recorder.isRecording, !recorder.isPaused {
-                recorder.pause()
-                WKInterfaceDevice.current().play(.stop)
-            }
+            togglePause()
             return .result()
         }
     }
 
-    /// Action and side buttons pressed together while paused.
     struct ResumeSessionIntent: ResumeWorkoutIntent {
         static let title: LocalizedStringResource = "Resume Session"
 
         @MainActor
         func perform() async throws -> some IntentResult {
-            let recorder = SessionController.shared.recorder
-            if recorder.isRecording, recorder.isPaused {
-                recorder.resume()
-                WKInterfaceDevice.current().play(.start)
-            }
+            togglePause()
             return .result()
         }
+    }
+
+    @MainActor
+    private func togglePause() {
+        let recorder = SessionController.shared.recorder
+        guard recorder.isRecording else { return }
+        if recorder.isPaused { recorder.resume() } else { recorder.pause() }
+        WKInterfaceDevice.current().play(recorder.isPaused ? .stop : .start)
     }
 #endif
