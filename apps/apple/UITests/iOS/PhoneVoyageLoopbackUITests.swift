@@ -7,6 +7,7 @@ final class PhoneVoyageLoopbackUITests: XCTestCase {
         let environment = ProcessInfo.processInfo.environment
         guard let port = environment["MADEGOOD_TEST_WORKER_PORT"].flatMap(UInt16.init),
             let owner = environment["MADEGOOD_TEST_VOYAGE_TOKEN"],
+            let refresh = environment["MADEGOOD_TEST_VOYAGE_REFRESH_TOKEN"],
             let account = environment["MADEGOOD_TEST_VOYAGE_ACCOUNT"],
             let outsider = environment["MADEGOOD_TEST_VOYAGE_OUTSIDER"]
         else { throw XCTSkip("Requires the synthetic loopback Worker fixture") }
@@ -22,6 +23,7 @@ final class PhoneVoyageLoopbackUITests: XCTestCase {
         app.launchEnvironment = [
             "MADEGOOD_TEST_WORKER_PORT": String(port),
             "MADEGOOD_TEST_VOYAGE_TOKEN": owner,
+            "MADEGOOD_TEST_VOYAGE_REFRESH_TOKEN": refresh,
             "MADEGOOD_TEST_VOYAGE_ACCOUNT": account,
             "MADEGOOD_TEST_VOYAGES": UUID().uuidString,
         ]

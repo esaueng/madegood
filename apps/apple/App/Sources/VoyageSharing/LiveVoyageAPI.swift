@@ -29,10 +29,14 @@ final class LiveVoyageAPI {
         self.foreground = foreground
     }
 
-    func create(_ voyage: VoyageSnapshot, id: UUID, binding: VoyageAccountBinding) async throws {
-        try await account.authorized(for: binding) { token in
-            try checkForeground()
-            try await api.putVoyage(voyage, id: id, bearer: token)
+    func ensureVoyage(_ voyage: VoyageSnapshot, id: UUID, binding: VoyageAccountBinding) async throws {
+        do {
+            _ = try await owner(id: id, binding: binding)
+        } catch let error as VoyageAPIError where error.status == 404 {
+            try await account.authorized(for: binding) { token in
+                try checkForeground()
+                try await api.putVoyage(voyage, id: id, bearer: token)
+            }
         }
     }
 

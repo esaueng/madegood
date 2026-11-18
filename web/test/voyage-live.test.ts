@@ -134,8 +134,8 @@ describe("local voyage transport", () => {
     const b = await setup(a.voyageId);
     const completed = await setup(undefined, true);
     const time = clock();
-    const sample = position(time.start, 0.1);
-    const later = position(time.start, 0.2);
+    const sample = position(time.start + 1, 0.1);
+    const later = position(time.start + 1, 0.2);
     expect(await (await a.state()).json()).toEqual({
       sharing: "off",
       delayS: 0,
@@ -166,7 +166,8 @@ describe("local voyage transport", () => {
     expect((await postJson(`${a.path}/positions`, { positions: [sample] }, a.headers)).status).toBe(
       400,
     );
-    const first = { receipts: [{ sampleId: sample.sampleId, receivedAtMs: time.start }] };
+    time.at(1);
+    const first = { receipts: [{ sampleId: sample.sampleId, receivedAtMs: time.start + 1 }] };
     const duplicates = await Promise.all([a.ingest([sample, sample]), a.ingest([sample])]);
     for (const response of duplicates) {
       expect(response.status).toBe(200);
@@ -299,6 +300,56 @@ describe("local voyage transport", () => {
     expect(await snapshot(slug)).toEqual(unavailable);
   });
 
+  it("clears the remaining viewers when another viewer disconnects at expiry", async () => {
+    const voyage = await setup();
+    const time = clock();
+    const slug = await voyage.issue(0, 10);
+    const first = await connect(slug);
+    const remaining = await connect(slug);
+    expect(await first.next()).toEqual(unavailable);
+    expect(await remaining.next()).toEqual(unavailable);
+    time.at(100);
+    expect((await voyage.ingest([position(time.start + 100, 1)])).status).toBe(200);
+    expect(await first.next()).toMatchObject({ status: "available" });
+    expect(await remaining.next()).toMatchObject({ status: "available" });
+
+    time.at(10_000);
+    first.ws.close(1000);
+    expect(await remaining.next()).toEqual(unavailable);
+    expect(await remaining.closed).toBe(1008);
+    expect(await alarmAt(voyage.stub)).toBeNull();
+  });
+
+  it("releases old positions when rotating a full share", async () => {
+    const voyage = await setup();
+    const time = clock();
+    const oldSlug = await voyage.issue();
+    time.at(1);
+    await runInDurableObject(voyage.stub, (_, state) => {
+      state.storage.sql.exec(
+        `WITH RECURSIVE rows(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM rows WHERE n < 10000)
+         INSERT INTO positions SELECT 'synthetic-' || n, 'synthetic', ?, 0, 1, ?, 1 FROM rows`,
+        time.start + 1,
+        time.start + 1,
+      );
+    });
+    expect(await (await voyage.ingest([position(time.start + 1, 2)])).json()).toEqual({
+      error: "live_capacity",
+    });
+    const rotated = await voyage.share({ action: "rotate", delayS: 0, expiresInS: 60 });
+    expect(rotated.status).toBe(200);
+    const { slug, grantGeneration } = await rotated.json<{
+      slug: string;
+      grantGeneration: number;
+    }>();
+    time.at(2);
+    const fix = position(time.start + 2, 3);
+    expect((await voyage.ingest([fix], 1)).status).toBe(409);
+    expect((await voyage.ingest([fix], grantGeneration)).status).toBe(200);
+    expect(await snapshot(oldSlug)).toEqual(unavailable);
+    expect(await snapshot(slug)).toMatchObject({ current: viewerFix(fix) });
+  });
+
   it.each(["pause", "rotate", "revoke", "delete"] as const)(
     "revalidates a suspended broadcast after %s before sending",
     async (action) => {
@@ -421,9 +472,7 @@ it("fences an earlier upload when a second controller revokes and reissues", asy
       time.at(600);
       release.resolve();
       expect(await pending).toEqual({ status: "stale_grant" });
-      expect(state.storage.sql.exec("SELECT sampleId FROM positions").toArray()).toEqual([
-        { sampleId: alreadyAccepted.sampleId },
-      ]);
+      expect(state.storage.sql.exec("SELECT sampleId FROM positions").toArray()).toEqual([]);
       return grant.slug;
     } finally {
       release.resolve();

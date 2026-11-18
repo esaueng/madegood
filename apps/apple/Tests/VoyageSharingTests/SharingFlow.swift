@@ -19,9 +19,12 @@ private final class WorkerStub: VoyageTransport {
     var online = true
     var loseAcknowledgement = false
     var replaceBeforeNextUpload = false
+    var accessExpired = false
     var privacyAvailable = true
     var hiddenLongitudes: Set<Double> = []
     private var voyagePath: String?
+    private var metadata: Data?
+    private(set) var refreshes = 0
     private var grant: (slug: String, issued: Int, expires: Int, delay: Int)?
     private var serial = 0
     private var stored: [String: Stored] = [:]
@@ -31,13 +34,29 @@ private final class WorkerStub: VoyageTransport {
     func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
         guard online else { throw URLError(.notConnectedToInternet) }
         let path = request.url!.path
-        let owner = request.value(forHTTPHeaderField: "Authorization") == "Bearer synthetic-owner"
-        guard owner else { return response(request, 404) }
+        if path == "/api/auth/refresh" {
+            let input = try JSONSerialization.jsonObject(with: request.httpBody!) as? [String: String]
+            guard input?["refreshToken"] == "synthetic-refresh" else { return response(request, 401) }
+            refreshes += 1
+            return response(
+                request, 200, Data(#"{"accessToken":"synthetic-renewed","refreshToken":"synthetic-rotated"}"#.utf8))
+        }
+        let token = request.value(forHTTPHeaderField: "Authorization")
+        guard token == "Bearer synthetic-owner" || token == "Bearer synthetic-renewed" else {
+            return response(request, 404)
+        }
+        if accessExpired && token == "Bearer synthetic-owner" { return response(request, 401) }
         if request.httpMethod == "PUT" {
+            if path == voyagePath { return response(request, 409) }
             var metadata = try JSONSerialization.jsonObject(with: request.httpBody!) as! [String: Any]
             metadata["id"] = path.split(separator: "/").last.map(String.init)
             voyagePath = path
-            return try response(request, 201, JSONSerialization.data(withJSONObject: metadata))
+            let contents = try JSONSerialization.data(withJSONObject: metadata)
+            self.metadata = contents
+            return response(request, 201, contents)
+        }
+        if request.httpMethod == "GET", path == voyagePath, let metadata {
+            return response(request, 200, metadata)
         }
         guard let voyagePath, path.hasPrefix(voyagePath + "/") else { return response(request, 404) }
         let isActive = grant.map { now < $0.expires } ?? false
@@ -180,7 +199,7 @@ struct SharingFlow {
         let base = URL(string: "http://127.0.0.1:5173/api")!
         let credentials = TestCredentials()
         credentials.value = VoyageCredentials(
-            binding: binding, tokens: VoyageTokenPair(accessToken: "synthetic-owner", refreshToken: "unused")
+            binding: binding, tokens: VoyageTokenPair(accessToken: "synthetic-owner", refreshToken: "synthetic-refresh")
         )
         let account = VoyageAccount(store: credentials, api: VoyageAPI(baseURL: base, transport: worker))
         var foreground = true
@@ -301,7 +320,8 @@ struct SharingFlow {
         worker.online = true
         print("PASS rotation and expiry")
 
-        await session.start(voyage: voyage, delay: 0, duration: 120, replacing: false)
+        let differentMetadata = VoyageSnapshot(title: "Existing title changed locally", startedAt: voyage.startedAt)
+        await session.start(voyage: differentMetadata, delay: 0, duration: 120, replacing: false)
         capture(session, leg, lon: 0.09)
         await session.poll()
         await session.poll()
@@ -315,7 +335,10 @@ struct SharingFlow {
             "Offline stop clears locally and retains revoke control")
         require(!FileManager.default.fileExists(atPath: journal.path), "Offline stop durably discards the upload queue")
         worker.online = true
+        worker.accessExpired = true
         await session.stop()
+        require(
+            worker.refreshes == 1 && account.binding == binding, "An expired access token can be renewed before revoke")
         require(session.sharing == .off && worker.viewer(slug: revokeSlug) == .unavailable, "Revoke clears the viewer")
         await session.poll()
         require(worker.attempts.last?.map(\.lon) == [0.09], "Revoked positions are never retried")

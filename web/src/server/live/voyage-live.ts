@@ -193,6 +193,7 @@ export class VoyageLive extends DurableObject<Env> {
       const added = new Map<string, StoredPosition>();
       for (const position of positions) {
         const { sampleId, segmentId, capturedAtMs, lat, lon } = position;
+        if (capturedAtMs <= share.issuedAtMs) return { status: "sync_conflict" } as const;
         const prior =
           added.get(sampleId) ??
           this.sql
@@ -275,7 +276,10 @@ export class VoyageLive extends DurableObject<Env> {
     } else if (command.action === "delay") {
       settings.delayS = command.delayS;
     }
-    this.save(settings);
+    this.ctx.storage.transactionSync(() => {
+      this.save(settings);
+      if (issuing || command.action === "revoke") this.sql.exec("DELETE FROM positions");
+    });
     await this.refresh();
 
     if (credential && settings.share) {
@@ -375,6 +379,7 @@ export class VoyageLive extends DurableObject<Env> {
       settings.share.revokedAtMs !== null ||
       settings.share.expiresAtMs <= now
     ) {
+      for (const socket of this.ctx.getWebSockets()) this.notify(socket, null);
       return this.ctx.storage.deleteAlarm();
     }
     const { share, delayS, paused } = settings;

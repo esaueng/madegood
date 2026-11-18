@@ -5,9 +5,10 @@ The controls run in a Debug iPhone simulator launched with
 `127.0.0.1`. The launch environment supplies the Worker port
 (`MADEGOOD_TEST_WORKER_PORT`), synthetic account ID
 (`MADEGOOD_TEST_VOYAGE_ACCOUNT`), synthetic access token
-(`MADEGOOD_TEST_VOYAGE_TOKEN`) and a fresh UUID (`MADEGOOD_TEST_VOYAGES`).
-The test credential store is in memory. A launch with incomplete loopback
-configuration falls back to the in-process private sync demo.
+(`MADEGOOD_TEST_VOYAGE_TOKEN`), the corresponding synthetic refresh token
+(`MADEGOOD_TEST_VOYAGE_REFRESH_TOKEN`) and a fresh UUID (`MADEGOOD_TEST_VOYAGES`).
+The test credential store is in memory. Both credentials are required to enable
+the loopback controls.
 
 Live sharing requires confirmation in a voyage with at least one leg. The
 owner chooses the position delay and link duration. The owner preview uses

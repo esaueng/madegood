@@ -11,7 +11,7 @@ pnpm -C web test test/voyage-live.test.ts test/voyage-sharing.test.ts test/voyag
 
 - The owner creates an active private voyage with `PUT /api/voyages/{voyageId}` using a MadeGood access token. Live commands require the same authenticated account and an active voyage. Two accounts can reuse the same voyage UUID without sharing state.
 - `POST /api/voyages/{voyageId}/positions` accepts 1–250 fixes. Normalize UUIDs to lowercase. The phone outbox persists a `sampleId` per recorded point and includes its authorizing `grantGeneration` in every batch. Use the original capture time from `VoyageStore.track(for:)` in epoch milliseconds. Allocate a new `segmentId` after every `gapBefore` and at every leg boundary. Store that UUID with the samples it covers so the same boundaries survive backfill, retries and relaunch.
-- The object checks the expected generation, revocation and expiry in the same transaction that accepts samples. A stale grant returns `409 stale_grant`. Identical samples within that generation return the original `receivedAtMs` even when a retry is repacked or reordered. That receipt records when the first accepted batch reached the Durable Object. Reusing a sample ID with different content returns `409 sync_conflict` for the batch. Samples captured after first receipt stay private on every retry. The local object accepts up to 10,000 unique fixes and still acknowledges known IDs at capacity.
+- The object checks the expected generation, revocation and expiry in the same transaction that accepts samples. A stale grant returns `409 stale_grant`. Identical samples within that generation return the original `receivedAtMs` even when a retry is repacked or reordered. That receipt records when the first accepted batch reached the Durable Object. Reusing a sample ID with different content returns `409 sync_conflict` for the batch. Samples captured after first receipt stay private on every retry. The local object accepts up to 10,000 unique fixes per grant and still acknowledges known IDs at capacity. A replacement or revocation discards the previous grant’s live fixes.
 - `GET /api/voyages/{voyageId}/sharing` returns the authenticated owner’s controls and filtered preview, with `grantGeneration` for the current valid grant. `POST` accepts `issue`, `rotate`, `pause`, `resume`, `revoke` and `delay`. Issue and rotate accept `delayS` (0–86,400) and `expiresInS` (1–604,800). They return the random slug once. The private capture window starts strictly after the issuance millisecond. Pause holds the window, so resuming can release fixes captured while paused. Revoke and reissue to exclude them. Rotate an active grant if the issuance response was lost.
 - `GET /api/live/{slug}` returns a whole snapshot or upgrades to a WebSocket. Viewers replace their state on each frame and clear on disconnect. `/v/{slug}` serves generic metadata and lists points in separate segments. Its initial HTML contains no projection. A share needs a current visible fix less than 600 seconds old relative to the delayed cutoff. Missing privacy data, a hidden current fix, a stale fix and an invalid grant all produce the same unavailable projection.
 - D1 stores the hashed locator and identifies the live objects to purge. The object's grant is authoritative. It reads account ownership and privacy zones from D1 for projection, then rechecks its persisted settings and the socket grant synchronously before serialization. It schedules the earliest pending capture, freshness or expiry transition and rechecks D1 every five seconds while a viewer is connected. External privacy edits are observed on the next read or poll. The local acceptance suite controls the clock, forces stored alarms and evicts the object while a viewer is connected. [Cloudflare WebSockets](https://developers.cloudflare.com/durable-objects/best-practices/websockets/) · [Cloudflare Alarms](https://developers.cloudflare.com/durable-objects/api/alarms/)
@@ -71,9 +71,11 @@ curl -fsS "$voyage_url/sharing" -H "Authorization: Bearer $access_token"
 ```
 
 For the [iPhone loopback test](../apps/apple/Integrations/VoyageSharing/README.md),
-pass the skipper token and a second token minted with subject
-`synthetic-outsider` to the test runner. Supply the port used by Wrangler.
-Keep the credentials in a local test environment or scratch `.xctestrun` file.
+pass a skipper access and refresh token pair from the local database, plus an
+access token minted with subject `synthetic-outsider`. The refresh token
+supports owner commands after the access token expires. Supply the port used by
+Wrangler and keep the credentials in a local test environment or scratch
+`.xctestrun` file.
 
 ## Production follow-ons
 

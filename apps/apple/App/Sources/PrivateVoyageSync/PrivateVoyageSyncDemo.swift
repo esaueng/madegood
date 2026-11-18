@@ -8,6 +8,7 @@
                 let environment = ProcessInfo.processInfo.environment
                 guard let port = environment["MADEGOOD_TEST_WORKER_PORT"].flatMap(UInt16.init), port > 0,
                     let accessToken = environment["MADEGOOD_TEST_VOYAGE_TOKEN"], !accessToken.isEmpty,
+                    let refreshToken = environment["MADEGOOD_TEST_VOYAGE_REFRESH_TOKEN"], !refreshToken.isEmpty,
                     let accountID = environment["MADEGOOD_TEST_VOYAGE_ACCOUNT"], accountID.hasPrefix("synthetic-"),
                     let runID = environment["MADEGOOD_TEST_VOYAGES"].flatMap(UUID.init(uuidString:))
                 else { return nil }
@@ -15,7 +16,7 @@
                 try? store.save(
                     VoyageCredentials(
                         binding: VoyageAccountBinding(accountID: accountID, signInID: runID),
-                        tokens: VoyageTokenPair(accessToken: accessToken, refreshToken: "synthetic-unused")
+                        tokens: VoyageTokenPair(accessToken: accessToken, refreshToken: refreshToken)
                     ))
                 return PrivateVoyageSync(
                     apiRoot: URL(string: "http://127.0.0.1:\(port)/api")!,

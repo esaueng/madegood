@@ -142,7 +142,7 @@ final class LiveVoyageShare {
         await polling?.value
         guard isBound, !storageFailed else { return }
         do {
-            if !replacing { try await api.create(voyage, id: id, binding: binding) }
+            if !replacing { try await api.ensureVoyage(voyage, id: id, binding: binding) }
             let started = now()
             mayHaveLink = true
             let owner = try await api.change(
