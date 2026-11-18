@@ -74,6 +74,9 @@ because its files don't exist yet, say so rather than inventing a replacement.
 `scripts/ci-changes.sh`) and ends in one `CI` job that passes when every job that ran
 passed. Require `CI` (plus `DCO sign-off`) on `main`, not the individual jobs, which are
 skipped when their area is untouched. Changing `ci.yml` or the script runs everything.
+Pull requests skip the slow macOS jobs (WaterKit tests on macOS and the iOS + watchOS UI
+tests); they run on pushes to `main` and on manual runs (Actions > CI > Run workflow on
+your branch). The UI tests never gate `CI`, so check them after merging UI changes.
 
 ## Pull requests
 
