@@ -1,5 +1,14 @@
 import { sql } from "drizzle-orm";
-import { index, integer, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import {
+  foreignKey,
+  index,
+  integer,
+  primaryKey,
+  real,
+  sqliteTable,
+  text,
+  uniqueIndex,
+} from "drizzle-orm/sqlite-core";
 
 // D1 schema (docs/PLAN.md §7). Applied migrations are never edited: change this file,
 // then run `pnpm db:generate` to add a new migration, and keep each change compatible
@@ -115,3 +124,41 @@ export const privacyZones = sqliteTable(
 export type Session = typeof sessions.$inferSelect;
 export type RefreshToken = typeof refreshTokens.$inferSelect;
 export type PrivacyZone = typeof privacyZones.$inferSelect;
+
+/** Private sync records. UUIDs are stable within an account. */
+export const voyages = sqliteTable(
+  "voyages",
+  {
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    id: text("id").notNull(),
+    title: text("title").notNull(),
+    boatName: text("boat_name"),
+    startedAt: timestamp("started_at").notNull(),
+    endedAt: timestamp("ended_at"),
+  },
+  (table) => [primaryKey({ columns: [table.userId, table.id] })],
+);
+
+export const legs = sqliteTable(
+  "legs",
+  {
+    userId: text("user_id").notNull(),
+    id: text("id").notNull(),
+    voyageId: text("voyage_id").notNull(),
+    fromName: text("from_name"),
+    toName: text("to_name"),
+    startedAt: timestamp("started_at").notNull(),
+    endedAt: timestamp("ended_at").notNull(),
+    distanceM: real("distance_m"),
+  },
+  (table) => [
+    primaryKey({ columns: [table.userId, table.id] }),
+    foreignKey({
+      columns: [table.userId, table.voyageId],
+      foreignColumns: [voyages.userId, voyages.id],
+    }).onDelete("cascade"),
+    index("legs_user_voyage_id").on(table.userId, table.voyageId, table.id),
+  ],
+);

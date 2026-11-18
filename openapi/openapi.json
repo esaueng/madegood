@@ -128,6 +128,7 @@
               "not_found",
               "forbidden",
               "session_id_taken",
+              "sync_conflict",
               "unsupported_media_type",
               "payload_too_large",
               "invalid_track",
@@ -497,6 +498,172 @@
             ]
           }
         },
+        "additionalProperties": false
+      },
+      "Voyage": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Device UUID, stored lowercase."
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 100
+          },
+          "boatName": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 100
+          },
+          "startedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "endedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "boatName",
+          "startedAt",
+          "endedAt"
+        ]
+      },
+      "PutVoyageRequest": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "boatName": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 100
+          },
+          "startedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "endedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "title",
+          "startedAt"
+        ],
+        "additionalProperties": false
+      },
+      "VoyageLeg": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Device UUID, stored lowercase."
+          },
+          "voyageId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Device UUID, stored lowercase."
+          },
+          "fromName": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 100
+          },
+          "toName": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 100
+          },
+          "startedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "endedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "distanceM": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0,
+            "description": "Distance in metres."
+          }
+        },
+        "required": [
+          "id",
+          "voyageId",
+          "fromName",
+          "toName",
+          "startedAt",
+          "endedAt",
+          "distanceM"
+        ]
+      },
+      "PutLegRequest": {
+        "type": "object",
+        "properties": {
+          "fromName": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 100
+          },
+          "toName": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 100
+          },
+          "startedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "endedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "distanceM": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0,
+            "description": "Distance in metres."
+          }
+        },
+        "required": [
+          "startedAt",
+          "endedAt"
+        ],
         "additionalProperties": false
       }
     },
@@ -1278,6 +1445,737 @@
           },
           "404": {
             "description": "No such session or track, or the caller may not see it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/voyages": {
+      "get": {
+        "tags": [
+          "voyages"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "operationId": "listVoyages",
+        "summary": "List the owner's voyages",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "Device UUID, stored lowercase."
+            },
+            "required": false,
+            "description": "Device UUID, stored lowercase.",
+            "name": "cursor",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page ordered by UUID.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "nextCursor": {
+                      "type": "string",
+                      "format": "uuid",
+                      "description": "Device UUID, stored lowercase."
+                    },
+                    "voyages": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Voyage"
+                      }
+                    }
+                  },
+                  "required": [
+                    "nextCursor",
+                    "voyages"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The access token is invalid or the account is gone.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/voyages/{voyageId}": {
+      "get": {
+        "tags": [
+          "voyages"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "operationId": "getVoyage",
+        "summary": "Read a private voyage",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "Device UUID, stored lowercase."
+            },
+            "required": true,
+            "description": "Device UUID, stored lowercase.",
+            "name": "voyageId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The voyage.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Voyage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The access token is invalid or the account is gone.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested private resource is unavailable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "voyages"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "operationId": "putVoyage",
+        "summary": "Create or retry a private voyage snapshot",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "Device UUID, stored lowercase."
+            },
+            "required": true,
+            "description": "Device UUID, stored lowercase.",
+            "name": "voyageId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PutVoyageRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The same snapshot was already stored.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Voyage"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "The snapshot was stored.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Voyage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The access token is invalid or the account is gone.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "This ID already has different content.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The body exceeds the upload limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/voyages/{voyageId}/legs": {
+      "get": {
+        "tags": [
+          "voyages"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "operationId": "listVoyageLegs",
+        "summary": "List legs of a private voyage",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "Device UUID, stored lowercase."
+            },
+            "required": true,
+            "description": "Device UUID, stored lowercase.",
+            "name": "voyageId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "Device UUID, stored lowercase."
+            },
+            "required": false,
+            "description": "Device UUID, stored lowercase.",
+            "name": "cursor",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page ordered by UUID.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "nextCursor": {
+                      "type": "string",
+                      "format": "uuid",
+                      "description": "Device UUID, stored lowercase."
+                    },
+                    "legs": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/VoyageLeg"
+                      }
+                    }
+                  },
+                  "required": [
+                    "nextCursor",
+                    "legs"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The access token is invalid or the account is gone.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested private resource is unavailable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/voyages/{voyageId}/legs/{legId}": {
+      "get": {
+        "tags": [
+          "voyages"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "operationId": "getVoyageLeg",
+        "summary": "Read a private voyage leg",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "Device UUID, stored lowercase."
+            },
+            "required": true,
+            "description": "Device UUID, stored lowercase.",
+            "name": "voyageId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "Device UUID, stored lowercase."
+            },
+            "required": true,
+            "description": "Device UUID, stored lowercase.",
+            "name": "legId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The leg.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoyageLeg"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The access token is invalid or the account is gone.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested private resource is unavailable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "voyages"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "operationId": "putVoyageLeg",
+        "summary": "Create or retry a completed private leg snapshot",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "Device UUID, stored lowercase."
+            },
+            "required": true,
+            "description": "Device UUID, stored lowercase.",
+            "name": "voyageId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "Device UUID, stored lowercase."
+            },
+            "required": true,
+            "description": "Device UUID, stored lowercase.",
+            "name": "legId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PutLegRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The same snapshot was already stored.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoyageLeg"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "The snapshot was stored.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoyageLeg"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The access token is invalid or the account is gone.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested private resource is unavailable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "This ID already has different content.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The body exceeds the upload limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/voyages/{voyageId}/legs/{legId}/track": {
+      "get": {
+        "tags": [
+          "voyages"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "operationId": "getVoyageLegTrack",
+        "summary": "Download a private leg track",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "Device UUID, stored lowercase."
+            },
+            "required": true,
+            "description": "Device UUID, stored lowercase.",
+            "name": "voyageId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "Device UUID, stored lowercase."
+            },
+            "required": true,
+            "description": "Device UUID, stored lowercase.",
+            "name": "legId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The original gzip file.",
+            "content": {
+              "application/gzip": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The access token is invalid or the account is gone.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested private resource is unavailable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "voyages"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "operationId": "putVoyageLegTrack",
+        "summary": "Upload or retry a private leg track",
+        "description": "Send the track v1 gzip file with the leg UUID as sessionId. Retries must send the same bytes.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "Device UUID, stored lowercase."
+            },
+            "required": true,
+            "description": "Device UUID, stored lowercase.",
+            "name": "voyageId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "Device UUID, stored lowercase."
+            },
+            "required": true,
+            "description": "Device UUID, stored lowercase.",
+            "name": "legId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/gzip": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "The track was stored or was already present with identical bytes."
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The access token is invalid or the account is gone.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested private resource is unavailable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "This ID already has different content.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The body exceeds the upload limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Use application/gzip without Content-Encoding.",
             "content": {
               "application/json": {
                 "schema": {

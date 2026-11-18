@@ -2,7 +2,9 @@ import SwiftUI
 
 @main
 struct MadeGoodApp: App {
-    @UIApplicationDelegateAdaptor(VoyageLaunchDelegate.self) private var voyageDelegate
+    @UIApplicationDelegateAdaptor(VoyageSyncAppDelegate.self) private var voyageDelegate
+    @Environment(\.scenePhase) private var scenePhase
+    private let voyageSync = PrivateVoyageSync.shared
 
     init() {
         // HealthKit can launch the phone in the background to deliver a mirror.
@@ -18,6 +20,11 @@ struct MadeGoodApp: App {
         WindowGroup {
             ContentView()
                 .modifier(FollowsAppearance())
+                .environment(voyageSync)
+                .task(id: voyageSync?.account.binding) { await voyageSync?.accountDidChange() }
+                .onChange(of: scenePhase) { _, phase in
+                    if phase == .active { voyageSync?.kick() }
+                }
         }
     }
 }

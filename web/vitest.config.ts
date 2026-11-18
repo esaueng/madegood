@@ -15,6 +15,7 @@ export default defineConfig(async () => {
             TEST_MIGRATIONS: migrations,
             // A test-only key; real keys are Wrangler secrets.
             JWT_SIGNING_KEY: "test-signing-key-not-a-secret-0123456789",
+            VOYAGE_PRIVATE_LOCAL: "1",
           },
         },
       }),

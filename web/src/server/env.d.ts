@@ -4,6 +4,8 @@
 interface WorkerSecrets {
   /** Signs access tokens (HS256). At least 32 characters, e.g. `openssl rand -base64 48`. */
   JWT_SIGNING_KEY: string;
+  /** Enables the private voyage prototype in local development and tests. */
+  VOYAGE_PRIVATE_LOCAL?: string;
 }
 
 interface Env extends WorkerSecrets {}

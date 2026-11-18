@@ -18,5 +18,7 @@ let package = Package(
     name: "MadeGoodDependencies",
     dependencies: [
         .package(path: "../../../packages/WaterKit"),
+        .package(url: "https://github.com/apple/swift-openapi-runtime", exact: "1.13.4"),
+        .package(url: "https://github.com/apple/swift-http-types", exact: "1.8.0"),
     ]
 )

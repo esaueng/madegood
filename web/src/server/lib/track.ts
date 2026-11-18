@@ -1,3 +1,5 @@
+import { z } from "@hono/zod-openapi";
+
 /** Largest gzipped track the API stores: 8 MiB. A 10-hour session at 1 Hz is about 1 MiB. */
 export const TRACK_MAX_BYTES = 8 * 1024 * 1024;
 
@@ -10,6 +12,17 @@ export const TRACK_MAX_INFLATED_BYTES = 64 * 1024 * 1024;
 
 /** The media type of an uploaded or downloaded track: the gzip file itself (docs/formats.md). */
 export const TRACK_CONTENT_TYPE = "application/gzip";
+export const TRACK_SPORTS = [
+  "sailing",
+  "windsurfing",
+  "motorboating",
+  "kayak",
+  "canoe",
+  "sup",
+] as const;
+
+/** Bound memory for the private leg endpoint, which validates the complete JSON. */
+const LEG_TRACK_MAX_INFLATED_BYTES = 16 * 1024 * 1024;
 
 /** Where a user's track for a session lives in the TRACKS bucket, under `userPrefix`. */
 export const trackKey = (prefix: string, sessionId: string) =>
@@ -83,4 +96,86 @@ export async function checkTrack(bytes: Uint8Array): Promise<string | null> {
   }
   if (!prefix.trimStart().startsWith("{")) return "The track is not a JSON object.";
   return null;
+}
+
+const record = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === "object" && !Array.isArray(value);
+const finite = (value: unknown) => typeof value === "number" && Number.isFinite(value);
+const trackDate = z.iso.datetime({ offset: true });
+
+function hasFiniteJSONNumbers(value: unknown): boolean {
+  if (typeof value === "number") return Number.isFinite(value);
+  if (Array.isArray(value)) return value.every(hasFiniteJSONNumbers);
+  if (record(value)) return Object.values(value).every(hasFiniteJSONNumbers);
+  return true;
+}
+
+function trackColumns(
+  value: unknown,
+  numbers: string[],
+  nullable: string[] = [],
+  optional: string[] = [],
+) {
+  if (!record(value) || !Array.isArray(value.t)) return false;
+  const count = value.t.length;
+  function column(key: string, allowNull: boolean) {
+    const items = valueRecord[key];
+    return (
+      Array.isArray(items) &&
+      items.length === count &&
+      items.every((item) => (allowNull && item === null) || finite(item))
+    );
+  }
+  const valueRecord = value;
+  return (
+    numbers.every((key) => column(key, false)) &&
+    nullable.every((key) => column(key, true)) &&
+    optional.every((key) => value[key] == null || column(key, true))
+  );
+}
+
+/** Check a completed leg's complete track before allocating its immutable R2 key. */
+export async function checkLegTrack(bytes: Uint8Array, legId: string): Promise<string | null> {
+  const structure = await checkTrack(bytes);
+  if (structure) return structure;
+  try {
+    const inflated = await readBody(
+      new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip")),
+      LEG_TRACK_MAX_INFLATED_BYTES,
+    );
+    if (!inflated) return "The private leg track inflates to more than 16 MiB.";
+    const track: unknown = JSON.parse(
+      new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(inflated),
+    );
+    if (!record(track) || track.v !== 1) return "The body must be a track v1 document.";
+    if (typeof track.sessionId !== "string" || track.sessionId.toLowerCase() !== legId) {
+      return "The track sessionId must match the leg UUID.";
+    }
+    if (
+      !TRACK_SPORTS.some((sport) => sport === track.sport) ||
+      !trackDate.safeParse(track.startedAt).success ||
+      !trackColumns(
+        track.gps,
+        ["t", "lat", "lon"],
+        ["spd", "crs", "hacc"],
+        ["alt", "spdacc", "crsacc"],
+      ) ||
+      !trackColumns(track.hr, ["t", "bpm"]) ||
+      !Array.isArray(track.events) ||
+      !track.events.every(
+        (event) =>
+          record(event) &&
+          finite(event.t) &&
+          typeof event.type === "string" &&
+          (event.data == null || (record(event.data) && hasFiniteJSONNumbers(event.data))),
+      ) ||
+      !hasFiniteJSONNumbers(track.summary) ||
+      (track.analyzerVersion != null && typeof track.analyzerVersion !== "string")
+    ) {
+      return "The track v1 fields or sample columns are invalid.";
+    }
+    return null;
+  } catch {
+    return "The gzip file does not contain valid track JSON.";
+  }
 }
