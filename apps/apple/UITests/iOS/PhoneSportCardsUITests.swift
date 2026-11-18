@@ -41,10 +41,7 @@ final class PhoneSportCardsUITests: XCTestCase {
         waitForLabel(app.staticTexts["stat.Speed"], "4.9 kn")
         attachScreenshot("live distance first")
 
-        app.buttons["control.stop"].tap()
-        let confirm = app.buttons["End session"].firstMatch
-        XCTAssertTrue(confirm.waitForExistence(timeout: 10))
-        confirm.tap()
+        endSession(app)
         XCTAssertTrue(sailing.waitForExistence(timeout: 20))
     }
 

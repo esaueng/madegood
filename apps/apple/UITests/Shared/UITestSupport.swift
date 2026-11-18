@@ -12,6 +12,14 @@ extension XCTestCase {
         return app
     }
 
+    /// Ends an iPhone recording the way a user does: Pause, then Save.
+    func endSession(_ app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
+        app.buttons["control.pause"].tap()
+        let save = app.buttons["control.save"]
+        XCTAssertTrue(save.waitForExistence(timeout: 10), file: file, line: line)
+        save.tap()
+    }
+
     /// Saves a screenshot in the test results (export with `xcrun xcresulttool`).
     func attachScreenshot(_ name: String) {
         let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
