@@ -68,7 +68,8 @@ struct LiveVoyageSharingSection: View {
                 LiveVoyageControls(
                     session: session,
                     voyage: VoyageSnapshot(
-                        title: voyage.name, startedAt: Date(timeIntervalSince1970: firstLeg.startedAt))
+                        title: VoyageRecorderSync.uploadTitle(voyage.name),
+                        startedAt: Date(timeIntervalSince1970: firstLeg.startedAt))
                 )
                 .id(session.binding.signInID)
             } else {
