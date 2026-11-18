@@ -46,10 +46,10 @@ final class PhoneVoyageUITests: XCTestCase {
         simulatePosition(longitude: -29.999)
         XCTAssertTrue(app.staticTexts["Latest Capture Gap"].waitForExistence(timeout: 20))
         let countAdvanced = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "value != %@", String(recoveredCount)), object: savedCount)
+            predicate: NSPredicate(format: "value != %@", String(countBeforeRestart)), object: savedCount)
         XCTAssertEqual(XCTWaiter().wait(for: [countAdvanced], timeout: 15), .completed)
         let resumedCount = try XCTUnwrap((savedCount.value as? String).flatMap(Int.init))
-        XCTAssertGreaterThan(resumedCount, recoveredCount)
+        XCTAssertGreaterThan(resumedCount, countBeforeRestart)
         XCTAssertFalse(resume.exists)
 
         app.buttons["End Leg"].tap()
