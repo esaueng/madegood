@@ -126,6 +126,16 @@ let project = Project(
             ]),
             sources: ["WatchWidgets/Sources/**"]
         ),
+        .target(
+            name: "MadeGoodTests",
+            destinations: [.iPhone],
+            product: .unitTests,
+            bundleId: "$(BUNDLE_ID_PREFIX).tests",
+            deploymentTargets: iOSTarget,
+            infoPlist: .default,
+            sources: ["Tests/iOS/**"],
+            dependencies: [.target(name: "MadeGood")]
+        ),
         // UI tests run the apps in demo mode (DemoFeed): no GPS, Health or prompts.
         .target(
             name: "MadeGoodUITests",
