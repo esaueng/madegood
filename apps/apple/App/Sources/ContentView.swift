@@ -555,6 +555,32 @@ private struct LiveControls: View {
         }
     }
 
+    @ViewBuilder private var pausedButtons: some View {
+        Button {
+            recorder.resume()
+        } label: {
+            Label("Resume", systemImage: "play.fill")
+                .lineLimit(1)
+                .fixedSize()
+                .frame(maxWidth: .infinity, minHeight: 52)
+        }
+        .buttonStyle(.borderedProminent)
+        .accessibilityIdentifier("control.pause")
+        Button {
+            saving = true
+            Task { await recorder.stop() }
+        } label: {
+            Label("Save", systemImage: "checkmark")
+                .lineLimit(1)
+                .fixedSize()
+                .frame(maxWidth: .infinity, minHeight: 52)
+        }
+        .buttonStyle(.bordered)
+        .disabled(saving)
+        .accessibilityHint("Ends and saves the session")
+        .accessibilityIdentifier("control.save")
+    }
+
     private var paused: some View {
         let metrics = recorder.metrics
         return VStack(alignment: .leading, spacing: 14) {
@@ -566,24 +592,10 @@ private struct LiveControls: View {
                 .font(.subheadline.monospacedDigit())
                 .foregroundStyle(.secondary)
             }
-            HStack(spacing: 10) {
-                Button {
-                    recorder.resume()
-                } label: {
-                    Label("Resume", systemImage: "play.fill").frame(maxWidth: .infinity, minHeight: 52)
-                }
-                .buttonStyle(.borderedProminent)
-                .accessibilityIdentifier("control.pause")
-                Button {
-                    saving = true
-                    Task { await recorder.stop() }
-                } label: {
-                    Label("Save", systemImage: "checkmark").frame(maxWidth: .infinity, minHeight: 52)
-                }
-                .buttonStyle(.bordered)
-                .disabled(saving)
-                .accessibilityHint("Ends and saves the session")
-                .accessibilityIdentifier("control.save")
+            // Side by side, or stacked when large text doesn't fit on one line.
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 10) { pausedButtons }
+                VStack(spacing: 10) { pausedButtons }
             }
             .buttonBorderShape(.capsule)
             .font(.title3.weight(.bold))
