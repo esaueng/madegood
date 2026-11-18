@@ -286,6 +286,11 @@ struct SessionDetailView: View {
                 .id("session.stats")
             }
 
+            if sport == .motorboating {
+                MotorboatDetailSection(
+                    metrics: metrics, startedAt: selectedTrack.startedAt, display: display, library: library)
+            }
+
             let heartRate = ChartSeries.heartRate(selectedTrack.hr, cuts: replayData.timeline.removedIntervals)
             if heartRate.reduce(0, { $0 + $1.count }) > 1 {
                 let start = min(replayData.timeline.start / 60, heartRate.first?.first?.minutes ?? 0)

@@ -106,6 +106,38 @@ public enum DistanceUnit: String, Sendable, Hashable, Codable, CaseIterable {
     }
 }
 
+/// A unit for showing fuel volumes. WaterKit keeps fuel in litres (1 L = 0.001 m³, the
+/// unit every fuel gauge and burn-rate table uses); 1 US gal = 3.785411784 L exactly.
+public enum VolumeUnit: String, Sendable, Hashable, Codable, CaseIterable {
+    case litres = "l"
+    case usGallons = "galUS"
+
+    /// One of this unit in litres.
+    public var litres: Double {
+        switch self {
+        case .litres: 1
+        case .usGallons: 3.785411784
+        }
+    }
+
+    /// "L" or "gal".
+    public var symbol: String {
+        switch self {
+        case .litres: "L"
+        case .usGallons: "gal"
+        }
+    }
+
+    public func fromLitres(_ litres: Double) -> Double { litres / self.litres }
+
+    public func toLitres(_ value: Double) -> Double { value * litres }
+
+    /// A volume in litres, ready to show: one decimal below 100 (12.3 L), whole above.
+    public func display(_ litres: Double) -> DisplayQuantity {
+        DisplayQuantity.rounded(fromLitres(litres), symbol: symbol) { magnitude in magnitude < 100 ? 1 : 0 }
+    }
+}
+
 /// A value converted and rounded for display. Apps that localize number formatting use
 /// `value` and `fractionDigits`; `text` is a locale-independent fallback ("12.3 kn").
 public struct DisplayQuantity: Sendable, Hashable {

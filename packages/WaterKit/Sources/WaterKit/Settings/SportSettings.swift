@@ -22,11 +22,19 @@ public struct SportSettings: Sendable, Hashable {
     public var countdownMinutes: Int
     /// Hidden sports are left out of the start screen.
     public var isHidden: Bool
+    /// Fuel burn under way for the fuel estimate, litres per hour; nil for no estimate.
+    /// Offered for motorboating (docs/PLAN.md §5).
+    public var fuelBurnRate: Double?
+    /// Fuel burn for the rest of the moving time, litres per hour; nil for none.
+    public var idleFuelBurnRate: Double?
+    /// The unit fuel is shown and entered in.
+    public var fuelUnit: VolumeUnit
 
     public init(
         speedUnit: SpeedUnit? = nil, distanceUnit: DistanceUnit? = nil, firstScreen: LiveScreen = .speed,
         autoPause: Bool, savesWorkout: Bool, distanceAlert: Double? = nil, countdownMinutes: Int = 0,
-        isHidden: Bool = false
+        isHidden: Bool = false, fuelBurnRate: Double? = nil, idleFuelBurnRate: Double? = nil,
+        fuelUnit: VolumeUnit = .litres
     ) {
         self.speedUnit = speedUnit
         self.distanceUnit = distanceUnit
@@ -36,6 +44,9 @@ public struct SportSettings: Sendable, Hashable {
         self.distanceAlert = distanceAlert
         self.countdownMinutes = countdownMinutes
         self.isHidden = isHidden
+        self.fuelBurnRate = fuelBurnRate
+        self.idleFuelBurnRate = idleFuelBurnRate
+        self.fuelUnit = fuelUnit
     }
 
     /// The defaults: automatic units, speed first, no alerts or countdown, and auto-pause
@@ -63,6 +74,16 @@ public struct SportSettings: Sendable, Hashable {
         guard let distanceAlert, distanceAlert > 0, distanceAlert.isFinite else { return nil }
         return resolvedDistanceUnit(for: sport).toSI(distanceAlert)
     }
+
+    /// The fuel model from the burn rates, or nil without a valid under-way rate.
+    public var fuelModel: FuelModel? {
+        guard let fuelBurnRate else { return nil }
+        let model = FuelModel(burnRate: fuelBurnRate, idleBurnRate: idleFuelBurnRate ?? 0)
+        return model.isValid ? model : nil
+    }
+
+    /// Burn rates above this are treated as typing mistakes, litres per hour.
+    public static let maxFuelBurnRate = 2_000.0
 
     /// The countdown in seconds, or nil when off.
     public var countdownSeconds: Double? {
@@ -106,6 +127,9 @@ extension SportSettings {
         public static func distanceAlert(_ sport: Sport) -> String { "settings.distanceAlert.\(sport.rawValue)" }
         public static func countdown(_ sport: Sport) -> String { "settings.countdown.\(sport.rawValue)" }
         public static func hidden(_ sport: Sport) -> String { "settings.hidden.\(sport.rawValue)" }
+        public static func fuelBurn(_ sport: Sport) -> String { "settings.fuelBurn.\(sport.rawValue)" }
+        public static func fuelIdleBurn(_ sport: Sport) -> String { "settings.fuelIdleBurn.\(sport.rawValue)" }
+        public static func fuelUnit(_ sport: Sport) -> String { "settings.fuelUnit.\(sport.rawValue)" }
 
         /// Units for every sport, before units became per sport.
         public static let legacySpeedUnit = "settings.speedUnit"
@@ -115,7 +139,8 @@ extension SportSettings {
         public static func all(_ sport: Sport) -> [String] {
             [
                 speedUnit(sport), distanceUnit(sport), firstScreen(sport), autoPause(sport), saveWorkout(sport),
-                distanceAlert(sport), countdown(sport), hidden(sport),
+                distanceAlert(sport), countdown(sport), hidden(sport), fuelBurn(sport), fuelIdleBurn(sport),
+                fuelUnit(sport),
             ]
         }
 
@@ -144,6 +169,15 @@ extension SportSettings {
             countdownMinutes = Int(minutes)
         }
         if let hidden = Self.bool(value(Key.hidden(sport))) { isHidden = hidden }
+        fuelBurnRate = Self.burnRate(value(Key.fuelBurn(sport)))
+        idleFuelBurnRate = Self.burnRate(value(Key.fuelIdleBurn(sport)), allowZero: true)
+        if let raw = value(Key.fuelUnit(sport)) as? String, let unit = VolumeUnit(rawValue: raw) { fuelUnit = unit }
+    }
+
+    private static func burnRate(_ value: Any?, allowZero: Bool = false) -> Double? {
+        guard let rate = number(value), rate.isFinite, rate <= maxFuelBurnRate, allowZero ? rate >= 0 : rate > 0
+        else { return nil }
+        return rate
     }
 
     /// Writes one sport's settings: a value equal to the default is removed (nil), so the
@@ -158,6 +192,9 @@ extension SportSettings {
         set(Key.distanceAlert(sport), distanceAlert)
         set(Key.countdown(sport), countdownMinutes == 0 ? nil : countdownMinutes)
         set(Key.hidden(sport), isHidden ? true : nil)
+        set(Key.fuelBurn(sport), fuelBurnRate)
+        set(Key.fuelIdleBurn(sport), idleFuelBurnRate)
+        set(Key.fuelUnit(sport), fuelUnit == standard.fuelUnit ? nil : fuelUnit.rawValue)
     }
 
     /// Moves units chosen before they were per sport onto every sport that has no unit of

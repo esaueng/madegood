@@ -131,6 +131,43 @@ the replay cursor to the estimated wind-axis crossing. Both use the displayed
 selection's clock. The results require wind and sufficient track evidence and
 live in the detail view alongside the wind input.
 
+## Motorboating
+
+- **Trip:** the session's distance (above), shown in nautical miles by default.
+- **Log total:** live, the trip plus every saved motorboat session on the iPhone; in
+  session detail ("Log to date"), the trip plus every saved motorboat session that
+  started before it.
+- **Engine time:** moving time made of intervals whose mean Doppler speed (the mean of
+  the two fixes' speeds, or the one known) is at least 1.0 m/s (about 1.9 kn). It follows
+  the same pauses, auto-pause roll-backs and GPS anchors as moving time, so it never
+  exceeds it. It is not stored in the session summary.
+- **Fuel (estimate):** `burn under way × engine time + idle burn × (moving time −
+  engine time)`, from rates the user enters in litres or US gallons per hour (stored as
+  L/h; idle defaults to 0). Without an under-way rate there is no estimate. It is always
+  labeled an estimate: actual burn depends on load, trim and sea state.
+
+## Anchor alarm
+
+iPhone only, independent of recording. The anchor is set at the accuracy-weighted
+(1/σ², σ ≥ 1 m) mean of the usable fixes in the 10 s before the newest one, with a
+radius of 10–500 m (offered: 20–150 m, default 40 m). Fixes with a horizontal accuracy
+worse than 25 m, or none, are ignored.
+
+| State | Meaning |
+|---|---|
+| Clear | No anchor set |
+| Armed | Watching; the boat is inside or the evidence is inconclusive |
+| Alarming: dragging | ≥ 3 clearly-outside fixes in a row spanning ≥ 10 s. Latches until silenced |
+| Alarming: no GPS | No usable fix for 120 s. The next usable fix returns to Armed |
+
+A fix is **clearly outside** when its distance minus its accuracy radius exceeds the
+radius, and **inside** when its distance is within the radius; inside resets the
+evidence, and a fix in between neither counts nor resets. Silencing returns to Armed
+and suppresses alarms for 60 s; if the boat is still outside after that, it sounds
+again. Changing the radius restarts the evidence. Distances and bearings (true, from
+the boat to the anchor) are shown in whole metres and degrees whatever the distance
+unit. The alarm is an aid, not for navigation.
+
 ## Heart rate
 
 Current heart rate is the latest reading. Average is the mean of the readings, and max

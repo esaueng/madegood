@@ -26,7 +26,14 @@ struct ContentView: View {
                 SettingsView()
             }
         }
+        // Above every tab, without covering a navigation bar's Back button.
+        .safeAreaInset(edge: .top, spacing: 0) {
+            AnchorAlarmBanner()
+                .padding(.vertical, 4)
+        }
         .onAppear {
+            // Resumes watching a saved anchor after a relaunch.
+            _ = AnchorWatch.shared
             voyageRecorder.liveSharing = PrivateVoyageSync.shared?.liveSharing
             controller.onFinish = { _, _, _ in library.reload() }
             library.reload()
@@ -57,7 +64,7 @@ private struct RecordView: View {
                 switch controller.recorder.state {
                 case .idle:
                     if let workout = controller.watchWorkout {
-                        LiveView(watchWorkout: workout)
+                        LiveView(watchWorkout: workout, library: library)
                             .id(workout.sessionID)
                     } else if WatchWorkoutMirror.shared.isAttached {
                         WatchWorkoutStatus(snapshot: nil, connected: true)
@@ -70,7 +77,7 @@ private struct RecordView: View {
                     ProgressView()
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 case .recording(_, let startedAt, let sport):
-                    LiveView(recorder: controller.recorder, startedAt: startedAt, sport: sport)
+                    LiveView(recorder: controller.recorder, startedAt: startedAt, sport: sport, library: library)
                 }
             }
         }
@@ -127,6 +134,12 @@ private struct StartView: View {
                                 .accessibilityIdentifier("sport.hide.\(sport.rawValue)")
                         }
                     }
+                }
+            }
+
+            if !store[.motorboating].isHidden || AnchorWatch.shared.isArmed {
+                Section {
+                    AnchorAlarmRow()
                 }
             }
 
@@ -448,23 +461,26 @@ private struct LiveView: View {
     let startedAt: Date?
     let watchWorkout: WorkoutMirrorSnapshot?
     let sport: Sport
+    let library: SessionLibrary
     @State private var banner: SessionRecorder.DistanceAlertEvent?
     @ScaledMetric(relativeTo: .largeTitle) private var primarySize = 64.0
 
     /// The sport's first screen, read once when the session opens.
     private let first: LiveScreen
 
-    init(recorder: SessionRecorder, startedAt: Date, sport: Sport) {
+    init(recorder: SessionRecorder, startedAt: Date, sport: Sport, library: SessionLibrary) {
         self.recorder = recorder
         self.startedAt = startedAt
         self.sport = sport
+        self.library = library
         watchWorkout = nil
         first = UserSettings.settings(for: sport).firstScreen
     }
 
-    init(watchWorkout: WorkoutMirrorSnapshot) {
+    init(watchWorkout: WorkoutMirrorSnapshot, library: SessionLibrary) {
         recorder = nil
         startedAt = nil
+        self.library = library
         self.watchWorkout = watchWorkout
         sport = watchWorkout.sport
         first = UserSettings.settings(for: sport).firstScreen
@@ -494,6 +510,7 @@ private struct LiveView: View {
                     TimelineView(.periodic(from: startedAt, by: 1)) { context in
                         metricCards(display: display, readings: readings, elapsed: context.date.timeIntervalSince(startedAt))
                     }
+                    motorboatPage(display: display, readings: readings)
                     if first != .map {
                         LiveTrackMap(points: recorder.trackPoints)
                             .frame(height: 180)
@@ -511,6 +528,7 @@ private struct LiveView: View {
                     .font(.footnote)
                 } else {
                     metricCards(display: display, readings: readings, elapsed: readings.elapsed)
+                    motorboatPage(display: display, readings: readings)
                 }
             }
             .padding()
@@ -542,6 +560,18 @@ private struct LiveView: View {
             guard banner != nil else { return }
             try? await Task.sleep(for: .seconds(5))
             if !Task.isCancelled { banner = nil }
+        }
+    }
+
+    /// The motorboat log and the anchor alarm (PLAN §5), under the headline metrics.
+    @ViewBuilder
+    private func motorboatPage(display: LiveDisplay, readings: LiveReadings) -> some View {
+        if sport == .motorboating {
+            MotorboatLiveCard(readings: readings, display: display, savedTrips: MotorboatStats.savedTrips(library))
+            AnchorAlarmRow()
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(.background.secondary, in: .rect(cornerRadius: 12))
         }
     }
 

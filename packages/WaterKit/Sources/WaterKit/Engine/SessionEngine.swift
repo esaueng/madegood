@@ -36,6 +36,9 @@ public struct LiveMetrics: Sendable, Hashable {
     public var movingTime: Double
     /// Distance while not paused, m.
     public var distance: Double
+    /// Moving time spent under way: intervals whose Doppler speed is at least
+    /// `SessionEngine.underWaySpeed`, s. Motorboating reports it as engine time.
+    public var underWayTime: Double = 0
     /// Mean Doppler speed over the last few seconds, m/s.
     public var speed: Double?
     /// Distance over moving time, m/s.
@@ -83,6 +86,9 @@ public struct SessionEngine: LiveAnalyzer {
     public static let maxSpeedWindows = (short: 2.0, long: 10.0)
     /// The current speed is blanked when the last fix with a speed is older than this, s.
     public static let staleSpeedAfter = 5.0
+    /// An interval counts toward `underWayTime` at or above this mean Doppler speed, m/s
+    /// (about 1.9 kn): faster than drifting or swinging at anchor.
+    public static let underWaySpeed = 1.0
 
     public let profile: SportProfile
     public private(set) var filter: GPSFilter
@@ -95,11 +101,13 @@ public struct SessionEngine: LiveAnalyzer {
         var since: Double
         var movingTime: Double
         var distance: Double
+        var underWayTime = 0.0
     }
     private struct LapStart {
         var since: Double
         var movingTime: Double
         var distance: Double
+        var underWayTime = 0.0
         /// Distance at the last manual lap (or the start), where auto-laps count from.
         var autoLapOrigin: Double
     }
@@ -118,6 +126,7 @@ public struct SessionEngine: LiveAnalyzer {
     private var mode = Mode.moving
     private var movingTime = 0.0
     private var distance = 0.0
+    private var underWayTime = 0.0
     private var lastAccepted: GPSFix?
     private var course: Double?
     /// While moving: totals when the speed first fell below the pause threshold.
@@ -170,7 +179,8 @@ public struct SessionEngine: LiveAnalyzer {
             closeLap(at: interval.lowerBound, isAuto: false)
         }
         lapStart = LapStart(
-            since: interval.upperBound, movingTime: movingTime, distance: distance, autoLapOrigin: distance)
+            since: interval.upperBound, movingTime: movingTime, distance: distance, underWayTime: underWayTime,
+            autoLapOrigin: distance)
         autoLapsSinceManual = 0
         retainedSpanStart = interval.upperBound
         filter = GPSFilter(config: filter.config)
@@ -204,7 +214,7 @@ public struct SessionEngine: LiveAnalyzer {
 
     public var snapshot: LiveMetrics {
         LiveMetrics(
-            elapsed: latestTime, movingTime: movingTime, distance: distance,
+            elapsed: latestTime, movingTime: movingTime, distance: distance, underWayTime: underWayTime,
             speed: currentSpeed, averageSpeed: movingTime > 0 ? distance / movingTime : nil,
             maxSpeed2s: best2s?.mean, maxSpeed10s: best10s?.mean,
             maxSpeed2sRange: best2s?.range, maxSpeed10sRange: best10s?.range, course: course,
@@ -250,8 +260,17 @@ public struct SessionEngine: LiveAnalyzer {
                 lat1: previous.latitude, lon1: previous.longitude, lat2: fix.latitude, lon2: fix.longitude)
         }
         let speed = fix.speed.flatMap { $0.isFinite && $0 >= 0 ? $0 : nil }
+        // The interval's speed is the mean of its two Doppler readings (or the one known).
+        let previousSpeed = startsInterval ? nil : previous?.speed.flatMap { $0.isFinite && $0 >= 0 ? $0 : nil }
+        let intervalSpeed: Double? =
+            switch (previousSpeed, speed) {
+            case (let a?, let b?): (a + b) / 2
+            case (let a?, nil): a
+            case (nil, let b?): b
+            case (nil, nil): nil
+            }
         account(
-            dt: dt, step: step, speed: speed, at: fix.t,
+            dt: dt, step: step, speed: speed, underWay: (intervalSpeed ?? 0) >= Self.underWaySpeed, at: fix.t,
             intervalStart: startsInterval ? fix.t : (previous?.t ?? fix.t))
         updateSpeeds(fix, speed: speed)
         // Auto-laps fall at whole multiples of the lap distance from the last manual lap,
@@ -266,7 +285,9 @@ public struct SessionEngine: LiveAnalyzer {
     }
 
     /// Adds one interval between accepted fixes to the totals and runs auto-pause.
-    private mutating func account(dt: Double, step: Double, speed: Double?, at t: Double, intervalStart: Double) {
+    private mutating func account(
+        dt: Double, step: Double, speed: Double?, underWay: Bool, at t: Double, intervalStart: Double
+    ) {
         let config = profile.autoPause
         switch mode {
         case .manuallyPaused:
@@ -274,22 +295,26 @@ public struct SessionEngine: LiveAnalyzer {
         case .moving:
             movingTime += dt
             distance += step
+            if underWay { underWayTime += dt }
             if dt > 0 {
                 movementIntervals?.append(MovementInterval(elapsedRange: intervalStart...t, distance: step))
             }
             guard config.enabled, let speed else { return }
             if speed < config.pauseBelow {
-                let mark = slow ?? Mark(since: t, movingTime: movingTime, distance: distance)
+                let mark = slow ?? Mark(since: t, movingTime: movingTime, distance: distance, underWayTime: underWayTime)
                 slow = mark
                 if t - mark.since >= config.pauseAfter {
                     // Date the pause back to when the boat slowed down, but not past the
                     // start of the current lap: closed laps keep their totals.
                     let mark =
                         lapStart.since > mark.since
-                        ? Mark(since: lapStart.since, movingTime: lapStart.movingTime, distance: lapStart.distance)
+                        ? Mark(
+                            since: lapStart.since, movingTime: lapStart.movingTime, distance: lapStart.distance,
+                            underWayTime: lapStart.underWayTime)
                         : mark
                     movingTime = mark.movingTime
                     distance = mark.distance
+                    underWayTime = mark.underWayTime
                     // The checkpoint keeps the intervals that had been booked by this
                     // time, including when a manual lap closed between fixes.
                     while let last = movementIntervals?.last, last.elapsedRange.upperBound > mark.since {
@@ -310,6 +335,7 @@ public struct SessionEngine: LiveAnalyzer {
             var mark = fast ?? Mark(since: intervalStart, movingTime: 0, distance: 0)
             mark.movingTime += dt
             mark.distance += step
+            if underWay { mark.underWayTime += dt }
             fast = mark
             if dt > 0, movementIntervals != nil {
                 pendingResumeIntervals.append(MovementInterval(elapsedRange: intervalStart...t, distance: step))
@@ -318,6 +344,7 @@ public struct SessionEngine: LiveAnalyzer {
                 // Date the resume back to when the boat started moving again.
                 movingTime += mark.movingTime
                 distance += mark.distance
+                underWayTime += mark.underWayTime
                 movementIntervals?.append(contentsOf: pendingResumeIntervals)
                 mode = .moving
                 fast = nil
@@ -389,7 +416,7 @@ public struct SessionEngine: LiveAnalyzer {
         laps.append(lap(endingAt: t, isAuto: isAuto))
         if !isAuto { autoLapsSinceManual = 0 }
         lapStart = LapStart(
-            since: t, movingTime: movingTime, distance: distance,
+            since: t, movingTime: movingTime, distance: distance, underWayTime: underWayTime,
             autoLapOrigin: isAuto ? lapStart.autoLapOrigin : distance)
         if isAuto { generatedEvents.append(SessionEvent(t: t, type: .lap, data: ["auto": true])) }
     }
