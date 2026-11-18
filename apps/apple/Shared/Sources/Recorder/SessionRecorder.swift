@@ -117,9 +117,11 @@ final class SessionRecorder {
         cancelPrepared()
         let id = UUID()
         prepareID = id
-        // Asks for Health access before the start, so the prompt never delays it.
-        try? await WorkoutSource.requestAuthorization(store: healthStore)
-        guard prepareID == id, state == .idle else { return nil }
+        if !startWorkout {
+            // Asks for Health access before the start, so the prompt never delays it.
+            try? await WorkoutSource.requestAuthorization(store: healthStore)
+            guard prepareID == id, state == .idle else { return nil }
+        }
         prepareID = nil
         let workout = makeWorkout()
         do {
@@ -129,6 +131,9 @@ final class SessionRecorder {
             // Not fatal: `start` creates the session itself.
             print("SessionRecorder: preparing the workout failed: \(error)")
         }
+        // The Action button needs the workout running first: a permission prompt (say, for
+        // a type a later version adds) must not hold it past Apple's 30 s.
+        if startWorkout { try? await WorkoutSource.requestAuthorization(store: healthStore) }
         return id
     }
 
