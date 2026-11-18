@@ -41,15 +41,37 @@ pnpm -C web build
 )
 ```
 
-In another shell at the repo root, issue a synthetic access token against the local key, create a voyage and enable a local grant.
+In another shell at the repo root, issue synthetic access tokens against the local key and register a refresh token for the skipper.
 
 ```sh
-access_token="$(cd web && node --env-file=.dev.vars --input-type=module -e '
-  import { SignJWT } from "jose";
-  console.log(await new SignJWT({}).setProtectedHeader({ alg: "HS256", typ: "at+jwt" })
-    .setIssuer("madegood").setAudience("madegood-api").setSubject("synthetic-skipper")
-    .setExpirationTime("15m").sign(new TextEncoder().encode(process.env.JWT_SIGNING_KEY)));
+access_token_for() {
+  (
+    cd web
+    SYNTHETIC_SUBJECT="$1" node --env-file=.dev.vars --input-type=module -e '
+      import { SignJWT } from "jose";
+      console.log(await new SignJWT({}).setProtectedHeader({ alg: "HS256", typ: "at+jwt" })
+        .setIssuer("madegood").setAudience("madegood-api").setSubject(process.env.SYNTHETIC_SUBJECT)
+        .setExpirationTime("15m").sign(new TextEncoder().encode(process.env.JWT_SIGNING_KEY)));
+    '
+  )
+}
+access_token="$(access_token_for synthetic-skipper)"
+outsider_token="$(access_token_for synthetic-outsider)"
+refresh_token="$(node -p 'require("node:crypto").randomBytes(32).toString("base64url")')"
+refresh_insert="$(SYNTHETIC_REFRESH="$refresh_token" node --input-type=module -e '
+  import { createHash, randomUUID } from "node:crypto";
+  const hash = createHash("sha256").update(process.env.SYNTHETIC_REFRESH).digest("hex");
+  const now = Date.now();
+  const values = [randomUUID(), "synthetic-skipper", hash].map(value => "\x27" + value + "\x27");
+  console.log("INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at, created_at) VALUES (" +
+    [...values, now + 30 * 86400000, now].join(", ") + ");");
 ')"
+pnpm -C web exec wrangler d1 execute DB --local --command "$refresh_insert" >/dev/null
+```
+
+Create a voyage and enable a local grant in that shell.
+
+```sh
 voyage_id="$(node -p 'crypto.randomUUID()')"
 voyage_url="http://127.0.0.1:5173/api/voyages/$voyage_id"
 curl -fsS -X PUT "$voyage_url" -H "Authorization: Bearer $access_token" \
@@ -71,11 +93,16 @@ curl -fsS "$voyage_url/sharing" -H "Authorization: Bearer $access_token"
 ```
 
 For the [iPhone loopback test](../apps/apple/Integrations/VoyageSharing/README.md),
-pass a skipper access and refresh token pair from the local database, plus an
-access token minted with subject `synthetic-outsider`. The refresh token
-supports owner commands after the access token expires. Supply the port used by
-Wrangler and keep the credentials in a local test environment or scratch
-`.xctestrun` file.
+pass the credentials from the same shell to the test runner. The database stores
+only the refresh token hash. The app uses the original token in `$refresh_token`.
+
+```sh
+export TEST_RUNNER_MADEGOOD_TEST_WORKER_PORT=5173
+export TEST_RUNNER_MADEGOOD_TEST_VOYAGE_ACCOUNT=synthetic-skipper
+export TEST_RUNNER_MADEGOOD_TEST_VOYAGE_TOKEN="$access_token"
+export TEST_RUNNER_MADEGOOD_TEST_VOYAGE_REFRESH_TOKEN="$refresh_token"
+export TEST_RUNNER_MADEGOOD_TEST_VOYAGE_OUTSIDER="$outsider_token"
+```
 
 ## Production follow-ons
 

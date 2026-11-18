@@ -320,6 +320,38 @@ describe("local voyage transport", () => {
     expect(await alarmAt(voyage.stub)).toBeNull();
   });
 
+  it("preserves a legacy issuance-millisecond receipt in a mixed retry", async () => {
+    const voyage = await setup();
+    const time = clock();
+    const slug = await voyage.issue();
+    const legacy = position(time.start, 1);
+    await runInDurableObject(voyage.stub, (_, state) => {
+      state.storage.sql.exec(
+        "INSERT INTO positions VALUES (?, ?, ?, ?, ?, ?, 1)",
+        legacy.sampleId,
+        legacy.segmentId,
+        legacy.capturedAtMs,
+        legacy.lat,
+        legacy.lon,
+        time.start,
+      );
+    });
+    time.at(10);
+    const fresh = position(time.start + 10, 2);
+    expect(await (await voyage.ingest([legacy, fresh])).json()).toEqual({
+      receipts: [
+        { sampleId: legacy.sampleId, receivedAtMs: time.start },
+        { sampleId: fresh.sampleId, receivedAtMs: time.start + 10 },
+      ],
+    });
+    expect((await voyage.ingest([position(time.start, 3)])).status).toBe(409);
+    expect(await snapshot(slug)).toEqual({
+      status: "available",
+      current: viewerFix(fresh),
+      segments: [[viewerFix(fresh)]],
+    });
+  });
+
   it("releases old positions when rotating a full share", async () => {
     const voyage = await setup();
     const time = clock();

@@ -193,7 +193,6 @@ export class VoyageLive extends DurableObject<Env> {
       const added = new Map<string, StoredPosition>();
       for (const position of positions) {
         const { sampleId, segmentId, capturedAtMs, lat, lon } = position;
-        if (capturedAtMs <= share.issuedAtMs) return { status: "sync_conflict" } as const;
         const prior =
           added.get(sampleId) ??
           this.sql
@@ -208,7 +207,10 @@ export class VoyageLive extends DurableObject<Env> {
             prior.lon !== lon)
         )
           return { status: "sync_conflict" } as const;
-        if (!prior) added.set(sampleId, { ...position, receivedAtMs, grantGeneration });
+        if (!prior) {
+          if (capturedAtMs <= share.issuedAtMs) return { status: "sync_conflict" } as const;
+          added.set(sampleId, { ...position, receivedAtMs, grantGeneration });
+        }
         receipts.set(sampleId, prior?.receivedAtMs ?? receivedAtMs);
       }
       const { count } = this.sql
