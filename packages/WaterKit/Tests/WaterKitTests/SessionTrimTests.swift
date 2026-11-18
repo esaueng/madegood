@@ -280,6 +280,29 @@ import Testing
         #expect(selectedPoints == [1, 2, 4, 5, 6].map { originalPoints[$0] })
     }
 
+    @Test func sidecarRoundTripPreservesAShortCutWhoseEndpointsRoundTogether() throws {
+        let start = 1.0.nextUp.nextUp
+        let cut = 6.0...6.0.nextUp
+        #expect(cut.lowerBound - start == cut.upperBound - start)
+        let raw = Self.session(gps: [2, cut.lowerBound, cut.upperBound, 8].map { Self.fix($0) }, end: 10)
+        let trim = try SessionTrim(start: start, end: 10, removing: [cut])
+        let folder = try TempFolder()
+        let store = SessionTrimStore(directory: folder.url)
+        try store.save(trim, for: raw)
+        let reloaded = try store.load(sessionId: raw.meta.sessionId)
+        let saved = try #require(reloaded)
+        let selected = try SessionSelection(session: raw, trim: saved)
+        let left = selected.replayTime(forSourceTime: cut.lowerBound)
+        let right = selected.replayTime(forSourceTime: cut.upperBound)
+        #expect(left < right)
+        #expect(selected.replay.fixSpans.map { $0.map(\.t) }.map(\.count) == [2, 2])
+        #expect(selected.replay.fixSpans[0].last?.t == left)
+        #expect(selected.replay.fixSpans[1].first?.t == right)
+        #expect(GPXWriter().segments(of: selected).map(\.count) == [2, 2])
+        let timeline = SessionReplayTimeline(replay: selected.replay, recordedFixes: selected.track.gps)
+        #expect(timeline.points.map(\.routeSegment) == [0, 0, 1, 1])
+    }
+
     @Test(arguments: [2, 10])
     func bestSpeedCannotSpanCutEvenWhenBothSidesHaveDoppler(window: Int) throws {
         let end = Double(window) + 0.5

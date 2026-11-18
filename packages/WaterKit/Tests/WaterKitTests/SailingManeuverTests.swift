@@ -92,6 +92,14 @@ import Testing
         #expect(cutBeforeTurn.replayRanges[1].contains(intact.event.t))
     }
 
+    @Test func aReportedUnreliableCourseInterruptsManeuverEvidence() throws {
+        var gps = tackTrack
+        gps[16].courseAccuracy = 180
+        #expect(try SessionSelection(session: session(gps)).sailingManeuvers(windFromDegreesTrue: 0).isEmpty)
+        gps[16].courseAccuracy = 5
+        #expect(try SessionSelection(session: session(gps)).sailingManeuvers(windFromDegreesTrue: 0).count == 1)
+    }
+
     @Test func requiresExplicitWindAndSailingSport() throws {
         let selection = try SessionSelection(session: session(tackTrack))
         for wind: Double? in [nil, .nan, .infinity, -.infinity, -1, 361, 90] {

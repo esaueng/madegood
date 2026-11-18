@@ -40,6 +40,7 @@ extension SessionSelection {
                 }
                 guard !paused, fix.t >= 0, fix.t <= duration,
                     let course = fix.course, (0...360).contains(course),
+                    fix.courseAccuracy.map({ (0...SailingManeuverDetector.axisProximity).contains($0) }) ?? true,
                     let speed = point.speed, speed >= SailingManeuverDetector.minimumCourseSpeed
                 else {
                     detector.finishRun()

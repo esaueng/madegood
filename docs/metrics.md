@@ -124,6 +124,7 @@ detail view. With a direction, replay looks for a sustained course change across
 the wind axis with a Doppler speed dip. An upwind crossing is a tack and a
 downwind crossing is a gybe. Each retained span is analyzed independently. Pauses,
 GPS gaps and unreliable course or speed interrupt the evidence within a span.
+A reported course uncertainty greater than 20° also interrupts the evidence.
 
 Each result highlights the detector's approach-to-departure bounds and moves
 the replay cursor to the estimated wind-axis crossing. Both use the displayed

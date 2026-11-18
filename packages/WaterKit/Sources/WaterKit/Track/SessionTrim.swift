@@ -68,26 +68,44 @@ public struct SessionTrim: Sendable, Hashable {
         guard range.upperBound <= availableEnd else { throw Error.exceedsRecording(availableEnd: availableEnd) }
     }
 
-    fileprivate func select(from session: RawSession) throws -> (track: Track, gpsTimes: [Double]) {
+    fileprivate var replayRanges: [ClosedRange<Double>] {
+        let start = range.lowerBound
+        var ranges: [ClosedRange<Double>] = []
+        for span in retainedRanges {
+            // Subtracting the origin can round both sides of a very short cut to
+            // the same instant. Advance the next span by the minimum representable step.
+            let lower = max(span.lowerBound - start, ranges.last?.upperBound.nextUp ?? 0)
+            ranges.append(lower...max(lower, span.upperBound - start))
+        }
+        return ranges
+    }
+
+    fileprivate func select(
+        from session: RawSession, replayRanges: [ClosedRange<Double>]
+    ) throws -> (track: Track, gpsTimes: [Double]) {
         try validate(in: session)
         let start = range.lowerBound
-        let end = range.upperBound
-        let spans = retainedRanges
-        let retainedGPS = session.gps.filter { fix in spans.contains { $0.contains(fix.t) } }
-        let gps = retainedGPS.map { fix in
+        func selectedTime(_ time: Double) -> Double? {
+            guard let index = retainedRanges.firstIndex(where: { $0.contains(time) }) else { return nil }
+            return max(time - start, replayRanges[index].lowerBound)
+        }
+        var gpsTimes: [Double] = []
+        let gps = session.gps.compactMap { fix -> GPSFix? in
+            guard let time = selectedTime(fix.t) else { return nil }
+            gpsTimes.append(fix.t)
             var selected = fix
-            selected.t -= start
+            selected.t = time
             return selected
         }
         let hr = session.hr.compactMap { sample -> HRSample? in
-            guard spans.contains(where: { $0.contains(sample.t) }) else { return nil }
-            return HRSample(t: sample.t - start, bpm: sample.bpm)
+            guard let time = selectedTime(sample.t) else { return nil }
+            return HRSample(t: time, bpm: sample.bpm)
         }
 
         // RawSession is sorted and retains source order at equal timestamps.
         let userEvents = session.events.filter { $0.t.isFinite && $0.data?["auto"] != .bool(true) }
         var events = [SessionEvent(t: 0, type: .start)]
-        for span in spans {
+        for (span, replayRange) in zip(retainedRanges, replayRanges) {
             let lastPauseChange = userEvents.last {
                 $0.t < span.lowerBound && ($0.type == .pause || $0.type == .resume)
             }
@@ -96,20 +114,20 @@ public struct SessionTrim: Sendable, Hashable {
             }
             // A transition at the boundary sets the initial state itself.
             if lastPauseChange?.type == .pause && !changesPauseAtStart {
-                events.append(SessionEvent(t: span.lowerBound - start, type: .pause))
+                events.append(SessionEvent(t: replayRange.lowerBound, type: .pause))
             }
             events += userEvents.compactMap { event -> SessionEvent? in
                 guard span.contains(event.t), event.type != .start, event.type != .stop else { return nil }
-                return SessionEvent(t: event.t - start, type: event.type, data: event.data)
+                return SessionEvent(t: max(event.t - start, replayRange.lowerBound), type: event.type, data: event.data)
             }
         }
         // Replay processes sensor readings before events at equal times, and this stop
         // follows any retained marks/laps at the endpoint. It also closes a quiet tail.
-        events.append(SessionEvent(t: end - start, type: .stop))
+        events.append(SessionEvent(t: replayRanges[replayRanges.count - 1].upperBound, type: .stop))
         let track = Track(
             sessionId: session.meta.sessionId, sport: session.meta.sport,
             startedAt: session.startedAt.addingTimeInterval(start), gps: gps, hr: hr, events: events)
-        return (track, retainedGPS.map(\.t))
+        return (track, gpsTimes)
     }
 }
 
@@ -127,9 +145,7 @@ public struct SessionSelection: Sendable {
     /// Inclusive retained ranges on the original recording clock.
     public let retainedRanges: [ClosedRange<Double>]
     /// The same ranges on the replay clock, preserving elapsed time between their boundaries.
-    public var replayRanges: [ClosedRange<Double>] {
-        retainedRanges.map { replayTime(forSourceTime: $0.lowerBound)...replayTime(forSourceTime: $0.upperBound) }
-    }
+    public let replayRanges: [ClosedRange<Double>]
     /// Total selected time, excluding the interior interval visible as a gap on the replay clock.
     public var retainedDuration: Double {
         guard !replay.removedIntervals.isEmpty else { return duration }
@@ -137,11 +153,16 @@ public struct SessionSelection: Sendable {
     }
 
     public func replayTime(forSourceTime time: Double) -> Double {
-        time - sourceStart
+        let rebased = time - sourceStart
+        guard let index = retainedRanges.firstIndex(where: { $0.contains(time) }) else { return rebased }
+        return max(rebased, replayRanges[index].lowerBound)
     }
 
     public func sourceTime(forReplayTime time: Double) -> Double {
-        time + sourceStart
+        let original = time + sourceStart
+        guard let index = replayRanges.firstIndex(where: { $0.contains(time) }) else { return original }
+        let span = retainedRanges[index]
+        return min(max(original, span.lowerBound), span.upperBound)
     }
 
     /// Original times in selected GPS index order. Adding the trim offset to a
@@ -161,15 +182,17 @@ public struct SessionSelection: Sendable {
     /// the raw recording and track v1. Removing the bounds restores the original.
     public init(session: RawSession, trim: SessionTrim? = nil, profile: SportProfile? = nil) throws {
         if let trim {
-            let selected = try trim.select(from: session)
+            let ranges = trim.replayRanges
+            let selected = try trim.select(from: session, replayRanges: ranges)
             let origin = trim.range.lowerBound
-            let removedIntervals = trim.removedRanges.map { ($0.lowerBound - origin)...($0.upperBound - origin) }
+            let removedIntervals = zip(ranges, ranges.dropFirst()).map { $0.upperBound...$1.lowerBound }
             let replay = SessionReplay(track: selected.track, profile: profile, removedIntervals: removedIntervals)
             self.replay = replay
             track = replay.analyzedTrack(from: selected.track)
             duration = replay.metrics.elapsed
             sourceStart = origin
             retainedRanges = trim.retainedRanges
+            replayRanges = ranges
             originalGPSClock = OriginalGPSClock(startedAt: session.startedAt, times: selected.gpsTimes)
         } else {
             track = session.track()
@@ -177,6 +200,7 @@ public struct SessionSelection: Sendable {
             duration = max(replay.metrics.elapsed, SessionTrim.availableEnd(in: session))
             sourceStart = 0
             retainedRanges = [min(0, replay.fixes.first?.t ?? 0)...duration]
+            replayRanges = retainedRanges
             originalGPSClock = nil
         }
     }
