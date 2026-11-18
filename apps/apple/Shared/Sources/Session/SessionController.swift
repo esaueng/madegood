@@ -63,7 +63,7 @@ final class SessionController {
 
     var isBusy: Bool {
         #if os(iOS)
-            isBusyLocally || watchWorkout != nil
+            isBusyLocally || WatchWorkoutMirror.shared.isAttached
         #else
             isBusyLocally
         #endif
@@ -160,6 +160,12 @@ final class SessionController {
 
     private func finishCountdown() {
         guard let countdown else { return }
+        #if os(iOS)
+            if WatchWorkoutMirror.shared.isAttached {
+                cancelCountdown()
+                return
+            }
+        #endif
         ticker?.cancel()
         ticker = nil
         self.countdown = nil

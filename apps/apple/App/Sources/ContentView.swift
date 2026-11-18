@@ -54,6 +54,10 @@ private struct RecordView: View {
                     if let workout = controller.watchWorkout {
                         LiveView(watchWorkout: workout)
                             .id(workout.sessionID)
+                    } else if WatchWorkoutMirror.shared.isAttached {
+                        WatchWorkoutStatus(snapshot: nil, connected: true)
+                            .padding()
+                            .navigationTitle("On Watch")
                     } else {
                         StartView(controller: controller, library: library, showHistory: showHistory)
                     }

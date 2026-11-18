@@ -7,7 +7,6 @@ import Observation
 @Observable
 final class WatchWorkoutMirror: NSObject, HKWorkoutSessionDelegate {
     static let shared = WatchWorkoutMirror()
-    static let staleAfter: TimeInterval = 15
 
     private enum Event: Sendable {
         case attached(HKWorkoutSession)
@@ -23,6 +22,10 @@ final class WatchWorkoutMirror: NSObject, HKWorkoutSessionDelegate {
 
     var connectedSnapshot: WorkoutMirrorSnapshot? { state.connectedSnapshot }
     var lastConfirmed: WorkoutMirrorSnapshot? { state.lastConfirmed }
+    var isAttached: Bool { state.isAttached }
+
+    func isStale(at now: Date) -> Bool { state.isStale(at: now) }
+    func dismissStale() { state.dismissIfStale(at: .now) }
 
     private override init() {
         let (stream, events) = AsyncStream.makeStream(of: Event.self)
@@ -112,6 +115,6 @@ final class WatchWorkoutMirror: NSObject, HKWorkoutSessionDelegate {
     }
 
     nonisolated func workoutSession(_ workoutSession: HKWorkoutSession, didFailWithError error: any Error) {
-        events.yield(.disconnected(workoutSession))
+        events.yield(.stopped(workoutSession))
     }
 }

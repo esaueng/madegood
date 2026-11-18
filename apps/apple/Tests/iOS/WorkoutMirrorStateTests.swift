@@ -4,6 +4,28 @@ import XCTest
 @testable import MadeGood
 
 final class WorkoutMirrorStateTests: XCTestCase {
+    func testAttachmentBlocksUntilStoppedOrExplicitlyDismissedAfterSilence() {
+        let source = NSObject()
+        let connection = ObjectIdentifier(source)
+        let timestamp = Date(timeIntervalSince1970: 100)
+        var state = WorkoutMirrorState()
+        state.connect(connection, at: timestamp)
+        XCTAssertTrue(state.isAttached)
+        XCTAssertNil(state.connectedSnapshot)
+        state.dismissIfStale(at: timestamp.addingTimeInterval(14))
+        XCTAssertTrue(state.isAttached)
+        let latest = snapshot(UUID(), sequence: 1)
+        state.receive(latest, from: connection, at: timestamp.addingTimeInterval(10))
+        state.dismissIfStale(at: timestamp.addingTimeInterval(20))
+        XCTAssertEqual(state.connectedSnapshot, latest)
+        state.dismissIfStale(at: timestamp.addingTimeInterval(25))
+        XCTAssertFalse(state.isAttached)
+        XCTAssertNil(state.connectedSnapshot)
+        XCTAssertEqual(state.lastConfirmed, latest)
+        state.stop(connection)
+        XCTAssertNil(state.lastConfirmed)
+    }
+
     func testDuplicateAndOutOfOrderSnapshotsDoNotReplaceReadings() throws {
         let source = NSObject()
         let connection = ObjectIdentifier(source)
