@@ -7,3 +7,6 @@ filter:
     - putVoyage
     - putVoyageLeg
     - putVoyageLegTrack
+    - getVoyageSharing
+    - changeVoyageSharing
+    - postVoyagePositions

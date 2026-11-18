@@ -3,6 +3,30 @@
     import WaterKit
 
     extension PrivateVoyageSync {
+        #if targetEnvironment(simulator)
+            static func makeLoopbackDemo() -> PrivateVoyageSync? {
+                let environment = ProcessInfo.processInfo.environment
+                guard let port = environment["MADEGOOD_TEST_WORKER_PORT"].flatMap(UInt16.init), port > 0,
+                    let accessToken = environment["MADEGOOD_TEST_VOYAGE_TOKEN"], !accessToken.isEmpty,
+                    let accountID = environment["MADEGOOD_TEST_VOYAGE_ACCOUNT"], accountID.hasPrefix("synthetic-"),
+                    let runID = environment["MADEGOOD_TEST_VOYAGES"].flatMap(UUID.init(uuidString:))
+                else { return nil }
+                let store = SyntheticVoyageCredentials()
+                try? store.save(
+                    VoyageCredentials(
+                        binding: VoyageAccountBinding(accountID: accountID, signInID: runID),
+                        tokens: VoyageTokenPair(accessToken: accessToken, refreshToken: "synthetic-unused")
+                    ))
+                return PrivateVoyageSync(
+                    apiRoot: URL(string: "http://127.0.0.1:\(port)/api")!,
+                    root: URL.temporaryDirectory.appending(path: "sync-\(runID)", directoryHint: .isDirectory),
+                    transport: VoyageURLSession(),
+                    store: store,
+                    isDemo: true
+                )
+            }
+        #endif
+
         static func makeDemo() -> PrivateVoyageSync {
             let root = URL.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
             return PrivateVoyageSync(
@@ -80,7 +104,8 @@
 
         private func response(_ request: URLRequest, _ status: Int) -> HTTPURLResponse {
             HTTPURLResponse(
-                url: request.url!, statusCode: status, httpVersion: nil, headerFields: ["Content-Type": "application/json"]
+                url: request.url!, statusCode: status, httpVersion: nil,
+                headerFields: ["Content-Type": "application/json"]
             )!
         }
     }

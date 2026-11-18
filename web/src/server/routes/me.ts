@@ -14,6 +14,7 @@ import { sessions, users } from "../db/schema";
 import { apiError, errorResponse } from "../lib/errors";
 import { createRouter } from "../lib/router";
 import { deletePrefix, userPrefix } from "../lib/storage";
+import { purgeAccountVoyages } from "../live/registry";
 
 const security = [{ bearerAuth: [] }];
 
@@ -150,7 +151,13 @@ me.openapi(deleteRoute, async (c) => {
   // with the rows already gone, so retrying after an R2 failure still cleans up.
   // Sessions, voyages and their legs, refresh tokens and privacy zones cascade from the user.
   await db.delete(users).where(eq(users.id, userId));
-  await deletePrefix(c.env.TRACKS, userPrefix(userId));
-  for (let i = 0; i < keys.length; i += 1000) await c.env.TRACKS.delete(keys.slice(i, i + 1000));
+  const cleanupTracks = async () => {
+    await deletePrefix(c.env.TRACKS, userPrefix(userId));
+    for (let i = 0; i < keys.length; i += 1000) await c.env.TRACKS.delete(keys.slice(i, i + 1000));
+  };
+  const cleanup = await Promise.allSettled([purgeAccountVoyages(c.env, userId), cleanupTracks()]);
+  for (const result of cleanup) {
+    if (result.status === "rejected") throw result.reason;
+  }
   return c.body(null, 204);
 });

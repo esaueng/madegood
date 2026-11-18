@@ -97,6 +97,9 @@ private struct VoyageDetailView: View {
                     Label(error, systemImage: "exclamationmark.triangle")
                         .foregroundStyle(.secondary)
                 }
+                if let sharing = recorder.liveSharing, !voyage.legs.isEmpty {
+                    LiveVoyageSharingSection(service: sharing, voyage: voyage)
+                }
                 let finished = voyage.legs.filter { $0.endedAt != nil }
                 if !finished.isEmpty {
                     Section("Saved Legs") {

@@ -129,6 +129,8 @@
               "forbidden",
               "session_id_taken",
               "sync_conflict",
+              "live_capacity",
+              "stale_grant",
               "unsupported_media_type",
               "payload_too_large",
               "invalid_track",
@@ -499,6 +501,371 @@
           }
         },
         "additionalProperties": false
+      },
+      "VoyagePositionReceipts": {
+        "type": "object",
+        "properties": {
+          "receipts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "sampleId": {
+                  "type": "string",
+                  "format": "uuid",
+                  "description": "Device UUID, stored lowercase."
+                },
+                "receivedAtMs": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "sampleId",
+                "receivedAtMs"
+              ]
+            }
+          }
+        },
+        "required": [
+          "receipts"
+        ]
+      },
+      "VoyagePositionBatch": {
+        "type": "object",
+        "properties": {
+          "grantGeneration": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "description": "The owner grant under which these positions were queued."
+          },
+          "positions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "lat": {
+                  "type": "number",
+                  "minimum": -90,
+                  "maximum": 90
+                },
+                "lon": {
+                  "type": "number",
+                  "minimum": -180,
+                  "maximum": 180
+                },
+                "capturedAtMs": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 8640000000000000
+                },
+                "sampleId": {
+                  "type": "string",
+                  "format": "uuid",
+                  "description": "Device UUID, stored lowercase."
+                },
+                "segmentId": {
+                  "type": "string",
+                  "format": "uuid",
+                  "description": "Stable segment UUID. Start a new one at every recording break or leg boundary."
+                }
+              },
+              "required": [
+                "lat",
+                "lon",
+                "capturedAtMs",
+                "sampleId",
+                "segmentId"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 1,
+            "maxItems": 250
+          }
+        },
+        "required": [
+          "grantGeneration",
+          "positions"
+        ],
+        "additionalProperties": false
+      },
+      "VoyageOwnerSharingState": {
+        "type": "object",
+        "properties": {
+          "sharing": {
+            "type": "string",
+            "enum": [
+              "off",
+              "on",
+              "paused"
+            ]
+          },
+          "delayS": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "grantGeneration": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "description": "Current valid grant, including when paused. Omitted when sharing is off."
+          },
+          "preview": {
+            "$ref": "#/components/schemas/VoyageViewerState"
+          }
+        },
+        "required": [
+          "sharing",
+          "delayS",
+          "preview"
+        ]
+      },
+      "VoyageViewerState": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": [
+                  "unavailable"
+                ]
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": [
+                  "available"
+                ]
+              },
+              "current": {
+                "type": "object",
+                "properties": {
+                  "lat": {
+                    "type": "number",
+                    "minimum": -90,
+                    "maximum": 90
+                  },
+                  "lon": {
+                    "type": "number",
+                    "minimum": -180,
+                    "maximum": 180
+                  },
+                  "capturedAtMs": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 8640000000000000
+                  }
+                },
+                "required": [
+                  "lat",
+                  "lon",
+                  "capturedAtMs"
+                ]
+              },
+              "segments": {
+                "type": "array",
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "lat": {
+                        "type": "number",
+                        "minimum": -90,
+                        "maximum": 90
+                      },
+                      "lon": {
+                        "type": "number",
+                        "minimum": -180,
+                        "maximum": 180
+                      },
+                      "capturedAtMs": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 8640000000000000
+                      }
+                    },
+                    "required": [
+                      "lat",
+                      "lon",
+                      "capturedAtMs"
+                    ]
+                  }
+                }
+              }
+            },
+            "required": [
+              "status",
+              "current",
+              "segments"
+            ]
+          }
+        ]
+      },
+      "VoyageChangeShareResult": {
+        "type": "object",
+        "properties": {
+          "sharing": {
+            "type": "string",
+            "enum": [
+              "off",
+              "on",
+              "paused"
+            ]
+          },
+          "delayS": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "grantGeneration": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "description": "Current valid grant, including when paused. Omitted when sharing is off."
+          },
+          "preview": {
+            "$ref": "#/components/schemas/VoyageViewerState"
+          },
+          "slug": {
+            "type": "string",
+            "description": "Returned only when a new link is issued."
+          }
+        },
+        "required": [
+          "sharing",
+          "delayS",
+          "preview"
+        ]
+      },
+      "VoyageShareCommand": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "issue"
+                ]
+              },
+              "delayS": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 86400
+              },
+              "expiresInS": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 604800
+              }
+            },
+            "required": [
+              "action",
+              "delayS",
+              "expiresInS"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "rotate"
+                ]
+              },
+              "delayS": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 86400
+              },
+              "expiresInS": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 604800
+              }
+            },
+            "required": [
+              "action",
+              "delayS",
+              "expiresInS"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "pause"
+                ]
+              }
+            },
+            "required": [
+              "action"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "resume"
+                ]
+              }
+            },
+            "required": [
+              "action"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "revoke"
+                ]
+              }
+            },
+            "required": [
+              "action"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "delay"
+                ]
+              },
+              "delayS": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 86400
+              }
+            },
+            "required": [
+              "action",
+              "delayS"
+            ],
+            "additionalProperties": false
+          }
+        ]
       },
       "Voyage": {
         "type": "object",
@@ -1445,6 +1812,315 @@
           },
           "404": {
             "description": "No such session or track, or the caller may not see it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/voyages/{voyageId}/positions": {
+      "post": {
+        "tags": [
+          "voyage live"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "operationId": "postVoyagePositions",
+        "summary": "Accept a batch of active voyage fixes",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "Device UUID, stored lowercase."
+            },
+            "required": true,
+            "description": "Device UUID, stored lowercase.",
+            "name": "voyageId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VoyagePositionBatch"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Original server receipt per distinct sample ID.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoyagePositionReceipts"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "A current owner account is required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The live voyage is unavailable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The sample ID or share state conflicts, the grant is stale, or the voyage is at capacity.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body exceeds 64 KiB.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/voyages/{voyageId}/sharing": {
+      "get": {
+        "tags": [
+          "voyage live"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "operationId": "getVoyageSharing",
+        "summary": "Read the owner's live sharing controls and preview",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "Device UUID, stored lowercase."
+            },
+            "required": true,
+            "description": "Device UUID, stored lowercase.",
+            "name": "voyageId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Owner view.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoyageOwnerSharingState"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "A current owner account is required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The live voyage is unavailable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "voyage live"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "operationId": "changeVoyageSharing",
+        "summary": "Issue a new live grant or change the current grant",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "Device UUID, stored lowercase."
+            },
+            "required": true,
+            "description": "Device UUID, stored lowercase.",
+            "name": "voyageId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VoyageShareCommand"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Owner view and any new link credential.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoyageChangeShareResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "A current owner account is required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The live voyage is unavailable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The sample ID or share state conflicts, the grant is stale, or the voyage is at capacity.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body exceeds 64 KiB.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/live/{slug}": {
+      "get": {
+        "tags": [
+          "voyage live"
+        ],
+        "operationId": "getVoyageLive",
+        "summary": "Read a share projection or upgrade to a WebSocket",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "slug",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "101": {
+            "description": "WebSocket. Every message replaces the entire view with a VoyageViewerState."
+          },
+          "200": {
+            "description": "Full projection or uniform unavailable state.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoyageViewerState"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The live voyage is unavailable.",
             "content": {
               "application/json": {
                 "schema": {

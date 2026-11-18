@@ -17,6 +17,8 @@ export const errorCodes = [
   "forbidden",
   "session_id_taken",
   "sync_conflict",
+  "live_capacity",
+  "stale_grant",
   "unsupported_media_type",
   "payload_too_large",
   "invalid_track",
