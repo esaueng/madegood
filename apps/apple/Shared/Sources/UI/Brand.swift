@@ -9,3 +9,21 @@ enum Theme {
     /// The dark-mode accent: teal lifted for contrast on black.
     static let brightTeal = Color(red: 0x3F / 255, green: 0xB8 / 255, blue: 0xA6 / 255)
 }
+
+/// The logo: the cream wave on a teal rounded square, as on the app icon (assets/icon.svg).
+struct LogoMark: View {
+    var size: CGFloat = 40
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: size * 0.2227, style: .continuous)
+        Image("logo.wave")
+            .resizable()
+            .scaledToFit()
+            .foregroundStyle(Theme.cream)
+            .frame(width: size, height: size)
+            .background(Theme.teal, in: shape)
+            .clipShape(shape)
+            .overlay(shape.strokeBorder(.white.opacity(0.12), lineWidth: 0.5))
+            .accessibilityHidden(true)
+    }
+}

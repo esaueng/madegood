@@ -24,6 +24,7 @@ struct StatTile: View {
                 .foregroundStyle(.secondary)
             Text(value)
                 .font(.title3.weight(.semibold).monospacedDigit())
+                .fontDesign(.rounded)
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
                 .accessibilityIdentifier(identifier ?? "stat.\(title)")
