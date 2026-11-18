@@ -147,12 +147,13 @@ if needed. A span never crosses an interval of more than 10 s between fixes (the
 |---|---|
 | 2 s | Best 2 s mean speed: the session's max 2 s speed |
 | 10 s | Best 10 s mean speed: the session's max 10 s speed |
-| 5 × 10 s | Mean of five 10 s windows that do not overlap (they may touch), picked greedily best first. Blank until five fit |
+| 5 × 10 s | Mean of the five 10 s windows that do not overlap (they may touch) with the highest total. Blank until five fit |
 | 100 m, 500 m, nautical mile | Distance over the shortest time to cover 100 m, 500 m or 1852 m of Doppler distance |
 | 1 hour | Doppler distance in the best 3600 s window, over 3600 s, including slow stretches |
-| Alpha 500 | The fastest 500 m span whose start position is within 50 m of the fix where it ends. The start position is interpolated between fixes. It may not start before a GPS re-anchor, where position jumped |
+| Alpha 500 | The fastest 500 m span whose start position is within 50 m of the fix where it ends. The start position is interpolated between fixes, the short way round across the antimeridian. It may not start before a GPS re-anchor, where position jumped, even when the anchor fix has no speed |
 
-Pauses do not stop the categories, as for the max speeds; GPS gaps do. Planing time
+Pauses do not stop the categories, as for the max speeds; GPS gaps do. `waterkit-replay`
+reports the same values, computed over the engine's accepted fixes. Planing time
 and gybe count (PLAN §5) are not computed yet.
 
 ## Heart rate

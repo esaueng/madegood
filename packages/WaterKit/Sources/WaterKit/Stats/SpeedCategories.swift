@@ -19,7 +19,7 @@ public struct SpeedCategories: Sendable, Hashable {
     public var peak2s: SpeedBest?
     /// Best 10 s mean; the same value as `LiveMetrics.maxSpeed10s`.
     public var best10s: SpeedBest?
-    /// Mean of the five best non-overlapping 10 s windows, chosen best first.
+    /// Mean of the five non-overlapping 10 s windows with the highest total (they may touch).
     public var best5x10s: Double?
     /// The five windows behind `best5x10s`, in time order; empty until there are five.
     public var best5x10sRanges: [ClosedRange<Double>]
@@ -60,10 +60,11 @@ public struct SpeedCategories: Sendable, Hashable {
         }
     }
 
-    /// Run fixes through the tracker after the session, without the live engine's GPS
-    /// cleaning. Fixes are used in time order; ones without a usable speed are skipped.
-    /// `peak2s` and `best10s` use the same definitions as the session's max speeds.
-    public static func analyze(_ fixes: [GPSFix]) -> SpeedCategories {
+    /// Run fixes through the tracker without the live engine's GPS cleaning, for tests.
+    /// Sessions use `SessionReplay`, whose engine filters fixes first. Fixes are used in
+    /// time order; ones without a usable speed are skipped. `peak2s` and `best10s` use the
+    /// same definitions as the session's max speeds.
+    static func analyze(_ fixes: [GPSFix]) -> SpeedCategories {
         let usable = fixes.filter { fix in fix.speed.map { $0.isFinite && $0 >= 0 } ?? false }
             .sorted { $0.t < $1.t }
         var tracker = SpeedCategoryTracker()
@@ -79,8 +80,8 @@ public struct SpeedCategories: Sendable, Hashable {
     }
 }
 
-/// Streaming speedsurfing categories over accepted fixes, amortised O(1) per fix apart
-/// from the 5 × 10 s selection, so it can run live on the watch at 1 Hz for hours.
+/// Streaming speedsurfing categories over accepted fixes. Each fix costs amortised O(1)
+/// plus O(windows ending in the last 10 s) for 5 × 10 s, so it runs live on the watch.
 ///
 /// Speed is linear between fixes (the trapezoid rule), so Doppler distance is exact for
 /// that model. Every span ends at a fix; its start is interpolated. A span never crosses
@@ -96,10 +97,21 @@ public struct SpeedCategoryTracker: Sendable {
     /// Alpha: the run is `distances.medium` long and ends within this radius of its start, m.
     public static let alphaRadius = 50.0
 
-    private struct Candidate: Sendable {
-        let mean: Double
-        let range: ClosedRange<Double>
+    /// A set of non-overlapping 10 s windows and the sum of their means.
+    private struct Choice: Sendable {
+        var total: Double
+        /// In time order.
+        var ranges: [ClosedRange<Double>]
     }
+
+    /// The best choice of j windows (j = 0...5) among the windows ending at or before `end`.
+    private struct Prefix: Sendable {
+        let end: Double
+        let best: [Choice?]
+    }
+
+    private static let noChoices: [Choice?] =
+        [Choice(total: 0, ranges: [])] + Array(repeating: nil, count: fiveByTenCount)
 
     // The current run, oldest first. `d` is cumulative Doppler distance from the run start.
     private var t: [Double] = []
@@ -109,6 +121,8 @@ public struct SpeedCategoryTracker: Sendable {
     private var lon: [Double] = []
     /// Index of the last position anchor in the run; alpha starts may not precede it.
     private var anchor = 0
+    /// An anchor fix without a speed: the next fix in the run takes its place.
+    private var pendingAnchor = false
     /// A category over a fixed distance (m) or time (s), and its best so far.
     private struct Span: Sendable {
         let length: Double
@@ -123,9 +137,13 @@ public struct SpeedCategoryTracker: Sendable {
     private var best10s = Span(length: tenSecondWindow)
     private var hour = Span(length: hourWindow)
     private var alpha500: SpeedBest?
-    /// Every 10 s window, best first; ties keep the earlier window first.
-    private var windows: [Candidate] = []
-    private var selected: [Candidate] = []
+    // 5 × 10 s, as weighted interval selection over windows in end order. `recent` holds
+    // the windows a future window could still overlap; `settled` is the best choice among
+    // the windows before them, and `latest` among all windows so far.
+    private var recent: [Prefix] = []
+    private var recentStart = 0
+    private var settled = noChoices
+    private var latest = noChoices
 
     public init() {}
 
@@ -137,6 +155,7 @@ public struct SpeedCategoryTracker: Sendable {
         lat.removeAll(keepingCapacity: true)
         lon.removeAll(keepingCapacity: true)
         anchor = 0
+        pendingAnchor = false
         best100m.pointer = -1
         best500m.pointer = -1
         nauticalMile.pointer = -1
@@ -144,10 +163,17 @@ public struct SpeedCategoryTracker: Sendable {
         hour.pointer = -1
     }
 
+    /// Mark an accepted anchor fix that has no Doppler speed: alpha may not start before
+    /// the next fix with one.
+    public mutating func noteAnchor() {
+        pendingAnchor = true
+    }
+
     /// Add an accepted fix with a Doppler speed. `isAnchor` marks a fix the GPS filter
     /// accepted after a position jump: alpha's start-to-end check may not span it.
-    public mutating func ingest(t time: Double, speed: Double, latitude: Double, longitude: Double, isAnchor: Bool = false)
-    {
+    public mutating func ingest(
+        t time: Double, speed: Double, latitude: Double, longitude: Double, isAnchor: Bool = false
+    ) {
         guard time.isFinite, speed.isFinite, speed >= 0, latitude.isFinite, longitude.isFinite else { return }
         if let last = t.last {
             guard time > last else { return }
@@ -163,7 +189,8 @@ public struct SpeedCategoryTracker: Sendable {
         lat.append(latitude)
         lon.append(longitude)
         let n = t.count - 1
-        if isAnchor { anchor = n }
+        if isAnchor || pendingAnchor { anchor = n }
+        pendingAnchor = false
 
         best100m = updatedDistance(best100m)
         best500m = updatedDistance(best500m)
@@ -171,17 +198,17 @@ public struct SpeedCategoryTracker: Sendable {
         updateAlpha()
         let (tenSeconds, mean) = updatedTime(best10s)
         best10s = tenSeconds
-        if let mean { addWindow(Candidate(mean: mean, range: (time - Self.tenSecondWindow)...time)) }
+        if let mean { addWindow(mean: mean, range: (time - Self.tenSecondWindow)...time) }
         hour = updatedTime(hour).span
         compact()
     }
 
     public var categories: SpeedCategories {
-        let complete = selected.count == Self.fiveByTenCount
+        let five = latest[Self.fiveByTenCount]
         return SpeedCategories(
             best10s: best10s.best,
-            best5x10s: complete ? selected.reduce(0) { $0 + $1.mean } / Double(selected.count) : nil,
-            best5x10sRanges: complete ? selected.map(\.range).sorted { $0.lowerBound < $1.lowerBound } : [],
+            best5x10s: five.map { $0.total / Double(Self.fiveByTenCount) },
+            best5x10sRanges: five?.ranges ?? [],
             best100m: best100m.best, best500m: best500m.best, nauticalMile: nauticalMile.best, hour: hour.best,
             alpha500: alpha500)
     }
@@ -248,7 +275,10 @@ public struct SpeedCategoryTracker: Sendable {
         // line between two fixes is well inside GPS noise.
         let f = (start - t[p500]) / (t[p500 + 1] - t[p500])
         let startLat = lat[p500] + (lat[p500 + 1] - lat[p500]) * f
-        let startLon = lon[p500] + (lon[p500 + 1] - lon[p500]) * f
+        // Across the antimeridian, interpolate the short way round.
+        var dLon = lon[p500 + 1] - lon[p500]
+        if dLon > 180 { dLon -= 360 } else if dLon < -180 { dLon += 360 }
+        let startLon = lon[p500] + dLon * f
         let gap = Geo.distance(lat1: startLat, lon1: startLon, lat2: lat[t.count - 1], lon2: lon[t.count - 1])
         guard gap <= Self.alphaRadius else { return }
         let speed = Self.distances.medium / (end - start)
@@ -270,28 +300,29 @@ public struct SpeedCategoryTracker: Sendable {
 
     // MARK: - 5 × 10 s
 
-    private mutating func addWindow(_ candidate: Candidate) {
-        // Insert after every window at least as fast, so ties keep time order.
-        var low = 0
-        var high = windows.count
-        while low < high {
-            let mid = (low + high) / 2
-            if windows[mid].mean >= candidate.mean { low = mid + 1 } else { high = mid }
+    /// Add the 10 s window ending at the newest fix. The best choice of j windows is
+    /// either the best without it, or the best j − 1 among windows ending by its start,
+    /// plus it. Windows end in time order, so those that can no longer overlap a future
+    /// window move from `recent` into `settled`. Ties keep the earlier choice.
+    private mutating func addWindow(mean: Double, range: ClosedRange<Double>) {
+        while recentStart < recent.count, recent[recentStart].end <= range.lowerBound {
+            settled = recent[recentStart].best
+            recentStart += 1
         }
-        windows.insert(candidate, at: low)
-        // Greedy selection walks windows best first, so a window slower than the slowest
-        // of five chosen ones cannot change the choice.
-        if selected.count == Self.fiveByTenCount, let slowest = selected.last, candidate.mean <= slowest.mean {
-            return
+        if recentStart > 64, recentStart * 2 > recent.count {
+            recent.removeFirst(recentStart)
+            recentStart = 0
         }
-        selected.removeAll(keepingCapacity: true)
-        for window in windows {
-            let overlaps = selected.contains {
-                window.range.lowerBound < $0.range.upperBound && $0.range.lowerBound < window.range.upperBound
+        var best = latest
+        for j in 1...Self.fiveByTenCount {
+            guard let before = settled[j - 1] else { continue }
+            let total = before.total + mean
+            if best[j].map({ total > $0.total * (1 + 1e-12) }) ?? true {
+                best[j] = Choice(total: total, ranges: before.ranges + [range])
             }
-            if !overlaps { selected.append(window) }
-            if selected.count == Self.fiveByTenCount { break }
         }
+        latest = best
+        recent.append(Prefix(end: range.upperBound, best: best))
     }
 
     // MARK: - Memory

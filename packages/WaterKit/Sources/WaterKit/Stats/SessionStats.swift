@@ -34,8 +34,8 @@ public struct SessionStats: Sendable, Hashable, Codable {
     /// Best time-weighted average Doppler speed over any 2 s and 10 s window, m/s.
     public var maxSpeed2s: Double?
     public var maxSpeed10s: Double?
-    /// Windsurfing only: speedsurfing categories over accepted fixes, m/s, keyed like the
-    /// track summary (docs/metrics.md). Missing categories are left out.
+    /// Windsurfing only: speedsurfing categories over the live engine's accepted fixes, m/s,
+    /// keyed like the track summary (docs/metrics.md). Missing categories are left out.
     public var speedCategories: [String: Double]?
     public var heartRateAverage: Double?
     public var heartRateMax: Double?
@@ -94,7 +94,9 @@ extension SessionStats {
         averageSpeed = profile.mean(maxGap: Self.maxSpeedGap)
         maxSpeed2s = profile.bestMean(window: 2)
         maxSpeed10s = profile.bestMean(window: 10)
-        speedCategories = track.sport == .windsurfing ? SpeedCategories.analyze(accepted).summaryFields : nil
+        // The same engine-filtered fixes as live and session detail, so the values agree.
+        speedCategories =
+            track.sport == .windsurfing ? SessionReplay(track: track).metrics.speedCategories?.summaryFields : nil
 
         let bpm = hr.map(\.bpm)
         heartRateAverage = bpm.isEmpty ? nil : bpm.reduce(0, +) / Double(bpm.count)

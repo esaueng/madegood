@@ -6,7 +6,8 @@ import Testing
 /// 1 Hz fixes along a line through (0, 0) heading east, with Doppler speed `speed(t)`.
 /// `position(t)` is the signed distance east, m, so out-and-back runs are easy to build.
 private func fixes(
-    _ range: ClosedRange<Int>, speed: (Double) -> Double, position: ((Double) -> Double)? = nil
+    _ range: ClosedRange<Int>, speed: (Double) -> Double, position: ((Double) -> Double)? = nil,
+    originLongitude: Double = 0
 ) -> [GPSFix] {
     var along = 0.0
     var previous: (t: Double, v: Double)?
@@ -16,7 +17,7 @@ private func fixes(
         if let previous { along += (previous.v + v) / 2 * (t - previous.t) }
         previous = (t, v)
         let x = position?(t) ?? along
-        let point = Geo.destination(lat: 0, lon: 0, bearing: x >= 0 ? 90 : 270, distance: abs(x))
+        let point = Geo.destination(lat: 0, lon: originLongitude, bearing: x >= 0 ? 90 : 270, distance: abs(x))
         return GPSFix(t: t, latitude: point.lat, longitude: point.lon, horizontalAccuracy: 5, speed: v, course: 90)
     }
 }
@@ -77,16 +78,6 @@ private func close(_ a: ClosedRange<Double>?, _ b: ClosedRange<Double>, _ tolera
         #expect(close(c.best500m?.range, 1001.5...1064))
     }
 
-    @Test func fiveByTenPicksNonOverlappingWindowsBestFirst() {
-        // 10 m/s for t in 100...145, 2 m/s otherwise. Four windows at 10 m/s fit back to
-        // back (100–140); every other fast window overlaps them. The best remaining one is
-        // 140–150: 5 s at 10, the 145–146 change (6 m), 4 s at 2 = 64 m.
-        let c = SpeedCategories.analyze(fixes(0...200, speed: { (100...145).contains($0) ? 10 : 2 }))
-        #expect(c.best5x10sRanges == [100...110, 110...120, 120...130, 130...140, 140...150])
-        #expect(close(c.best5x10s, (4 * 10 + 6.4) / 5))
-        #expect(close(c.best10s?.speed, 10))
-    }
-
     @Test func alphaNeedsTheEndNearTheStart() {
         // 10 m/s out east for 30 s, then straight back. A 500 m run takes 50 s; starting at
         // a it ends |20a − 100| m from its start, within 50 m for a in 2.5...7.5. Spans end
@@ -98,12 +89,59 @@ private func close(_ a: ClosedRange<Double>?, _ b: ClosedRange<Double>, _ tolera
         #expect(close(c.best500m?.speed, 10))
     }
 
+    @Test func fiveByTenFindsFiveWindowsWhenTheFastestBlocksGreedy() {
+        // Review regression: a bump centred at 10 s makes 5–15 s the fastest window, and a
+        // greedy pick then leaves room for only three more in 0–50 s. Exactly five
+        // windows fit, back to back, so they are the answer.
+        let c = SpeedCategories.analyze(fixes(0...50, speed: { 3 + 4 * max(0, 1 - abs($0 - 10) / 5) }))
+        #expect(c.best5x10sRanges == [0...10, 10...20, 20...30, 30...40, 40...50])
+        // Mean over 0–50 s: 3 m/s plus the bump's 20 m (a triangle 10 s wide, 4 m/s high).
+        #expect(close(c.best5x10s, (150 + 20) / 50.0))
+    }
+
+    @Test func fiveByTenMaximisesTheTotalOverAPlateau() {
+        // 10 m/s for t in 100...145, 2 m/s otherwise, with one-second ramps. The best five
+        // windows tile 50 s covering the plateau: 450 m on it plus 18 m at the edges.
+        let c = SpeedCategories.analyze(fixes(0...200, speed: { (100...145).contains($0) ? 10 : 2 }))
+        #expect(close(c.best5x10s, 468.0 / 50))
+        let ranges = c.best5x10sRanges
+        #expect(ranges.count == 5)
+        #expect(zip(ranges, ranges.dropFirst()).allSatisfy { $0.upperBound == $1.lowerBound })
+        #expect((ranges.first?.lowerBound ?? 0) <= 100 && (ranges.last?.upperBound ?? 0) >= 145)
+    }
+
+    @Test func alphaInterpolatesAcrossTheAntimeridian() {
+        // Review regression: out and back at 12 m/s, so 500 m takes 41.67 s and alpha starts
+        // fall between fixes. The earliest qualifying start is 7.33 s, 88 m out, between
+        // fixes at 84 m and 96 m. The antimeridian is put at 90 m, between those two.
+        let origin = 180 - 90 / (Geo.earthRadius * .pi / 180)
+        let route = fixes(
+            0...60, speed: { _ in 12 }, position: { $0 <= 30 ? 12 * $0 : 720 - 12 * $0 }, originLongitude: origin)
+        let c = SpeedCategories.analyze(route)
+        #expect(close(c.alpha500?.range, (49 - 500 / 12.0)...49, 1e-6))
+        #expect(close(c.alpha500?.speed, 12))
+    }
+
+    @Test func alphaDoesNotSpanAnAnchorWithoutSpeed() {
+        // Review regression: 10 m/s out and back, five rejected fixes at 20–24 s, then a
+        // re-anchor at 25 s that has no Doppler speed. Alpha may not start before it.
+        var route = fixes(0...60, speed: { _ in 10 }, position: { $0 <= 30 ? 10 * $0 : 600 - 10 * $0 })
+        for i in 20...24 { route[i].horizontalAccuracy = 80 }
+        route[25].speed = nil
+        let replay = SessionReplay(
+            track: Track(sessionId: UUID(), sport: .windsurfing, startedAt: Date(timeIntervalSince1970: 0), gps: route))
+        #expect(replay.metrics.rejectedFixes == 5)
+        #expect(replay.metrics.speedCategories?.alpha500 == nil)
+        #expect(close(replay.metrics.speedCategories?.best500m?.speed, 10))
+    }
+
     @Test func alphaDoesNotSpanAPositionAnchor() {
         let route = fixes(0...60, speed: { _ in 10 }, position: { $0 <= 30 ? 10 * $0 : 600 - 10 * $0 })
         var tracker = SpeedCategoryTracker()
         for fix in route {
             tracker.ingest(
-                t: fix.t, speed: fix.speed ?? 0, latitude: fix.latitude, longitude: fix.longitude, isAnchor: fix.t == 20)
+                t: fix.t, speed: fix.speed ?? 0, latitude: fix.latitude, longitude: fix.longitude, isAnchor: fix.t == 20
+            )
         }
         #expect(tracker.categories.alpha500 == nil)
         #expect(close(tracker.categories.best500m?.speed, 10))
@@ -112,22 +150,31 @@ private func close(_ a: ClosedRange<Double>?, _ b: ClosedRange<Double>, _ tolera
     @Test func spansDoNotCrossLongGapsOrBreaks() {
         // Two 300 m runs at 5 m/s. An 11 s gap splits them; a 10 s gap does not.
         let first = fixes(0...60, speed: { _ in 5 })
-        let split = first + fixes(0...60, speed: { _ in 5 }).map { fix in
-            var fix = fix
-            fix.t += 71
-            return fix
-        }
+        let split =
+            first
+            + fixes(0...60, speed: { _ in 5 }).map { fix in
+                var fix = fix
+                fix.t += 71
+                return fix
+            }
         #expect(SpeedCategories.analyze(split).best500m == nil)
         #expect(close(SpeedCategories.analyze(split).best100m?.speed, 5))
-        let joined = first + fixes(0...60, speed: { _ in 5 }).map { fix in
-            var fix = fix
-            fix.t += 70
-            return fix
-        }
+        let joined =
+            first
+            + fixes(0...60, speed: { _ in 5 }).map { fix in
+                var fix = fix
+                fix.t += 70
+                return fix
+            }
         #expect(close(SpeedCategories.analyze(joined).best500m?.speed, 5))
 
         var tracker = SpeedCategoryTracker()
-        for (index, fix) in (first + first.map { var f = $0; f.t += 61; return f }).enumerated() {
+        for (index, fix)
+            in (first
+            + first.map {
+                var f = $0; f.t += 61; return f
+            }).enumerated()
+        {
             if index == first.count { tracker.breakRun() }
             tracker.ingest(t: fix.t, speed: fix.speed ?? 0, latitude: fix.latitude, longitude: fix.longitude)
         }
@@ -179,11 +226,22 @@ private func close(_ a: ClosedRange<Double>?, _ b: ClosedRange<Double>, _ tolera
         var track = Track(sessionId: UUID(), sport: .windsurfing, startedAt: Date(timeIntervalSince1970: 0), gps: route)
         let stats = SessionStats(track: track)
         #expect(stats.speedCategories == SpeedCategories.analyze(route).summaryFields)
-        #expect(close(stats.speedCategories?["best5x10s"], 9.28))
+        #expect(close(stats.speedCategories?["best5x10s"], 9.36))
         #expect(stats.speedCategories?["best1h"] == nil)
         #expect(stats.textReport().contains("5 × 10 s"))
         track.sport = .kayak
         #expect(SessionStats(track: track).speedCategories == nil)
+    }
+
+    @Test func statsUseTheEnginesFilteredFixes() {
+        // Review regression: Doppler above the filter's 50 m/s limit is rejected live and
+        // in session detail, so the CLI must not report it as a best either.
+        let route = fixes(0...200, speed: { _ in 60 })
+        let track = Track(sessionId: UUID(), sport: .windsurfing, startedAt: Date(timeIntervalSince1970: 0), gps: route)
+        let stats = SessionStats(track: track)
+        let replay = SessionReplay(track: track)
+        #expect(stats.speedCategories == replay.metrics.speedCategories?.summaryFields)
+        #expect((stats.speedCategories?.values.max() ?? 0) <= GPSFilter.Config().maxSpeed)
     }
 
     @Test func otherSportsDoNotTrackCategories() {
