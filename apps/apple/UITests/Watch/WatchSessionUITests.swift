@@ -1,7 +1,7 @@
 import XCTest
 
-/// Walks through a demo kayak session on the watch: start card, metrics, controls, map, end,
-/// summary. The demo boat moves at 2.5 m/s, which kayak shows as 9.0 km/h.
+/// Walks through a demo kayak session on the watch: start card, metrics, controls, strokes,
+/// map, end, summary. The demo boat moves at 2.5 m/s, which kayak shows as 9.0 km/h.
 final class WatchSessionUITests: XCTestCase {
     override func setUp() {
         continueAfterFailure = false
@@ -40,11 +40,26 @@ final class WatchSessionUITests: XCTestCase {
         XCTAssertTrue(speed.waitForExistence(timeout: 10))
         waitForLabel(app.staticTexts["metric.lap"], "Lap 2")
 
-        // The map is below the metrics, and swiping must still leave it (a review found
-        // an interactive map trapped the user there).
+        // Kayak's sport page: stroke rate and count from the demo's synthetic wrist
+        // motion (64 SPM).
         goToPage(3, app)
+        let strokeRate = app.staticTexts["metric.strokeRate"]
+        XCTAssertTrue(strokeRate.waitForExistence(timeout: 10))
+        XCTAssertEqual(strokeRate.label, "Stroke rate")
+        let settled = NSPredicate(format: "value MATCHES %@", "6[2-6] strokes per minute")
+        XCTAssertEqual(
+            XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: settled, object: strokeRate)], timeout: 30),
+            .completed, "stroke rate never settled; last value: \(strokeRate.value ?? "missing")")
+        let strokes = app.staticTexts["field.Strokes"]
+        XCTAssertGreaterThan(Int(strokes.label) ?? 0, 0)
+        XCTAssertTrue(app.staticTexts["field.Per stroke"].label.hasSuffix(" m"))
+        attachScreenshot("5 strokes")
+
+        // The map is below the sport page, and swiping must still leave it (a review found
+        // an interactive map trapped the user there).
+        goToPage(4, app)
         XCTAssertTrue(app.otherElements["page.map"].waitForExistence(timeout: 10))
-        attachScreenshot("5 map")
+        attachScreenshot("5b map")
         goToPage(2, app)
         XCTAssertTrue(speed.waitForExistence(timeout: 10))
         goToPage(1, app)
@@ -70,6 +85,7 @@ final class WatchSessionUITests: XCTestCase {
         XCTAssertTrue(done.waitForExistence(timeout: 20))
         XCTAssertTrue(app.staticTexts["field.Distance"].exists)
         XCTAssertEqual(app.staticTexts["field.Laps"].label, "2")
+        XCTAssertGreaterThan(Int(app.staticTexts["field.Strokes"].label) ?? 0, 0)
         // Regression check from review: the demo once ran on a 5x clock, so the session
         // time outran the real session and the saved events.
         let time = app.staticTexts["field.Time"].label.split(separator: ":").compactMap { Double($0) }

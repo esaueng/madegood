@@ -475,7 +475,7 @@ private struct LiveView: View {
 
     var body: some View {
         let display = UserSettings.display(for: sport)
-        let readings = watchWorkout?.readings ?? LiveReadings(recorder?.metrics)
+        let readings = watchWorkout?.readings ?? LiveReadings(recorder?.metrics, strokes: recorder?.strokes)
         ScrollView {
             VStack(spacing: 16) {
                 if let watchWorkout {
@@ -576,6 +576,12 @@ private struct LiveView: View {
                 primaryMetric(primary)
             }
             supportingMetrics(Array(supporting.prefix(3)))
+            if sport.isPaddling {
+                // The paddling sport page (PLAN §6): strokes on their own card.
+                supportingMetrics(strokeMetrics(display: display, readings: readings))
+                    .accessibilityElement(children: .contain)
+                    .accessibilityIdentifier("card.strokes")
+            }
             DisclosureGroup("More metrics") {
                 VStack(spacing: 12) {
                     ForEach(supporting.dropFirst(3)) { metric in
@@ -601,6 +607,17 @@ private struct LiveView: View {
             LiveMetric(id: "metric.moving", title: "Moving time", text: Formatting.elapsed(readings.movingTime)),
             LiveMetric(id: "metric.average", title: "Average speed", text: display.speed(readings.averageSpeed)),
             LiveMetric(id: "metric.max", title: "Max speed (10 s)", text: display.speed(readings.maxSpeed10s)),
+        ]
+    }
+
+    private func strokeMetrics(display: LiveDisplay, readings: LiveReadings) -> [LiveMetric] {
+        [
+            LiveMetric(
+                id: "metric.strokeRate", title: "Stroke rate", text: LiveDisplay.strokeRate(readings.strokeRate)),
+            LiveMetric(id: "metric.strokes", title: "Strokes", text: LiveDisplay.strokeCount(readings.strokeCount)),
+            LiveMetric(
+                id: "metric.distancePerStroke", title: "Per stroke",
+                text: display.distancePerStroke(distance: readings.distance, strokes: readings.strokeCount)),
         ]
     }
 
@@ -701,6 +718,8 @@ private struct LiveMetric: Identifiable {
         case "nm": "\(number) nautical miles"
         case "mi": "\(number) miles"
         case "bpm": "\(number) beats per minute"
+        case "spm": "\(number) strokes per minute"
+        case "ft": "\(number) feet"
         case "°": "\(number) degrees true"
         default: text == "–" ? "Unavailable" : text
         }

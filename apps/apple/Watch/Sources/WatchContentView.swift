@@ -17,6 +17,7 @@ struct WatchContentView: View {
         let id = UUID()
         let sport: Sport
         let metrics: LiveMetrics
+        var strokes: StrokeDetector.Metrics?
         var savedToHealth = false
     }
 
@@ -53,7 +54,8 @@ struct WatchContentView: View {
         .onAppear {
             controller.onFinish = { sport, metrics, folder in
                 if let metrics {
-                    summary = Summary(sport: sport, metrics: metrics, savedToHealth: recorder.savedToHealth)
+                    summary = Summary(
+                        sport: sport, metrics: metrics, strokes: recorder.strokes, savedToHealth: recorder.savedToHealth)
                 }
                 RecordingTransfer.shared.send(folder: folder)
                 reload()
@@ -378,7 +380,7 @@ private struct SessionPages: View {
     @State private var banner: SessionRecorder.DistanceAlertEvent?
     private let hero: LiveScreen
 
-    enum Page { case manOverboard, controls, metrics, map }
+    enum Page { case manOverboard, controls, metrics, strokes, map }
 
     init(recorder: SessionRecorder, startedAt: Date, sport: Sport) {
         self.recorder = recorder
@@ -397,6 +399,9 @@ private struct SessionPages: View {
             }
             ControlsPage(recorder: recorder) { page = .manOverboard }.tag(Page.controls)
             MetricsPage(recorder: recorder, startedAt: startedAt, sport: sport, hero: hero).tag(Page.metrics)
+            if sport.isPaddling {
+                StrokesPage(recorder: recorder, startedAt: startedAt, sport: sport).tag(Page.strokes)
+            }
             MapPage(points: recorder.trackPoints, manOverboard: manOverboard.mark).tag(Page.map)
         }
         .tabViewStyle(.verticalPage)
@@ -484,6 +489,54 @@ private struct MetricsPage: View {
         case .distance: display.distance(metrics?.distance ?? 0)
         case .time: time
         case .heartRate: LiveDisplay.heartRate(metrics?.heartRate)
+        }
+    }
+}
+
+/// The paddling sport page (PLAN §6): stroke rate large, then strokes and distance per stroke.
+private struct StrokesPage: View {
+    let recorder: SessionRecorder
+    let startedAt: Date
+    let sport: Sport
+    @Environment(\.isLuminanceReduced) private var isLuminanceReduced
+
+    var body: some View {
+        let display = UserSettings.display(for: sport)
+        let metrics = recorder.metrics
+        let strokes = recorder.strokes
+        TimelineView(.periodic(from: startedAt, by: isLuminanceReduced ? 60 : 1)) { context in
+            let elapsed = context.date.timeIntervalSince(startedAt)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack {
+                    SportIcon(sport: sport, size: 18, labeled: true)
+                    Spacer()
+                    Text(isLuminanceReduced ? Formatting.duration(elapsed) : Formatting.elapsed(elapsed))
+                        .monospacedDigit()
+                }
+                .font(.footnote)
+                HStack(alignment: .firstTextBaseline, spacing: 4) {
+                    Text(strokes?.strokeRate.map { "\(Int($0.rounded()))" } ?? "–")
+                        .font(.system(size: 40, weight: .semibold, design: .rounded).monospacedDigit())
+                        .minimumScaleFactor(0.6)
+                        .lineLimit(1)
+                    Text("spm").font(.footnote).foregroundStyle(.secondary)
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("Stroke rate")
+                .accessibilityValue(strokes?.strokeRate.map { "\(Int($0.rounded())) strokes per minute" } ?? "Unavailable")
+                .accessibilityIdentifier("metric.strokeRate")
+                Field(label: "Strokes", value: LiveDisplay.strokeCount(strokes?.strokeCount))
+                Field(
+                    label: "Per stroke",
+                    value: display.distancePerStroke(distance: metrics?.distance ?? 0, strokes: strokes?.strokeCount))
+                if !isLuminanceReduced {
+                    Field(label: "Speed", value: display.speed(metrics?.speed))
+                    if let switches = strokes?.sideSwitches, sport != .kayak {
+                        Field(label: "Switches", value: "\(switches)")
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }
@@ -673,6 +726,12 @@ private struct SummaryView: View {
                 Field(label: "Max 10 s", value: display.speed(metrics.maxSpeed10s))
                 Field(label: "Max 2 s", value: display.speed(metrics.maxSpeed2s))
                 Field(label: "Avg HR", value: LiveDisplay.heartRate(metrics.heartRateAverage))
+                if let strokes = summary.strokes {
+                    Field(label: "Strokes", value: LiveDisplay.strokeCount(strokes.strokeCount))
+                    Field(
+                        label: "Per stroke",
+                        value: display.distancePerStroke(distance: metrics.distance, strokes: strokes.strokeCount))
+                }
                 if !metrics.laps.isEmpty {
                     Field(label: "Laps", value: "\(metrics.laps.count + 1)")
                 }

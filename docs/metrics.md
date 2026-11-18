@@ -112,9 +112,51 @@ moving ranges. Replay can seek to the lower bound and highlight each moving rang
 separately, preserving gaps between spans. A middle cut ends the current moving range
 but keeps the same split counter. Time and distance from the cut do not contribute.
 The bounds use the selected track's clock, including when a trim rebases it. Split
-results are computed for replay and are absent from the saved summary. Stroke rate
-and stroke-based intervals require motion data and
-validation against the labeled stroke count and rate targets in PLAN §5.
+results are computed for replay and are absent from the saved summary. Stroke-based
+intervals are not built yet.
+
+## Strokes
+
+Kayak, canoe and SUP strokes come from wrist motion (the raw `motion` stream).
+`StrokeDetector` is causal and streaming: the watch and iPhone run it live, and
+`StrokeAnalysis` runs it over a whole recording afterwards. Tracks do not keep motion,
+so post-session strokes need the raw recording.
+
+| Step | Definition |
+|---|---|
+| Resampling | Samples are averaged into 40 ms bins (25 Hz), whatever the sensor rate. Missing bins up to 1 s repeat the last bin; a longer gap restarts the filters and the rate |
+| Signal | Rotation rate (rad/s) and user acceleration divided by 4 m/s² per rad/s, six channels |
+| Band-pass | 0.3–3 Hz per channel (second-order Butterworth high-pass and low-pass) |
+| Main axis | First principal component of the filtered channels over the last 3 s, refreshed every 0.5 s and kept pointing the same way. PLAN §5 suggests 5 s; 3 s follows a side switch within about a stroke |
+| Cycle | A positive lobe of the projected signal above max(0.25, 0.5 × running RMS (3 s time constant)), ended by a swing below −0.3 × that threshold. The peak time is refined with a parabola through the top three bins |
+| Minimum gap | Peaks closer than max(0.33 s, 0.45 × median recent period) are one cycle |
+| Strokes | Kayak: two per wrist cycle (left and right). Canoe and SUP: one |
+
+**Stroke rate (SPM).** From the last six cycle periods: the mean, leaving out periods
+below 0.6× or above 1.6× their median (a missed or split cycle). An interval longer
+than 4 s is a pause and does not count. Live, the rate needs three cycles in a row and
+blanks once the last cycle is older than min(4 s, 2.5 periods) plus one period. After
+the session, the rate over time uses up to four periods per point, and the average is
+strokes in counted periods over their total time.
+
+**Distance per stroke.** Distance (moving, as above) over stroke count. Shown in metres
+with one decimal, or feet with statute-mile units.
+
+**Sides (canoe, SUP).** Each cycle's mean gravity direction in the device frame. A cycle
+more than 40° from the current side's direction is a candidate; three candidates in a
+row, each within 30° of their mean, confirm a switch, and those cycles move to the new
+side. Side 0 is the side paddled first: the watch cannot tell left from right. Side
+balance is the share of strokes on side 0.
+
+Strokes are counted through pauses: the detector sees only motion. A trimmed selection
+keeps the cycles inside its retained ranges, and a period counts only when both of its
+ends are in the same range.
+
+**Accuracy.** No labeled paddling recordings exist yet, so the PLAN §5 targets (count
+within ±3 %, rate within ±2 SPM) are checked in `StrokeDetectorTests` against
+`PaddleMotionSimulator`: synthetic wrist motion with noise, harmonics, per-cycle
+amplitude and period jitter, pauses, rate changes, side switches, sensor gaps and 50 or
+100 Hz sampling. Labeled real sessions still have to confirm them.
 
 ## Sailing replay maneuvers
 

@@ -79,4 +79,10 @@ import Testing
         let display = DistanceUnit.nauticalMiles.display(1852 * 2.345)
         #expect(display.value == 2.35 && display.fractionDigits == 2 && display.symbol == "nm")
     }
+
+    @Test func shortLengthsUseMetresOrFeet() {
+        #expect(DistanceUnit.metric.shortLength(4.26).text == "4.3 m")
+        #expect(DistanceUnit.nauticalMiles.shortLength(4.26).text == "4.3 m")
+        #expect(DistanceUnit.statuteMiles.shortLength(3.048).text == "10.0 ft")
+    }
 }

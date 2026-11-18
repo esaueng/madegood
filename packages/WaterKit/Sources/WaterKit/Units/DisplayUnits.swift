@@ -106,6 +106,17 @@ public enum DistanceUnit: String, Sendable, Hashable, Codable, CaseIterable {
     }
 }
 
+extension DistanceUnit {
+    /// A short length such as distance per stroke: metres with one decimal (4.2 m), or
+    /// feet for statute miles (13.8 ft; 1 ft = 0.3048 m).
+    public func shortLength(_ metres: Double) -> DisplayQuantity {
+        switch self {
+        case .metric, .nauticalMiles: DisplayQuantity.rounded(metres, symbol: "m") { _ in 1 }
+        case .statuteMiles: DisplayQuantity.rounded(metres / 0.3048, symbol: "ft") { _ in 1 }
+        }
+    }
+}
+
 /// A value converted and rounded for display. Apps that localize number formatting use
 /// `value` and `fractionDigits`; `text` is a locale-independent fallback ("12.3 kn").
 public struct DisplayQuantity: Sendable, Hashable {

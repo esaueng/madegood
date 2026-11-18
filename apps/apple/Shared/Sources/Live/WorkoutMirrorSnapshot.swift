@@ -13,8 +13,11 @@ struct LiveReadings: Codable, Equatable, Sendable {
     var heartRate: Double?
     var pauseState: LiveMetrics.PauseState
     var lap: Int?
+    /// Paddle strokes (kayak, canoe, SUP); absent from older watches' snapshots.
+    var strokeRate: Double?
+    var strokeCount: Int?
 
-    init(_ metrics: LiveMetrics?) {
+    init(_ metrics: LiveMetrics?, strokes: StrokeDetector.Metrics? = nil) {
         elapsed = metrics?.elapsed ?? 0
         movingTime = metrics?.movingTime ?? 0
         distance = metrics?.distance ?? 0
@@ -25,6 +28,8 @@ struct LiveReadings: Codable, Equatable, Sendable {
         heartRate = metrics?.heartRate
         pauseState = metrics?.pauseState ?? .moving
         lap = metrics.flatMap { $0.laps.isEmpty ? nil : $0.currentLap.index }
+        strokeRate = strokes?.strokeRate
+        strokeCount = strokes?.strokeCount
     }
 }
 
