@@ -148,8 +148,9 @@ live in the detail view alongside the wind input.
 
 ## Anchor alarm
 
-iPhone only, independent of recording. The anchor is set at the accuracy-weighted
-(1/σ², σ ≥ 1 m) mean of the usable fixes in the 10 s before the newest one, with a
+iPhone only, independent of recording. The anchor can only be set when there are usable
+fixes measured in the last 10 s, and is set at their accuracy-weighted (1/σ², σ ≥ 1 m)
+mean (an older or inaccurate position is never used), with a
 radius of 10–500 m (offered: 20–150 m, default 40 m). Fixes with a horizontal accuracy
 worse than 25 m, or none, are ignored.
 
@@ -157,16 +158,25 @@ worse than 25 m, or none, are ignored.
 |---|---|
 | Clear | No anchor set |
 | Armed | Watching; the boat is inside or the evidence is inconclusive |
-| Alarming: dragging | ≥ 3 clearly-outside fixes in a row spanning ≥ 10 s. Latches until silenced |
-| Alarming: no GPS | No usable fix for 120 s. The next usable fix returns to Armed |
+| Alarming: dragging | ≥ 3 consecutive clearly-outside fixes spanning ≥ 10 s. Latches until silenced |
+| Alarming: no GPS | No usable fix for 120 s, by the clock or found when a fix arrives after such a gap (the app was suspended). The next usable fix returns to Armed |
 
 A fix is **clearly outside** when its distance minus its accuracy radius exceeds the
-radius, and **inside** when its distance is within the radius; inside resets the
-evidence, and a fix in between neither counts nor resets. Silencing returns to Armed
+radius. Any other usable fix (inside, or inconclusive because its accuracy circle
+straddles the radius) resets the streak, so separate outside readings are never
+bridged. Silencing returns to Armed
 and suppresses alarms for 60 s; if the boat is still outside after that, it sounds
 again. Changing the radius restarts the evidence. Distances and bearings (true, from
 the boat to the anchor) are shown in whole metres and degrees whatever the distance
 unit. The alarm is an aid, not for navigation.
+
+Alerts do not depend on the app running. While armed, a local notification stays
+scheduled for 120 s after the last usable fix (or the end of a silence), moved forward as
+fixes arrive (within 10 s), so lost GPS alerts a locked phone even if iOS suspends the
+app. While alarming, the next 20 repeat notifications on a 30 s cadence from the alarm's
+start stay scheduled; an alarm restored after a relaunch sounds at once. The screen warns,
+with a link to Settings, when notifications, location or precise location are not
+allowed, and the watch then shows as limited rather than on.
 
 ## Heart rate
 

@@ -12,8 +12,9 @@ import Foundation
 /// - `alarming(.dragging)`: the boat has been clearly outside the circle for at least
 ///   `confirmFixes` usable fixes in a row spanning `confirmSeconds`. It latches: coming
 ///   back inside does not silence it, because a dragging anchor can swing back in.
-/// - `alarming(.gpsLost)`: no usable fix for `gpsLostAfter`. The next usable fix clears
-///   it (the drag check then decides).
+/// - `alarming(.gpsLost)`: no usable fix for `gpsLostAfter`, noticed either by the clock
+///   (`advance`) or by a fix that arrives after such a gap (the app was suspended). The
+///   next usable fix after that clears it (the drag check then decides).
 public struct AnchorAlarm: Sendable, Hashable, Codable {
     public struct Config: Sendable, Hashable, Codable {
         /// Fixes with a worse (or unknown) horizontal accuracy are ignored, m.
@@ -82,6 +83,8 @@ public struct AnchorAlarm: Sendable, Hashable, Codable {
     public private(set) var lastFixTime: Double?
     /// When the latest silence ends; no alarm sounds before then.
     public private(set) var silencedUntil: Double?
+    /// When the current alarm started; nil unless alarming.
+    public private(set) var alarmingSince: Double?
 
     private var outsideCount = 0
     private var outsideSince: Double?
@@ -108,6 +111,7 @@ public struct AnchorAlarm: Sendable, Hashable, Codable {
         maxDistance = nil
         lastFixTime = t
         silencedUntil = nil
+        alarmingSince = nil
         resetEvidence()
         return true
     }
@@ -132,6 +136,7 @@ public struct AnchorAlarm: Sendable, Hashable, Codable {
     public mutating func silence(at t: Double) {
         guard state.isAlarming, t.isFinite else { return }
         state = .armed
+        alarmingSince = nil
         silencedUntil = t + config.silenceFor
     }
 
@@ -146,6 +151,10 @@ public struct AnchorAlarm: Sendable, Hashable, Codable {
         else { return advance(to: fix.t) }
         if let last = lastFixTime, fix.t < last { return false }
         let before = state
+        // A fix after a long silence (the app was suspended) first raises the GPS alarm
+        // the clock would have raised, so the gap is never hidden by the fix that ends it.
+        let gapAlarm = gpsLostDeadline.map { fix.t >= $0 } ?? false
+        if gapAlarm { raise(.gpsLost, at: fix.t) }
         lastFixTime = fix.t
         let distance = Geo.distance(
             lat1: fix.latitude, lon1: fix.longitude, lat2: anchor.latitude, lon2: anchor.longitude)
@@ -154,19 +163,25 @@ public struct AnchorAlarm: Sendable, Hashable, Codable {
         accuracy = hacc
         maxDistance = max(maxDistance ?? distance, distance)
 
-        if state == .alarming(.gpsLost) { state = .armed }
+        if state == .alarming(.gpsLost), !gapAlarm {
+            state = .armed
+            alarmingSince = nil
+        }
 
-        // Accuracy-aware hysteresis: "clearly outside" when even the near edge of the
-        // accuracy circle is outside; "inside" when the fix itself is inside. In between
-        // the fix is inconclusive and leaves the evidence as it was.
+        // Accuracy-aware: "clearly outside" only when even the near edge of the accuracy
+        // circle is outside. Anything else (inside, or inconclusive because the circle
+        // straddles the radius) breaks the streak, so an alarm needs `confirmFixes`
+        // consecutive clearly-outside fixes and never bridges separate readings.
         if distance - hacc > anchor.radius {
             outsideCount += 1
             let since = outsideSince ?? fix.t
             outsideSince = since
-            if outsideCount >= config.confirmFixes, fix.t - since >= config.confirmSeconds, !isSilenced(at: fix.t) {
-                state = .alarming(.dragging)
+            if state == .armed, outsideCount >= config.confirmFixes, fix.t - since >= config.confirmSeconds,
+                !isSilenced(at: fix.t)
+            {
+                raise(.dragging, at: fix.t)
             }
-        } else if distance <= anchor.radius {
+        } else {
             resetEvidence()
         }
         return state != before
@@ -179,8 +194,21 @@ public struct AnchorAlarm: Sendable, Hashable, Codable {
         guard state == .armed, t.isFinite, let last = lastFixTime, !isSilenced(at: t),
             t - last >= config.gpsLostAfter
         else { return false }
-        state = .alarming(.gpsLost)
+        raise(.gpsLost, at: t)
         return true
+    }
+
+    /// When the GPS alarm will sound if no usable fix arrives: a deadline for a
+    /// dead-man's-switch notification that works while the app is suspended. Nil unless
+    /// armed and not alarming.
+    public var gpsLostDeadline: Double? {
+        guard state == .armed, let last = lastFixTime else { return nil }
+        return max(last + config.gpsLostAfter, silencedUntil ?? -.infinity)
+    }
+
+    private mutating func raise(_ reason: Reason, at t: Double) {
+        state = .alarming(reason)
+        alarmingSince = t
     }
 
     // MARK: - Helpers
@@ -190,17 +218,20 @@ public struct AnchorAlarm: Sendable, Hashable, Codable {
     }
 
     /// The anchor point for "drop anchor here": the accuracy-weighted mean of the usable
-    /// fixes in the last `window` seconds before the newest one, so one noisy fix does
-    /// not misplace the circle. Nil without a usable fix.
+    /// fixes (accuracy ≤ 25 m) measured in the `window` seconds up to `now`, so one noisy
+    /// fix does not misplace the circle and an old position is never used. Nil when no
+    /// usable fix is that recent: the anchor cannot be set yet.
     public static func anchorPoint(
-        from fixes: [GPSFix], window: Double = 10, maxHorizontalAccuracy: Double = Config().maxHorizontalAccuracy
+        from fixes: [GPSFix], at now: Double, window: Double = 10,
+        maxHorizontalAccuracy: Double = Config().maxHorizontalAccuracy
     ) -> (latitude: Double, longitude: Double)? {
-        let usable = fixes.filter { fix in
-            fix.t.isFinite && validCoordinate(latitude: fix.latitude, longitude: fix.longitude)
+        guard now.isFinite else { return nil }
+        let recent = fixes.filter { fix in
+            fix.t.isFinite && now - fix.t <= window && fix.t <= now + 1
+                && validCoordinate(latitude: fix.latitude, longitude: fix.longitude)
                 && (fix.horizontalAccuracy.map { $0.isFinite && $0 >= 0 && $0 <= maxHorizontalAccuracy } ?? false)
         }
-        guard let newest = usable.max(by: { $0.t < $1.t }) else { return nil }
-        let recent = usable.filter { newest.t - $0.t <= window }
+        guard let newest = recent.max(by: { $0.t < $1.t }) else { return nil }
         // Weight by 1/σ² with a floor, so a claimed 0 m accuracy cannot dominate.
         var sumWeight = 0.0
         var north = 0.0
@@ -239,5 +270,51 @@ public struct AnchorAlarm: Sendable, Hashable, Codable {
 
     static func validRadius(_ radius: Double) -> Bool {
         radius.isFinite && radiusRange.contains(radius)
+    }
+}
+
+/// The alerts an armed anchor alarm needs, as local notifications that fire even when
+/// the app is suspended: a dead-man's switch for lost GPS, and repeats while alarming.
+/// The app keeps exactly these pending.
+public enum AnchorAlertSchedule {
+    public struct Alert: Sendable, Hashable {
+        public var id: String
+        public var fireAt: Double
+        public var reason: AnchorAlarm.Reason
+    }
+
+    /// While alarming, alerts repeat this often, s, with this many kept pending ahead.
+    public static let repeatInterval = 30.0
+    public static let repeatCount = 20
+
+    public static let gpsLostID = "anchorAlarm.gpsLost"
+    public static func repeatID(_ index: Int) -> String { "anchorAlarm.repeat.\(index)" }
+
+    /// The notifications that should be pending at `now`.
+    public static func pending(for alarm: AnchorAlarm, now: Double) -> [Alert] {
+        switch alarm.state {
+        case .clear:
+            return []
+        case .armed:
+            guard let deadline = alarm.gpsLostDeadline else { return [] }
+            return [Alert(id: gpsLostID, fireAt: max(deadline, now + 1), reason: .gpsLost)]
+        case .alarming(let reason):
+            // The next `repeatCount` slots on the alarm's 30 s cadence, so an alarm
+            // restored long after it started still has repeats ahead of it.
+            let since = alarm.alarmingSince ?? now
+            let first = max(1, Int(((now - since) / repeatInterval).rounded(.down)) + 1)
+            return (first..<(first + repeatCount)).map { index in
+                Alert(id: repeatID(index), fireAt: since + Double(index) * repeatInterval, reason: reason)
+            }
+        }
+    }
+
+    /// Whether an in-app alert (sound and haptics) is due: always for an alarm with no
+    /// alert yet in this process (including one restored after a relaunch), then every
+    /// `repeatInterval`.
+    public static func isAlertDue(alarm: AnchorAlarm, lastAlert: Double?, now: Double) -> Bool {
+        guard alarm.state.isAlarming else { return false }
+        guard let lastAlert else { return true }
+        return now - lastAlert >= repeatInterval
     }
 }

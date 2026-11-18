@@ -96,6 +96,30 @@ final class PhoneMotorboatUITests: XCTestCase {
         attachScreenshot("anchor 3 raised")
     }
 
+    /// Review regression: without notification permission the watch must say so, not
+    /// look fully armed.
+    func testAnchorWarnsWhenNotificationsAreOff() {
+        let app = launchDemoApp(extraArguments: ["-app.appearance", "dark", "-demoNotificationsDenied"])
+        let open = app.buttons["anchor.open"]
+        XCTAssertTrue(open.waitForExistence(timeout: 15))
+        open.tap()
+        let warning = element("anchor.issue.notificationsOff", in: app)
+        XCTAssertTrue(warning.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["anchor.openSettings"].exists)
+        let set = app.buttons["anchor.set"]
+        scrollTo(set, in: app)
+        waitForPredicate(set, "isEnabled == true")
+        set.tap()
+        let status = element("anchor.status", in: app)
+        waitForPredicate(status, "label BEGINSWITH 'Anchor watch limited'")
+        XCTAssertTrue(warning.exists)
+        attachScreenshot("anchor 4 notifications off")
+        app.navigationBars.buttons.firstMatch.tap()
+        let row = app.buttons["anchor.open"]
+        XCTAssertTrue(row.waitForExistence(timeout: 5))
+        XCTAssertTrue(row.label.contains("alerts may not reach you"), row.label)
+    }
+
     private func waitForPredicate(_ element: XCUIElement, _ format: String, timeout: TimeInterval = 10) {
         let expectation = XCTNSPredicateExpectation(predicate: NSPredicate(format: format), object: element)
         XCTAssertEqual(XCTWaiter().wait(for: [expectation], timeout: timeout), .completed, element.label)

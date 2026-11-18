@@ -13,7 +13,7 @@ struct AnchorAlarmView: View {
         let alarm = watch.alarm
         List {
             Section {
-                AnchorStatusHeader(alarm: alarm)
+                AnchorStatusHeader(alarm: alarm, isLimited: watch.isLimited)
                     .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
                 if alarm.state.isAlarming {
                     Button {
@@ -29,6 +29,10 @@ struct AnchorAlarmView: View {
                     .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
                     .accessibilityIdentifier("anchor.silence")
                 }
+            }
+
+            if !watch.issues.isEmpty {
+                AnchorIssuesSection(issues: watch.issues)
             }
 
             Section {
@@ -130,6 +134,8 @@ struct AnchorAlarmView: View {
 /// The alarm state in words, large, colored by state.
 private struct AnchorStatusHeader: View {
     let alarm: AnchorAlarm
+    /// Armed, but alerts may not reach the user.
+    let isLimited: Bool
 
     var body: some View {
         HStack(spacing: 14) {
@@ -156,7 +162,7 @@ private struct AnchorStatusHeader: View {
     private var title: String {
         switch alarm.state {
         case .clear: "No anchor set"
-        case .armed: "Anchor watch on"
+        case .armed: isLimited ? "Anchor watch limited" : "Anchor watch on"
         case .alarming(.dragging): "Anchor dragging"
         case .alarming(.gpsLost): "No GPS"
         }
@@ -177,7 +183,7 @@ private struct AnchorStatusHeader: View {
     private var symbol: String {
         switch alarm.state {
         case .clear: "scope"
-        case .armed: "checkmark.shield.fill"
+        case .armed: isLimited ? "exclamationmark.shield.fill" : "checkmark.shield.fill"
         case .alarming(.dragging): "exclamationmark.triangle.fill"
         case .alarming(.gpsLost): "location.slash.fill"
         }
@@ -186,8 +192,35 @@ private struct AnchorStatusHeader: View {
     private var tint: Color {
         switch alarm.state {
         case .clear: .secondary
-        case .armed: .accentColor
+        case .armed: isLimited ? .orange : .accentColor
         case .alarming: Theme.coral
+        }
+    }
+}
+
+/// Why the alarm may not reach the user, with a way to fix it. Shown whenever a
+/// permission is missing, so the watch is never presented as fully armed without it.
+private struct AnchorIssuesSection: View {
+    let issues: [AnchorReadiness.Issue]
+    @Environment(\.openURL) private var openURL
+
+    var body: some View {
+        Section {
+            ForEach(issues, id: \.self) { issue in
+                Label {
+                    Text(issue.message)
+                } icon: {
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                }
+                .font(.subheadline)
+                .accessibilityIdentifier("anchor.issue.\(issue.rawValue)")
+            }
+            Button("Open Settings", systemImage: "gearshape") {
+                if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
+            }
+            .accessibilityIdentifier("anchor.openSettings")
+        } header: {
+            Text("Alerts may not reach you")
         }
     }
 }
@@ -266,6 +299,7 @@ struct AnchorAlarmRow: View {
     private func subtitle(_ alarm: AnchorAlarm) -> String {
         switch alarm.state {
         case .clear: "Off"
+        case .armed where watch.isLimited: "On · alerts may not reach you"
         case .armed: alarm.distance.map { "On · \(AnchorText.metres($0)) from anchor" } ?? "On · waiting for GPS"
         case .alarming(.dragging): "Dragging · \(AnchorText.metres(alarm.distance))"
         case .alarming(.gpsLost): "No GPS"

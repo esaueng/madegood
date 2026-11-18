@@ -161,8 +161,10 @@ private func swing(_ t: Double) -> (distance: Double, bearing: Double) {
         #expect(alarm.state == .alarming(.dragging))
     }
 
-    @Test func inconclusiveFixesNeitherCountNorReset() {
+    @Test func inconclusiveFixesBreakTheStreak() {
         // Radius 30 m, hacc 10 m: 35 m is inconclusive (35 − 10 < 30 but 35 > 30).
+        // Review regression: 50 m (s 1–2), 35 m (s 3–20), 50 m (s 21) used to alarm by
+        // bridging two separate outside readings across the inconclusive ones.
         var alarm = armed(radius: 30)
         var random = SeededRandom(state: 5)
         alarm.ingest(fix(t: 1, distance: 50, bearing: 0, hacc: 10, random: &random))
@@ -170,9 +172,14 @@ private func swing(_ t: Double) -> (distance: Double, bearing: Double) {
         for second in 3...20 {
             alarm.ingest(fix(t: Double(second), distance: 35, bearing: 0, hacc: 10, random: &random))
         }
-        #expect(alarm.state == .armed)
-        // The earlier evidence still stands: one more clear fix confirms.
         alarm.ingest(fix(t: 21, distance: 50, bearing: 0, hacc: 10, random: &random))
+        #expect(alarm.state == .armed)
+        // Only an unbroken run of clearly-outside fixes over 10 s confirms.
+        for second in 22...30 {
+            alarm.ingest(fix(t: Double(second), distance: 50, bearing: 0, hacc: 10, random: &random))
+            #expect(alarm.state == .armed)
+        }
+        alarm.ingest(fix(t: 31, distance: 50, bearing: 0, hacc: 10, random: &random))
         #expect(alarm.state == .alarming(.dragging))
 
         // An inside fix resets the evidence.
@@ -244,11 +251,90 @@ private func swing(_ t: Double) -> (distance: Double, bearing: Double) {
         // A wild fix with poor accuracy, and an old one far away, are left out.
         fixes.append(fix(t: 29.5, distance: 300, bearing: 90, hacc: 80, random: &random))
         fixes.insert(fix(t: -100, distance: 300, bearing: 90, hacc: 5, random: &random), at: 0)
-        let point = try #require(AnchorAlarm.anchorPoint(from: fixes))
+        let point = try #require(AnchorAlarm.anchorPoint(from: fixes, at: 30))
         let error = Geo.distance(lat1: point.latitude, lon1: point.longitude, lat2: origin.lat, lon2: origin.lon)
         #expect(error < 4)
-        #expect(AnchorAlarm.anchorPoint(from: []) == nil)
-        let single = try #require(AnchorAlarm.anchorPoint(from: [fixes[5]]))
+        #expect(AnchorAlarm.anchorPoint(from: [], at: 30) == nil)
+        let single = try #require(AnchorAlarm.anchorPoint(from: [fixes[5]], at: 5))
         #expect(single.latitude == fixes[5].latitude && single.longitude == fixes[5].longitude)
+    }
+
+    @Test func anchorPointNeverUsesAnOldPosition() {
+        // Review regression: a fresh but inaccurate fix must not let arming fall back to
+        // a usable fix from 25 s ago, 100 m away.
+        var random = SeededRandom(state: 29)
+        let old = fix(t: 0, distance: 100, bearing: 90, hacc: 5, random: &random)
+        let freshButPoor = fix(t: 25, distance: 0, bearing: 0, hacc: 40, random: &random)
+        #expect(AnchorAlarm.anchorPoint(from: [old, freshButPoor], at: 25) == nil)
+        // A usable fix measured 9 s ago is still accepted, one from 11 s ago is not.
+        let nine = fix(t: 16, distance: 0, bearing: 0, hacc: 5, random: &random)
+        #expect(AnchorAlarm.anchorPoint(from: [old, nine, freshButPoor], at: 25) != nil)
+        let eleven = fix(t: 14, distance: 0, bearing: 0, hacc: 5, random: &random)
+        #expect(AnchorAlarm.anchorPoint(from: [old, eleven, freshButPoor], at: 25) == nil)
+    }
+
+    @Test func aFixAfterASuspendedGapRaisesTheGPSAlarmFirst() {
+        // Review regression: when the app was suspended without fixes, the fix that
+        // wakes it must not silently overwrite the last-fix time.
+        var alarm = armed(radius: 30)
+        var random = SeededRandom(state: 31)
+        alarm.ingest(fix(t: 10, distance: 5, bearing: 0, random: &random))
+        #expect(alarm.gpsLostDeadline == 130)
+        let changed = alarm.ingest(fix(t: 400, distance: 5, bearing: 0, random: &random))
+        #expect(changed)
+        #expect(alarm.state == .alarming(.gpsLost))
+        #expect(alarm.alarmingSince == 400)
+        #expect(alarm.distance.map { abs($0 - 5) < 0.01 } == true)
+        // The next fix shows GPS is back.
+        alarm.ingest(fix(t: 401, distance: 5, bearing: 0, random: &random))
+        #expect(alarm.state == .armed)
+        // A gap shorter than the limit is fine.
+        alarm.ingest(fix(t: 500, distance: 5, bearing: 0, random: &random))
+        #expect(alarm.state == .armed)
+    }
+
+    @Test func alertScheduleKeepsADeadMansSwitchAndRepeats() throws {
+        var alarm = armed(radius: 30, at: 0)
+        var random = SeededRandom(state: 37)
+        #expect(AnchorAlertSchedule.pending(for: AnchorAlarm(), now: 0).isEmpty)
+        alarm.ingest(fix(t: 50, distance: 5, bearing: 0, random: &random))
+        // Armed: one notification for lost GPS, 120 s after the last usable fix, moved
+        // by every new fix.
+        #expect(
+            AnchorAlertSchedule.pending(for: alarm, now: 55)
+                == [.init(id: AnchorAlertSchedule.gpsLostID, fireAt: 170, reason: .gpsLost)])
+        // Alarming: repeats from the alarm start, never in the past, no dead-man's switch.
+        for second in 51...65 {
+            alarm.ingest(fix(t: Double(second), distance: 80, bearing: 0, random: &random))
+        }
+        let since = try #require(alarm.alarmingSince)
+        let repeats = AnchorAlertSchedule.pending(for: alarm, now: since + 45)
+        #expect(repeats.first?.fireAt == since + 60)
+        #expect(repeats.allSatisfy { $0.reason == .dragging && $0.id != AnchorAlertSchedule.gpsLostID })
+        #expect(repeats.count == AnchorAlertSchedule.repeatCount)
+        // Hours later (a restored alarm), repeats still lie ahead on the same cadence.
+        let later = AnchorAlertSchedule.pending(for: alarm, now: since + 3600 + 5)
+        #expect(later.first?.fireAt == since + 3630)
+        #expect(later.count == AnchorAlertSchedule.repeatCount)
+        // Silenced: the dead-man's switch waits for the silence to end.
+        alarm.silence(at: 70)
+        #expect(alarm.gpsLostDeadline == 185)
+        alarm.clear()
+        #expect(AnchorAlertSchedule.pending(for: alarm, now: 80).isEmpty)
+    }
+
+    @Test func aRestoredAlarmAlertsAtOnceThenRepeats() throws {
+        // Review regression: an alarm restored after a relaunch has no previous alert in
+        // this process, and must sound immediately.
+        var alarm = armed(radius: 30)
+        var random = SeededRandom(state: 41)
+        for second in 1...15 {
+            alarm.ingest(fix(t: Double(second), distance: 80, bearing: 0, random: &random))
+        }
+        let restored = try JSONDecoder().decode(AnchorAlarm.self, from: JSONEncoder().encode(alarm))
+        #expect(AnchorAlertSchedule.isAlertDue(alarm: restored, lastAlert: nil, now: 1000))
+        #expect(!AnchorAlertSchedule.isAlertDue(alarm: restored, lastAlert: 1000, now: 1020))
+        #expect(AnchorAlertSchedule.isAlertDue(alarm: restored, lastAlert: 1000, now: 1030))
+        #expect(!AnchorAlertSchedule.isAlertDue(alarm: armed(), lastAlert: nil, now: 1000))
     }
 }
