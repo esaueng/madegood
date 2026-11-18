@@ -65,7 +65,8 @@ private struct StartView: View {
     @State private var store = SettingsStore.shared
     @State private var settingsSport: Sport?
 
-    private let columns = [GridItem(.adaptive(minimum: 160), spacing: 12)]
+    /// One column of rows on iPhone, two or more on iPad.
+    private let columns = [GridItem(.adaptive(minimum: 320), spacing: 8)]
 
     /// The newest session of each sport in the history (recorded here or on the watch).
     private var latest: [Sport: SessionLibrary.Summary] {
@@ -80,7 +81,7 @@ private struct StartView: View {
         let latest = latest
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                LazyVGrid(columns: columns, spacing: 12) {
+                LazyVGrid(columns: columns, spacing: 8) {
                     ForEach(
                         store.startList(extraUse: latest.mapValues { $0.startedAt.timeIntervalSince1970 }), id: \.self
                     ) { sport in
@@ -148,6 +149,8 @@ private struct StartView: View {
     }
 }
 
+/// One full-width row per sport: icon, name over the last session, and a settings
+/// button. Tapping the rest of the row starts the sport.
 private struct PhoneSportCard: View {
     let sport: Sport
     let detail: String?
@@ -156,43 +159,44 @@ private struct PhoneSportCard: View {
     let openSettings: () -> Void
 
     var body: some View {
-        Button(action: start) {
-            VStack(alignment: .leading, spacing: 4) {
-                SportIcon(sport: sport, size: 34)
-                    .foregroundStyle(Theme.cream)
-                    .frame(width: 48, height: 48)
-                    .background(Color.accentColor, in: .circle)
-                    .padding(.bottom, 6)
-                Text(sport.displayName)
-                    .font(.title3.weight(.semibold))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
-                Group {
-                    if let detail {
-                        Text(detail).monospacedDigit()
-                    } else if countdownMinutes > 0 {
-                        Label("\(countdownMinutes) min countdown", systemImage: "timer")
-                    } else {
-                        Text("Tap to start")
+        HStack(spacing: 0) {
+            Button(action: start) {
+                HStack(spacing: 12) {
+                    SportIcon(sport: sport, size: 32)
+                        .foregroundStyle(Theme.cream)
+                        .frame(width: 44, height: 44)
+                        .background(Color.accentColor, in: .circle)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(sport.displayName)
+                            .font(.headline)
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                        Group {
+                            if let detail {
+                                Text(detail).monospacedDigit()
+                            } else if countdownMinutes > 0 {
+                                Label("\(countdownMinutes) min countdown", systemImage: "timer")
+                            } else {
+                                Text("Tap to start")
+                            }
+                        }
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
                     }
                 }
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.leading, 12)
+                .padding(.vertical, 9)
+                .contentShape(.rect)
             }
-            .frame(maxWidth: .infinity, minHeight: 132, alignment: .bottomLeading)
-            .padding(14)
-            .background(Color.accentColor.opacity(0.12), in: .rect(cornerRadius: 24, style: .continuous))
-            .contentShape(.rect(cornerRadius: 24, style: .continuous))
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(sport.displayName)
-        .accessibilityValue(detail.map { "Last session \($0)" } ?? "")
-        .accessibilityHint("Starts a session")
-        .accessibilityIdentifier("sport.\(sport.rawValue)")
-        .overlay(alignment: .topTrailing) {
+            .buttonStyle(.plain)
+            .accessibilityLabel(sport.displayName)
+            .accessibilityValue(detail.map { "Last session \($0)" } ?? "")
+            .accessibilityHint("Starts a session")
+            .accessibilityIdentifier("sport.\(sport.rawValue)")
+
             Button(action: openSettings) {
                 Image(systemName: "gearshape.fill")
                     .font(.body)
@@ -200,10 +204,11 @@ private struct PhoneSportCard: View {
             }
             .buttonStyle(.glass)
             .buttonBorderShape(.circle)
-            .padding(8)
+            .padding(.trailing, 10)
             .accessibilityLabel("\(sport.displayName) settings")
             .accessibilityIdentifier("sportSettings.open.\(sport.rawValue)")
         }
+        .background(Color.accentColor.opacity(0.12), in: .rect(cornerRadius: 18, style: .continuous))
     }
 }
 
