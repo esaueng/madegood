@@ -2,18 +2,22 @@ import MapKit
 import SwiftUI
 import WaterKit
 
-/// The iPhone app: record, history, settings (docs/PLAN.md §6). Voyages arrive in Phase 5.
+/// The iPhone app tabs (docs/PLAN.md §6).
 struct ContentView: View {
     @State private var controller = SessionController.shared
     @State private var library = SessionLibrary()
+    @State private var voyageRecorder = VoyageRecorder()
     @State private var tab = AppTab.record
 
-    enum AppTab: Hashable { case record, history, settings }
+    enum AppTab: Hashable { case record, voyages, history, settings }
 
     var body: some View {
         TabView(selection: $tab) {
             Tab("Record", systemImage: "record.circle", value: AppTab.record) {
                 RecordView(controller: controller, library: library, showHistory: { tab = .history })
+            }
+            Tab("Voyages", systemImage: "sailboat", value: AppTab.voyages) {
+                VoyagesView(recorder: voyageRecorder)
             }
             Tab("History", systemImage: "list.bullet", value: AppTab.history) {
                 HistoryView(library: library)
