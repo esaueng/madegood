@@ -8,11 +8,21 @@ certificates, profiles or fastlane setup to maintain.
 ## Shipping a build
 
 - **Any time:** Actions → TestFlight → Run workflow (needs write access).
-- **A version:** bump `MARKETING_VERSION` in `apps/apple/Config/MadeGood.xcconfig`, merge,
-  then push a matching tag, for example `git tag v0.2.0 && git push origin v0.2.0`.
+- **A new minor or major version:** change `MARKETING_VERSION` in
+  `apps/apple/Config/MadeGood.xcconfig` (for example to `0.2.0`), merge, then run the
+  workflow or push a matching tag (`git tag v0.2.0 && git push origin v0.2.0`).
 
-The build number is the UTC time of the build (`20261117.91530` for 09:15:30), so it
-always increases, even when an older run is re-run. Apple processes an upload in about 10–30 minutes; the **Internal** TestFlight
+Every build gets a new version and build number without a commit:
+
+- **Version** (`CFBundleShortVersionString`): the major.minor from the xcconfig plus the
+  number of commits on the built branch, for example `0.1.39`. Main only gains commits,
+  so each merge ships a higher version; running the workflow twice on the same commit
+  gives the same version with a newer build number. Run it from `main`: another branch
+  has a different count and can produce a version that is out of order.
+- **Build number** (`CFBundleVersion`): the UTC time of the build (`20261117.91530` for
+  09:15:30), so it always increases, even when an older run is re-run.
+
+Apple processes an upload in about 10–30 minutes; the **Internal** TestFlight
 group has automatic distribution on, so its testers get the build without further
 steps.
 
@@ -53,8 +63,9 @@ The same script runs on a Mac. After `tuist install && tuist generate --no-open`
 ```sh
 APPLE_TEAM_ID=… APP_STORE_CONNECT_KEY_ID=… APP_STORE_CONNECT_ISSUER_ID=… \
 APP_STORE_CONNECT_KEY_PATH=~/.appstoreconnect/private_keys/AuthKey_….p8 \
-BUILD_NUMBER=0.1 UPLOAD=0 scripts/testflight
+BUILD_NUMBER="$(date -u +%Y%m%d).$((10#$(date -u +%H%M%S)))" UPLOAD=0 scripts/testflight
 ```
 
 `UPLOAD=0` exports a signed `.ipa` without uploading. Leave it out to upload, and use a
-build number higher than any already in App Store Connect.
+build number higher than any already in App Store Connect. Set `MARKETING_VERSION` to
+override the computed version.

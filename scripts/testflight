@@ -13,6 +13,10 @@
 #   APP_STORE_CONNECT_KEY_PATH     path to the key's .p8 file
 #   BUILD_NUMBER                   CFBundleVersion for every target; must increase
 # Optional:
+#   MARKETING_VERSION              CFBundleShortVersionString; by default the major.minor
+#                                  from apps/apple/Config/MadeGood.xcconfig plus the number
+#                                  of commits in HEAD's history (0.1.39), so each merge to
+#                                  main ships a higher version
 #   UPLOAD=0                       export an .ipa instead of uploading it
 #   WORK_DIR                       where the archive and logs go
 #
@@ -26,6 +30,17 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 : "${APP_STORE_CONNECT_KEY_PATH:?set APP_STORE_CONNECT_KEY_PATH}"
 : "${BUILD_NUMBER:?set BUILD_NUMBER}"
 test -f "$APP_STORE_CONNECT_KEY_PATH" || { echo "No key file at APP_STORE_CONNECT_KEY_PATH" >&2; exit 1; }
+
+if [ -z "${MARKETING_VERSION:-}" ]; then
+  # A shallow clone would count only its own commits and ship a lower version.
+  if [ "$(git -C "$root" rev-parse --is-shallow-repository)" = true ]; then
+    echo "Shallow clone: fetch the full history or set MARKETING_VERSION" >&2
+    exit 1
+  fi
+  base="$(sed -nE 's/^MARKETING_VERSION *= *([0-9]+)\.([0-9]+).*/\1.\2/p' "$root/apps/apple/Config/MadeGood.xcconfig")"
+  [ -n "$base" ] || { echo "No MARKETING_VERSION in MadeGood.xcconfig" >&2; exit 1; }
+  MARKETING_VERSION="$base.$(git -C "$root" rev-list --count HEAD)"
+fi
 
 work="${WORK_DIR:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/madegood-testflight}"
 rm -rf "$work"
@@ -43,7 +58,7 @@ auth=(
 
 cd "$root/apps/apple"
 
-echo "Archiving build $BUILD_NUMBER"
+echo "Archiving version $MARKETING_VERSION ($BUILD_NUMBER)"
 xcodebuild archive \
   -workspace MadeGood.xcworkspace \
   -scheme MadeGood \
@@ -52,6 +67,7 @@ xcodebuild archive \
   -archivePath "$work/MadeGood.xcarchive" \
   "${auth[@]}" \
   DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+  MARKETING_VERSION="$MARKETING_VERSION" \
   CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
   > "$work/archive.log" 2>&1 || true
 grep -E '(error|warning):|\*\* ARCHIVE' "$work/archive.log" || true
@@ -90,4 +106,4 @@ if ! grep -q '\*\* EXPORT SUCCEEDED \*\*' "$work/export.log"; then
   echo "Export failed; see $work/export.log" >&2
   exit 1
 fi
-echo "Build $BUILD_NUMBER: $destination done"
+echo "Version $MARKETING_VERSION ($BUILD_NUMBER): $destination done"
