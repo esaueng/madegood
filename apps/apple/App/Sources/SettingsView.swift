@@ -66,10 +66,7 @@ private struct SportRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            SportIcon(sport: sport, size: 24)
-                .foregroundStyle(Theme.cream)
-                .frame(width: 32, height: 32)
-                .background(Color.accentColor.opacity(settings.isHidden ? 0.4 : 1), in: .rect(cornerRadius: 8))
+            SportBadge(sport: sport, diameter: 36, dimmed: settings.isHidden)
             VStack(alignment: .leading, spacing: 2) {
                 Text(sport.displayName)
                     .foregroundStyle(settings.isHidden ? .secondary : .primary)

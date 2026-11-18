@@ -195,9 +195,7 @@ private struct PhoneSportCard: View {
         HStack(spacing: 0) {
             Button(action: start) {
                 HStack(spacing: 12) {
-                    RowIcon(sport: sport)
-                        // Grows with text size, but stops before it crowds out the name.
-                        .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
+                    SportBadge(sport: sport, diameter: 52)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(sport.displayName)
                             .font(.headline)
@@ -263,19 +261,6 @@ private struct HiddenSportToast: View {
         .padding(.vertical, 12)
         .glassEffect(.regular, in: .capsule)
         .accessibilityElement(children: .contain)
-    }
-}
-
-/// The sport's glyph in an accent circle; both scale with text size together.
-private struct RowIcon: View {
-    let sport: Sport
-    @ScaledMetric private var circle: CGFloat = 52
-
-    var body: some View {
-        SportIcon(sport: sport, size: 38)
-            .foregroundStyle(Theme.cream)
-            .frame(width: circle, height: circle)
-            .background(Color.accentColor, in: .circle)
     }
 }
 
