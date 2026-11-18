@@ -17,11 +17,17 @@ enum RecordingStore {
     }
 
     static var root: URL {
-        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         if let demoNamespace {
+            let documents = recordingsRoot.deletingLastPathComponent()
             return documents.appendingPathComponent("DemoHistory", isDirectory: true)
                 .appendingPathComponent(demoNamespace.uuidString, isDirectory: true)
         }
+        return recordingsRoot
+    }
+
+    /// Watch transfers always land in the normal library, even during a demo.
+    static var recordingsRoot: URL {
+        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         return documents.appendingPathComponent("Recordings", isDirectory: true)
     }
 

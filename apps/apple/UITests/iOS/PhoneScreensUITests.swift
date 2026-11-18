@@ -41,9 +41,10 @@ final class PhoneScreensUITests: XCTestCase {
         XCTAssertTrue(element("replay.map", in: app).waitForExistence(timeout: 20))
         sleep(2)  // map tiles
         attachScreenshot("\(appearance) detail top")
-        scrollTo(app.staticTexts["stat.Distance"], in: app)
+        scrollTo(element("chart.speed", in: app), in: app)
         attachScreenshot("\(appearance) detail charts")
-        app.swipeUp()
+        scrollTo(app.staticTexts["stat.Distance"], in: app)
+        scrollTo(app.buttons["replay.lap.1"], in: app)
         attachScreenshot("\(appearance) detail laps")
         app.navigationBars.buttons.firstMatch.tap()
 

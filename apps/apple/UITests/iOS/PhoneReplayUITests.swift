@@ -110,13 +110,16 @@ final class PhoneReplayUITests: XCTestCase {
         let play = app.buttons["replay.playPause"]
         XCTAssertTrue(play.isHittable)
         let beforePlaying = elapsed.label
-        play.tap()
-        waitForLabel(play, "Pause")
         // Playback updates the chart continuously. Compare the settled snapshots
-        // before playing and after pausing, once a displayed second has elapsed.
-        Thread.sleep(forTimeInterval: 1.5)
-        play.tap()
-        waitForLabel(play, "Play")
+        // and allow another interval if the simulator hasn't published a tick yet.
+        for interval in [1.5, 2.5] {
+            play.tap()
+            waitForLabel(play, "Pause")
+            Thread.sleep(forTimeInterval: interval)
+            play.tap()
+            waitForLabel(play, "Play")
+            if secondsInTime(elapsed.label) > secondsInTime(beforePlaying) { break }
+        }
         XCTAssertGreaterThan(secondsInTime(elapsed.label), secondsInTime(beforePlaying))
 
         let lap = app.buttons["replay.lap.1"]
