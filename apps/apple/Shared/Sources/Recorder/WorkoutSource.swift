@@ -13,7 +13,9 @@ import WaterKit
 ///
 /// A countdown can `prepare` the session first: it stays in its prepared state (sensors
 /// on, the app kept running with the wrist down, nothing collected) until `start` begins
-/// the same session, or `cancel` ends it.
+/// the same session, or `cancel` ends it. A countdown started by the Action button also
+/// starts the session's activity at once (Apple requires a running workout within 30 s
+/// of the press); collection, and so the saved workout, still begins at `start`.
 final class WorkoutSource: NSObject, HKWorkoutSessionDelegate, HKLiveWorkoutBuilderDelegate, Sendable {
     private let store: HKHealthStore
     private let lastHeartRateDate = Mutex<Date?>(nil)
@@ -47,11 +49,13 @@ final class WorkoutSource: NSObject, HKWorkoutSessionDelegate, HKLiveWorkoutBuil
             toShare: [HKObjectType.workoutType(), HKSeriesType.workoutRoute()], read: [heartRate])
     }
 
-    /// Creates the session for `sport` and moves it to the prepared state, for a countdown.
-    func prepare(sport: Sport) throws {
+    /// Creates the session for `sport` and moves it to the prepared state, for a countdown;
+    /// with `startActivity`, on to running without collecting anything yet.
+    func prepare(sport: Sport, startActivity: Bool = false) throws {
         let (session, builder) = try makeSession(sport: sport)
         install(session, builder)
         session.prepare()
+        if startActivity { session.startActivity(with: Date()) }
     }
 
     /// Begins the workout: the prepared session if there is a usable one for `sport`,
@@ -64,7 +68,8 @@ final class WorkoutSource: NSObject, HKWorkoutSessionDelegate, HKLiveWorkoutBuil
         let activityType = Self.activityType(for: sport)
         let prepared = state.withLock { state -> (HKWorkoutSession, HKLiveWorkoutBuilder)? in
             guard let session = state.session, let builder = state.builder,
-                Self.canStart(session.state), session.workoutConfiguration.activityType == activityType
+                Self.canStart(session.state) || Self.isRunningWithoutCollection(session.state, builder),
+                session.workoutConfiguration.activityType == activityType
             else { return nil }
             return (session, builder)
         }
@@ -84,7 +89,9 @@ final class WorkoutSource: NSObject, HKWorkoutSessionDelegate, HKLiveWorkoutBuil
         }
         route.withLock { $0 = HKWorkoutRouteBuilder(healthStore: store, device: nil) }
 
-        session.startActivity(with: date)
+        // An activity already started for the Action button keeps running; only collection
+        // starts now, so the workout begins at zero, not at the countdown.
+        if Self.canStart(session.state) { session.startActivity(with: date) }
         try await builder.beginCollection(at: date)
     }
 
@@ -118,6 +125,12 @@ final class WorkoutSource: NSObject, HKWorkoutSessionDelegate, HKLiveWorkoutBuil
     /// Only a session that has not run yet can start (`startActivity`).
     static func canStart(_ state: HKWorkoutSessionState) -> Bool {
         state == .notStarted || state == .prepared
+    }
+
+    /// A session whose activity started early (Action button countdown) and has not begun
+    /// collecting: `start` can still use it.
+    static func isRunningWithoutCollection(_ state: HKWorkoutSessionState, _ builder: HKLiveWorkoutBuilder) -> Bool {
+        state == .running && builder.startDate == nil
     }
 
     private func makeSession(sport: Sport) throws -> (HKWorkoutSession, HKLiveWorkoutBuilder) {

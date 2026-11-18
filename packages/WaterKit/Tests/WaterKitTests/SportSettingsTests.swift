@@ -20,6 +20,7 @@ import Testing
         #expect(kayak.distanceAlert == nil)
         #expect(kayak.countdownSeconds == nil)
         #expect(!kayak.isHidden)
+        #expect(kayak.actionButton == .lap)
 
         let sailing = SportSettings.standard(for: .sailing)
         #expect(!sailing.autoPause)
@@ -46,6 +47,7 @@ import Testing
         settings.distanceAlert = 0.5
         settings.countdownMinutes = 5
         settings.isHidden = true
+        settings.actionButton = .manOverboard
         settings.write(sport: .sailing, to: store.write)
         #expect(SportSettings(sport: .sailing, reading: store.read) == settings)
         // Other sports are untouched.
@@ -224,5 +226,28 @@ import Testing
         #expect(DistanceAlert(interval: nil) == nil)
         #expect(DistanceAlert(interval: 0) == nil)
         #expect(DistanceAlert(interval: .infinity) == nil)
+    }
+
+    @Test func actionButtonReadsStringsAndIgnoresUnknownValues() {
+        let store = SportSettingsTests.Store()
+        store.values[SportSettings.Key.actionButton(.sailing)] = "mark"
+        store.values[SportSettings.Key.actionButton(.kayak)] = "jump"
+        #expect(SportSettings(sport: .sailing, reading: store.read).actionButton == .mark)
+        #expect(SportSettings(sport: .kayak, reading: store.read).actionButton == .lap)
+        #expect(SportSettings.Key.all(.sailing).contains(SportSettings.Key.actionButton(.sailing)))
+    }
+
+    @Test func actionButtonPressFollowsTheSessionState() {
+        typealias P = ActionButtonPress
+        // A countdown takes the press whatever the setting.
+        #expect(P.resolve(countingDown: true, canSync: true, isRecording: false, action: .manOverboard) == .syncCountdown)
+        #expect(P.resolve(countingDown: true, canSync: false, isRecording: false, action: .lap) == .startNow)
+        // Recording runs the sport's choice.
+        #expect(P.resolve(countingDown: false, canSync: false, isRecording: true, action: .lap) == .lap)
+        #expect(P.resolve(countingDown: false, canSync: false, isRecording: true, action: .mark) == .mark)
+        #expect(
+            P.resolve(countingDown: false, canSync: false, isRecording: true, action: .manOverboard) == .manOverboard)
+        // Nothing running: nothing happens.
+        #expect(P.resolve(countingDown: false, canSync: true, isRecording: false, action: .lap) == .ignore)
     }
 }

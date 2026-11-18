@@ -59,14 +59,23 @@ struct SportSettingsForm: View {
                     }
                 }
                 .accessibilityIdentifier("sportSettings.countdown")
+                Picker("Action button", selection: store.binding(sport, \.actionButton)) {
+                    ForEach(ActionButtonAction.allCases, id: \.self) { action in
+                        Text(action.title).tag(action)
+                    }
+                }
+                .accessibilityIdentifier("sportSettings.actionButton")
             } header: {
                 Text("Start")
             } footer: {
                 if sport == .sailing {
                     Text(
-                        "Taps each minute and over the last 10 s. Sync rounds to the nearest minute at a start signal.")
+                        "Taps each minute and over the last 10 s. Sync rounds to the nearest minute at a start signal. On Apple Watch Ultra, the Action button syncs the countdown, then does the action above."
+                    )
                 } else {
-                    Text("Taps each minute and over the last 10 s. Recording begins at zero.")
+                    Text(
+                        "Taps each minute and over the last 10 s. Recording begins at zero. On Apple Watch Ultra, the Action button skips the countdown, then does the action above."
+                    )
                 }
             }
 
@@ -172,5 +181,15 @@ struct DistanceAlertBanner: View {
             .shadow(color: .black.opacity(0.4), radius: 6, y: 2)
             .accessibilityElement(children: .combine)
             .accessibilityIdentifier("distanceAlert.banner")
+    }
+}
+
+extension ActionButtonAction {
+    var title: String {
+        switch self {
+        case .lap: "Lap"
+        case .mark: "Mark"
+        case .manOverboard: "Man overboard"
+        }
     }
 }

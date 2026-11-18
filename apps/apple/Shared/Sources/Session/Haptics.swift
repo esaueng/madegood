@@ -16,6 +16,10 @@ enum Haptics {
         case recordingStarted
         case lap
         case distanceAlert
+        case mark
+        case manOverboard
+        /// The press did nothing it could confirm (no position for a MOB mark).
+        case failure
     }
 
     @MainActor
@@ -24,18 +28,23 @@ enum Haptics {
             let type: WKHapticType =
                 switch event {
                 case .countdownStarted, .recordingStarted: .start
-                case .countdownMinute, .distanceAlert: .notification
-                case .countdownSecond, .lap: .click
+                case .countdownMinute, .distanceAlert, .manOverboard: .notification
+                case .countdownSecond, .lap, .mark: .click
                 case .sync: .directionUp
+                case .failure: .failure
                 }
             WKInterfaceDevice.current().play(type)
         #else
             switch event {
             case .countdownStarted, .recordingStarted, .distanceAlert:
                 UINotificationFeedbackGenerator().notificationOccurred(.success)
+            case .manOverboard:
+                UINotificationFeedbackGenerator().notificationOccurred(.warning)
+            case .failure:
+                UINotificationFeedbackGenerator().notificationOccurred(.error)
             case .countdownMinute, .sync:
                 UIImpactFeedbackGenerator(style: .heavy).impactOccurred()
-            case .countdownSecond, .lap:
+            case .countdownSecond, .lap, .mark:
                 UIImpactFeedbackGenerator(style: .light).impactOccurred()
             }
         #endif
