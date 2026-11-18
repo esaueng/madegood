@@ -79,9 +79,12 @@ final class MotionSource {
         return queue
     }()
     private let writer: RawStreamWriter
+    private let onSample: @Sendable (RawFormat.MotionLine) -> Void
 
-    init(writer: RawStreamWriter) {
+    /// `onSample` receives every line written, on the motion queue, for live analysis.
+    init(writer: RawStreamWriter, onSample: @escaping @Sendable (RawFormat.MotionLine) -> Void = { _ in }) {
         self.writer = writer
+        self.onSample = onSample
     }
 
     var isAvailable: Bool { manager.isDeviceMotionAvailable }
@@ -89,7 +92,7 @@ final class MotionSource {
     func start(rate: Double) {
         guard manager.isDeviceMotionAvailable else { return }
         manager.deviceMotionUpdateInterval = 1 / rate
-        manager.startDeviceMotionUpdates(to: queue, withHandler: Self.handler(writer: writer))
+        manager.startDeviceMotionUpdates(to: queue, withHandler: Self.handler(writer: writer, onSample: onSample))
     }
 
     func stop() {
@@ -98,7 +101,9 @@ final class MotionSource {
 
     /// Built outside the main actor so the closure is not main-actor isolated: CoreMotion
     /// calls it on `queue`.
-    nonisolated private static func handler(writer: RawStreamWriter) -> CMDeviceMotionHandler {
+    nonisolated private static func handler(
+        writer: RawStreamWriter, onSample: @escaping @Sendable (RawFormat.MotionLine) -> Void
+    ) -> CMDeviceMotionHandler {
         { motion, _ in
             guard let motion else { return }
             let g = RawFormat.standardGravity
@@ -106,13 +111,14 @@ final class MotionSource {
             let gravity = motion.gravity
             let r = motion.rotationRate
             let q = motion.attitude.quaternion
-            writer.append(
-                RawFormat.MotionLine(
-                    ts: motion.timestamp,
-                    userAcceleration: Vector3(x: a.x * g, y: a.y * g, z: a.z * g),
-                    gravity: Vector3(x: gravity.x * g, y: gravity.y * g, z: gravity.z * g),
-                    rotationRate: Vector3(x: r.x, y: r.y, z: r.z),
-                    attitude: Quaternion(x: q.x, y: q.y, z: q.z, w: q.w)))
+            let line = RawFormat.MotionLine(
+                ts: motion.timestamp,
+                userAcceleration: Vector3(x: a.x * g, y: a.y * g, z: a.z * g),
+                gravity: Vector3(x: gravity.x * g, y: gravity.y * g, z: gravity.z * g),
+                rotationRate: Vector3(x: r.x, y: r.y, z: r.z),
+                attitude: Quaternion(x: q.x, y: q.y, z: q.z, w: q.w))
+            writer.append(line)
+            onSample(line)
         }
     }
 }

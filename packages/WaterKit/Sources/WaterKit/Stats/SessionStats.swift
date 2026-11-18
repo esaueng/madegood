@@ -43,6 +43,19 @@ public struct SessionStats: Sendable, Hashable, Codable {
     public var heartRateMax: Double?
     public var events: [String: Int]
     public var issues: [String]
+    /// Paddle strokes, for kayak, canoe and SUP recordings with motion (docs/metrics.md "Strokes").
+    public var strokes: StrokeStats?
+
+    public struct StrokeStats: Sendable, Hashable, Codable {
+        public var count: Int
+        /// SPM
+        public var averageRate: Double?
+        /// m, over the distance above
+        public var distancePerStroke: Double?
+        public var sideSwitches: Int?
+        /// Share of strokes on the side paddled first, 0–1.
+        public var sideBalance: Double?
+    }
 
     public static let gapFactor = 3.0
     /// Fixes with a larger horizontal accuracy radius are ignored (docs/PLAN.md §5).
@@ -56,6 +69,15 @@ extension SessionStats {
         self.init(
             track: session.track(), motion: session.motion.map(\.t), heading: session.heading.map(\.t),
             duration: session.duration, issues: session.issues.map(\.description))
+        if session.meta.sport.isPaddling, !session.motion.isEmpty {
+            let analysis = StrokeAnalysis(
+                detection: StrokeAnalysis.detect(session: session), sport: session.meta.sport, distance: distance)
+            let singleBlade = session.meta.sport != .kayak
+            strokes = StrokeStats(
+                count: analysis.strokeCount, averageRate: analysis.averageStrokeRate,
+                distancePerStroke: analysis.distancePerStroke, sideSwitches: singleBlade ? analysis.sideSwitches : nil,
+                sideBalance: analysis.sideBalance)
+        }
     }
 
     public init(

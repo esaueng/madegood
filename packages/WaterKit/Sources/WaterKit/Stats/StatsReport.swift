@@ -37,6 +37,14 @@ extension SessionStats {
         if let average = heartRateAverage, let max = heartRateMax {
             lines.append("Heart rate avg \(Self.fixed(average, 0)) bpm, max \(Self.fixed(max, 0)) bpm")
         }
+        if let strokes {
+            var line = "Strokes   \(strokes.count)"
+            if let rate = strokes.averageRate { line += ", avg \(Self.fixed(rate, 1)) spm" }
+            if let perStroke = strokes.distancePerStroke { line += ", \(Self.fixed(perStroke, 2)) m/stroke" }
+            if let switches = strokes.sideSwitches { line += ", \(switches) side switches" }
+            if let balance = strokes.sideBalance { line += " (\(Self.fixed(balance * 100, 0)) % on first side)" }
+            lines.append(line)
+        }
         let eventList = events.sorted { $0.key < $1.key }.map { "\($0.key) ×\($0.value)" }
         lines.append("Events    \(eventList.isEmpty ? "none" : eventList.joined(separator: ", "))")
         if issues.isEmpty {

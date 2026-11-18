@@ -74,7 +74,7 @@ public enum RawSessionReader {
                 userAcceleration: Vector3(x: l.ax, y: l.ay, z: l.az),
                 gravity: Vector3(x: l.gx, y: l.gy, z: l.gz),
                 rotationRate: Vector3(x: l.rx, y: l.ry, z: l.rz),
-                attitude: Quaternion(x: l.qx, y: l.qy, z: l.qz, w: l.qw))
+                attitude: Quaternion(x: l.qx, y: l.qy, z: l.qz, w: l.qw), uptime: l.ts)
         }
         let hr = try (readStream(.hr, in: folder, issues: &issues) as [RawFormat.HRLine]).map {
             HRSample(t: clock.fromUnix($0.ts), bpm: $0.bpm)
@@ -82,11 +82,20 @@ public enum RawSessionReader {
         let heading = try (readStream(.heading, in: folder, issues: &issues) as [RawFormat.HeadingLine]).map {
             HeadingSample(t: clock.fromUnix($0.ts), magnetic: $0.mag, trueHeading: $0.trueHeading, accuracy: $0.acc)
         }
-        let events = try (readStream(.events, in: folder, issues: &issues) as [RawFormat.EventLine]).map {
+        let eventLines: [RawFormat.EventLine] = try readStream(.events, in: folder, issues: &issues)
+        let events = eventLines.map {
             SessionEvent(t: clock.fromUnix($0.ts), type: EventType($0.type), data: $0.data)
         }
+        let pauseLines = eventLines.filter { line in
+            (line.type == EventType.pause.rawValue || line.type == EventType.resume.rawValue)
+                && line.data?["auto"] != .bool(true)
+        }
+        let pauseUptimes = clock.uptimes(forUnixInRecordedOrder: pauseLines.map(\.ts))
+        let pauseEvents = zip(pauseLines, pauseUptimes).map { line, uptime in
+            SessionEvent(t: uptime - meta.clock.uptime, type: EventType(line.type), data: line.data)
+        }
 
-        return RawSession(
+        var session = RawSession(
             meta: meta,
             gps: sortedByTime(gps, \.t),
             motion: sortedByTime(motion, \.t),
@@ -95,6 +104,8 @@ public enum RawSessionReader {
             events: sortedByTime(events, \.t),
             clockAnchors: anchors,
             issues: issues)
+        session.pauseEventsOnUptime = pauseEvents
+        return session
     }
 
     public static func readMeta(folder: URL) throws -> RawFormat.Meta {
@@ -174,6 +185,32 @@ struct SessionClock: Sendable {
     var anchors: [RawFormat.ClockAnchor]
 
     func fromUnix(_ unix: Double) -> Double { unix - startedAt }
+
+    /// Device uptimes for wall-clock times written in this order (events are appended as
+    /// they happen). Each anchor starts a segment of the uptime clock where wall time and
+    /// uptime advance together. Walking the segments in order, each time goes to the first
+    /// segment, from the current one on, where it lands at or after the previous result and
+    /// before the next anchor: a wall time repeated by a backward correction lands after it.
+    func uptimes(forUnixInRecordedOrder times: [Double]) -> [Double] {
+        var segment = 0
+        var previous = -Double.infinity
+        return times.map { unix in
+            var chosen: Double?
+            for k in segment..<anchors.count {
+                let uptime = anchors[k].uptime + (unix - anchors[k].unix)
+                let fitsEnd = k + 1 == anchors.count || uptime < anchors[k + 1].uptime
+                if uptime >= previous, fitsEnd {
+                    chosen = uptime
+                    segment = k
+                    break
+                }
+            }
+            let last = anchors[anchors.count - 1]
+            let result = max(chosen ?? last.uptime + (unix - last.unix), previous)
+            previous = result
+            return result
+        }
+    }
 
     /// Converts device uptime using the latest anchor at or before it (or the first anchor),
     /// so wall-clock corrections during a session apply from the moment they were recorded.

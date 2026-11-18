@@ -37,6 +37,36 @@ enum DemoFeed {
         return RawFormat.GPSLine(ts: ts, lat: point.lat, lon: point.lon, hacc: 5, spd: speed, crs: 90)
     }
 
+    /// Synthetic wrist motion for paddling, at 25 Hz: a steady 64 SPM for kayak (two
+    /// strokes per wrist cycle) and 48 SPM for canoe and SUP, repeating every 10 minutes.
+    static let motionRate = 25.0
+    static let motionLoop = 600.0
+
+    static func strokeRate(for sport: Sport) -> Double { sport == .kayak ? 64 : 48 }
+
+    private static let paddleMotion: [Sport: [MotionSample]] = Dictionary(
+        uniqueKeysWithValues: [Sport.kayak, .canoe, .sup].map { sport in
+            var simulator = PaddleMotionSimulator(
+                sport: sport, segments: [.init(duration: motionLoop, strokeRate: strokeRate(for: sport))])
+            simulator.sampleRate = motionRate
+            simulator.seed = 2
+            return (sport, simulator.generate().samples)
+        })
+
+    /// Motion lines for session times in (`start`, `end`], with uptime timestamps.
+    static func motion(sport: Sport, from start: Double, to end: Double, startUptime: Double) -> [RawFormat.MotionLine] {
+        guard let samples = paddleMotion[sport], !samples.isEmpty, end > start else { return [] }
+        let first = Int((start * motionRate).rounded(.down)) + 1
+        let last = Int((end * motionRate).rounded(.down))
+        guard last >= first else { return [] }
+        return (first...last).map { index in
+            let sample = samples[index % samples.count]
+            return RawFormat.MotionLine(
+                ts: startUptime + Double(index) / motionRate, userAcceleration: sample.userAcceleration,
+                gravity: sample.gravity, rotationRate: sample.rotationRate, attitude: sample.attitude)
+        }
+    }
+
     static func heartRate(at ts: Double, startUnix: Double) -> RawFormat.HRLine {
         RawFormat.HRLine(ts: ts, bpm: 120 + Double(Int(ts - startUnix) % 10))
     }

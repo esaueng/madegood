@@ -47,6 +47,12 @@ struct SessionDetailView: View {
         var current: Presentation
         var trim: SessionTrim?
         let display: LiveDisplay
+        /// Strokes over the whole recording (kayak, canoe, SUP), detected once from the
+        /// motion stream; nil for other sports. Trims re-derive `strokes` from it.
+        let strokeDetection: StrokeAnalysis.Detection?
+        /// Whether the recording has a motion stream at all.
+        let hasMotion: Bool
+        var strokes: StrokeAnalysis?
     }
 
     struct ShareFile: Identifiable {
@@ -125,9 +131,19 @@ struct SessionDetailView: View {
                     selection: loaded.selection, display: display, isTrimmed: loaded.trim != nil,
                     trimUnavailable: loaded.trimUnavailable)
                 : original
+            let sport = loaded.session.meta.sport
+            var detection: StrokeAnalysis.Detection?
+            var hasMotion = false
+            if sport.isPaddling {
+                let full = try? RawSessionReader.read(folder: folder)
+                hasMotion = !(full?.motion.isEmpty ?? true)
+                detection = full.map { StrokeAnalysis.detect(session: $0) } ?? .init(cycles: [], strokes: [])
+            }
             return Analysis(
                 source: source, session: loaded.session, profile: loaded.profile, original: original,
-                current: current, trim: loaded.trim, display: display)
+                current: current, trim: loaded.trim, display: display, strokeDetection: detection,
+                hasMotion: hasMotion,
+                strokes: detection.map { StrokeAnalysis(detection: $0, sport: sport, selection: current.selection) })
         }.value
         guard !Task.isCancelled else { return }
         if let result, SessionLibrary.source(for: folder) != result.source {
@@ -145,6 +161,9 @@ struct SessionDetailView: View {
             trim, for: original.session, source: original.source, summary: preview.summary)
         edited.trim = trim
         edited.current = preview
+        edited.strokes = original.strokeDetection.map {
+            StrokeAnalysis(detection: $0, sport: original.session.meta.sport, selection: preview.selection)
+        }
         clearReplay()
         analysis = edited
     }
@@ -370,6 +389,10 @@ struct SessionDetailView: View {
                 }
             }
 
+            if let strokes = analysis.strokes {
+                strokeSection(strokes, analysis: analysis, replayData: replayData)
+            }
+
             SessionMomentsSection(
                 presentation: analysis.current, source: analysis.source, display: display,
                 highlightedTitle: replayHighlight?.title,
@@ -467,6 +490,83 @@ struct SessionDetailView: View {
         }
     }
 
+    /// Paddling: stroke totals and the stroke rate over time (docs/metrics.md "Strokes").
+    @ViewBuilder
+    private func strokeSection(
+        _ strokes: StrokeAnalysis, analysis: Analysis, replayData: SessionReplayView.Data
+    ) -> some View {
+        let display = analysis.display
+        let distance = analysis.current.selection.replay.metrics.distance
+        Section {
+            if !analysis.hasMotion {
+                Label("No wrist motion was recorded, so strokes aren't available.", systemImage: "waveform.slash")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            } else {
+                Grid(horizontalSpacing: 16, verticalSpacing: 14) {
+                    GridRow {
+                        StatTile(title: "Strokes", value: LiveDisplay.strokeCount(strokes.strokeCount))
+                        StatTile(title: "Avg stroke rate", value: LiveDisplay.strokeRate(strokes.averageStrokeRate))
+                    }
+                    GridRow {
+                        StatTile(
+                            title: "Per stroke",
+                            value: display.distancePerStroke(distance: distance, strokes: strokes.strokeCount))
+                        if strokes.sideBalance != nil {
+                            StatTile(title: "Side switches", value: "\(strokes.sideSwitches)")
+                        } else {
+                            Color.clear.gridCellUnsizedAxes([.horizontal, .vertical])
+                        }
+                    }
+                    if let balance = strokes.sideBalance {
+                        let first = Int((balance * 100).rounded())
+                        GridRow {
+                            StatTile(title: "Side balance", value: "\(first) / \(100 - first) %")
+                            Color.clear.gridCellUnsizedAxes([.horizontal, .vertical])
+                        }
+                    }
+                }
+                .padding(.vertical, 6)
+                let spans = ChartSeries.strokeRate(strokes.rateSeries)
+                if spans.reduce(0, { $0 + $1.count }) > 1 {
+                    let start = min(replayData.timeline.start / 60, spans.first?.first?.minutes ?? 0)
+                    let end = max(spans.last?.last?.minutes ?? 0, replayData.timeline.duration / 60)
+                    Chart {
+                        ForEach(replayHighlight?.ranges ?? [], id: \.self) { range in
+                            RectangleMark(
+                                xStart: .value("Start", range.lowerBound / 60),
+                                xEnd: .value("End", range.upperBound / 60)
+                            )
+                            .foregroundStyle(Color.accentColor.opacity(0.2))
+                        }
+                        ForEach(spans.indices, id: \.self) { index in
+                            ForEach(spans[index]) { point in
+                                LineMark(
+                                    x: .value("Minutes", point.minutes), y: .value("spm", point.value),
+                                    series: .value("Span", index)
+                                )
+                                .foregroundStyle(Color.accentColor)
+                            }
+                        }
+                    }
+                    .chartXScale(domain: start...end)
+                    .chartYScale(domain: .automatic(includesZero: false))
+                    .chartXAxisLabel("min")
+                    .chartYAxisLabel("spm")
+                    .frame(height: 140)
+                    .accessibilityIdentifier("chart.strokeRate")
+                }
+            }
+        } header: {
+            Text("Strokes")
+        } footer: {
+            if analysis.hasMotion, strokes.sideBalance != nil {
+                Text("Side balance is the share of strokes on the side paddled first, then on the other side.")
+            }
+        }
+        .id("session.strokes")
+    }
+
     private func exportGPX(_ analysis: Analysis) {
         isPlaying = false
         let track = analysis.current.selection.track
@@ -504,6 +604,22 @@ enum ChartSeries {
         }
         spans.append(bucket(samples[start...].map { ($0.t, $0.bpm) }))
         return spans.filter { !$0.isEmpty }
+    }
+
+    /// Stroke-rate points split at pauses (no point for 20 s), so a line never bridges one.
+    static func strokeRate(_ points: [StrokeAnalysis.RatePoint]) -> [[Point]] {
+        var spans: [[(t: Double, value: Double)]] = []
+        var last: Double?
+        for point in points {
+            if let last, point.t - last <= 20 {
+                spans[spans.count - 1].append((point.t, point.strokeRate))
+            } else {
+                spans.append([(point.t, point.strokeRate)])
+            }
+            last = point.t
+        }
+        let total = max(1, points.count)
+        return spans.map { bucket($0, maxPoints: max(2, 300 * $0.count / total)) }
     }
 
     static func bucket(_ values: [(t: Double, value: Double)], maxPoints: Int = 300) -> [Point] {
