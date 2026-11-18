@@ -162,15 +162,16 @@ private struct PhoneSportCard: View {
         HStack(spacing: 0) {
             Button(action: start) {
                 HStack(spacing: 12) {
-                    SportIcon(sport: sport, size: 38)
-                        .foregroundStyle(Theme.cream)
-                        .frame(width: 52, height: 52)
-                        .background(Color.accentColor, in: .circle)
+                    RowIcon(sport: sport)
+                        // Grows with text size, but stops before it crowds out the name.
+                        .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(sport.displayName)
                             .font(.headline)
                             .foregroundStyle(.primary)
-                            .lineLimit(1)
+                            // Wraps rather than truncates at large text sizes.
+                            .lineLimit(2)
+                            .fixedSize(horizontal: false, vertical: true)
                         Group {
                             if let detail {
                                 Text(detail).monospacedDigit()
@@ -182,7 +183,7 @@ private struct PhoneSportCard: View {
                         }
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                        .lineLimit(2)
                         .minimumScaleFactor(0.8)
                     }
                 }
@@ -209,6 +210,19 @@ private struct PhoneSportCard: View {
             .accessibilityIdentifier("sportSettings.open.\(sport.rawValue)")
         }
         .background(Color.accentColor.opacity(0.12), in: .rect(cornerRadius: 18, style: .continuous))
+    }
+}
+
+/// The sport's glyph in an accent circle; both scale with text size together.
+private struct RowIcon: View {
+    let sport: Sport
+    @ScaledMetric private var circle: CGFloat = 52
+
+    var body: some View {
+        SportIcon(sport: sport, size: 38)
+            .foregroundStyle(Theme.cream)
+            .frame(width: circle, height: circle)
+            .background(Color.accentColor, in: .circle)
     }
 }
 
