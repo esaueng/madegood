@@ -33,6 +33,11 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: RecordingTransfer.didReceiveFile)) { _ in
             library.reload()
         }
+        #if DEBUG
+            .onChange(of: controller.recorder.isRecording) { _, isRecording in
+                if isRecording { WatchWorkoutMirror.shared.seedDemoIfRequested() }
+            }
+        #endif
     }
 }
 
@@ -50,7 +55,16 @@ private struct RecordView: View {
             } else {
                 switch controller.recorder.state {
                 case .idle:
-                    StartView(controller: controller, library: library, showHistory: showHistory)
+                    if let workout = controller.watchWorkout {
+                        LiveView(watchWorkout: workout)
+                            .id(workout.sessionID)
+                    } else if WatchWorkoutMirror.shared.isAttached {
+                        WatchWorkoutStatus(snapshot: nil, connected: true)
+                            .padding()
+                            .navigationTitle("On Watch")
+                    } else {
+                        StartView(controller: controller, library: library, showHistory: showHistory)
+                    }
                 case .starting, .stopping:
                     ProgressView()
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -90,6 +104,10 @@ private struct StartView: View {
                 .listRowInsets(EdgeInsets(top: 8, leading: 4, bottom: 4, trailing: 0))
                 .listRowSeparator(.hidden)
                 .listRowBackground(Color.clear)
+
+            if let lastConfirmed = WatchWorkoutMirror.shared.lastConfirmed {
+                WatchWorkoutStatus(snapshot: lastConfirmed, connected: false)
+            }
 
             Section {
                 ForEach(sports, id: \.self) { sport in
@@ -425,8 +443,9 @@ private struct PhoneCountdownView: View {
 
 /// The live session: the numbers that matter at a glance, a small map, and controls.
 private struct LiveView: View {
-    let recorder: SessionRecorder
-    let startedAt: Date
+    let recorder: SessionRecorder?
+    let startedAt: Date?
+    let watchWorkout: WorkoutMirrorSnapshot?
     let sport: Sport
     @State private var banner: SessionRecorder.DistanceAlertEvent?
     @ScaledMetric(relativeTo: .largeTitle) private var primarySize = 64.0
@@ -438,6 +457,15 @@ private struct LiveView: View {
         self.recorder = recorder
         self.startedAt = startedAt
         self.sport = sport
+        watchWorkout = nil
+        first = UserSettings.settings(for: sport).firstScreen
+    }
+
+    init(watchWorkout: WorkoutMirrorSnapshot) {
+        recorder = nil
+        startedAt = nil
+        self.watchWorkout = watchWorkout
+        sport = watchWorkout.sport
         first = UserSettings.settings(for: sport).firstScreen
     }
 
@@ -446,60 +474,50 @@ private struct LiveView: View {
 
     var body: some View {
         let display = UserSettings.display(for: sport)
-        let metrics = recorder.metrics
+        let readings = watchWorkout?.readings ?? LiveReadings(recorder?.metrics)
         ScrollView {
             VStack(spacing: 16) {
-                status(metrics)
-
-                if first == .map {
-                    LiveTrackMap(points: recorder.trackPoints)
-                        .frame(height: 260)
-                        .clipShape(.rect(cornerRadius: 16))
-                        .accessibilityIdentifier("page.map")
+                if let watchWorkout {
+                    WatchWorkoutStatus(snapshot: watchWorkout, connected: true)
+                } else {
+                    localStatus(readings)
                 }
 
-                TimelineView(.periodic(from: startedAt, by: 1)) { context in
-                    let elapsed = context.date.timeIntervalSince(startedAt)
-                    let readings = liveMetrics(display: display, metrics: metrics, elapsed: elapsed)
-                    let primaryID = "metric.\(heroScreen.rawValue)"
-                    let supporting = readings.filter { $0.id != primaryID }
-                    VStack(spacing: 16) {
-                        if let primary = readings.first(where: { $0.id == primaryID }) {
-                            primaryMetric(primary)
-                        }
-                        supportingMetrics(Array(supporting.prefix(3)))
-                        DisclosureGroup("More metrics") {
-                            VStack(spacing: 12) {
-                                ForEach(supporting.dropFirst(3)) { metric in
-                                    metricRow(metric)
-                                }
-                            }
-                            .padding(.top, 12)
-                        }
-                        .font(.subheadline)
+                if let recorder, let startedAt {
+                    if first == .map {
+                        LiveTrackMap(points: recorder.trackPoints)
+                            .frame(height: 260)
+                            .clipShape(.rect(cornerRadius: 16))
+                            .accessibilityIdentifier("page.map")
                     }
-                }
+                    TimelineView(.periodic(from: startedAt, by: 1)) { context in
+                        metricCards(display: display, readings: readings, elapsed: context.date.timeIntervalSince(startedAt))
+                    }
+                    if first != .map {
+                        LiveTrackMap(points: recorder.trackPoints)
+                            .frame(height: 180)
+                            .clipShape(.rect(cornerRadius: 16))
+                    }
 
-                if first != .map {
-                    LiveTrackMap(points: recorder.trackPoints)
-                        .frame(height: 180)
-                        .clipShape(.rect(cornerRadius: 16))
+                    if let error = recorder.lastError {
+                        Label(error, systemImage: "exclamationmark.triangle")
+                            .font(.footnote)
+                            .foregroundStyle(.orange)
+                    }
+                    DisclosureGroup("Sensors") {
+                        CountsGrid(counts: recorder.counts).frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .font(.footnote)
+                } else {
+                    metricCards(display: display, readings: readings, elapsed: readings.elapsed)
                 }
-
-                if let error = recorder.lastError {
-                    Label(error, systemImage: "exclamationmark.triangle")
-                        .font(.footnote)
-                        .foregroundStyle(.orange)
-                }
-                DisclosureGroup("Sensors") {
-                    CountsGrid(counts: recorder.counts).frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .font(.footnote)
             }
             .padding()
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            LiveControls(recorder: recorder, sport: sport, display: display)
+            if let recorder {
+                LiveControls(recorder: recorder, sport: sport, display: display)
+            }
         }
         .toolbar(.hidden, for: .tabBar)
         .navigationTitle(sport.displayName)
@@ -514,7 +532,7 @@ private struct LiveView: View {
             }
         }
         .animation(.snappy, value: banner)
-        .onChange(of: recorder.distanceAlert) { _, alert in
+        .onChange(of: recorder?.distanceAlert) { _, alert in
             guard let alert else { return }
             Haptics.play(.distanceAlert)
             banner = alert
@@ -526,8 +544,8 @@ private struct LiveView: View {
         }
     }
 
-    private func status(_ metrics: LiveMetrics?) -> some View {
-        let pause = metrics.flatMap { LiveDisplay.pauseLabel($0.pauseState) }
+    private func localStatus(_ readings: LiveReadings) -> some View {
+        let pause = LiveDisplay.pauseLabel(readings.pauseState)
         return HStack {
             Label {
                 Text(pause ?? "Recording")
@@ -540,27 +558,48 @@ private struct LiveView: View {
             .background(.background.secondary, in: .capsule)
             .accessibilityIdentifier(pause == nil ? "recordingBadge" : "pauseBadge")
             Spacer(minLength: 8)
-            if let lap = LiveDisplay.lapLabel(metrics) {
-                Text(lap)
+            if let lap = readings.lap {
+                Text("Lap \(lap)")
                     .accessibilityIdentifier("metric.lap")
             }
         }
         .font(.subheadline.weight(.semibold))
     }
 
-    private func liveMetrics(display: LiveDisplay, metrics: LiveMetrics?, elapsed: TimeInterval) -> [LiveMetric] {
+    private func metricCards(display: LiveDisplay, readings: LiveReadings, elapsed: TimeInterval) -> some View {
+        let metrics = liveMetrics(display: display, readings: readings, elapsed: elapsed)
+        let primaryID = "metric.\(heroScreen.rawValue)"
+        let supporting = metrics.filter { $0.id != primaryID }
+        return VStack(spacing: 16) {
+            if let primary = metrics.first(where: { $0.id == primaryID }) {
+                primaryMetric(primary)
+            }
+            supportingMetrics(Array(supporting.prefix(3)))
+            DisclosureGroup("More metrics") {
+                VStack(spacing: 12) {
+                    ForEach(supporting.dropFirst(3)) { metric in
+                        metricRow(metric)
+                    }
+                }
+                .padding(.top, 12)
+            }
+            .font(.subheadline)
+        }
+    }
+
+    private func liveMetrics(display: LiveDisplay, readings: LiveReadings, elapsed: TimeInterval) -> [LiveMetric] {
         let heartRate = LiveMetric(
-            id: "metric.heartRate", title: "Heart rate", text: LiveDisplay.heartRate(metrics?.heartRate))
-        let course = LiveMetric(id: "metric.course", title: "Course", text: LiveDisplay.course(metrics?.course))
+            id: "metric.heartRate", title: "Heart rate", text: LiveDisplay.heartRate(readings.heartRate))
+        let course = LiveMetric(id: "metric.course", title: "Course", text: LiveDisplay.course(readings.course))
         return [
-            LiveMetric(id: "metric.speed", title: "Speed", text: display.speed(metrics?.speed)),
+            LiveMetric(id: "metric.speed", title: "Speed", text: display.speed(readings.speed)),
             LiveMetric(id: "metric.time", title: "Elapsed time", text: Formatting.elapsed(elapsed)),
-            LiveMetric(id: "metric.distance", title: "Distance", text: display.distance(metrics?.distance ?? 0)),
+            LiveMetric(id: "metric.distance", title: "Distance", text: display.distance(readings.distance)),
             sport.isPaddling ? heartRate : course,
             sport.isPaddling ? course : heartRate,
-            LiveMetric(id: "metric.moving", title: "Moving time", text: Formatting.elapsed(metrics?.movingTime ?? 0)),
-            LiveMetric(id: "metric.average", title: "Average speed", text: display.speed(metrics?.averageSpeed)),
-            LiveMetric(id: "metric.max", title: "Max speed (10 s)", text: display.speed(metrics?.maxSpeed10s)),
+            LiveMetric(id: "metric.moving", title: "Moving time", text: Formatting.elapsed(readings.movingTime)),
+            LiveMetric(id: "metric.average", title: "Average speed", text: display.speed(readings.averageSpeed)),
+            LiveMetric(id: "metric.max", title: "Max speed (10 s)", text: display.speed(readings.maxSpeed10s)),
         ]
     }
 

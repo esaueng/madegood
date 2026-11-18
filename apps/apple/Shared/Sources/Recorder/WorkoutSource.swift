@@ -98,6 +98,11 @@ final class WorkoutSource: NSObject, HKWorkoutSessionDelegate, HKLiveWorkoutBuil
         session?.end()
     }
 
+    #if os(watchOS)
+        /// The primary session is captured once for this recording's mirror task.
+        var sessionForMirroring: HKWorkoutSession? { state.withLock { $0.session } }
+    #endif
+
     private func install(_ session: HKWorkoutSession, _ builder: HKLiveWorkoutBuilder) {
         state.withLock { state in
             generation.withLock { $0 += 1 }

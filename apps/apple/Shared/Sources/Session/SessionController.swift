@@ -52,7 +52,22 @@ final class SessionController {
         }
     }
 
-    var isBusy: Bool { countdown != nil || recorder.state != .idle }
+    private var isBusyLocally: Bool { countdown != nil || recorder.state != .idle }
+
+    #if os(iOS)
+        var watchWorkout: WorkoutMirrorSnapshot? {
+            guard !isBusyLocally else { return nil }
+            return WatchWorkoutMirror.shared.connectedSnapshot
+        }
+    #endif
+
+    var isBusy: Bool {
+        #if os(iOS)
+            isBusyLocally || WatchWorkoutMirror.shared.isAttached
+        #else
+            isBusyLocally
+        #endif
+    }
 
     /// Starts `sport`, through its countdown if it has one. Ignored while busy.
     func begin(_ sport: Sport) {
@@ -145,6 +160,12 @@ final class SessionController {
 
     private func finishCountdown() {
         guard let countdown else { return }
+        #if os(iOS)
+            if WatchWorkoutMirror.shared.isAttached {
+                cancelCountdown()
+                return
+            }
+        #endif
         ticker?.cancel()
         ticker = nil
         self.countdown = nil
@@ -153,6 +174,6 @@ final class SessionController {
     }
 
     private func startRecording(_ sport: Sport) {
-        Task { await recorder.start(sport: sport) }
+        recorder.start(sport: sport)
     }
 }

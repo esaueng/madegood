@@ -164,9 +164,14 @@ final class SessionRecorder {
         }
     }
 
-    func start(sport: Sport) async {
+    /// Reserve the recorder synchronously before authorization or any other async work.
+    func start(sport: Sport) {
         guard state == .idle else { return }
         state = .starting
+        Task { await startRecording(sport: sport) }
+    }
+
+    private func startRecording(sport: Sport) async {
         let preparedWorkout = takePrepared(for: sport)
         startupInterruption = nil
         lastError = nil
@@ -288,8 +293,46 @@ final class SessionRecorder {
         liveSport = sport
         #if os(iOS)
             liveActivity.start(sport: sport, startedAt: startedAt)
+        #elseif os(watchOS)
+            if let primary = workout?.sessionForMirroring {
+                startMirroring(primary, sessionID: sessionId, sport: sport)
+            }
         #endif
     }
+
+    #if os(watchOS)
+        private func startMirroring(_ primary: HKWorkoutSession, sessionID: UUID, sport: Sport) {
+            loops.append(Task { [weak self] in
+                guard !Task.isCancelled else { return }
+                do {
+                    try await primary.startMirroringToCompanionDevice()
+                } catch {
+                    // Recording and the eventual file handoff do not depend on a mirror.
+                    return
+                }
+
+                let encoder = JSONEncoder()
+                var sequence: UInt64 = 0
+                while !Task.isCancelled {
+                    guard let readings = self?.mirrorReadings(for: sessionID) else { return }
+                    sequence += 1
+                    let snapshot = WorkoutMirrorSnapshot(
+                        sessionID: sessionID, sequence: sequence, sport: sport, sentAt: Date(), readings: readings)
+                    if let data = try? encoder.encode(snapshot) {
+                        // HealthKit reconnects on its own. Send the latest snapshot on the
+                        // next tick rather than replaying samples after a dropped link.
+                        try? await primary.sendToRemoteWorkoutSession(data: data)
+                    }
+                    try? await Task.sleep(for: .seconds(1))
+                }
+            })
+        }
+
+        private func mirrorReadings(for sessionID: UUID) -> LiveReadings? {
+            guard liveSession == sessionID, isRecording, let metrics else { return nil }
+            return LiveReadings(metrics)
+        }
+    #endif
 
     /// Undoes a start that cannot continue: nothing has been recorded yet.
     private func abandonStart(folder: URL) {
