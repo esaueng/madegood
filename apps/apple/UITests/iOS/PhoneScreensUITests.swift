@@ -20,9 +20,13 @@ final class PhoneScreensUITests: XCTestCase {
         let app = launchDemoApp(extraArguments: ["-demoHistory", "-app.appearance", appearance])
         XCTAssertTrue(app.buttons["sport.sailing"].waitForExistence(timeout: 15))
         sleep(2)  // last-session lines come from the history summaries
+        XCTAssertTrue(app.descendants(matching: .any)["start.header"].exists)
         attachScreenshot("\(appearance) record")
 
-        app.tabBars.buttons["History"].tap()
+        // "See All" beside Recent opens History.
+        let seeAll = app.buttons["recent.seeAll"]
+        for _ in 0..<3 where !seeAll.isHittable { app.swipeUp() }
+        seeAll.tap()
         let rows = app.buttons.matching(identifier: "session.row")
         XCTAssertTrue(rows.firstMatch.waitForExistence(timeout: 15))
         XCTAssertGreaterThanOrEqual(rows.count, 3)

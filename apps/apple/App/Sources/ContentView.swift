@@ -13,7 +13,7 @@ struct ContentView: View {
     var body: some View {
         TabView(selection: $tab) {
             Tab("Record", systemImage: "record.circle", value: AppTab.record) {
-                RecordView(controller: controller, library: library)
+                RecordView(controller: controller, library: library, showHistory: { tab = .history })
             }
             Tab("History", systemImage: "list.bullet", value: AppTab.history) {
                 HistoryView(library: library)
@@ -37,6 +37,7 @@ struct ContentView: View {
 private struct RecordView: View {
     let controller: SessionController
     let library: SessionLibrary
+    let showHistory: () -> Void
 
     var body: some View {
         NavigationStack {
@@ -45,7 +46,7 @@ private struct RecordView: View {
             } else {
                 switch controller.recorder.state {
                 case .idle:
-                    StartView(controller: controller, library: library)
+                    StartView(controller: controller, library: library, showHistory: showHistory)
                 case .starting, .stopping:
                     ProgressView()
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -62,6 +63,7 @@ private struct RecordView: View {
 private struct StartView: View {
     let controller: SessionController
     let library: SessionLibrary
+    let showHistory: () -> Void
     @State private var store = SettingsStore.shared
     @State private var settingsSport: Sport?
     /// The sport just hidden by a swipe, while its Undo toast shows.
@@ -80,6 +82,11 @@ private struct StartView: View {
         let latest = latest
         let sports = store.startList(extraUse: latest.mapValues { $0.startedAt.timeIntervalSince1970 })
         List {
+            StartHeader()
+                .listRowInsets(EdgeInsets(top: 8, leading: 4, bottom: 4, trailing: 0))
+                .listRowSeparator(.hidden)
+                .listRowBackground(Color.clear)
+
             Section {
                 ForEach(sports, id: \.self) { sport in
                     PhoneSportCard(
@@ -101,9 +108,14 @@ private struct StartView: View {
             }
 
             if let error = controller.recorder.lastError {
-                Label(error, systemImage: "exclamationmark.triangle")
-                    .font(.footnote)
+                Label(error, systemImage: "exclamationmark.triangle.fill")
+                    .font(.footnote.weight(.medium))
                     .foregroundStyle(.orange)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(.orange.opacity(0.12), in: .rect(cornerRadius: 14, style: .continuous))
+                    .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
                     .listRowBackground(Color.clear)
             }
 
@@ -117,13 +129,24 @@ private struct StartView: View {
                         .listRowBackground(Color(.secondarySystemBackground))
                     }
                 } header: {
-                    Text("Recent").font(.headline).foregroundStyle(.primary).textCase(nil)
+                    HStack(alignment: .firstTextBaseline) {
+                        Text("Recent")
+                            .font(.title3.weight(.bold))
+                            .fontDesign(.rounded)
+                            .foregroundStyle(.primary)
+                        Spacer()
+                        Button("See All", action: showHistory)
+                            .font(.subheadline.weight(.semibold))
+                            .accessibilityIdentifier("recent.seeAll")
+                    }
+                    .textCase(nil)
                 }
             }
         }
         .listStyle(.insetGrouped)
         .scrollContentBackground(.hidden)
         .listSectionSpacing(12)
+        .background { StartBackground() }
         .overlay(alignment: .bottom) {
             if let hidden = hiddenSport {
                 HiddenSportToast(sport: hidden) { undoHide(hidden) }
@@ -137,7 +160,9 @@ private struct StartView: View {
             try? await Task.sleep(for: .seconds(5))
             if !Task.isCancelled { hiddenSport = nil }
         }
+        // The header row stands in for the title; the title stays for the Back button.
         .navigationTitle(AppInfo.name)
+        .toolbarVisibility(.hidden, for: .navigationBar)
         .navigationDestination(for: SessionLibrary.Item.self) { item in
             SessionDetailView(item: item, library: library)
         }
@@ -182,6 +207,39 @@ private struct StartView: View {
     }
 }
 
+/// The logo and a two-tone wordmark over today's date, in place of a plain large title.
+private struct StartHeader: View {
+    var body: some View {
+        HStack(spacing: 12) {
+            LogoMark(size: 46)
+            VStack(alignment: .leading, spacing: 0) {
+                (Text("Made").foregroundStyle(.primary) + Text("Good").foregroundStyle(Color.accentColor))
+                    .font(.largeTitle.weight(.bold))
+                    .fontDesign(.rounded)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+                Text(.now, format: .dateTime.weekday(.wide).month(.wide).day())
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isHeader)
+        .accessibilityIdentifier("start.header")
+    }
+}
+
+/// A soft wash of the brand teal behind the top of the start screen.
+private struct StartBackground: View {
+    var body: some View {
+        LinearGradient(
+            colors: [Color.accentColor.opacity(0.16), Color.accentColor.opacity(0.04), .clear],
+            startPoint: .top, endPoint: UnitPoint(x: 0.5, y: 0.55)
+        )
+        .ignoresSafeArea()
+    }
+}
+
 /// One full-width row per sport: icon, name over the last session, and a settings
 /// button. Tapping the rest of the row starts the sport.
 private struct PhoneSportCard: View {
@@ -199,6 +257,7 @@ private struct PhoneSportCard: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(sport.displayName)
                             .font(.headline)
+                            .fontDesign(.rounded)
                             .foregroundStyle(.primary)
                             // Wraps rather than truncates at large text sizes.
                             .lineLimit(2)
@@ -240,7 +299,16 @@ private struct PhoneSportCard: View {
             .accessibilityLabel("\(sport.displayName) settings")
             .accessibilityIdentifier("sportSettings.open.\(sport.rawValue)")
         }
-        .background(Color.accentColor.opacity(0.12), in: .rect(cornerRadius: 18, style: .continuous))
+        .background {
+            let shape = RoundedRectangle(cornerRadius: 20, style: .continuous)
+            shape
+                .fill(
+                    LinearGradient(
+                        colors: [Color.accentColor.opacity(0.16), Color.accentColor.opacity(0.07)],
+                        startPoint: .topLeading, endPoint: .bottomTrailing)
+                )
+                .overlay(shape.strokeBorder(Color.accentColor.opacity(0.14), lineWidth: 1))
+        }
     }
 }
 
