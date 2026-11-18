@@ -18,6 +18,8 @@ enum UserSettings {
         /// Older builds remembered the last sport here (watch) and the selected one (iPhone).
         static let legacyWatchLastSport = "watch.lastSport"
         static let legacyPhoneSport = "recorder.sport"
+        /// iPhone only, device-local: System, Light or Dark (`Appearance`).
+        static let appearance = "app.appearance"
     }
 
     /// Posted on the main queue when settings arrive from the other device.
@@ -148,7 +150,7 @@ enum UserSettings {
     static func resetIfRequested() {
         #if DEBUG
             guard ProcessInfo.processInfo.arguments.contains("-resetSettings") else { return }
-            var keys = SettingsSync.snapshotKeys + [SettingsSync.Key.highestSeen]
+            var keys = SettingsSync.snapshotKeys + [SettingsSync.Key.highestSeen, Key.appearance]
             for sport in Sport.allCases {
                 keys += [Key.lastUsed(sport), Key.lastDistance(sport), Key.lastDate(sport)]
             }

@@ -5,6 +5,7 @@ import WaterKit
 /// then app-wide items. Every setting starts at an automatic value that follows the sport.
 struct SettingsView: View {
     @State private var store = SettingsStore.shared
+    @AppStorage(UserSettings.Key.appearance) private var appearance: Appearance = .system
 
     var body: some View {
         NavigationStack {
@@ -20,6 +21,25 @@ struct SettingsView: View {
                     Text("Sports")
                 } footer: {
                     Text("Units, first screen, alerts, countdown and Health for each sport. Changes reach your watch.")
+                }
+
+                Section {
+                    Picker("Appearance", selection: $appearance) {
+                        ForEach(Appearance.allCases) { option in
+                            Text(option.title).tag(option)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .controlSize(.large)
+                    .accessibilityIdentifier("settings.appearance")
+                    // The control is its own pill; no list card around it.
+                    .listRowBackground(Color.clear)
+                    .listRowInsets(EdgeInsets())
+                } header: {
+                    Text("Appearance")
+                } footer: {
+                    Text("System follows your iPhone. The watch app is always dark.")
                 }
 
                 Section("About") {

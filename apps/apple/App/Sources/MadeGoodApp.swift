@@ -13,6 +13,8 @@ struct MadeGoodApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .modifier(FollowsAppearance())
         }
     }
 }
+
