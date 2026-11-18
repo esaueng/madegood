@@ -4,6 +4,10 @@ name: CI
 # are expensive on a private repo), and the final `CI` job reports one result that
 # branch protection can require: it passes when every job that ran passed and treats
 # skipped jobs as fine.
+#
+# Pull requests run only the fast gates. The slow or flaky macOS jobs (WaterKit tests on
+# macOS, iOS + watchOS UI tests) run after merge on main, or on demand with Run
+# workflow on a branch, and the UI tests do not gate `CI`.
 
 on:
   pull_request:
@@ -89,10 +93,11 @@ jobs:
       - name: Check fixtures are anonymized
         run: swift run --package-path packages/WaterKit waterkit-anonymize --check fixtures
 
+  # Linux gates pull requests; the apple job already compiles WaterKit's sources on macOS.
   waterkit-macos:
     name: WaterKit tests (macOS)
     needs: changes
-    if: needs.changes.outputs.waterkit == 'true'
+    if: needs.changes.outputs.waterkit == 'true' && contains(fromJSON('["push", "workflow_dispatch"]'), github.event_name)
     runs-on: macos-26
     timeout-minutes: 20
     env:
@@ -179,10 +184,11 @@ jobs:
             ${{ runner.temp }}/MadeGood.xcresult
           retention-days: 7
 
+  # 25-30 minutes of macOS time, so not on pull requests and not part of `CI`.
   apple-ui-tests:
     name: iOS + watchOS UI tests
     needs: changes
-    if: needs.changes.outputs.apple == 'true'
+    if: needs.changes.outputs.apple == 'true' && contains(fromJSON('["push", "workflow_dispatch"]'), github.event_name)
     runs-on: macos-26
     timeout-minutes: 45
     env:
@@ -209,7 +215,6 @@ jobs:
 
       # Runner images change which simulators exist, so pick the newest available
       # iPhone and Apple Watch instead of naming one.
-      # Runner images change which simulators exist, so pick the newest available.
       - name: Pick simulators
         id: sims
         run: |
@@ -277,7 +282,7 @@ jobs:
 
   ci:
     name: CI
-    needs: [changes, biome, waterkit-linux, waterkit-macos, apple, apple-ui-tests, web]
+    needs: [changes, biome, waterkit-linux, waterkit-macos, apple, web]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
