@@ -64,8 +64,8 @@ private struct StartView: View {
     let library: SessionLibrary
     @State private var store = SettingsStore.shared
     @State private var settingsSport: Sport?
-
-    private let columns = [GridItem(.adaptive(minimum: 160), spacing: 12)]
+    /// The sport just hidden by a swipe, while its Undo toast shows.
+    @State private var hiddenSport: Sport?
 
     /// The newest session of each sport in the history (recorded here or on the watch).
     private var latest: [Sport: SessionLibrary.Summary] {
@@ -78,42 +78,64 @@ private struct StartView: View {
 
     var body: some View {
         let latest = latest
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                LazyVGrid(columns: columns, spacing: 12) {
-                    ForEach(
-                        store.startList(extraUse: latest.mapValues { $0.startedAt.timeIntervalSince1970 }), id: \.self
-                    ) { sport in
-                        PhoneSportCard(
-                            sport: sport, detail: detail(for: sport, latest: latest[sport]),
-                            countdownMinutes: store[sport].countdownMinutes,
-                            start: { controller.begin(sport) }, openSettings: { settingsSport = sport })
-                    }
-                }
-
-                if let error = controller.recorder.lastError {
-                    Label(error, systemImage: "exclamationmark.triangle")
-                        .font(.footnote)
-                        .foregroundStyle(.orange)
-                }
-
-                let recent = Array(library.items.prefix(3))
-                if !recent.isEmpty {
-                    Text("Recent").font(.headline)
-                    VStack(spacing: 0) {
-                        ForEach(recent) { item in
-                            NavigationLink(value: item) {
-                                SessionRow(item: item).padding(.vertical, 10)
-                            }
-                            .buttonStyle(.plain)
-                            if item.id != recent.last?.id { Divider() }
+        let sports = store.startList(extraUse: latest.mapValues { $0.startedAt.timeIntervalSince1970 })
+        List {
+            Section {
+                ForEach(sports, id: \.self) { sport in
+                    PhoneSportCard(
+                        sport: sport, detail: detail(for: sport, latest: latest[sport]),
+                        countdownMinutes: store[sport].countdownMinutes,
+                        start: { controller.begin(sport) }, openSettings: { settingsSport = sport })
+                    .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
+                    .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                        // The last visible sport can't be hidden.
+                        if store.canHide(sport) {
+                            Button("Hide", systemImage: "eye.slash") { hide(sport) }
+                                .tint(.gray)
+                                .accessibilityIdentifier("sport.hide.\(sport.rawValue)")
                         }
                     }
-                    .padding(.horizontal)
-                    .background(.background.secondary, in: .rect(cornerRadius: 16))
                 }
             }
-            .padding()
+
+            if let error = controller.recorder.lastError {
+                Label(error, systemImage: "exclamationmark.triangle")
+                    .font(.footnote)
+                    .foregroundStyle(.orange)
+                    .listRowBackground(Color.clear)
+            }
+
+            let recent = Array(library.items.prefix(3))
+            if !recent.isEmpty {
+                Section {
+                    ForEach(recent) { item in
+                        NavigationLink(value: item) {
+                            SessionRow(item: item).padding(.vertical, 4)
+                        }
+                        .listRowBackground(Color(.secondarySystemBackground))
+                    }
+                } header: {
+                    Text("Recent").font(.headline).foregroundStyle(.primary).textCase(nil)
+                }
+            }
+        }
+        .listStyle(.insetGrouped)
+        .scrollContentBackground(.hidden)
+        .listSectionSpacing(12)
+        .overlay(alignment: .bottom) {
+            if let hidden = hiddenSport {
+                HiddenSportToast(sport: hidden) { undoHide(hidden) }
+                    .padding(.bottom, 8)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .animation(.snappy, value: hiddenSport)
+        .task(id: hiddenSport) {
+            guard hiddenSport != nil else { return }
+            try? await Task.sleep(for: .seconds(5))
+            if !Task.isCancelled { hiddenSport = nil }
         }
         .navigationTitle(AppInfo.name)
         .navigationDestination(for: SessionLibrary.Item.self) { item in
@@ -132,6 +154,18 @@ private struct StartView: View {
         }
     }
 
+    /// Hides a sport from this screen (Settings > the sport > Show on start screen).
+    private func hide(_ sport: Sport) {
+        guard store.canHide(sport) else { return }
+        store.update(sport) { $0.isHidden = true }
+        hiddenSport = sport
+    }
+
+    private func undoHide(_ sport: Sport) {
+        store.update(sport) { $0.isHidden = false }
+        hiddenSport = nil
+    }
+
     private func detail(for sport: Sport, latest: SessionLibrary.Summary?) -> String? {
         let unit = store[sport].resolvedDistanceUnit(for: sport)
         let local = store.lastSessions[sport]
@@ -148,6 +182,8 @@ private struct StartView: View {
     }
 }
 
+/// One full-width row per sport: icon, name over the last session, and a settings
+/// button. Tapping the rest of the row starts the sport.
 private struct PhoneSportCard: View {
     let sport: Sport
     let detail: String?
@@ -156,43 +192,43 @@ private struct PhoneSportCard: View {
     let openSettings: () -> Void
 
     var body: some View {
-        Button(action: start) {
-            VStack(alignment: .leading, spacing: 4) {
-                SportIcon(sport: sport, size: 34)
-                    .foregroundStyle(Theme.cream)
-                    .frame(width: 48, height: 48)
-                    .background(Color.accentColor, in: .circle)
-                    .padding(.bottom, 6)
-                Text(sport.displayName)
-                    .font(.title3.weight(.semibold))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
-                Group {
-                    if let detail {
-                        Text(detail).monospacedDigit()
-                    } else if countdownMinutes > 0 {
-                        Label("\(countdownMinutes) min countdown", systemImage: "timer")
-                    } else {
-                        Text("Tap to start")
+        HStack(spacing: 0) {
+            Button(action: start) {
+                HStack(spacing: 12) {
+                    SportBadge(sport: sport, diameter: 52)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(sport.displayName)
+                            .font(.headline)
+                            .foregroundStyle(.primary)
+                            // Wraps rather than truncates at large text sizes.
+                            .lineLimit(2)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Group {
+                            if let detail {
+                                Text(detail).monospacedDigit()
+                            } else if countdownMinutes > 0 {
+                                Label("\(countdownMinutes) min countdown", systemImage: "timer")
+                            } else {
+                                Text("Tap to start")
+                            }
+                        }
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .minimumScaleFactor(0.8)
                     }
                 }
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.leading, 12)
+                .padding(.vertical, 8)
+                .contentShape(.rect)
             }
-            .frame(maxWidth: .infinity, minHeight: 132, alignment: .bottomLeading)
-            .padding(14)
-            .background(Color.accentColor.opacity(0.12), in: .rect(cornerRadius: 24, style: .continuous))
-            .contentShape(.rect(cornerRadius: 24, style: .continuous))
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(sport.displayName)
-        .accessibilityValue(detail.map { "Last session \($0)" } ?? "")
-        .accessibilityHint("Starts a session")
-        .accessibilityIdentifier("sport.\(sport.rawValue)")
-        .overlay(alignment: .topTrailing) {
+            .buttonStyle(.plain)
+            .accessibilityLabel(sport.displayName)
+            .accessibilityValue(detail.map { "Last session \($0)" } ?? "")
+            .accessibilityHint("Starts a session")
+            .accessibilityIdentifier("sport.\(sport.rawValue)")
+
             Button(action: openSettings) {
                 Image(systemName: "gearshape.fill")
                     .font(.body)
@@ -200,10 +236,31 @@ private struct PhoneSportCard: View {
             }
             .buttonStyle(.glass)
             .buttonBorderShape(.circle)
-            .padding(8)
+            .padding(.trailing, 10)
             .accessibilityLabel("\(sport.displayName) settings")
             .accessibilityIdentifier("sportSettings.open.\(sport.rawValue)")
         }
+        .background(Color.accentColor.opacity(0.12), in: .rect(cornerRadius: 18, style: .continuous))
+    }
+}
+
+/// "Kayak hidden" with Undo, after a sport is hidden by a swipe.
+private struct HiddenSportToast: View {
+    let sport: Sport
+    let undo: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Text("\(sport.displayName) hidden")
+                .font(.subheadline.weight(.semibold))
+            Button("Undo", action: undo)
+                .font(.subheadline.weight(.bold))
+                .accessibilityIdentifier("sport.undoHide")
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 12)
+        .glassEffect(.regular, in: .capsule)
+        .accessibilityElement(children: .contain)
     }
 }
 
