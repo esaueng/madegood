@@ -7,17 +7,27 @@ final class PhoneScreensUITests: XCTestCase {
     }
 
     func testScreens() {
-        let app = launchDemoApp(extraArguments: ["-demoHistory"])
+        tourScreens(appearance: "light")
+    }
+
+    /// The same tour in dark mode, pinned with a launch argument (the Settings picker is
+    /// covered by PhoneAppearanceUITests).
+    func testScreensDark() {
+        tourScreens(appearance: "dark")
+    }
+
+    private func tourScreens(appearance: String) {
+        let app = launchDemoApp(extraArguments: ["-demoHistory", "-app.appearance", appearance])
         XCTAssertTrue(app.buttons["sport.sailing"].waitForExistence(timeout: 15))
         sleep(2)  // last-session lines come from the history summaries
-        attachScreenshot("record")
+        attachScreenshot("\(appearance) record")
 
         app.tabBars.buttons["History"].tap()
         let rows = app.buttons.matching(identifier: "session.row")
         XCTAssertTrue(rows.firstMatch.waitForExistence(timeout: 15))
         XCTAssertGreaterThanOrEqual(rows.count, 3)
         sleep(2)  // let the summaries finish computing
-        attachScreenshot("history")
+        attachScreenshot("\(appearance) history")
 
         // Open the demo sailing session (other rows may be left by earlier test runs).
         let sailing = rows.containing(.staticText, identifier: "Sailing").firstMatch
@@ -26,22 +36,22 @@ final class PhoneScreensUITests: XCTestCase {
         sailing.tap()
         XCTAssertTrue(app.staticTexts["stat.Distance"].waitForExistence(timeout: 20))
         sleep(2)  // map tiles
-        attachScreenshot("detail top")
+        attachScreenshot("\(appearance) detail top")
         app.swipeUp()
-        attachScreenshot("detail charts")
+        attachScreenshot("\(appearance) detail charts")
         app.swipeUp()
-        attachScreenshot("detail laps")
+        attachScreenshot("\(appearance) detail laps")
         app.navigationBars.buttons.firstMatch.tap()
 
         app.tabBars.buttons["Settings"].tap()
         let sailingRow = app.buttons["settings.sport.sailing"]
         XCTAssertTrue(sailingRow.waitForExistence(timeout: 10))
-        attachScreenshot("settings")
+        attachScreenshot("\(appearance) settings")
         sailingRow.tap()
         XCTAssertTrue(app.buttons["sportSettings.speedUnit"].waitForExistence(timeout: 10))
-        attachScreenshot("sport settings")
+        attachScreenshot("\(appearance) sport settings")
         app.swipeUp()
-        attachScreenshot("sport settings lower")
+        attachScreenshot("\(appearance) sport settings lower")
     }
 }
 
