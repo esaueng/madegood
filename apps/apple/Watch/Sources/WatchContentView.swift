@@ -196,9 +196,9 @@ private struct SportCard: View {
     private var title: some View {
         Text(sport.displayName)
             .font(.system(size: titleSize * titleScale, weight: .semibold))
-            .lineLimit(1)
-            // Backstop for rounding between the measured and the drawn size.
-            .minimumScaleFactor(0.9)
+            // No per-card shrinking, so every title stays the shared size. A name that
+            // still doesn't fit at the smallest shared scale wraps instead.
+            .lineLimit(2)
             .frame(maxWidth: .infinity, alignment: .leading)
             .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { availableWidth = $0 }
             .background {
@@ -229,8 +229,9 @@ private struct SportCard: View {
 
     /// The scale at which this card's name fits on one line, at most 1.
     private var fittingScale: CGFloat {
-        guard titleWidth > 0, availableWidth > 0 else { return 1 }
-        return min(1, availableWidth / titleWidth)
+        guard titleWidth > 0, availableWidth > 0, titleWidth > availableWidth else { return 1 }
+        // A little slack, as glyph widths don't scale exactly with point size.
+        return availableWidth * 0.98 / titleWidth
     }
 }
 
