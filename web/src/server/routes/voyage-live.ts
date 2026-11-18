@@ -184,7 +184,9 @@ voyageLiveRoutes.use("/live/:slug", noStoreAndEnabled);
 async function noStoreAndEnabled(c: Context, next: () => Promise<void>) {
   c.header("Cache-Control", "private, no-store");
   c.header("Referrer-Policy", "no-referrer");
-  if (c.env.VOYAGE_LIVE_LOCAL !== "1") return apiError(c, 404, "not_found");
+  if (c.env.VOYAGE_LIVE_LOCAL !== "1" || !c.env.VOYAGE_LIVE) {
+    return apiError(c, 404, "not_found");
+  }
   await next();
 }
 

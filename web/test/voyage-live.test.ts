@@ -128,6 +128,18 @@ afterEach(() => {
 });
 
 describe("local voyage transport", () => {
+  it("keeps viewer routes unavailable in a preview without a live namespace", async () => {
+    const previewEnv = { ...env, VOYAGE_LIVE_LOCAL: "1" };
+    Reflect.deleteProperty(previewEnv, "VOYAGE_LIVE");
+    const app = createApp();
+    const slug = "a".repeat(43);
+    for (const path of [`/v/${slug}`, `/api/live/${slug}`]) {
+      const response = await app.request(path, {}, previewEnv);
+      expect(response.status).toBe(404);
+      expect(await response.json()).toEqual({ error: "not_found" });
+    }
+  });
+
   it("keeps the completed path independent and atomically deduplicates active sample receipts", async () => {
     const a = await setup();
     const stranger = await signIn();

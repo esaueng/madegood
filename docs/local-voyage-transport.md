@@ -106,6 +106,9 @@ export TEST_RUNNER_MADEGOOD_TEST_VOYAGE_OUTSIDER="$outsider_token"
 
 ## Production follow-ons
 
+Hosted PR previews omit the live namespace and its Durable Object migration. The
+local Worker includes both for the loopback acceptance suite.
+
 The live routes require the local opt-in flag, which is absent from the Worker configuration. The local suite verifies that account deletion removes D1 authority, closes live sockets and purges stored positions, settings and alarms before acknowledging deletion. The registry survives failed object cleanup so the same valid token can retry. Mutations that already registered in D1 still pass the object purge fence after asynchronous work. Frames already sent before the fence can remain in a recipient's possession.
 
 The durable R2 cleanup follow-on in [Private voyage sync](private-voyage-sync.md) remains open. A Worker interruption during a concurrent completed upload can leave an object after the account's prefix sweep. This is separate from the live Durable Object purge. Production also needs a durable cleanup trigger instead of relying on a still-valid token to retry, an agreed retention and historical archival policy, request and connection rate limits, URL/log redaction for share credentials, deployed alarm and WebSocket verification, and the Phase 5 phone and overnight passage checks.

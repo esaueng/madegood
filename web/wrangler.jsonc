@@ -43,9 +43,9 @@
           "migrations_dir": "migrations"
         }
       ],
-      "durable_objects": {
-        "bindings": [{ "name": "VOYAGE_LIVE", "class_name": "VoyageLive" }]
-      },
+      // Sharing is disabled here. Preview version uploads cannot apply Durable Object migrations.
+      "durable_objects": { "bindings": [] },
+      "migrations": [],
       "r2_buckets": [{ "binding": "TRACKS", "bucket_name": "madegood-tracks-preview" }]
     }
   }

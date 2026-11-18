@@ -1,6 +1,7 @@
 export type VoyageKey = { userId: string; voyageId: string };
 
 export function liveVoyage(env: Env, { userId, voyageId }: VoyageKey) {
+  if (!env.VOYAGE_LIVE) throw new Error("Voyage live storage is unavailable.");
   return env.VOYAGE_LIVE.getByName(JSON.stringify([userId, voyageId]));
 }
 
