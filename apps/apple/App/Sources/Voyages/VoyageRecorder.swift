@@ -10,6 +10,7 @@ final class VoyageRecorder {
     static let shared = VoyageRecorder()
 
     private var store: VoyageStore?
+    var liveSharing: LiveVoyageSharing?
     private var updateTask: Task<Void, Never>?
     private var serviceSession: CLServiceSession?
     private var backgroundSession: CLBackgroundActivitySession?
@@ -144,8 +145,16 @@ final class VoyageRecorder {
                 horizontalAccuracy: location.horizontalAccuracy, speed: line.spd, course: line.crs)
         }
         do {
+            let previousCount = fixCount
+            let previousGap = latestGap
             if try store?.record(position, isStationary: update.stationary, receivedAt: Self.now) == true {
                 locationStatus = "Recording positions"
+                if fixCount > previousCount, let position, let voyageID = activeVoyage?.id, let legID = activeLeg?.id {
+                    liveSharing?.savedPosition(
+                        voyageID: voyageID, legID: legID, position: position,
+                        gapBefore: latestGap != previousGap
+                    )
+                }
             }
         } catch VoyageStore.StoreError.clockBehind {
             interrupt(VoyageStore.StoreError.clockBehind.localizedDescription)

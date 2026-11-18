@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo="$(cd "$(dirname "$0")/.." && pwd)"
+core="$repo/apps/apple/App/Sources/PrivateVoyageSync/Core"
+sharing="$repo/apps/apple/App/Sources/VoyageSharing"
+scratch="$(mktemp -d)"
+trap 'rm -rf "$scratch"' EXIT
+products="${MADEGOOD_SWIFT_PRODUCTS:-$repo/apps/apple/.build/debug}"
+
+swiftc -swift-version 6 -Xfrontend -disable-sandbox -module-cache-path "$scratch/modules" -I "$products" \
+    "$products/HTTPTypes.o" "$products/HTTPTypesFoundation.o" "$products/OpenAPIRuntime.o" \
+    "$core/VoyageAccount.swift" "$core/VoyageAPI.swift" "$core/Generated/"*.swift \
+    "$sharing/LiveVoyageAPI.swift" "$sharing/LiveVoyageShare.swift" \
+    "$repo/apps/apple/Tests/VoyageSharingTests/SharingFlow.swift" -o "$scratch/share-test"
+"$scratch/share-test"

@@ -2,6 +2,8 @@
 // .dev.vars). Declare them here; set them with `wrangler secret put` and locally in
 // web/.dev.vars (docs/self-hosting.md).
 interface WorkerSecrets {
+  /** Local opt-in switch for the synthetic live voyage transport. */
+  VOYAGE_LIVE_LOCAL?: string;
   /** Signs access tokens (HS256). At least 32 characters, e.g. `openssl rand -base64 48`. */
   JWT_SIGNING_KEY: string;
   /** Enables the private voyage prototype in local development and tests. */

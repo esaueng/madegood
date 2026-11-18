@@ -25,6 +25,21 @@ internal protocol APIProtocol: Sendable {
     /// - Remark: HTTP `POST /auth/refresh`.
     /// - Remark: Generated from `#/paths//auth/refresh/post`.
     func post_sol_auth_sol_refresh(_ input: Operations.post_sol_auth_sol_refresh.Input) async throws -> Operations.post_sol_auth_sol_refresh.Output
+    /// Accept a batch of active voyage fixes
+    ///
+    /// - Remark: HTTP `POST /voyages/{voyageId}/positions`.
+    /// - Remark: Generated from `#/paths//voyages/{voyageId}/positions/post(postVoyagePositions)`.
+    func postVoyagePositions(_ input: Operations.postVoyagePositions.Input) async throws -> Operations.postVoyagePositions.Output
+    /// Read the owner's live sharing controls and preview
+    ///
+    /// - Remark: HTTP `GET /voyages/{voyageId}/sharing`.
+    /// - Remark: Generated from `#/paths//voyages/{voyageId}/sharing/get(getVoyageSharing)`.
+    func getVoyageSharing(_ input: Operations.getVoyageSharing.Input) async throws -> Operations.getVoyageSharing.Output
+    /// Issue a new live grant or change the current grant
+    ///
+    /// - Remark: HTTP `POST /voyages/{voyageId}/sharing`.
+    /// - Remark: Generated from `#/paths//voyages/{voyageId}/sharing/post(changeVoyageSharing)`.
+    func changeVoyageSharing(_ input: Operations.changeVoyageSharing.Input) async throws -> Operations.changeVoyageSharing.Output
     /// Create or retry a private voyage snapshot
     ///
     /// - Remark: HTTP `PUT /voyages/{voyageId}`.
@@ -72,6 +87,49 @@ extension APIProtocol {
         body: Operations.post_sol_auth_sol_refresh.Input.Body
     ) async throws -> Operations.post_sol_auth_sol_refresh.Output {
         try await post_sol_auth_sol_refresh(Operations.post_sol_auth_sol_refresh.Input(
+            headers: headers,
+            body: body
+        ))
+    }
+    /// Accept a batch of active voyage fixes
+    ///
+    /// - Remark: HTTP `POST /voyages/{voyageId}/positions`.
+    /// - Remark: Generated from `#/paths//voyages/{voyageId}/positions/post(postVoyagePositions)`.
+    internal func postVoyagePositions(
+        path: Operations.postVoyagePositions.Input.Path,
+        headers: Operations.postVoyagePositions.Input.Headers = .init(),
+        body: Operations.postVoyagePositions.Input.Body
+    ) async throws -> Operations.postVoyagePositions.Output {
+        try await postVoyagePositions(Operations.postVoyagePositions.Input(
+            path: path,
+            headers: headers,
+            body: body
+        ))
+    }
+    /// Read the owner's live sharing controls and preview
+    ///
+    /// - Remark: HTTP `GET /voyages/{voyageId}/sharing`.
+    /// - Remark: Generated from `#/paths//voyages/{voyageId}/sharing/get(getVoyageSharing)`.
+    internal func getVoyageSharing(
+        path: Operations.getVoyageSharing.Input.Path,
+        headers: Operations.getVoyageSharing.Input.Headers = .init()
+    ) async throws -> Operations.getVoyageSharing.Output {
+        try await getVoyageSharing(Operations.getVoyageSharing.Input(
+            path: path,
+            headers: headers
+        ))
+    }
+    /// Issue a new live grant or change the current grant
+    ///
+    /// - Remark: HTTP `POST /voyages/{voyageId}/sharing`.
+    /// - Remark: Generated from `#/paths//voyages/{voyageId}/sharing/post(changeVoyageSharing)`.
+    internal func changeVoyageSharing(
+        path: Operations.changeVoyageSharing.Input.Path,
+        headers: Operations.changeVoyageSharing.Input.Headers = .init(),
+        body: Operations.changeVoyageSharing.Input.Body
+    ) async throws -> Operations.changeVoyageSharing.Output {
+        try await changeVoyageSharing(Operations.changeVoyageSharing.Input(
+            path: path,
             headers: headers,
             body: body
         ))
@@ -254,6 +312,8 @@ internal enum Components {
                 case forbidden = "forbidden"
                 case session_id_taken = "session_id_taken"
                 case sync_conflict = "sync_conflict"
+                case live_capacity = "live_capacity"
+                case stale_grant = "stale_grant"
                 case unsupported_media_type = "unsupported_media_type"
                 case payload_too_large = "payload_too_large"
                 case invalid_track = "invalid_track"
@@ -345,6 +405,718 @@ internal enum Components {
             }
             internal enum CodingKeys: String, CodingKey {
                 case refreshToken
+            }
+        }
+        /// - Remark: Generated from `#/components/schemas/VoyagePositionReceipts`.
+        internal struct VoyagePositionReceipts: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/VoyagePositionReceipts/receiptsPayload`.
+            internal struct receiptsPayloadPayload: Codable, Hashable, Sendable {
+                /// Device UUID, stored lowercase.
+                ///
+                /// - Remark: Generated from `#/components/schemas/VoyagePositionReceipts/receiptsPayload/sampleId`.
+                internal var sampleId: Swift.String
+                /// - Remark: Generated from `#/components/schemas/VoyagePositionReceipts/receiptsPayload/receivedAtMs`.
+                internal var receivedAtMs: Swift.Int
+                /// Creates a new `receiptsPayloadPayload`.
+                ///
+                /// - Parameters:
+                ///   - sampleId: Device UUID, stored lowercase.
+                ///   - receivedAtMs:
+                internal init(
+                    sampleId: Swift.String,
+                    receivedAtMs: Swift.Int
+                ) {
+                    self.sampleId = sampleId
+                    self.receivedAtMs = receivedAtMs
+                }
+                internal enum CodingKeys: String, CodingKey {
+                    case sampleId
+                    case receivedAtMs
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/VoyagePositionReceipts/receipts`.
+            internal typealias receiptsPayload = [Components.Schemas.VoyagePositionReceipts.receiptsPayloadPayload]
+            /// - Remark: Generated from `#/components/schemas/VoyagePositionReceipts/receipts`.
+            internal var receipts: Components.Schemas.VoyagePositionReceipts.receiptsPayload
+            /// Creates a new `VoyagePositionReceipts`.
+            ///
+            /// - Parameters:
+            ///   - receipts:
+            internal init(receipts: Components.Schemas.VoyagePositionReceipts.receiptsPayload) {
+                self.receipts = receipts
+            }
+            internal enum CodingKeys: String, CodingKey {
+                case receipts
+            }
+        }
+        /// - Remark: Generated from `#/components/schemas/VoyagePositionBatch`.
+        internal struct VoyagePositionBatch: Codable, Hashable, Sendable {
+            /// The owner grant under which these positions were queued.
+            ///
+            /// - Remark: Generated from `#/components/schemas/VoyagePositionBatch/grantGeneration`.
+            internal var grantGeneration: Swift.Int
+            /// - Remark: Generated from `#/components/schemas/VoyagePositionBatch/positionsPayload`.
+            internal struct positionsPayloadPayload: Codable, Hashable, Sendable {
+                /// - Remark: Generated from `#/components/schemas/VoyagePositionBatch/positionsPayload/lat`.
+                internal var lat: Swift.Double
+                /// - Remark: Generated from `#/components/schemas/VoyagePositionBatch/positionsPayload/lon`.
+                internal var lon: Swift.Double
+                /// - Remark: Generated from `#/components/schemas/VoyagePositionBatch/positionsPayload/capturedAtMs`.
+                internal var capturedAtMs: Swift.Int
+                /// Device UUID, stored lowercase.
+                ///
+                /// - Remark: Generated from `#/components/schemas/VoyagePositionBatch/positionsPayload/sampleId`.
+                internal var sampleId: Swift.String
+                /// Stable segment UUID. Start a new one at every recording break or leg boundary.
+                ///
+                /// - Remark: Generated from `#/components/schemas/VoyagePositionBatch/positionsPayload/segmentId`.
+                internal var segmentId: Swift.String
+                /// Creates a new `positionsPayloadPayload`.
+                ///
+                /// - Parameters:
+                ///   - lat:
+                ///   - lon:
+                ///   - capturedAtMs:
+                ///   - sampleId: Device UUID, stored lowercase.
+                ///   - segmentId: Stable segment UUID. Start a new one at every recording break or leg boundary.
+                internal init(
+                    lat: Swift.Double,
+                    lon: Swift.Double,
+                    capturedAtMs: Swift.Int,
+                    sampleId: Swift.String,
+                    segmentId: Swift.String
+                ) {
+                    self.lat = lat
+                    self.lon = lon
+                    self.capturedAtMs = capturedAtMs
+                    self.sampleId = sampleId
+                    self.segmentId = segmentId
+                }
+                internal enum CodingKeys: String, CodingKey {
+                    case lat
+                    case lon
+                    case capturedAtMs
+                    case sampleId
+                    case segmentId
+                }
+                internal init(from decoder: any Decoder) throws {
+                    let container = try decoder.container(keyedBy: CodingKeys.self)
+                    self.lat = try container.decode(
+                        Swift.Double.self,
+                        forKey: .lat
+                    )
+                    self.lon = try container.decode(
+                        Swift.Double.self,
+                        forKey: .lon
+                    )
+                    self.capturedAtMs = try container.decode(
+                        Swift.Int.self,
+                        forKey: .capturedAtMs
+                    )
+                    self.sampleId = try container.decode(
+                        Swift.String.self,
+                        forKey: .sampleId
+                    )
+                    self.segmentId = try container.decode(
+                        Swift.String.self,
+                        forKey: .segmentId
+                    )
+                    try decoder.ensureNoAdditionalProperties(knownKeys: [
+                        "lat",
+                        "lon",
+                        "capturedAtMs",
+                        "sampleId",
+                        "segmentId"
+                    ])
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/VoyagePositionBatch/positions`.
+            internal typealias positionsPayload = [Components.Schemas.VoyagePositionBatch.positionsPayloadPayload]
+            /// - Remark: Generated from `#/components/schemas/VoyagePositionBatch/positions`.
+            internal var positions: Components.Schemas.VoyagePositionBatch.positionsPayload
+            /// Creates a new `VoyagePositionBatch`.
+            ///
+            /// - Parameters:
+            ///   - grantGeneration: The owner grant under which these positions were queued.
+            ///   - positions:
+            internal init(
+                grantGeneration: Swift.Int,
+                positions: Components.Schemas.VoyagePositionBatch.positionsPayload
+            ) {
+                self.grantGeneration = grantGeneration
+                self.positions = positions
+            }
+            internal enum CodingKeys: String, CodingKey {
+                case grantGeneration
+                case positions
+            }
+            internal init(from decoder: any Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                self.grantGeneration = try container.decode(
+                    Swift.Int.self,
+                    forKey: .grantGeneration
+                )
+                self.positions = try container.decode(
+                    Components.Schemas.VoyagePositionBatch.positionsPayload.self,
+                    forKey: .positions
+                )
+                try decoder.ensureNoAdditionalProperties(knownKeys: [
+                    "grantGeneration",
+                    "positions"
+                ])
+            }
+        }
+        /// - Remark: Generated from `#/components/schemas/VoyageOwnerSharingState`.
+        internal struct VoyageOwnerSharingState: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/VoyageOwnerSharingState/sharing`.
+            internal enum sharingPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                case off = "off"
+                case on = "on"
+                case paused = "paused"
+            }
+            /// - Remark: Generated from `#/components/schemas/VoyageOwnerSharingState/sharing`.
+            internal var sharing: Components.Schemas.VoyageOwnerSharingState.sharingPayload
+            /// - Remark: Generated from `#/components/schemas/VoyageOwnerSharingState/delayS`.
+            internal var delayS: Swift.Int
+            /// Current valid grant, including when paused. Omitted when sharing is off.
+            ///
+            /// - Remark: Generated from `#/components/schemas/VoyageOwnerSharingState/grantGeneration`.
+            internal var grantGeneration: Swift.Int?
+            /// - Remark: Generated from `#/components/schemas/VoyageOwnerSharingState/preview`.
+            internal var preview: Components.Schemas.VoyageViewerState
+            /// Creates a new `VoyageOwnerSharingState`.
+            ///
+            /// - Parameters:
+            ///   - sharing:
+            ///   - delayS:
+            ///   - grantGeneration: Current valid grant, including when paused. Omitted when sharing is off.
+            ///   - preview:
+            internal init(
+                sharing: Components.Schemas.VoyageOwnerSharingState.sharingPayload,
+                delayS: Swift.Int,
+                grantGeneration: Swift.Int? = nil,
+                preview: Components.Schemas.VoyageViewerState
+            ) {
+                self.sharing = sharing
+                self.delayS = delayS
+                self.grantGeneration = grantGeneration
+                self.preview = preview
+            }
+            internal enum CodingKeys: String, CodingKey {
+                case sharing
+                case delayS
+                case grantGeneration
+                case preview
+            }
+        }
+        /// - Remark: Generated from `#/components/schemas/VoyageViewerState`.
+        internal enum VoyageViewerState: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/VoyageViewerState/case1`.
+            internal struct Case1Payload: Codable, Hashable, Sendable {
+                /// - Remark: Generated from `#/components/schemas/VoyageViewerState/case1/status`.
+                internal enum statusPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                    case unavailable = "unavailable"
+                }
+                /// - Remark: Generated from `#/components/schemas/VoyageViewerState/case1/status`.
+                internal var status: Components.Schemas.VoyageViewerState.Case1Payload.statusPayload
+                /// Creates a new `Case1Payload`.
+                ///
+                /// - Parameters:
+                ///   - status:
+                internal init(status: Components.Schemas.VoyageViewerState.Case1Payload.statusPayload) {
+                    self.status = status
+                }
+                internal enum CodingKeys: String, CodingKey {
+                    case status
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/VoyageViewerState/case1`.
+            case case1(Components.Schemas.VoyageViewerState.Case1Payload)
+            /// - Remark: Generated from `#/components/schemas/VoyageViewerState/case2`.
+            internal struct Case2Payload: Codable, Hashable, Sendable {
+                /// - Remark: Generated from `#/components/schemas/VoyageViewerState/case2/status`.
+                internal enum statusPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                    case available = "available"
+                }
+                /// - Remark: Generated from `#/components/schemas/VoyageViewerState/case2/status`.
+                internal var status: Components.Schemas.VoyageViewerState.Case2Payload.statusPayload
+                /// - Remark: Generated from `#/components/schemas/VoyageViewerState/case2/current`.
+                internal struct currentPayload: Codable, Hashable, Sendable {
+                    /// - Remark: Generated from `#/components/schemas/VoyageViewerState/case2/current/lat`.
+                    internal var lat: Swift.Double
+                    /// - Remark: Generated from `#/components/schemas/VoyageViewerState/case2/current/lon`.
+                    internal var lon: Swift.Double
+                    /// - Remark: Generated from `#/components/schemas/VoyageViewerState/case2/current/capturedAtMs`.
+                    internal var capturedAtMs: Swift.Int
+                    /// Creates a new `currentPayload`.
+                    ///
+                    /// - Parameters:
+                    ///   - lat:
+                    ///   - lon:
+                    ///   - capturedAtMs:
+                    internal init(
+                        lat: Swift.Double,
+                        lon: Swift.Double,
+                        capturedAtMs: Swift.Int
+                    ) {
+                        self.lat = lat
+                        self.lon = lon
+                        self.capturedAtMs = capturedAtMs
+                    }
+                    internal enum CodingKeys: String, CodingKey {
+                        case lat
+                        case lon
+                        case capturedAtMs
+                    }
+                }
+                /// - Remark: Generated from `#/components/schemas/VoyageViewerState/case2/current`.
+                internal var current: Components.Schemas.VoyageViewerState.Case2Payload.currentPayload
+                /// - Remark: Generated from `#/components/schemas/VoyageViewerState/case2/segmentsPayloadPayload`.
+                internal struct segmentsPayloadPayloadPayload: Codable, Hashable, Sendable {
+                    /// - Remark: Generated from `#/components/schemas/VoyageViewerState/case2/segmentsPayloadPayload/lat`.
+                    internal var lat: Swift.Double
+                    /// - Remark: Generated from `#/components/schemas/VoyageViewerState/case2/segmentsPayloadPayload/lon`.
+                    internal var lon: Swift.Double
+                    /// - Remark: Generated from `#/components/schemas/VoyageViewerState/case2/segmentsPayloadPayload/capturedAtMs`.
+                    internal var capturedAtMs: Swift.Int
+                    /// Creates a new `segmentsPayloadPayloadPayload`.
+                    ///
+                    /// - Parameters:
+                    ///   - lat:
+                    ///   - lon:
+                    ///   - capturedAtMs:
+                    internal init(
+                        lat: Swift.Double,
+                        lon: Swift.Double,
+                        capturedAtMs: Swift.Int
+                    ) {
+                        self.lat = lat
+                        self.lon = lon
+                        self.capturedAtMs = capturedAtMs
+                    }
+                    internal enum CodingKeys: String, CodingKey {
+                        case lat
+                        case lon
+                        case capturedAtMs
+                    }
+                }
+                /// - Remark: Generated from `#/components/schemas/VoyageViewerState/case2/segmentsPayload`.
+                internal typealias segmentsPayloadPayload = [Components.Schemas.VoyageViewerState.Case2Payload.segmentsPayloadPayloadPayload]
+                /// - Remark: Generated from `#/components/schemas/VoyageViewerState/case2/segments`.
+                internal typealias segmentsPayload = [Components.Schemas.VoyageViewerState.Case2Payload.segmentsPayloadPayload]
+                /// - Remark: Generated from `#/components/schemas/VoyageViewerState/case2/segments`.
+                internal var segments: Components.Schemas.VoyageViewerState.Case2Payload.segmentsPayload
+                /// Creates a new `Case2Payload`.
+                ///
+                /// - Parameters:
+                ///   - status:
+                ///   - current:
+                ///   - segments:
+                internal init(
+                    status: Components.Schemas.VoyageViewerState.Case2Payload.statusPayload,
+                    current: Components.Schemas.VoyageViewerState.Case2Payload.currentPayload,
+                    segments: Components.Schemas.VoyageViewerState.Case2Payload.segmentsPayload
+                ) {
+                    self.status = status
+                    self.current = current
+                    self.segments = segments
+                }
+                internal enum CodingKeys: String, CodingKey {
+                    case status
+                    case current
+                    case segments
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/VoyageViewerState/case2`.
+            case case2(Components.Schemas.VoyageViewerState.Case2Payload)
+            internal init(from decoder: any Decoder) throws {
+                var errors: [any Error] = []
+                do {
+                    self = .case1(try .init(from: decoder))
+                    return
+                } catch {
+                    errors.append(error)
+                }
+                do {
+                    self = .case2(try .init(from: decoder))
+                    return
+                } catch {
+                    errors.append(error)
+                }
+                throw Swift.DecodingError.failedToDecodeOneOfSchema(
+                    type: Self.self,
+                    codingPath: decoder.codingPath,
+                    errors: errors
+                )
+            }
+            internal func encode(to encoder: any Encoder) throws {
+                switch self {
+                case let .case1(value):
+                    try value.encode(to: encoder)
+                case let .case2(value):
+                    try value.encode(to: encoder)
+                }
+            }
+        }
+        /// - Remark: Generated from `#/components/schemas/VoyageChangeShareResult`.
+        internal struct VoyageChangeShareResult: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/VoyageChangeShareResult/sharing`.
+            internal enum sharingPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                case off = "off"
+                case on = "on"
+                case paused = "paused"
+            }
+            /// - Remark: Generated from `#/components/schemas/VoyageChangeShareResult/sharing`.
+            internal var sharing: Components.Schemas.VoyageChangeShareResult.sharingPayload
+            /// - Remark: Generated from `#/components/schemas/VoyageChangeShareResult/delayS`.
+            internal var delayS: Swift.Int
+            /// Current valid grant, including when paused. Omitted when sharing is off.
+            ///
+            /// - Remark: Generated from `#/components/schemas/VoyageChangeShareResult/grantGeneration`.
+            internal var grantGeneration: Swift.Int?
+            /// - Remark: Generated from `#/components/schemas/VoyageChangeShareResult/preview`.
+            internal var preview: Components.Schemas.VoyageViewerState
+            /// Returned only when a new link is issued.
+            ///
+            /// - Remark: Generated from `#/components/schemas/VoyageChangeShareResult/slug`.
+            internal var slug: Swift.String?
+            /// Creates a new `VoyageChangeShareResult`.
+            ///
+            /// - Parameters:
+            ///   - sharing:
+            ///   - delayS:
+            ///   - grantGeneration: Current valid grant, including when paused. Omitted when sharing is off.
+            ///   - preview:
+            ///   - slug: Returned only when a new link is issued.
+            internal init(
+                sharing: Components.Schemas.VoyageChangeShareResult.sharingPayload,
+                delayS: Swift.Int,
+                grantGeneration: Swift.Int? = nil,
+                preview: Components.Schemas.VoyageViewerState,
+                slug: Swift.String? = nil
+            ) {
+                self.sharing = sharing
+                self.delayS = delayS
+                self.grantGeneration = grantGeneration
+                self.preview = preview
+                self.slug = slug
+            }
+            internal enum CodingKeys: String, CodingKey {
+                case sharing
+                case delayS
+                case grantGeneration
+                case preview
+                case slug
+            }
+        }
+        /// - Remark: Generated from `#/components/schemas/VoyageShareCommand`.
+        internal enum VoyageShareCommand: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/VoyageShareCommand/case1`.
+            internal struct Case1Payload: Codable, Hashable, Sendable {
+                /// - Remark: Generated from `#/components/schemas/VoyageShareCommand/case1/action`.
+                internal enum actionPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                    case issue = "issue"
+                }
+                /// - Remark: Generated from `#/components/schemas/VoyageShareCommand/case1/action`.
+                internal var action: Components.Schemas.VoyageShareCommand.Case1Payload.actionPayload
+                /// - Remark: Generated from `#/components/schemas/VoyageShareCommand/case1/delayS`.
+                internal var delayS: Swift.Int
+                /// - Remark: Generated from `#/components/schemas/VoyageShareCommand/case1/expiresInS`.
+                internal var expiresInS: Swift.Int
+                /// Creates a new `Case1Payload`.
+                ///
+                /// - Parameters:
+                ///   - action:
+                ///   - delayS:
+                ///   - expiresInS:
+                internal init(
+                    action: Components.Schemas.VoyageShareCommand.Case1Payload.actionPayload,
+                    delayS: Swift.Int,
+                    expiresInS: Swift.Int
+                ) {
+                    self.action = action
+                    self.delayS = delayS
+                    self.expiresInS = expiresInS
+                }
+                internal enum CodingKeys: String, CodingKey {
+                    case action
+                    case delayS
+                    case expiresInS
+                }
+                internal init(from decoder: any Decoder) throws {
+                    let container = try decoder.container(keyedBy: CodingKeys.self)
+                    self.action = try container.decode(
+                        Components.Schemas.VoyageShareCommand.Case1Payload.actionPayload.self,
+                        forKey: .action
+                    )
+                    self.delayS = try container.decode(
+                        Swift.Int.self,
+                        forKey: .delayS
+                    )
+                    self.expiresInS = try container.decode(
+                        Swift.Int.self,
+                        forKey: .expiresInS
+                    )
+                    try decoder.ensureNoAdditionalProperties(knownKeys: [
+                        "action",
+                        "delayS",
+                        "expiresInS"
+                    ])
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/VoyageShareCommand/case1`.
+            case case1(Components.Schemas.VoyageShareCommand.Case1Payload)
+            /// - Remark: Generated from `#/components/schemas/VoyageShareCommand/case2`.
+            internal struct Case2Payload: Codable, Hashable, Sendable {
+                /// - Remark: Generated from `#/components/schemas/VoyageShareCommand/case2/action`.
+                internal enum actionPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                    case rotate = "rotate"
+                }
+                /// - Remark: Generated from `#/components/schemas/VoyageShareCommand/case2/action`.
+                internal var action: Components.Schemas.VoyageShareCommand.Case2Payload.actionPayload
+                /// - Remark: Generated from `#/components/schemas/VoyageShareCommand/case2/delayS`.
+                internal var delayS: Swift.Int
+                /// - Remark: Generated from `#/components/schemas/VoyageShareCommand/case2/expiresInS`.
+                internal var expiresInS: Swift.Int
+                /// Creates a new `Case2Payload`.
+                ///
+                /// - Parameters:
+                ///   - action:
+                ///   - delayS:
+                ///   - expiresInS:
+                internal init(
+                    action: Components.Schemas.VoyageShareCommand.Case2Payload.actionPayload,
+                    delayS: Swift.Int,
+                    expiresInS: Swift.Int
+                ) {
+                    self.action = action
+                    self.delayS = delayS
+                    self.expiresInS = expiresInS
+                }
+                internal enum CodingKeys: String, CodingKey {
+                    case action
+                    case delayS
+                    case expiresInS
+                }
+                internal init(from decoder: any Decoder) throws {
+                    let container = try decoder.container(keyedBy: CodingKeys.self)
+                    self.action = try container.decode(
+                        Components.Schemas.VoyageShareCommand.Case2Payload.actionPayload.self,
+                        forKey: .action
+                    )
+                    self.delayS = try container.decode(
+                        Swift.Int.self,
+                        forKey: .delayS
+                    )
+                    self.expiresInS = try container.decode(
+                        Swift.Int.self,
+                        forKey: .expiresInS
+                    )
+                    try decoder.ensureNoAdditionalProperties(knownKeys: [
+                        "action",
+                        "delayS",
+                        "expiresInS"
+                    ])
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/VoyageShareCommand/case2`.
+            case case2(Components.Schemas.VoyageShareCommand.Case2Payload)
+            /// - Remark: Generated from `#/components/schemas/VoyageShareCommand/case3`.
+            internal struct Case3Payload: Codable, Hashable, Sendable {
+                /// - Remark: Generated from `#/components/schemas/VoyageShareCommand/case3/action`.
+                internal enum actionPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                    case pause = "pause"
+                }
+                /// - Remark: Generated from `#/components/schemas/VoyageShareCommand/case3/action`.
+                internal var action: Components.Schemas.VoyageShareCommand.Case3Payload.actionPayload
+                /// Creates a new `Case3Payload`.
+                ///
+                /// - Parameters:
+                ///   - action:
+                internal init(action: Components.Schemas.VoyageShareCommand.Case3Payload.actionPayload) {
+                    self.action = action
+                }
+                internal enum CodingKeys: String, CodingKey {
+                    case action
+                }
+                internal init(from decoder: any Decoder) throws {
+                    let container = try decoder.container(keyedBy: CodingKeys.self)
+                    self.action = try container.decode(
+                        Components.Schemas.VoyageShareCommand.Case3Payload.actionPayload.self,
+                        forKey: .action
+                    )
+                    try decoder.ensureNoAdditionalProperties(knownKeys: [
+                        "action"
+                    ])
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/VoyageShareCommand/case3`.
+            case case3(Components.Schemas.VoyageShareCommand.Case3Payload)
+            /// - Remark: Generated from `#/components/schemas/VoyageShareCommand/case4`.
+            internal struct Case4Payload: Codable, Hashable, Sendable {
+                /// - Remark: Generated from `#/components/schemas/VoyageShareCommand/case4/action`.
+                internal enum actionPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                    case resume = "resume"
+                }
+                /// - Remark: Generated from `#/components/schemas/VoyageShareCommand/case4/action`.
+                internal var action: Components.Schemas.VoyageShareCommand.Case4Payload.actionPayload
+                /// Creates a new `Case4Payload`.
+                ///
+                /// - Parameters:
+                ///   - action:
+                internal init(action: Components.Schemas.VoyageShareCommand.Case4Payload.actionPayload) {
+                    self.action = action
+                }
+                internal enum CodingKeys: String, CodingKey {
+                    case action
+                }
+                internal init(from decoder: any Decoder) throws {
+                    let container = try decoder.container(keyedBy: CodingKeys.self)
+                    self.action = try container.decode(
+                        Components.Schemas.VoyageShareCommand.Case4Payload.actionPayload.self,
+                        forKey: .action
+                    )
+                    try decoder.ensureNoAdditionalProperties(knownKeys: [
+                        "action"
+                    ])
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/VoyageShareCommand/case4`.
+            case case4(Components.Schemas.VoyageShareCommand.Case4Payload)
+            /// - Remark: Generated from `#/components/schemas/VoyageShareCommand/case5`.
+            internal struct Case5Payload: Codable, Hashable, Sendable {
+                /// - Remark: Generated from `#/components/schemas/VoyageShareCommand/case5/action`.
+                internal enum actionPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                    case revoke = "revoke"
+                }
+                /// - Remark: Generated from `#/components/schemas/VoyageShareCommand/case5/action`.
+                internal var action: Components.Schemas.VoyageShareCommand.Case5Payload.actionPayload
+                /// Creates a new `Case5Payload`.
+                ///
+                /// - Parameters:
+                ///   - action:
+                internal init(action: Components.Schemas.VoyageShareCommand.Case5Payload.actionPayload) {
+                    self.action = action
+                }
+                internal enum CodingKeys: String, CodingKey {
+                    case action
+                }
+                internal init(from decoder: any Decoder) throws {
+                    let container = try decoder.container(keyedBy: CodingKeys.self)
+                    self.action = try container.decode(
+                        Components.Schemas.VoyageShareCommand.Case5Payload.actionPayload.self,
+                        forKey: .action
+                    )
+                    try decoder.ensureNoAdditionalProperties(knownKeys: [
+                        "action"
+                    ])
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/VoyageShareCommand/case5`.
+            case case5(Components.Schemas.VoyageShareCommand.Case5Payload)
+            /// - Remark: Generated from `#/components/schemas/VoyageShareCommand/case6`.
+            internal struct Case6Payload: Codable, Hashable, Sendable {
+                /// - Remark: Generated from `#/components/schemas/VoyageShareCommand/case6/action`.
+                internal enum actionPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                    case delay = "delay"
+                }
+                /// - Remark: Generated from `#/components/schemas/VoyageShareCommand/case6/action`.
+                internal var action: Components.Schemas.VoyageShareCommand.Case6Payload.actionPayload
+                /// - Remark: Generated from `#/components/schemas/VoyageShareCommand/case6/delayS`.
+                internal var delayS: Swift.Int
+                /// Creates a new `Case6Payload`.
+                ///
+                /// - Parameters:
+                ///   - action:
+                ///   - delayS:
+                internal init(
+                    action: Components.Schemas.VoyageShareCommand.Case6Payload.actionPayload,
+                    delayS: Swift.Int
+                ) {
+                    self.action = action
+                    self.delayS = delayS
+                }
+                internal enum CodingKeys: String, CodingKey {
+                    case action
+                    case delayS
+                }
+                internal init(from decoder: any Decoder) throws {
+                    let container = try decoder.container(keyedBy: CodingKeys.self)
+                    self.action = try container.decode(
+                        Components.Schemas.VoyageShareCommand.Case6Payload.actionPayload.self,
+                        forKey: .action
+                    )
+                    self.delayS = try container.decode(
+                        Swift.Int.self,
+                        forKey: .delayS
+                    )
+                    try decoder.ensureNoAdditionalProperties(knownKeys: [
+                        "action",
+                        "delayS"
+                    ])
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/VoyageShareCommand/case6`.
+            case case6(Components.Schemas.VoyageShareCommand.Case6Payload)
+            internal init(from decoder: any Decoder) throws {
+                var errors: [any Error] = []
+                do {
+                    self = .case1(try .init(from: decoder))
+                    return
+                } catch {
+                    errors.append(error)
+                }
+                do {
+                    self = .case2(try .init(from: decoder))
+                    return
+                } catch {
+                    errors.append(error)
+                }
+                do {
+                    self = .case3(try .init(from: decoder))
+                    return
+                } catch {
+                    errors.append(error)
+                }
+                do {
+                    self = .case4(try .init(from: decoder))
+                    return
+                } catch {
+                    errors.append(error)
+                }
+                do {
+                    self = .case5(try .init(from: decoder))
+                    return
+                } catch {
+                    errors.append(error)
+                }
+                do {
+                    self = .case6(try .init(from: decoder))
+                    return
+                } catch {
+                    errors.append(error)
+                }
+                throw Swift.DecodingError.failedToDecodeOneOfSchema(
+                    type: Self.self,
+                    codingPath: decoder.codingPath,
+                    errors: errors
+                )
+            }
+            internal func encode(to encoder: any Encoder) throws {
+                switch self {
+                case let .case1(value):
+                    try value.encode(to: encoder)
+                case let .case2(value):
+                    try value.encode(to: encoder)
+                case let .case3(value):
+                    try value.encode(to: encoder)
+                case let .case4(value):
+                    try value.encode(to: encoder)
+                case let .case5(value):
+                    try value.encode(to: encoder)
+                case let .case6(value):
+                    try value.encode(to: encoder)
+                }
             }
         }
         /// - Remark: Generated from `#/components/schemas/Voyage`.
@@ -1009,6 +1781,1077 @@ internal enum Operations {
                     default:
                         try throwUnexpectedResponseStatus(
                             expectedStatus: "unauthorized",
+                            response: self
+                        )
+                    }
+                }
+            }
+            /// Undocumented response.
+            ///
+            /// A response with a code that is not documented in the OpenAPI document.
+            case undocumented(statusCode: Swift.Int, OpenAPIRuntime.UndocumentedPayload)
+        }
+        internal enum AcceptableContentType: AcceptableProtocol {
+            case json
+            case other(Swift.String)
+            internal init?(rawValue: Swift.String) {
+                switch rawValue.lowercased() {
+                case "application/json":
+                    self = .json
+                default:
+                    self = .other(rawValue)
+                }
+            }
+            internal var rawValue: Swift.String {
+                switch self {
+                case let .other(string):
+                    return string
+                case .json:
+                    return "application/json"
+                }
+            }
+            internal static var allCases: [Self] {
+                [
+                    .json
+                ]
+            }
+        }
+    }
+    /// Accept a batch of active voyage fixes
+    ///
+    /// - Remark: HTTP `POST /voyages/{voyageId}/positions`.
+    /// - Remark: Generated from `#/paths//voyages/{voyageId}/positions/post(postVoyagePositions)`.
+    internal enum postVoyagePositions {
+        internal static let id: Swift.String = "postVoyagePositions"
+        internal struct Input: Sendable, Hashable {
+            /// - Remark: Generated from `#/paths/voyages/{voyageId}/positions/POST/path`.
+            internal struct Path: Sendable, Hashable {
+                /// Device UUID, stored lowercase.
+                ///
+                /// - Remark: Generated from `#/paths/voyages/{voyageId}/positions/POST/path/voyageId`.
+                internal var voyageId: Swift.String
+                /// Creates a new `Path`.
+                ///
+                /// - Parameters:
+                ///   - voyageId: Device UUID, stored lowercase.
+                internal init(voyageId: Swift.String) {
+                    self.voyageId = voyageId
+                }
+            }
+            internal var path: Operations.postVoyagePositions.Input.Path
+            /// - Remark: Generated from `#/paths/voyages/{voyageId}/positions/POST/header`.
+            internal struct Headers: Sendable, Hashable {
+                internal var accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.postVoyagePositions.AcceptableContentType>]
+                /// Creates a new `Headers`.
+                ///
+                /// - Parameters:
+                ///   - accept:
+                internal init(accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.postVoyagePositions.AcceptableContentType>] = .defaultValues()) {
+                    self.accept = accept
+                }
+            }
+            internal var headers: Operations.postVoyagePositions.Input.Headers
+            /// - Remark: Generated from `#/paths/voyages/{voyageId}/positions/POST/requestBody`.
+            internal enum Body: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/voyages/{voyageId}/positions/POST/requestBody/content/application\/json`.
+                case json(Components.Schemas.VoyagePositionBatch)
+            }
+            internal var body: Operations.postVoyagePositions.Input.Body
+            /// Creates a new `Input`.
+            ///
+            /// - Parameters:
+            ///   - path:
+            ///   - headers:
+            ///   - body:
+            internal init(
+                path: Operations.postVoyagePositions.Input.Path,
+                headers: Operations.postVoyagePositions.Input.Headers = .init(),
+                body: Operations.postVoyagePositions.Input.Body
+            ) {
+                self.path = path
+                self.headers = headers
+                self.body = body
+            }
+        }
+        internal enum Output: Sendable, Hashable {
+            internal struct Ok: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/voyages/{voyageId}/positions/POST/responses/200/content`.
+                internal enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/voyages/{voyageId}/positions/POST/responses/200/content/application\/json`.
+                    case json(Components.Schemas.VoyagePositionReceipts)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    internal var json: Components.Schemas.VoyagePositionReceipts {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                internal var body: Operations.postVoyagePositions.Output.Ok.Body
+                /// Creates a new `Ok`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                internal init(body: Operations.postVoyagePositions.Output.Ok.Body) {
+                    self.body = body
+                }
+            }
+            /// Original server receipt per distinct sample ID.
+            ///
+            /// - Remark: Generated from `#/paths//voyages/{voyageId}/positions/post(postVoyagePositions)/responses/200`.
+            ///
+            /// HTTP response code: `200 ok`.
+            case ok(Operations.postVoyagePositions.Output.Ok)
+            /// The associated value of the enum case if `self` is `.ok`.
+            ///
+            /// - Throws: An error if `self` is not `.ok`.
+            /// - SeeAlso: `.ok`.
+            internal var ok: Operations.postVoyagePositions.Output.Ok {
+                get throws {
+                    switch self {
+                    case let .ok(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "ok",
+                            response: self
+                        )
+                    }
+                }
+            }
+            internal struct BadRequest: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/voyages/{voyageId}/positions/POST/responses/400/content`.
+                internal enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/voyages/{voyageId}/positions/POST/responses/400/content/application\/json`.
+                    case json(Components.Schemas._Error)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    internal var json: Components.Schemas._Error {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                internal var body: Operations.postVoyagePositions.Output.BadRequest.Body
+                /// Creates a new `BadRequest`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                internal init(body: Operations.postVoyagePositions.Output.BadRequest.Body) {
+                    self.body = body
+                }
+            }
+            /// The request is invalid.
+            ///
+            /// - Remark: Generated from `#/paths//voyages/{voyageId}/positions/post(postVoyagePositions)/responses/400`.
+            ///
+            /// HTTP response code: `400 badRequest`.
+            case badRequest(Operations.postVoyagePositions.Output.BadRequest)
+            /// The associated value of the enum case if `self` is `.badRequest`.
+            ///
+            /// - Throws: An error if `self` is not `.badRequest`.
+            /// - SeeAlso: `.badRequest`.
+            internal var badRequest: Operations.postVoyagePositions.Output.BadRequest {
+                get throws {
+                    switch self {
+                    case let .badRequest(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "badRequest",
+                            response: self
+                        )
+                    }
+                }
+            }
+            internal struct Unauthorized: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/voyages/{voyageId}/positions/POST/responses/401/content`.
+                internal enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/voyages/{voyageId}/positions/POST/responses/401/content/application\/json`.
+                    case json(Components.Schemas._Error)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    internal var json: Components.Schemas._Error {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                internal var body: Operations.postVoyagePositions.Output.Unauthorized.Body
+                /// Creates a new `Unauthorized`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                internal init(body: Operations.postVoyagePositions.Output.Unauthorized.Body) {
+                    self.body = body
+                }
+            }
+            /// A current owner account is required.
+            ///
+            /// - Remark: Generated from `#/paths//voyages/{voyageId}/positions/post(postVoyagePositions)/responses/401`.
+            ///
+            /// HTTP response code: `401 unauthorized`.
+            case unauthorized(Operations.postVoyagePositions.Output.Unauthorized)
+            /// The associated value of the enum case if `self` is `.unauthorized`.
+            ///
+            /// - Throws: An error if `self` is not `.unauthorized`.
+            /// - SeeAlso: `.unauthorized`.
+            internal var unauthorized: Operations.postVoyagePositions.Output.Unauthorized {
+                get throws {
+                    switch self {
+                    case let .unauthorized(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "unauthorized",
+                            response: self
+                        )
+                    }
+                }
+            }
+            internal struct NotFound: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/voyages/{voyageId}/positions/POST/responses/404/content`.
+                internal enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/voyages/{voyageId}/positions/POST/responses/404/content/application\/json`.
+                    case json(Components.Schemas._Error)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    internal var json: Components.Schemas._Error {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                internal var body: Operations.postVoyagePositions.Output.NotFound.Body
+                /// Creates a new `NotFound`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                internal init(body: Operations.postVoyagePositions.Output.NotFound.Body) {
+                    self.body = body
+                }
+            }
+            /// The live voyage is unavailable.
+            ///
+            /// - Remark: Generated from `#/paths//voyages/{voyageId}/positions/post(postVoyagePositions)/responses/404`.
+            ///
+            /// HTTP response code: `404 notFound`.
+            case notFound(Operations.postVoyagePositions.Output.NotFound)
+            /// The associated value of the enum case if `self` is `.notFound`.
+            ///
+            /// - Throws: An error if `self` is not `.notFound`.
+            /// - SeeAlso: `.notFound`.
+            internal var notFound: Operations.postVoyagePositions.Output.NotFound {
+                get throws {
+                    switch self {
+                    case let .notFound(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "notFound",
+                            response: self
+                        )
+                    }
+                }
+            }
+            internal struct Conflict: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/voyages/{voyageId}/positions/POST/responses/409/content`.
+                internal enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/voyages/{voyageId}/positions/POST/responses/409/content/application\/json`.
+                    case json(Components.Schemas._Error)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    internal var json: Components.Schemas._Error {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                internal var body: Operations.postVoyagePositions.Output.Conflict.Body
+                /// Creates a new `Conflict`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                internal init(body: Operations.postVoyagePositions.Output.Conflict.Body) {
+                    self.body = body
+                }
+            }
+            /// The sample ID or share state conflicts, the grant is stale, or the voyage is at capacity.
+            ///
+            /// - Remark: Generated from `#/paths//voyages/{voyageId}/positions/post(postVoyagePositions)/responses/409`.
+            ///
+            /// HTTP response code: `409 conflict`.
+            case conflict(Operations.postVoyagePositions.Output.Conflict)
+            /// The associated value of the enum case if `self` is `.conflict`.
+            ///
+            /// - Throws: An error if `self` is not `.conflict`.
+            /// - SeeAlso: `.conflict`.
+            internal var conflict: Operations.postVoyagePositions.Output.Conflict {
+                get throws {
+                    switch self {
+                    case let .conflict(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "conflict",
+                            response: self
+                        )
+                    }
+                }
+            }
+            internal struct ContentTooLarge: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/voyages/{voyageId}/positions/POST/responses/413/content`.
+                internal enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/voyages/{voyageId}/positions/POST/responses/413/content/application\/json`.
+                    case json(Components.Schemas._Error)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    internal var json: Components.Schemas._Error {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                internal var body: Operations.postVoyagePositions.Output.ContentTooLarge.Body
+                /// Creates a new `ContentTooLarge`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                internal init(body: Operations.postVoyagePositions.Output.ContentTooLarge.Body) {
+                    self.body = body
+                }
+            }
+            /// The request body exceeds 64 KiB.
+            ///
+            /// - Remark: Generated from `#/paths//voyages/{voyageId}/positions/post(postVoyagePositions)/responses/413`.
+            ///
+            /// HTTP response code: `413 contentTooLarge`.
+            case contentTooLarge(Operations.postVoyagePositions.Output.ContentTooLarge)
+            /// The associated value of the enum case if `self` is `.contentTooLarge`.
+            ///
+            /// - Throws: An error if `self` is not `.contentTooLarge`.
+            /// - SeeAlso: `.contentTooLarge`.
+            internal var contentTooLarge: Operations.postVoyagePositions.Output.ContentTooLarge {
+                get throws {
+                    switch self {
+                    case let .contentTooLarge(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "contentTooLarge",
+                            response: self
+                        )
+                    }
+                }
+            }
+            /// Undocumented response.
+            ///
+            /// A response with a code that is not documented in the OpenAPI document.
+            case undocumented(statusCode: Swift.Int, OpenAPIRuntime.UndocumentedPayload)
+        }
+        internal enum AcceptableContentType: AcceptableProtocol {
+            case json
+            case other(Swift.String)
+            internal init?(rawValue: Swift.String) {
+                switch rawValue.lowercased() {
+                case "application/json":
+                    self = .json
+                default:
+                    self = .other(rawValue)
+                }
+            }
+            internal var rawValue: Swift.String {
+                switch self {
+                case let .other(string):
+                    return string
+                case .json:
+                    return "application/json"
+                }
+            }
+            internal static var allCases: [Self] {
+                [
+                    .json
+                ]
+            }
+        }
+    }
+    /// Read the owner's live sharing controls and preview
+    ///
+    /// - Remark: HTTP `GET /voyages/{voyageId}/sharing`.
+    /// - Remark: Generated from `#/paths//voyages/{voyageId}/sharing/get(getVoyageSharing)`.
+    internal enum getVoyageSharing {
+        internal static let id: Swift.String = "getVoyageSharing"
+        internal struct Input: Sendable, Hashable {
+            /// - Remark: Generated from `#/paths/voyages/{voyageId}/sharing/GET/path`.
+            internal struct Path: Sendable, Hashable {
+                /// Device UUID, stored lowercase.
+                ///
+                /// - Remark: Generated from `#/paths/voyages/{voyageId}/sharing/GET/path/voyageId`.
+                internal var voyageId: Swift.String
+                /// Creates a new `Path`.
+                ///
+                /// - Parameters:
+                ///   - voyageId: Device UUID, stored lowercase.
+                internal init(voyageId: Swift.String) {
+                    self.voyageId = voyageId
+                }
+            }
+            internal var path: Operations.getVoyageSharing.Input.Path
+            /// - Remark: Generated from `#/paths/voyages/{voyageId}/sharing/GET/header`.
+            internal struct Headers: Sendable, Hashable {
+                internal var accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.getVoyageSharing.AcceptableContentType>]
+                /// Creates a new `Headers`.
+                ///
+                /// - Parameters:
+                ///   - accept:
+                internal init(accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.getVoyageSharing.AcceptableContentType>] = .defaultValues()) {
+                    self.accept = accept
+                }
+            }
+            internal var headers: Operations.getVoyageSharing.Input.Headers
+            /// Creates a new `Input`.
+            ///
+            /// - Parameters:
+            ///   - path:
+            ///   - headers:
+            internal init(
+                path: Operations.getVoyageSharing.Input.Path,
+                headers: Operations.getVoyageSharing.Input.Headers = .init()
+            ) {
+                self.path = path
+                self.headers = headers
+            }
+        }
+        internal enum Output: Sendable, Hashable {
+            internal struct Ok: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/voyages/{voyageId}/sharing/GET/responses/200/content`.
+                internal enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/voyages/{voyageId}/sharing/GET/responses/200/content/application\/json`.
+                    case json(Components.Schemas.VoyageOwnerSharingState)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    internal var json: Components.Schemas.VoyageOwnerSharingState {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                internal var body: Operations.getVoyageSharing.Output.Ok.Body
+                /// Creates a new `Ok`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                internal init(body: Operations.getVoyageSharing.Output.Ok.Body) {
+                    self.body = body
+                }
+            }
+            /// Owner view.
+            ///
+            /// - Remark: Generated from `#/paths//voyages/{voyageId}/sharing/get(getVoyageSharing)/responses/200`.
+            ///
+            /// HTTP response code: `200 ok`.
+            case ok(Operations.getVoyageSharing.Output.Ok)
+            /// The associated value of the enum case if `self` is `.ok`.
+            ///
+            /// - Throws: An error if `self` is not `.ok`.
+            /// - SeeAlso: `.ok`.
+            internal var ok: Operations.getVoyageSharing.Output.Ok {
+                get throws {
+                    switch self {
+                    case let .ok(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "ok",
+                            response: self
+                        )
+                    }
+                }
+            }
+            internal struct BadRequest: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/voyages/{voyageId}/sharing/GET/responses/400/content`.
+                internal enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/voyages/{voyageId}/sharing/GET/responses/400/content/application\/json`.
+                    case json(Components.Schemas._Error)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    internal var json: Components.Schemas._Error {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                internal var body: Operations.getVoyageSharing.Output.BadRequest.Body
+                /// Creates a new `BadRequest`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                internal init(body: Operations.getVoyageSharing.Output.BadRequest.Body) {
+                    self.body = body
+                }
+            }
+            /// The request is invalid.
+            ///
+            /// - Remark: Generated from `#/paths//voyages/{voyageId}/sharing/get(getVoyageSharing)/responses/400`.
+            ///
+            /// HTTP response code: `400 badRequest`.
+            case badRequest(Operations.getVoyageSharing.Output.BadRequest)
+            /// The associated value of the enum case if `self` is `.badRequest`.
+            ///
+            /// - Throws: An error if `self` is not `.badRequest`.
+            /// - SeeAlso: `.badRequest`.
+            internal var badRequest: Operations.getVoyageSharing.Output.BadRequest {
+                get throws {
+                    switch self {
+                    case let .badRequest(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "badRequest",
+                            response: self
+                        )
+                    }
+                }
+            }
+            internal struct Unauthorized: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/voyages/{voyageId}/sharing/GET/responses/401/content`.
+                internal enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/voyages/{voyageId}/sharing/GET/responses/401/content/application\/json`.
+                    case json(Components.Schemas._Error)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    internal var json: Components.Schemas._Error {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                internal var body: Operations.getVoyageSharing.Output.Unauthorized.Body
+                /// Creates a new `Unauthorized`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                internal init(body: Operations.getVoyageSharing.Output.Unauthorized.Body) {
+                    self.body = body
+                }
+            }
+            /// A current owner account is required.
+            ///
+            /// - Remark: Generated from `#/paths//voyages/{voyageId}/sharing/get(getVoyageSharing)/responses/401`.
+            ///
+            /// HTTP response code: `401 unauthorized`.
+            case unauthorized(Operations.getVoyageSharing.Output.Unauthorized)
+            /// The associated value of the enum case if `self` is `.unauthorized`.
+            ///
+            /// - Throws: An error if `self` is not `.unauthorized`.
+            /// - SeeAlso: `.unauthorized`.
+            internal var unauthorized: Operations.getVoyageSharing.Output.Unauthorized {
+                get throws {
+                    switch self {
+                    case let .unauthorized(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "unauthorized",
+                            response: self
+                        )
+                    }
+                }
+            }
+            internal struct NotFound: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/voyages/{voyageId}/sharing/GET/responses/404/content`.
+                internal enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/voyages/{voyageId}/sharing/GET/responses/404/content/application\/json`.
+                    case json(Components.Schemas._Error)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    internal var json: Components.Schemas._Error {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                internal var body: Operations.getVoyageSharing.Output.NotFound.Body
+                /// Creates a new `NotFound`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                internal init(body: Operations.getVoyageSharing.Output.NotFound.Body) {
+                    self.body = body
+                }
+            }
+            /// The live voyage is unavailable.
+            ///
+            /// - Remark: Generated from `#/paths//voyages/{voyageId}/sharing/get(getVoyageSharing)/responses/404`.
+            ///
+            /// HTTP response code: `404 notFound`.
+            case notFound(Operations.getVoyageSharing.Output.NotFound)
+            /// The associated value of the enum case if `self` is `.notFound`.
+            ///
+            /// - Throws: An error if `self` is not `.notFound`.
+            /// - SeeAlso: `.notFound`.
+            internal var notFound: Operations.getVoyageSharing.Output.NotFound {
+                get throws {
+                    switch self {
+                    case let .notFound(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "notFound",
+                            response: self
+                        )
+                    }
+                }
+            }
+            /// Undocumented response.
+            ///
+            /// A response with a code that is not documented in the OpenAPI document.
+            case undocumented(statusCode: Swift.Int, OpenAPIRuntime.UndocumentedPayload)
+        }
+        internal enum AcceptableContentType: AcceptableProtocol {
+            case json
+            case other(Swift.String)
+            internal init?(rawValue: Swift.String) {
+                switch rawValue.lowercased() {
+                case "application/json":
+                    self = .json
+                default:
+                    self = .other(rawValue)
+                }
+            }
+            internal var rawValue: Swift.String {
+                switch self {
+                case let .other(string):
+                    return string
+                case .json:
+                    return "application/json"
+                }
+            }
+            internal static var allCases: [Self] {
+                [
+                    .json
+                ]
+            }
+        }
+    }
+    /// Issue a new live grant or change the current grant
+    ///
+    /// - Remark: HTTP `POST /voyages/{voyageId}/sharing`.
+    /// - Remark: Generated from `#/paths//voyages/{voyageId}/sharing/post(changeVoyageSharing)`.
+    internal enum changeVoyageSharing {
+        internal static let id: Swift.String = "changeVoyageSharing"
+        internal struct Input: Sendable, Hashable {
+            /// - Remark: Generated from `#/paths/voyages/{voyageId}/sharing/POST/path`.
+            internal struct Path: Sendable, Hashable {
+                /// Device UUID, stored lowercase.
+                ///
+                /// - Remark: Generated from `#/paths/voyages/{voyageId}/sharing/POST/path/voyageId`.
+                internal var voyageId: Swift.String
+                /// Creates a new `Path`.
+                ///
+                /// - Parameters:
+                ///   - voyageId: Device UUID, stored lowercase.
+                internal init(voyageId: Swift.String) {
+                    self.voyageId = voyageId
+                }
+            }
+            internal var path: Operations.changeVoyageSharing.Input.Path
+            /// - Remark: Generated from `#/paths/voyages/{voyageId}/sharing/POST/header`.
+            internal struct Headers: Sendable, Hashable {
+                internal var accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.changeVoyageSharing.AcceptableContentType>]
+                /// Creates a new `Headers`.
+                ///
+                /// - Parameters:
+                ///   - accept:
+                internal init(accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.changeVoyageSharing.AcceptableContentType>] = .defaultValues()) {
+                    self.accept = accept
+                }
+            }
+            internal var headers: Operations.changeVoyageSharing.Input.Headers
+            /// - Remark: Generated from `#/paths/voyages/{voyageId}/sharing/POST/requestBody`.
+            internal enum Body: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/voyages/{voyageId}/sharing/POST/requestBody/content/application\/json`.
+                case json(Components.Schemas.VoyageShareCommand)
+            }
+            internal var body: Operations.changeVoyageSharing.Input.Body
+            /// Creates a new `Input`.
+            ///
+            /// - Parameters:
+            ///   - path:
+            ///   - headers:
+            ///   - body:
+            internal init(
+                path: Operations.changeVoyageSharing.Input.Path,
+                headers: Operations.changeVoyageSharing.Input.Headers = .init(),
+                body: Operations.changeVoyageSharing.Input.Body
+            ) {
+                self.path = path
+                self.headers = headers
+                self.body = body
+            }
+        }
+        internal enum Output: Sendable, Hashable {
+            internal struct Ok: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/voyages/{voyageId}/sharing/POST/responses/200/content`.
+                internal enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/voyages/{voyageId}/sharing/POST/responses/200/content/application\/json`.
+                    case json(Components.Schemas.VoyageChangeShareResult)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    internal var json: Components.Schemas.VoyageChangeShareResult {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                internal var body: Operations.changeVoyageSharing.Output.Ok.Body
+                /// Creates a new `Ok`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                internal init(body: Operations.changeVoyageSharing.Output.Ok.Body) {
+                    self.body = body
+                }
+            }
+            /// Owner view and any new link credential.
+            ///
+            /// - Remark: Generated from `#/paths//voyages/{voyageId}/sharing/post(changeVoyageSharing)/responses/200`.
+            ///
+            /// HTTP response code: `200 ok`.
+            case ok(Operations.changeVoyageSharing.Output.Ok)
+            /// The associated value of the enum case if `self` is `.ok`.
+            ///
+            /// - Throws: An error if `self` is not `.ok`.
+            /// - SeeAlso: `.ok`.
+            internal var ok: Operations.changeVoyageSharing.Output.Ok {
+                get throws {
+                    switch self {
+                    case let .ok(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "ok",
+                            response: self
+                        )
+                    }
+                }
+            }
+            internal struct BadRequest: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/voyages/{voyageId}/sharing/POST/responses/400/content`.
+                internal enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/voyages/{voyageId}/sharing/POST/responses/400/content/application\/json`.
+                    case json(Components.Schemas._Error)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    internal var json: Components.Schemas._Error {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                internal var body: Operations.changeVoyageSharing.Output.BadRequest.Body
+                /// Creates a new `BadRequest`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                internal init(body: Operations.changeVoyageSharing.Output.BadRequest.Body) {
+                    self.body = body
+                }
+            }
+            /// The request is invalid.
+            ///
+            /// - Remark: Generated from `#/paths//voyages/{voyageId}/sharing/post(changeVoyageSharing)/responses/400`.
+            ///
+            /// HTTP response code: `400 badRequest`.
+            case badRequest(Operations.changeVoyageSharing.Output.BadRequest)
+            /// The associated value of the enum case if `self` is `.badRequest`.
+            ///
+            /// - Throws: An error if `self` is not `.badRequest`.
+            /// - SeeAlso: `.badRequest`.
+            internal var badRequest: Operations.changeVoyageSharing.Output.BadRequest {
+                get throws {
+                    switch self {
+                    case let .badRequest(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "badRequest",
+                            response: self
+                        )
+                    }
+                }
+            }
+            internal struct Unauthorized: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/voyages/{voyageId}/sharing/POST/responses/401/content`.
+                internal enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/voyages/{voyageId}/sharing/POST/responses/401/content/application\/json`.
+                    case json(Components.Schemas._Error)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    internal var json: Components.Schemas._Error {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                internal var body: Operations.changeVoyageSharing.Output.Unauthorized.Body
+                /// Creates a new `Unauthorized`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                internal init(body: Operations.changeVoyageSharing.Output.Unauthorized.Body) {
+                    self.body = body
+                }
+            }
+            /// A current owner account is required.
+            ///
+            /// - Remark: Generated from `#/paths//voyages/{voyageId}/sharing/post(changeVoyageSharing)/responses/401`.
+            ///
+            /// HTTP response code: `401 unauthorized`.
+            case unauthorized(Operations.changeVoyageSharing.Output.Unauthorized)
+            /// The associated value of the enum case if `self` is `.unauthorized`.
+            ///
+            /// - Throws: An error if `self` is not `.unauthorized`.
+            /// - SeeAlso: `.unauthorized`.
+            internal var unauthorized: Operations.changeVoyageSharing.Output.Unauthorized {
+                get throws {
+                    switch self {
+                    case let .unauthorized(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "unauthorized",
+                            response: self
+                        )
+                    }
+                }
+            }
+            internal struct NotFound: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/voyages/{voyageId}/sharing/POST/responses/404/content`.
+                internal enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/voyages/{voyageId}/sharing/POST/responses/404/content/application\/json`.
+                    case json(Components.Schemas._Error)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    internal var json: Components.Schemas._Error {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                internal var body: Operations.changeVoyageSharing.Output.NotFound.Body
+                /// Creates a new `NotFound`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                internal init(body: Operations.changeVoyageSharing.Output.NotFound.Body) {
+                    self.body = body
+                }
+            }
+            /// The live voyage is unavailable.
+            ///
+            /// - Remark: Generated from `#/paths//voyages/{voyageId}/sharing/post(changeVoyageSharing)/responses/404`.
+            ///
+            /// HTTP response code: `404 notFound`.
+            case notFound(Operations.changeVoyageSharing.Output.NotFound)
+            /// The associated value of the enum case if `self` is `.notFound`.
+            ///
+            /// - Throws: An error if `self` is not `.notFound`.
+            /// - SeeAlso: `.notFound`.
+            internal var notFound: Operations.changeVoyageSharing.Output.NotFound {
+                get throws {
+                    switch self {
+                    case let .notFound(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "notFound",
+                            response: self
+                        )
+                    }
+                }
+            }
+            internal struct Conflict: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/voyages/{voyageId}/sharing/POST/responses/409/content`.
+                internal enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/voyages/{voyageId}/sharing/POST/responses/409/content/application\/json`.
+                    case json(Components.Schemas._Error)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    internal var json: Components.Schemas._Error {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                internal var body: Operations.changeVoyageSharing.Output.Conflict.Body
+                /// Creates a new `Conflict`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                internal init(body: Operations.changeVoyageSharing.Output.Conflict.Body) {
+                    self.body = body
+                }
+            }
+            /// The sample ID or share state conflicts, the grant is stale, or the voyage is at capacity.
+            ///
+            /// - Remark: Generated from `#/paths//voyages/{voyageId}/sharing/post(changeVoyageSharing)/responses/409`.
+            ///
+            /// HTTP response code: `409 conflict`.
+            case conflict(Operations.changeVoyageSharing.Output.Conflict)
+            /// The associated value of the enum case if `self` is `.conflict`.
+            ///
+            /// - Throws: An error if `self` is not `.conflict`.
+            /// - SeeAlso: `.conflict`.
+            internal var conflict: Operations.changeVoyageSharing.Output.Conflict {
+                get throws {
+                    switch self {
+                    case let .conflict(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "conflict",
+                            response: self
+                        )
+                    }
+                }
+            }
+            internal struct ContentTooLarge: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/voyages/{voyageId}/sharing/POST/responses/413/content`.
+                internal enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/voyages/{voyageId}/sharing/POST/responses/413/content/application\/json`.
+                    case json(Components.Schemas._Error)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    internal var json: Components.Schemas._Error {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                internal var body: Operations.changeVoyageSharing.Output.ContentTooLarge.Body
+                /// Creates a new `ContentTooLarge`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                internal init(body: Operations.changeVoyageSharing.Output.ContentTooLarge.Body) {
+                    self.body = body
+                }
+            }
+            /// The request body exceeds 64 KiB.
+            ///
+            /// - Remark: Generated from `#/paths//voyages/{voyageId}/sharing/post(changeVoyageSharing)/responses/413`.
+            ///
+            /// HTTP response code: `413 contentTooLarge`.
+            case contentTooLarge(Operations.changeVoyageSharing.Output.ContentTooLarge)
+            /// The associated value of the enum case if `self` is `.contentTooLarge`.
+            ///
+            /// - Throws: An error if `self` is not `.contentTooLarge`.
+            /// - SeeAlso: `.contentTooLarge`.
+            internal var contentTooLarge: Operations.changeVoyageSharing.Output.ContentTooLarge {
+                get throws {
+                    switch self {
+                    case let .contentTooLarge(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "contentTooLarge",
                             response: self
                         )
                     }

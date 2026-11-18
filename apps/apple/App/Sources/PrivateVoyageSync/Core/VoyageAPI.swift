@@ -91,10 +91,11 @@ final class VoyageAPI {
             let result = try await client.putVoyage(
                 .init(
                     path: .init(voyageId: id.uuidString.lowercased()),
-                    body: .json(.init(
-                        title: voyage.title, boatName: voyage.boatName,
-                        startedAt: voyage.startedAt, endedAt: voyage.endedAt
-                    ))
+                    body: .json(
+                        .init(
+                            title: voyage.title, boatName: voyage.boatName,
+                            startedAt: voyage.startedAt, endedAt: voyage.endedAt
+                        ))
                 )
             )
             switch result {
@@ -109,10 +110,11 @@ final class VoyageAPI {
             let result = try await client.putVoyageLeg(
                 .init(
                     path: .init(voyageId: voyageID.uuidString.lowercased(), legId: legID.uuidString.lowercased()),
-                    body: .json(.init(
-                        fromName: leg.fromName, toName: leg.toName,
-                        startedAt: leg.startedAt, endedAt: leg.endedAt, distanceM: leg.distanceM
-                    ))
+                    body: .json(
+                        .init(
+                            fromName: leg.fromName, toName: leg.toName,
+                            startedAt: leg.startedAt, endedAt: leg.endedAt, distanceM: leg.distanceM
+                        ))
                 )
             )
             switch result {
@@ -134,22 +136,33 @@ final class VoyageAPI {
         try await perform(bearer: bearer, upload: .init(file: file, key: key)) { client in
             _ = try await client.putVoyageLegTrack(
                 .init(
-                    path: .init(voyageId: key.voyageID.uuidString.lowercased(), legId: key.legID.uuidString.lowercased()),
+                    path: .init(
+                        voyageId: key.voyageID.uuidString.lowercased(), legId: key.legID.uuidString.lowercased()),
                     body: .application_gzip(body)
                 )
             ).noContent
         }
     }
 
+    func withForegroundClient<Result>(
+        bearer: String, beforeSend: @escaping @MainActor () throws -> Void,
+        _ operation: (Client) async throws -> Result
+    ) async throws -> Result {
+        try await perform(bearer: bearer, beforeSend: beforeSend, operation)
+    }
+
     private func perform<Result>(
         bearer: String? = nil,
         upload: GeneratedVoyageTransport.FileUpload? = nil,
+        beforeSend: (@MainActor () throws -> Void)? = nil,
         _ operation: (Client) async throws -> Result
     ) async throws -> Result {
         let client = Client(
             serverURL: baseURL,
             configuration: .init(dateTranscoder: .iso8601WithFractionalSeconds),
-            transport: GeneratedVoyageTransport(transport: transport, bearer: bearer, fileUpload: upload)
+            transport: GeneratedVoyageTransport(
+                transport: transport, bearer: bearer, fileUpload: upload, beforeSend: beforeSend
+            )
         )
         do {
             return try await operation(client)
@@ -172,6 +185,7 @@ private struct GeneratedVoyageTransport: ClientTransport {
     let transport: any VoyageTransport
     let bearer: String?
     let fileUpload: FileUpload?
+    let beforeSend: (@MainActor () throws -> Void)?
 
     func send(
         _ request: HTTPRequest, body: HTTPBody?, baseURL: URL, operationID: String
@@ -190,6 +204,7 @@ private struct GeneratedVoyageTransport: ClientTransport {
             data = Data()
         } else {
             if let body { request.httpBody = try await Data(collecting: body, upTo: 64 * 1024) }
+            try beforeSend?()
             (data, response) = try await transport.send(request)
         }
         guard (200..<300).contains(response.statusCode) else {

@@ -162,3 +162,18 @@ export const legs = sqliteTable(
     index("legs_user_voyage_id").on(table.userId, table.voyageId, table.id),
   ],
 );
+
+/** Locates live objects and remains available for purge retries after account deletion. */
+export const voyageLiveRegistry = sqliteTable(
+  "voyage_live_registry",
+  {
+    userId: text("user_id").notNull(),
+    voyageId: text("voyage_id").notNull(),
+    generation: integer("generation").notNull().default(0),
+    slugHash: text("slug_hash"),
+  },
+  (table) => [
+    primaryKey({ columns: [table.userId, table.voyageId] }),
+    uniqueIndex("voyage_live_slug_hash").on(table.slugHash),
+  ],
+);

@@ -4,6 +4,11 @@ import UIKit
 @MainActor @Observable
 final class PrivateVoyageSync {
     static let shared: PrivateVoyageSync? = {
+        #if DEBUG && targetEnvironment(simulator)
+            if ProcessInfo.processInfo.arguments.contains("-localVoyageSharing") {
+                return makeLoopbackDemo()
+            }
+        #endif
         #if DEBUG
             if ProcessInfo.processInfo.arguments.contains("-demoPrivateVoyageSync") {
                 return makeDemo()
@@ -15,6 +20,7 @@ final class PrivateVoyageSync {
     let account: VoyageAccount
     let outbox: VoyageOutbox
     let isDemo: Bool
+    let liveSharing: LiveVoyageSharing?
     private(set) var outboxUnavailable = false
     private let transport: any VoyageTransport
     @ObservationIgnored private var worker: Task<Void, Never>?
@@ -29,6 +35,11 @@ final class PrivateVoyageSync {
         outbox = VoyageOutbox(root: root, account: account, api: api)
         self.transport = transport
         self.isDemo = isDemo
+        liveSharing = LiveVoyageSharing(
+            apiRoot: apiRoot,
+            root: root.appending(path: "LiveSharing", directoryHint: .isDirectory),
+            account: account, transport: transport, isDemo: isDemo
+        )
     }
 
     /// A recorder should call this from an explicit private sync action, using the
@@ -45,6 +56,7 @@ final class PrivateVoyageSync {
     }
 
     func accountDidChange() async {
+        liveSharing?.accountDidChange()
         let binding = account.binding
         if binding == nil {
             worker?.cancel()

@@ -27,6 +27,7 @@ struct ContentView: View {
             }
         }
         .onAppear {
+            voyageRecorder.liveSharing = PrivateVoyageSync.shared?.liveSharing
             controller.onFinish = { _, _, _ in library.reload() }
             library.reload()
         }

@@ -17,7 +17,7 @@ const LegItem = "/voyages/{voyageId}/legs/{legId}";
 const LegTrack = "/voyages/{voyageId}/legs/{legId}/track";
 const PAGE_SIZE = 100;
 
-const deviceId = z
+export const deviceId = z
   .string()
   .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)
   .transform((value) => value.toLowerCase())
