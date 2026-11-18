@@ -13,7 +13,17 @@ import WaterKit
 /// Alerts do not depend on the app running: while armed, a local notification is kept
 /// pending for the moment GPS would count as lost (a dead-man's switch, moved forward by
 /// every usable fix), and while alarming, repeat notifications are pending every 30 s
-/// (`AnchorAlertSchedule`). In the foreground the phone also sounds and buzzes.
+/// (`AnchorAlertSchedule`) plus a repeating one every 60 s that lasts until Silence or
+/// Raise. In the foreground the phone also sounds and buzzes.
+///
+/// The alarm runs on `ProcessInfo.systemUptime`: each fix is stamped when it arrives, so
+/// a wall-clock change cannot fake or hide a GPS gap. A saved alarm is moved onto the new
+/// process's clock at launch (`AnchorAlarm.resume(at:)`).
+///
+/// iOS limits that remain: if the user force-quits the app, location stops until it is
+/// opened again (the pending no-GPS and repeat notifications still fire); notifications
+/// need the user's permission (the screen warns without it); Time Sensitive delivery
+/// needs its entitlement, and Focus or Do Not Disturb can still hold them back.
 @MainActor
 @Observable
 final class AnchorWatch {
@@ -55,17 +65,14 @@ final class AnchorWatch {
     private var lastAlert: TimeInterval?
     /// Notifications this object has scheduled: identifier → fire time (unix time).
     private var scheduled: [String: Double] = [:]
+    /// The next sync removes every fixed anchor identifier it does not schedule, not only
+    /// the ones in `scheduled` (at launch, and after Silence or Raise).
+    private var needsFullReconcile = true
     private var viewers = 0
 
     private init() {
         let defaults = UserDefaults.standard
-        if let data = defaults.data(forKey: Self.storageKey),
-            let saved = try? JSONDecoder().decode(AnchorAlarm.self, from: data)
-        {
-            alarm = saved
-        } else {
-            alarm = AnchorAlarm()
-        }
+        alarm = Self.restored(from: defaults.data(forKey: Self.storageKey), at: Self.clock())
         let saved = defaults.double(forKey: Self.radiusKey)
         radius = AnchorAlarm.radiusRange.contains(saved) ? saved : AnchorAlarm.defaultRadius
         #if DEBUG
@@ -80,12 +87,29 @@ final class AnchorWatch {
         ) { _ in
             MainActor.assumeIsolated { AnchorWatch.shared.becameActive() }
         }
+        // Nothing an earlier process scheduled may fire on its own: the first sync removes
+        // every anchor identifier this state does not need (`needsFullReconcile`).
+        if !alarm.isArmed { syncNotifications() }
         // A saved anchor keeps being watched after a relaunch; a saved alarm sounds again
         // on the first tick.
         if alarm.isArmed {
+            save()
             startUpdates()
             refreshReadiness()
         }
+    }
+
+    /// The alarm's monotonic clock, s.
+    static func clock() -> Double { ProcessInfo.processInfo.systemUptime }
+
+    /// A saved alarm moved onto this process's clock: GPS counts as fresh from `now`, so a
+    /// relaunch never raises "no GPS" from a fix time saved long ago.
+    static func restored(from data: Data?, at now: Double) -> AnchorAlarm {
+        guard let data, var alarm = try? JSONDecoder().decode(AnchorAlarm.self, from: data) else {
+            return AnchorAlarm()
+        }
+        alarm.resume(at: now)
+        return alarm
     }
 
     var isArmed: Bool { alarm.isArmed }
@@ -95,7 +119,7 @@ final class AnchorWatch {
 
     /// Whether "drop anchor here" has usable fixes (≤ 25 m) from the last 10 s.
     var canSetAnchor: Bool {
-        AnchorAlarm.anchorPoint(from: recent, at: Date().timeIntervalSince1970) != nil
+        AnchorAlarm.anchorPoint(from: recent, at: Self.clock()) != nil
     }
 
     // MARK: - Screen lifetime
@@ -118,7 +142,7 @@ final class AnchorWatch {
     /// last 10 s. Returns false when there are none.
     @discardableResult
     func setAnchorHere() -> Bool {
-        let now = Date().timeIntervalSince1970
+        let now = Self.clock()
         guard let point = AnchorAlarm.anchorPoint(from: recent, at: now),
             alarm.set(latitude: point.latitude, longitude: point.longitude, radius: radius, at: now)
         else { return false }
@@ -135,19 +159,19 @@ final class AnchorWatch {
     }
 
     /// Acknowledges the alarm: quiet for a minute, then it sounds again if still outside.
-    func silence(at date: Date = Date()) {
-        alarm.silence(at: date.timeIntervalSince1970)
+    func silence() {
+        alarm.silence(at: Self.clock())
         lastAlert = nil
+        cancelAllNotifications()
         save()
-        UNUserNotificationCenter.current().removeAllDeliveredNotifications()
     }
 
     /// Raises the anchor: stops watching and, unless the screen is open, location.
     func raise() {
         alarm.clear()
         lastAlert = nil
+        cancelAllNotifications()
         save()
-        UNUserNotificationCenter.current().removeAllDeliveredNotifications()
         if viewers == 0 { stopUpdates() }
     }
 
@@ -165,10 +189,15 @@ final class AnchorWatch {
                 do {
                     for try await update in CLLocationUpdate.liveUpdates(.otherNavigation) {
                         if Task.isCancelled { break }
-                        guard let location = update.location, location.horizontalAccuracy >= 0 else { continue }
+                        guard let location = update.location, location.horizontalAccuracy >= 0,
+                            // A cached position from before the updates started is not
+                            // current. Both times follow the system clock together.
+                            location.timestamp.timeIntervalSinceNow > -60
+                        else { continue }
+                        // Stamped on arrival on the monotonic clock (see the type comment).
                         self?.ingest(
                             GPSFix(
-                                t: location.timestamp.timeIntervalSince1970, latitude: location.coordinate.latitude,
+                                t: AnchorWatch.clock(), latitude: location.coordinate.latitude,
                                 longitude: location.coordinate.longitude,
                                 horizontalAccuracy: location.horizontalAccuracy,
                                 speed: location.speed >= 0 ? location.speed : nil))
@@ -222,7 +251,7 @@ final class AnchorWatch {
     }
 
     private func tick() {
-        let now = Date().timeIntervalSince1970
+        let now = Self.clock()
         apply { $0.advance(to: now) }
         if alarm.state.isAlarming, lastAlert != nil, UIApplication.shared.applicationState == .active {
             // In the foreground the phone keeps buzzing until the alarm is silenced.
@@ -250,29 +279,43 @@ final class AnchorWatch {
             AudioServicesPlayAlertSound(SystemSoundID(1005))
         } else if isFirst, case .alarming(let reason) = alarm.state {
             // In the background the scheduled repeats take over from here.
-            post(id: "anchorAlarm.now", reason: reason, at: nil)
+            post(id: AnchorAlertSchedule.nowID, reason: reason, at: nil)
         }
     }
 
     /// Keeps exactly the notifications `AnchorAlertSchedule` asks for pending.
     private func syncNotifications() {
         guard !DemoFeed.isEnabled else { return }
-        let wanted = AnchorAlertSchedule.pending(for: alarm, now: Date().timeIntervalSince1970)
+        let wanted = AnchorAlertSchedule.pending(for: alarm, now: Self.clock())
         let wantedIDs = Set(wanted.map(\.id))
-        let stale = scheduled.keys.filter { !wantedIDs.contains($0) }
+        let candidates = needsFullReconcile ? AnchorAlertSchedule.allIDs : Array(scheduled.keys)
+        needsFullReconcile = false
+        let stale = candidates.filter { !wantedIDs.contains($0) }
         if !stale.isEmpty {
+            // Disjoint from what is added below, so the order of the two calls cannot matter;
+            // a wanted identifier is replaced in place by adding it again.
             UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: stale)
             for id in stale { scheduled[id] = nil }
         }
         for alert in wanted {
             if let current = scheduled[alert.id], abs(current - alert.fireAt) <= Self.rescheduleTolerance { continue }
-            post(id: alert.id, reason: alert.reason, at: alert.fireAt)
+            post(id: alert.id, reason: alert.reason, at: alert.fireAt, repeatsEvery: alert.repeatsEvery)
             scheduled[alert.id] = alert.fireAt
         }
     }
 
-    /// Posts a notification now (`at` nil) or schedules it; the same ID replaces it.
-    private func post(id: String, reason: AnchorAlarm.Reason, at fireAt: Double?) {
+    /// Clears delivered anchor notifications and makes the next sync (in `save`) cancel
+    /// every pending one it does not reschedule, including any an earlier process
+    /// scheduled: the identifiers are a fixed set.
+    private func cancelAllNotifications() {
+        UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: AnchorAlertSchedule.allIDs)
+        scheduled = [:]
+        needsFullReconcile = true
+    }
+
+    /// Posts a notification now (`at` nil) or schedules it, once or repeating; the same ID
+    /// replaces it. `fireAt` is on the alarm's clock.
+    private func post(id: String, reason: AnchorAlarm.Reason, at fireAt: Double?, repeatsEvery: Double? = nil) {
         guard !DemoFeed.isEnabled else { return }
         let content = UNMutableNotificationContent()
         switch reason {
@@ -290,9 +333,13 @@ final class AnchorWatch {
         }
         content.sound = .default
         content.interruptionLevel = .timeSensitive
-        let trigger = fireAt.map {
-            UNTimeIntervalNotificationTrigger(timeInterval: max(1, $0 - Date().timeIntervalSince1970), repeats: false)
-        }
+        let trigger: UNNotificationTrigger? =
+            if let repeatsEvery {
+                // Repeats from now; iOS requires at least 60 s.
+                UNTimeIntervalNotificationTrigger(timeInterval: max(60, repeatsEvery), repeats: true)
+            } else {
+                fireAt.map { UNTimeIntervalNotificationTrigger(timeInterval: max(1, $0 - Self.clock()), repeats: false) }
+            }
         UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: id, content: content, trigger: trigger))
     }
 
@@ -339,7 +386,7 @@ final class AnchorWatch {
         var step = 0
         while !Task.isCancelled {
             step += 1
-            let now = Date().timeIntervalSince1970
+            let now = Self.clock()
             var distance = Double(step % 5)  // 0–4 m of jitter around the origin
             if ProcessInfo.processInfo.arguments.contains("-demoAnchorDrift"), let setAt = alarm.anchor?.setAt {
                 distance += max(0, now - setAt - 5) * 1.5

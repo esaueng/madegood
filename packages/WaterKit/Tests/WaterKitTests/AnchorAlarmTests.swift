@@ -161,10 +161,11 @@ private func swing(_ t: Double) -> (distance: Double, bearing: Double) {
         #expect(alarm.state == .alarming(.dragging))
     }
 
-    @Test func inconclusiveFixesBreakTheStreak() {
+    @Test func separateExcursionsAreNotBridged() {
         // Radius 30 m, hacc 10 m: 35 m is inconclusive (35 − 10 < 30 but 35 > 30).
         // Review regression: 50 m (s 1–2), 35 m (s 3–20), 50 m (s 21) used to alarm by
-        // bridging two separate outside readings across the inconclusive ones.
+        // bridging two separate outside readings across the inconclusive ones. They
+        // are now more than the 15 s evidence window apart.
         var alarm = armed(radius: 30)
         var random = SeededRandom(state: 5)
         alarm.ingest(fix(t: 1, distance: 50, bearing: 0, hacc: 10, random: &random))
@@ -259,6 +260,72 @@ private func swing(_ t: Double) -> (distance: Double, bearing: Double) {
         #expect(single.latitude == fixes[5].latitude && single.longitude == fixes[5].longitude)
     }
 
+    @Test func oneInconclusiveFixPerWindowCannotHideADrag() {
+        // Re-check regression: 9 s at 45 m then one 39 m reading (inconclusive with
+        // 10 m accuracy), repeating, used to reset the evidence forever.
+        var alarm = armed(radius: 30)
+        var random = SeededRandom(state: 43)
+        var alarmAt: Double?
+        for second in 1...120 {
+            let distance = second.isMultiple(of: 10) ? 39.0 : 45.0
+            alarm.ingest(fix(t: Double(second), distance: distance, bearing: 0, hacc: 10, random: &random))
+            if alarm.state.isAlarming {
+                alarmAt = Double(second)
+                break
+            }
+        }
+        #expect(alarm.state == .alarming(.dragging))
+        #expect(alarmAt == 11)
+        // An inside fix still clears the evidence.
+        var cleared = armed(radius: 30)
+        for second in 1...9 {
+            cleared.ingest(fix(t: Double(second), distance: 45, bearing: 0, hacc: 10, random: &random))
+        }
+        cleared.ingest(fix(t: 10, distance: 25, bearing: 0, hacc: 10, random: &random))
+        cleared.ingest(fix(t: 11, distance: 45, bearing: 0, hacc: 10, random: &random))
+        #expect(cleared.state == .armed)
+    }
+
+    @Test func aRestoredAlarmGetsAGracePeriodOnTheNewClock() {
+        // Re-check regressions: a relaunch must not raise "no GPS" from a stale saved
+        // fix time, and saved times from another clock must not hide new fixes.
+        var alarm = armed(radius: 30, at: 50_000)
+        var random = SeededRandom(state: 47)
+        for second in 50_001...50_009 {
+            alarm.ingest(fix(t: Double(second), distance: 45, bearing: 0, random: &random))
+        }
+        alarm.silence(at: 50_009)
+        var restored = alarm
+        // The new process's uptime clock starts near zero.
+        restored.resume(at: 12)
+        #expect(restored.state == .armed)
+        #expect(restored.gpsLostDeadline == 132)
+        let early = restored.advance(to: 131)
+        #expect(!early)
+        // Fixes on the new clock are accepted although the old times were larger.
+        let changed = restored.ingest(fix(t: 13, distance: 5, bearing: 0, random: &random))
+        #expect(!changed)
+        #expect(restored.lastFixTime == 13)
+        // The old outside evidence and silence are gone: a fresh 10 s drag is needed.
+        for second in 14...23 {
+            restored.ingest(fix(t: Double(second), distance: 45, bearing: 0, random: &random))
+        }
+        #expect(restored.state == .armed)
+        restored.ingest(fix(t: 24, distance: 45, bearing: 0, random: &random))
+        #expect(restored.state == .alarming(.dragging))
+        // A restored alarm stays alarming, with its cadence from the new clock.
+        var sounding = restored
+        sounding.resume(at: 5)
+        #expect(sounding.state == .alarming(.dragging))
+        #expect(sounding.alarmingSince == 5)
+        // GPS lost after the grace period.
+        var quiet = alarm
+        quiet.resume(at: 0)
+        let lost = quiet.advance(to: 120)
+        #expect(lost)
+        #expect(quiet.state == .alarming(.gpsLost))
+    }
+
     @Test func anchorPointNeverUsesAnOldPosition() {
         // Review regression: a fresh but inaccurate fix must not let arming fall back to
         // a usable fix from 25 s ago, 100 m away.
@@ -308,14 +375,26 @@ private func swing(_ t: Double) -> (distance: Double, bearing: Double) {
             alarm.ingest(fix(t: Double(second), distance: 80, bearing: 0, random: &random))
         }
         let since = try #require(alarm.alarmingSince)
-        let repeats = AnchorAlertSchedule.pending(for: alarm, now: since + 45)
+        let pending = AnchorAlertSchedule.pending(for: alarm, now: since + 45)
+        let repeats = pending.filter { $0.repeatsEvery == nil }
         #expect(repeats.first?.fireAt == since + 60)
-        #expect(repeats.allSatisfy { $0.reason == .dragging && $0.id != AnchorAlertSchedule.gpsLostID })
+        #expect(pending.allSatisfy { $0.reason == .dragging && $0.id != AnchorAlertSchedule.gpsLostID })
         #expect(repeats.count == AnchorAlertSchedule.repeatCount)
+        #expect(Set(repeats.map(\.id)).count == AnchorAlertSchedule.repeatCount)
+        // Re-check regression: alerts must not run out while the app is suspended. A
+        // repeating notification stays pending for as long as the alarm sounds.
+        let forever = pending.filter { $0.repeatsEvery != nil }
+        #expect(forever.map(\.id) == [AnchorAlertSchedule.repeatingID])
+        #expect(forever.first?.repeatsEvery == 60)
         // Hours later (a restored alarm), repeats still lie ahead on the same cadence.
         let later = AnchorAlertSchedule.pending(for: alarm, now: since + 3600 + 5)
         #expect(later.first?.fireAt == since + 3630)
-        #expect(later.count == AnchorAlertSchedule.repeatCount)
+        #expect(later.filter { $0.repeatsEvery == nil }.count == AnchorAlertSchedule.repeatCount)
+        // Re-check regression: every identifier is from the fixed set, so a new process
+        // can cancel what an earlier one scheduled.
+        let all = Set(AnchorAlertSchedule.allIDs)
+        #expect((pending + later).allSatisfy { all.contains($0.id) })
+        #expect(all.contains(AnchorAlertSchedule.nowID))
         // Silenced: the dead-man's switch waits for the silence to end.
         alarm.silence(at: 70)
         #expect(alarm.gpsLostDeadline == 185)
