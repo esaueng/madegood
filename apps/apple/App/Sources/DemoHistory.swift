@@ -23,7 +23,12 @@ enum DemoHistory {
                 let speed = intoLeg < 12 ? 1.2 + intoLeg * 0.15 : 3.1 + 0.4 * sin(t / 37)
                 return (speed, leg.isMultiple(of: 2) ? 45 : 315)
             }
-            seed(id: "00000000-0000-4000-8000-00000000d002", sport: .kayak, start: now - 9 * day, minutes: 35) { t in
+            seed(
+                id: "00000000-0000-4000-8000-00000000d002", sport: .kayak, start: now - 9 * day, minutes: 35,
+                // Wrist motion for strokes: a little faster after the stop.
+                paddling: [.init(duration: 900, strokeRate: 66), .init(duration: 120, strokeRate: 0),
+                           .init(duration: 1_080, strokeRate: 72)]
+            ) { t in
                 // A steady paddle with a short stop in the middle.
                 let stopped = (900.0..<1_020).contains(t)
                 return (stopped ? 0 : 2.1 + 0.2 * sin(t / 23), 90 + 40 * sin(t / 600))
@@ -57,6 +62,7 @@ enum DemoHistory {
 
         private static func seed(
             id: String, sport: Sport, start: Double, minutes: Int, extraEvents: [SessionEvent] = [],
+            paddling: [PaddleMotionSimulator.Segment] = [],
             motion: (Double) -> (speed: Double, course: Double)
         ) {
             let sessionId = UUID(uuidString: id)!
@@ -86,8 +92,15 @@ enum DemoHistory {
                 clock: RawFormat.ClockAnchor(unix: start, uptime: 1_000),
                 device: RawFormat.Device(kind: "watch", model: "Demo", os: "watchOS"),
                 app: RawFormat.App(version: AppInfo.version, build: "demo"))
+            var wrist: [MotionSample] = []
+            if !paddling.isEmpty {
+                var simulator = PaddleMotionSimulator(sport: sport, segments: paddling)
+                simulator.sampleRate = 25
+                simulator.seed = 3
+                wrist = simulator.generate().samples.filter { $0.t >= 0 && $0.t <= duration }
+            }
             try? RawSessionWriter.write(
-                RawSession(meta: meta, gps: gps, hr: hr, events: events), to: folder)
+                RawSession(meta: meta, gps: gps, motion: wrist, hr: hr, events: events), to: folder)
         }
     #endif
 }

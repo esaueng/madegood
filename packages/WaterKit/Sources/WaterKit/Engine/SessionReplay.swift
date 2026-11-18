@@ -67,7 +67,7 @@ public struct SessionReplay: Sendable {
     /// Version of the analysis that produced `summary` and the generated events. Bump it
     /// when a metric definition in docs/metrics.md changes, so stored tracks can be
     /// re-analyzed.
-    public static let analyzerVersion = "1.0.0"
+    public static let analyzerVersion = "1.1.0"
 
     /// The session summary stored in track v1 (`summary`, docs/metrics.md "Session
     /// summary"). Values are SI; absent values are left out.
@@ -92,6 +92,8 @@ public struct SessionReplay: Sendable {
         for (key, value) in optional {
             if let value, value.isFinite { fields[key] = .number(value) }
         }
+        // Windsurfing only; the 2 s and 10 s categories are maxSpeed2s and maxSpeed10s.
+        for (key, value) in metrics.speedCategories?.summaryFields ?? [:] { fields[key] = .number(value) }
         return .object(fields)
     }
 

@@ -75,6 +75,8 @@ public struct LiveMetrics: Sendable, Hashable {
     public var acceptedFixes: Int
     public var rejectedFixes: Int
     public var isFinished: Bool
+    /// Speedsurfing categories, for sports whose profile tracks them (windsurfing).
+    public var speedCategories: SpeedCategories? = nil
 }
 
 /// The sport-independent live session engine: GPS cleaning, auto-pause, laps and the
@@ -139,9 +141,9 @@ public struct SessionEngine: LiveAnalyzer {
     }
     /// Recent accepted fixes with a speed, for the current and windowed speeds.
     private var recent: [GPSFix] = []
-    private typealias SpeedBest = (mean: Double, range: ClosedRange<Double>)
-    private var best2s: SpeedBest?
-    private var best10s: SpeedBest?
+    private typealias WindowBest = (mean: Double, range: ClosedRange<Double>)
+    private var best2s: WindowBest?
+    private var best10s: WindowBest?
     private var latestTime = 0.0
     private var heartRate: Double?
     private var heartRateSum = 0.0
@@ -157,10 +159,12 @@ public struct SessionEngine: LiveAnalyzer {
     /// next fix starts a new interval instead of closing that one.
     private var intervalBroken = false
     private var retainedSpanStart: Double?
+    private var categoryTracker: SpeedCategoryTracker?
 
     public init(profile: SportProfile, filter: GPSFilter.Config = GPSFilter.Config()) {
         self.profile = profile
         self.filter = GPSFilter(config: filter)
+        if profile.tracksSpeedCategories { categoryTracker = SpeedCategoryTracker() }
     }
 
     init(profile: SportProfile, recordsMovement: Bool) {
@@ -187,6 +191,7 @@ public struct SessionEngine: LiveAnalyzer {
         lastAccepted = nil
         course = nil
         recent.removeAll(keepingCapacity: true)
+        categoryTracker?.breakRun()
         intervalBroken = false
         mode = .moving
         slow = nil
@@ -222,7 +227,16 @@ public struct SessionEngine: LiveAnalyzer {
             heartRate: heartRate, heartRateAverage: heartRateCount > 0 ? heartRateSum / Double(heartRateCount) : nil,
             heartRateMax: heartRateMax,
             pauseState: pauseState, laps: laps, currentLap: lap(endingAt: latestTime, isAuto: false),
-            acceptedFixes: acceptedFixes, rejectedFixes: rejectedFixes, isFinished: finished)
+            acceptedFixes: acceptedFixes, rejectedFixes: rejectedFixes, isFinished: finished,
+            speedCategories: speedCategories)
+    }
+
+    private var speedCategories: SpeedCategories? {
+        guard var categories = categoryTracker?.categories else { return nil }
+        // The 2 s and 10 s categories are the session's max speeds, window for window.
+        categories.peak2s = best2s.map { SpeedBest(speed: $0.mean, range: $0.range) }
+        categories.best10s = best10s.map { SpeedBest(speed: $0.mean, range: $0.range) }
+        return categories
     }
 
     private var pauseState: LiveMetrics.PauseState {
@@ -273,6 +287,13 @@ public struct SessionEngine: LiveAnalyzer {
             dt: dt, step: step, speed: speed, underWay: (intervalSpeed ?? 0) >= Self.underWaySpeed, at: fix.t,
             intervalStart: startsInterval ? fix.t : (previous?.t ?? fix.t))
         updateSpeeds(fix, speed: speed)
+        if let speed {
+            categoryTracker?.ingest(
+                t: fix.t, speed: speed, latitude: fix.latitude, longitude: fix.longitude, isAnchor: accepted.isAnchor)
+        } else if accepted.isAnchor {
+            // The position jump still breaks alpha's start-to-end check.
+            categoryTracker?.noteAnchor(t: fix.t, latitude: fix.latitude, longitude: fix.longitude)
+        }
         // Auto-laps fall at whole multiples of the lap distance from the last manual lap,
         // so one lap's overshoot is not added to the next. The epsilon absorbs rounding
         // in the summed great-circle steps.

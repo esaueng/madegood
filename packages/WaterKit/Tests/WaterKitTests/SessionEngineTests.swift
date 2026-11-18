@@ -380,8 +380,8 @@ private func approx(_ a: Double?, _ b: Double, tolerance: Double = 0.01) -> Bool
         // The causal window ends at the last fix, with an interpolated start at 4 m/s.
         #expect(mean == 3.5)
         #expect(range == (0.5 * scale)...(2.5 * scale))
-        // The offline diagnostic can instead start at the first fix, averaging 4 m/s.
-        #expect((isShort ? offline.maxSpeed2s : offline.maxSpeed10s) == 4)
+        // waterkit-replay shows the same value as live and session detail.
+        #expect((isShort ? offline.maxSpeed2s : offline.maxSpeed10s) == mean)
     }
 
     @Test func storedAutoEventsAreRegeneratedNotReplayed() {
@@ -438,7 +438,7 @@ private func approx(_ a: Double?, _ b: Double, tolerance: Double = 0.01) -> Bool
         if case .array(let laps) = summary["laps"] { #expect(laps.count == 2) } else { Issue.record("no laps") }
         let decoded = try TrackCodec.decode(TrackCodec.encode(analyzed))
         #expect(decoded.summary == analyzed.summary)
-        #expect(decoded.analyzerVersion == "1.0.0")
+        #expect(decoded.analyzerVersion == "1.1.0")
         #expect(decoded.events.map(\.type) == analyzed.events.map(\.type))
     }
 }

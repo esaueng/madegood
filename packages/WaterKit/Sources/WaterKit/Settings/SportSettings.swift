@@ -29,12 +29,14 @@ public struct SportSettings: Sendable, Hashable {
     public var idleFuelBurnRate: Double?
     /// The unit fuel is shown and entered in.
     public var fuelUnit: VolumeUnit
+    /// What the Apple Watch Ultra's Action button does while this sport is recording.
+    public var actionButton: ActionButtonAction
 
     public init(
         speedUnit: SpeedUnit? = nil, distanceUnit: DistanceUnit? = nil, firstScreen: LiveScreen = .speed,
         autoPause: Bool, savesWorkout: Bool, distanceAlert: Double? = nil, countdownMinutes: Int = 0,
         isHidden: Bool = false, fuelBurnRate: Double? = nil, idleFuelBurnRate: Double? = nil,
-        fuelUnit: VolumeUnit = .litres
+        fuelUnit: VolumeUnit = .litres, actionButton: ActionButtonAction = .lap
     ) {
         self.speedUnit = speedUnit
         self.distanceUnit = distanceUnit
@@ -47,6 +49,7 @@ public struct SportSettings: Sendable, Hashable {
         self.fuelBurnRate = fuelBurnRate
         self.idleFuelBurnRate = idleFuelBurnRate
         self.fuelUnit = fuelUnit
+        self.actionButton = actionButton
     }
 
     /// The defaults: automatic units, speed first, no alerts or countdown, and auto-pause
@@ -91,6 +94,41 @@ public struct SportSettings: Sendable, Hashable {
     }
 }
 
+/// What a press of the Apple Watch Ultra's Action button does while a session records.
+/// The first press starts the session; this is every press after that.
+public enum ActionButtonAction: String, Sendable, Hashable, Codable, CaseIterable {
+    case lap
+    case mark
+    case manOverboard
+}
+
+/// What one Action button press does, given the session's state.
+public enum ActionButtonPress: Equatable, Sendable {
+    /// Rounds a sailing countdown to the nearest minute.
+    case syncCountdown
+    /// Ends a countdown that cannot sync and starts recording now.
+    case startNow
+    case lap
+    case mark
+    case manOverboard
+    /// No session is counting down or recording.
+    case ignore
+
+    /// During a countdown the press works the countdown; while recording it runs the
+    /// sport's chosen action, even while paused (a lap or MOB is never lost to a pause).
+    public static func resolve(
+        countingDown: Bool, canSync: Bool, isRecording: Bool, action: ActionButtonAction
+    ) -> ActionButtonPress {
+        if countingDown { return canSync ? .syncCountdown : .startNow }
+        guard isRecording else { return .ignore }
+        switch action {
+        case .lap: return .lap
+        case .mark: return .mark
+        case .manOverboard: return .manOverboard
+        }
+    }
+}
+
 /// The first page of a live session.
 public enum LiveScreen: String, Sendable, Hashable, Codable, CaseIterable {
     case speed
@@ -130,6 +168,7 @@ extension SportSettings {
         public static func fuelBurn(_ sport: Sport) -> String { "settings.fuelBurn.\(sport.rawValue)" }
         public static func fuelIdleBurn(_ sport: Sport) -> String { "settings.fuelIdleBurn.\(sport.rawValue)" }
         public static func fuelUnit(_ sport: Sport) -> String { "settings.fuelUnit.\(sport.rawValue)" }
+        public static func actionButton(_ sport: Sport) -> String { "settings.actionButton.\(sport.rawValue)" }
 
         /// Units for every sport, before units became per sport.
         public static let legacySpeedUnit = "settings.speedUnit"
@@ -140,7 +179,7 @@ extension SportSettings {
             [
                 speedUnit(sport), distanceUnit(sport), firstScreen(sport), autoPause(sport), saveWorkout(sport),
                 distanceAlert(sport), countdown(sport), hidden(sport), fuelBurn(sport), fuelIdleBurn(sport),
-                fuelUnit(sport),
+                fuelUnit(sport), actionButton(sport),
             ]
         }
 
@@ -169,6 +208,9 @@ extension SportSettings {
             countdownMinutes = Int(minutes)
         }
         if let hidden = Self.bool(value(Key.hidden(sport))) { isHidden = hidden }
+        if let raw = value(Key.actionButton(sport)) as? String, let action = ActionButtonAction(rawValue: raw) {
+            actionButton = action
+        }
         fuelBurnRate = Self.burnRate(value(Key.fuelBurn(sport)))
         idleFuelBurnRate = Self.burnRate(value(Key.fuelIdleBurn(sport)), allowZero: true)
         if let raw = value(Key.fuelUnit(sport)) as? String, let unit = VolumeUnit(rawValue: raw) { fuelUnit = unit }
@@ -195,6 +237,7 @@ extension SportSettings {
         set(Key.fuelBurn(sport), fuelBurnRate)
         set(Key.fuelIdleBurn(sport), idleFuelBurnRate)
         set(Key.fuelUnit(sport), fuelUnit == standard.fuelUnit ? nil : fuelUnit.rawValue)
+        set(Key.actionButton(sport), actionButton == standard.actionButton ? nil : actionButton.rawValue)
     }
 
     /// Moves units chosen before they were per sport onto every sport that has no unit of

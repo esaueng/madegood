@@ -17,6 +17,7 @@ struct WatchContentView: View {
         let id = UUID()
         let sport: Sport
         let metrics: LiveMetrics
+        var strokes: StrokeDetector.Metrics?
         var savedToHealth = false
     }
 
@@ -47,13 +48,25 @@ struct WatchContentView: View {
                 }
             }
         }
+        #if DEBUG
+            // UI tests can't press the Action button: `-uiTestActionButton` adds a stand-in.
+            .overlay(alignment: .topLeading) {
+                if UserDefaults.standard.bool(forKey: "uiTestActionButton") {
+                    Button("Action") { SessionController.shared.actionButtonPressed() }
+                        .accessibilityIdentifier("debug.actionButton")
+                        .font(.caption2)
+                        .buttonStyle(.plain)
+                }
+            }
+        #endif
         .sheet(item: $summary) { summary in
             SummaryView(summary: summary)
         }
         .onAppear {
             controller.onFinish = { sport, metrics, folder in
                 if let metrics {
-                    summary = Summary(sport: sport, metrics: metrics, savedToHealth: recorder.savedToHealth)
+                    summary = Summary(
+                        sport: sport, metrics: metrics, strokes: recorder.strokes, savedToHealth: recorder.savedToHealth)
                 }
                 RecordingTransfer.shared.send(folder: folder)
                 reload()
@@ -378,7 +391,7 @@ private struct SessionPages: View {
     @State private var banner: SessionRecorder.DistanceAlertEvent?
     private let hero: LiveScreen
 
-    enum Page { case manOverboard, controls, metrics, map }
+    enum Page { case manOverboard, controls, metrics, strokes, speed, map }
 
     init(recorder: SessionRecorder, startedAt: Date, sport: Sport) {
         self.recorder = recorder
@@ -397,6 +410,12 @@ private struct SessionPages: View {
             }
             ControlsPage(recorder: recorder) { page = .manOverboard }.tag(Page.controls)
             MetricsPage(recorder: recorder, startedAt: startedAt, sport: sport, hero: hero).tag(Page.metrics)
+            if sport.isPaddling {
+                StrokesPage(recorder: recorder, startedAt: startedAt, sport: sport).tag(Page.strokes)
+            }
+            if UserSettings.profile(for: sport).tracksSpeedCategories {
+                SpeedPage(recorder: recorder, sport: sport).tag(Page.speed)
+            }
             MapPage(points: recorder.trackPoints, manOverboard: manOverboard.mark).tag(Page.map)
         }
         .tabViewStyle(.verticalPage)
@@ -408,6 +427,12 @@ private struct SessionPages: View {
             }
         }
         .animation(.snappy, value: banner)
+        // A new mark from anywhere (the controls or the Action button), including one that
+        // replaces an earlier mark, shows the way back.
+        .onChange(of: manOverboard.mark) { old, new in
+            // Wait a turn: the page only exists once the mark has redrawn the pages.
+            if let new, new != old { Task { @MainActor in page = .manOverboard } }
+        }
         .onChange(of: recorder.distanceAlert) { _, alert in
             guard let alert else { return }
             Haptics.play(.distanceAlert)
@@ -485,6 +510,96 @@ private struct MetricsPage: View {
         case .time: time
         case .heartRate: LiveDisplay.heartRate(metrics?.heartRate)
         }
+    }
+}
+
+/// The paddling sport page (PLAN §6): stroke rate large, then strokes and distance per stroke.
+private struct StrokesPage: View {
+    let recorder: SessionRecorder
+    let startedAt: Date
+    let sport: Sport
+    @Environment(\.isLuminanceReduced) private var isLuminanceReduced
+
+    var body: some View {
+        let display = UserSettings.display(for: sport)
+        let metrics = recorder.metrics
+        let strokes = recorder.strokes
+        TimelineView(.periodic(from: startedAt, by: isLuminanceReduced ? 60 : 1)) { context in
+            let elapsed = context.date.timeIntervalSince(startedAt)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack {
+                    SportIcon(sport: sport, size: 18, labeled: true)
+                    Spacer()
+                    Text(isLuminanceReduced ? Formatting.duration(elapsed) : Formatting.elapsed(elapsed))
+                        .monospacedDigit()
+                }
+                .font(.footnote)
+                HStack(alignment: .firstTextBaseline, spacing: 4) {
+                    Text(strokes?.strokeRate.map { "\(Int($0.rounded()))" } ?? "–")
+                        .font(.system(size: 40, weight: .semibold, design: .rounded).monospacedDigit())
+                        .minimumScaleFactor(0.6)
+                        .lineLimit(1)
+                    Text("spm").font(.footnote).foregroundStyle(.secondary)
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("Stroke rate")
+                .accessibilityValue(strokes?.strokeRate.map { "\(Int($0.rounded())) strokes per minute" } ?? "Unavailable")
+                .accessibilityIdentifier("metric.strokeRate")
+                Field(label: "Strokes", value: LiveDisplay.strokeCount(strokes?.strokeCount))
+                Field(
+                    label: "Per stroke",
+                    value: display.distancePerStroke(distance: metrics?.distance ?? 0, strokes: strokes?.strokeCount))
+                if !isLuminanceReduced {
+                    Field(label: "Speed", value: display.speed(metrics?.speed))
+                    if let switches = strokes?.sideSwitches, sport != .kayak {
+                        Field(label: "Switches", value: "\(switches)")
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
+/// Windsurfing: the speedsurfing categories (docs/metrics.md), two columns so all eight
+/// fit without scrolling, which would fight the vertical page swipes.
+private struct SpeedPage: View {
+    let recorder: SessionRecorder
+    let sport: Sport
+    @Environment(\.isLuminanceReduced) private var isLuminanceReduced
+
+    var body: some View {
+        let display = UserSettings.display(for: sport)
+        let categories = recorder.metrics?.speedCategories ?? SpeedCategories()
+        let rows = SpeedCategoryReadings(categories).rows
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Speed bests")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(Theme.brightTeal)
+                .accessibilityIdentifier("page.speed")
+            ForEach(0..<(rows.count + 1) / 2, id: \.self) { line in
+                HStack(alignment: .top, spacing: 8) {
+                    ForEach(rows[(line * 2)..<min(rows.count, line * 2 + 2)]) { row in
+                        VStack(alignment: .leading, spacing: -2) {
+                            Text(row.shortTitle)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                            Text(display.speed(row.value))
+                                .font(.system(size: 22, weight: .semibold, design: .rounded).monospacedDigit())
+                                .foregroundStyle(isLuminanceReduced ? .secondary : .primary)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.7)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel(row.title)
+                        .accessibilityValue(display.speed(row.value))
+                        .accessibilityIdentifier(row.id)
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }
 
@@ -673,6 +788,22 @@ private struct SummaryView: View {
                 Field(label: "Max 10 s", value: display.speed(metrics.maxSpeed10s))
                 Field(label: "Max 2 s", value: display.speed(metrics.maxSpeed2s))
                 Field(label: "Avg HR", value: LiveDisplay.heartRate(metrics.heartRateAverage))
+                if let strokes = summary.strokes {
+                    Field(label: "Strokes", value: LiveDisplay.strokeCount(strokes.strokeCount))
+                    Field(
+                        label: "Per stroke",
+                        value: display.distancePerStroke(distance: metrics.distance, strokes: strokes.strokeCount))
+                }
+                if let categories = metrics.speedCategories {
+                    Text("Speed bests")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(Theme.brightTeal)
+                        .padding(.top, 4)
+                    // The 2 s and 10 s bests are the max speeds above.
+                    ForEach(SpeedCategoryReadings(categories).rows.dropFirst(2)) { row in
+                        Field(label: row.title, value: display.speed(row.value))
+                    }
+                }
                 if !metrics.laps.isEmpty {
                     Field(label: "Laps", value: "\(metrics.laps.count + 1)")
                 }

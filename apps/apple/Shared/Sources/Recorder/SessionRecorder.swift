@@ -43,6 +43,9 @@ final class SessionRecorder {
     private(set) var counts = Counts()
     /// Live metrics while recording; after a stop, the final values for the summary.
     private(set) var metrics: LiveMetrics?
+    /// Live paddle strokes for kayak, canoe and SUP (nil for other sports), updated about
+    /// once a second; after a stop, the final values.
+    private(set) var strokes: StrokeDetector.Metrics?
     /// Whether the last session's workout was saved to Apple Health.
     private(set) var savedToHealth = false
     /// Accepted positions for the live map, oldest first.
@@ -78,6 +81,7 @@ final class SessionRecorder {
     private var startupInterruption: (message: String, source: WorkoutSource, generation: Int)?
     private var clockObserver: (any NSObjectProtocol)?
     private var engine: SessionEngine?
+    private var liveStrokes: LiveStrokes?
     private var liveSport: Sport?
     #if os(iOS)
         private let liveActivity = SessionActivityController()
@@ -109,24 +113,31 @@ final class SessionRecorder {
     /// keeps the watch app running (and its countdown haptics on time) with the wrist
     /// down. `start` begins this session; `cancelPrepared` ends it. Returns this
     /// preparation's ID for `cancelPrepared(_:)`, or nil if it did nothing.
+    /// `startWorkout` also starts the session's activity now (an Action button press must
+    /// start a workout within 30 s); data is still collected only from `start`.
     @discardableResult
-    func prepare(sport: Sport) async -> UUID? {
+    func prepare(sport: Sport, startWorkout: Bool = false) async -> UUID? {
         guard state == .idle, WorkoutSource.isAvailable, !DemoFeed.isEnabled else { return nil }
         cancelPrepared()
         let id = UUID()
         prepareID = id
-        // Asks for Health access before the start, so the prompt never delays it.
-        try? await WorkoutSource.requestAuthorization(store: healthStore)
-        guard prepareID == id, state == .idle else { return nil }
+        if !startWorkout {
+            // Asks for Health access before the start, so the prompt never delays it.
+            try? await WorkoutSource.requestAuthorization(store: healthStore)
+            guard prepareID == id, state == .idle else { return nil }
+        }
         prepareID = nil
         let workout = makeWorkout()
         do {
-            try workout.prepare(sport: sport)
+            try workout.prepare(sport: sport, startActivity: startWorkout)
             prepared = (id, sport, workout)
         } catch {
             // Not fatal: `start` creates the session itself.
             print("SessionRecorder: preparing the workout failed: \(error)")
         }
+        // The Action button needs the workout running first: a permission prompt (say, for
+        // a type a later version adds) must not hold it past Apple's 30 s.
+        if startWorkout { try? await WorkoutSource.requestAuthorization(store: healthStore) }
         return id
     }
 
@@ -217,6 +228,9 @@ final class SessionRecorder {
         startUnix = anchor.unix
         writtenGeneratedEvents = 0
         metrics = engine?.snapshot
+        let liveStrokes = sport.isPaddling ? LiveStrokes(sport: sport, startUptime: anchor.uptime) : nil
+        self.liveStrokes = liveStrokes
+        strokes = liveStrokes?.snapshot()
         trackPoints = []
         distanceAlert = nil
         let settings = UserSettings.settings(for: sport)
@@ -263,7 +277,7 @@ final class SessionRecorder {
         #endif
 
         if demo {
-            startDemoFeed(session: sessionId)
+            startDemoFeed(session: sessionId, sport: sport, startUptime: anchor.uptime)
         } else if let writer = writers[.gps] {
             let location = LocationSource(writer: writer) { [weak self] line in
                 Task { @MainActor in self?.ingestFix(line, session: sessionId) }
@@ -272,7 +286,7 @@ final class SessionRecorder {
             self.location = location
         }
         if !demo, let writer = writers[.motion] {
-            let motion = MotionSource(writer: writer)
+            let motion = MotionSource(writer: writer) { [liveStrokes] line in liveStrokes?.ingest(line) }
             motion.start(rate: Self.motionRate)
             self.motion = motion
         }
@@ -330,13 +344,15 @@ final class SessionRecorder {
 
         private func mirrorReadings(for sessionID: UUID) -> LiveReadings? {
             guard liveSession == sessionID, isRecording, let metrics else { return nil }
-            return LiveReadings(metrics)
+            return LiveReadings(metrics, strokes: strokes)
         }
     #endif
 
     /// Undoes a start that cannot continue: nothing has been recorded yet.
     private func abandonStart(folder: URL) {
         engine = nil
+        liveStrokes = nil
+        strokes = nil
         liveSession = nil
         metrics = nil
         writers = [:]
@@ -377,8 +393,10 @@ final class SessionRecorder {
 
     /// Marks man-overboard (PLAN §5) at the latest position in `ManOverboard`, and
     /// records a `mob` event with that position and how old it was.
-    func markManOverboard() {
-        guard isRecording else { return }
+    /// Returns whether a position was marked (false before the first fix).
+    @discardableResult
+    func markManOverboard() -> Bool {
+        guard isRecording else { return false }
         let now = Date()
         let mark = ManOverboard.shared.markNow(at: now)
         var data: [String: JSONValue]?
@@ -390,6 +408,7 @@ final class SessionRecorder {
         }
         writers[.events]?.append(RawFormat.EventLine(ts: now.timeIntervalSince1970, type: .mob, data: data))
         ingest(.event(SessionEvent(t: now.timeIntervalSince1970 - startUnix, type: .mob, data: data)))
+        return mark != nil
     }
 
     func pause() { userEvent(.pause) }
@@ -408,6 +427,7 @@ final class SessionRecorder {
         let now = Date().timeIntervalSince1970
         writers[.events]?.append(RawFormat.EventLine(ts: now, type: type))
         ingest(.event(SessionEvent(t: now - startUnix, type: type)))
+        if type == .pause || type == .resume { liveStrokes?.userEvent(type) }
     }
 
     // MARK: Live analysis
@@ -466,9 +486,11 @@ final class SessionRecorder {
     /// no sensor is reporting.
     private func tick() {
         guard isRecording, var engine else { return }
-        engine.advance(to: Date().timeIntervalSince1970 - startUnix)
+        let now = Date().timeIntervalSince1970 - startUnix
+        engine.advance(to: now)
         self.engine = engine
         metrics = engine.snapshot
+        if let liveStrokes { strokes = liveStrokes.snapshot() }
         #if os(iOS)
             if let liveSport { liveActivity.update(metrics, sport: liveSport) }
         #endif
@@ -491,18 +513,28 @@ final class SessionRecorder {
         }
     }
 
-    /// Feeds the synthetic route through the same path as real sensors (see `DemoFeed`).
-    private func startDemoFeed(session: UUID) {
+    /// Feeds the synthetic route through the same path as real sensors (see `DemoFeed`),
+    /// with synthetic wrist motion for paddling sports.
+    private func startDemoFeed(session: UUID, sport: Sport, startUptime: Double) {
         loops.append(
             Task { [weak self] in
+                var motionUntil = 0.0
                 while !Task.isCancelled {
                     try? await Task.sleep(for: .seconds(1))
                     guard let self, self.isRecording else { return }
                     let now = Date().timeIntervalSince1970
-                    let fix = DemoFeed.fix(at: now, startUnix: self.startUnix)
+                    let fix = DemoFeed.fix(at: now, startUnix: self.startUnix, sport: sport)
                     let hr = DemoFeed.heartRate(at: now, startUnix: self.startUnix)
                     self.writers[.gps]?.append(fix)
                     self.writers[.hr]?.append(hr)
+                    if sport.isPaddling {
+                        let elapsed = now - self.startUnix
+                        for line in DemoFeed.motion(sport: sport, from: motionUntil, to: elapsed, startUptime: startUptime) {
+                            self.writers[.motion]?.append(line)
+                            self.liveStrokes?.ingest(line)
+                        }
+                        motionUntil = elapsed
+                    }
                     self.ingestFix(fix, session: session)
                     self.ingestHeartRate(hr, session: session)
                 }
@@ -583,6 +615,7 @@ final class SessionRecorder {
         serviceSession = nil
 
         ingest(.event(SessionEvent(t: endedAt.timeIntervalSince1970 - startUnix, type: .stop)))
+        if let liveStrokes { strokes = liveStrokes.snapshot() }
         writers[.events]?.append(RawFormat.EventLine(ts: endedAt.timeIntervalSince1970, type: .stop))
         #if os(iOS)
             if let liveSport { liveActivity.end(metrics, sport: liveSport) }
@@ -614,6 +647,7 @@ final class SessionRecorder {
         workout = nil
         self.writers = [:]
         engine = nil
+        liveStrokes = nil
         liveSession = nil
         distanceAlertTracker = nil
         distanceAlert = nil

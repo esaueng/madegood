@@ -13,6 +13,11 @@ public struct RawSession: Sendable {
     public var clockAnchors: [RawFormat.ClockAnchor]
     /// Problems found while reading that did not stop the read (e.g. a truncated last line).
     public var issues: [RawReadIssue]
+    /// The user's pause and resume events (not auto-pause) in recorded order, timed on the
+    /// motion sensor's uptime clock: seconds of device uptime since `meta.clock`. A
+    /// wall-clock correction can reorder `events`; it cannot reorder these. Nil when the
+    /// session was not read from files.
+    public var pauseEventsOnUptime: [SessionEvent]?
 
     public init(
         meta: RawFormat.Meta, gps: [GPSFix] = [], motion: [MotionSample] = [], hr: [HRSample] = [],

@@ -491,7 +491,7 @@ private struct LiveView: View {
 
     var body: some View {
         let display = UserSettings.display(for: sport)
-        let readings = watchWorkout?.readings ?? LiveReadings(recorder?.metrics)
+        let readings = watchWorkout?.readings ?? LiveReadings(recorder?.metrics, strokes: recorder?.strokes)
         ScrollView {
             VStack(spacing: 16) {
                 if let watchWorkout {
@@ -606,6 +606,15 @@ private struct LiveView: View {
                 primaryMetric(primary)
             }
             supportingMetrics(Array(supporting.prefix(3)))
+            if sport.isPaddling {
+                // The paddling sport page (PLAN §6): strokes on their own card.
+                supportingMetrics(strokeMetrics(display: display, readings: readings))
+                    .accessibilityElement(children: .contain)
+                    .accessibilityIdentifier("card.strokes")
+            }
+            if let categories = readings.speedCategories {
+                speedBests(categories, display: display)
+            }
             DisclosureGroup("More metrics") {
                 VStack(spacing: 12) {
                     ForEach(supporting.dropFirst(3)) { metric in
@@ -631,6 +640,17 @@ private struct LiveView: View {
             LiveMetric(id: "metric.moving", title: "Moving time", text: Formatting.elapsed(readings.movingTime)),
             LiveMetric(id: "metric.average", title: "Average speed", text: display.speed(readings.averageSpeed)),
             LiveMetric(id: "metric.max", title: "Max speed (10 s)", text: display.speed(readings.maxSpeed10s)),
+        ]
+    }
+
+    private func strokeMetrics(display: LiveDisplay, readings: LiveReadings) -> [LiveMetric] {
+        [
+            LiveMetric(
+                id: "metric.strokeRate", title: "Stroke rate", text: LiveDisplay.strokeRate(readings.strokeRate)),
+            LiveMetric(id: "metric.strokes", title: "Strokes", text: LiveDisplay.strokeCount(readings.strokeCount)),
+            LiveMetric(
+                id: "metric.distancePerStroke", title: "Per stroke",
+                text: display.distancePerStroke(distance: readings.distance, strokes: readings.strokeCount)),
         ]
     }
 
@@ -665,6 +685,30 @@ private struct LiveView: View {
         }
         .padding(12)
         .background(.background.secondary, in: .rect(cornerRadius: 12))
+    }
+
+    /// Windsurfing: the speedsurfing categories (docs/metrics.md), two to a row.
+    private func speedBests(_ categories: SpeedCategoryReadings, display: LiveDisplay) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Speed bests")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.secondary)
+            let column = GridItem(.flexible(), alignment: .leading)
+            LazyVGrid(columns: [column, column], alignment: .leading, spacing: 12) {
+                ForEach(categories.rows) { row in
+                    let metric = LiveMetric(id: row.id, title: row.title, text: display.speed(row.value))
+                    VStack(alignment: .leading, spacing: 2) {
+                        metric.caption.font(.caption)
+                        metric.reading(numberFont: .title3.weight(.semibold), unitFont: .footnote)
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(.background.secondary, in: .rect(cornerRadius: 12))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("live.speedBests")
     }
 
     private func metricRow(_ metric: LiveMetric) -> some View {
@@ -731,6 +775,8 @@ private struct LiveMetric: Identifiable {
         case "nm": "\(number) nautical miles"
         case "mi": "\(number) miles"
         case "bpm": "\(number) beats per minute"
+        case "spm": "\(number) strokes per minute"
+        case "ft": "\(number) feet"
         case "°": "\(number) degrees true"
         default: text == "–" ? "Unavailable" : text
         }
