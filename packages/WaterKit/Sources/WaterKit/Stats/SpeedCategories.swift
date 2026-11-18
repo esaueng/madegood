@@ -119,10 +119,19 @@ public struct SpeedCategoryTracker: Sendable {
     private var d: [Double] = []
     private var lat: [Double] = []
     private var lon: [Double] = []
-    /// Index of the last position anchor in the run; alpha starts may not precede it.
-    private var anchor = 0
-    /// An anchor fix without a speed: the next fix in the run takes its place.
-    private var pendingAnchor = false
+    /// A fix the GPS filter accepted after a position jump. Alpha starts may not precede
+    /// it; a start between it and the next fix is interpolated from its position.
+    private struct Anchor: Sendable {
+        let t: Double
+        let latitude: Double
+        let longitude: Double
+    }
+
+    private var anchor: Anchor?
+    /// An anchor without a Doppler speed, until the next fix places it in the run.
+    private var pendingAnchor: Anchor?
+    /// Spans that meet within this much are touching, not overlapping, s.
+    static let touchTolerance = 1e-6
     /// A category over a fixed distance (m) or time (s), and its best so far.
     private struct Span: Sendable {
         let length: Double
@@ -154,8 +163,8 @@ public struct SpeedCategoryTracker: Sendable {
         d.removeAll(keepingCapacity: true)
         lat.removeAll(keepingCapacity: true)
         lon.removeAll(keepingCapacity: true)
-        anchor = 0
-        pendingAnchor = false
+        anchor = nil
+        pendingAnchor = nil
         best100m.pointer = -1
         best500m.pointer = -1
         nauticalMile.pointer = -1
@@ -163,10 +172,11 @@ public struct SpeedCategoryTracker: Sendable {
         hour.pointer = -1
     }
 
-    /// Mark an accepted anchor fix that has no Doppler speed: alpha may not start before
-    /// the next fix with one.
-    public mutating func noteAnchor() {
-        pendingAnchor = true
+    /// Mark an accepted anchor fix that has no Doppler speed. Alpha may start at it, but
+    /// not before it.
+    public mutating func noteAnchor(t time: Double, latitude: Double, longitude: Double) {
+        guard time.isFinite, latitude.isFinite, longitude.isFinite else { return }
+        pendingAnchor = Anchor(t: time, latitude: latitude, longitude: longitude)
     }
 
     /// Add an accepted fix with a Doppler speed. `isAnchor` marks a fix the GPS filter
@@ -189,8 +199,16 @@ public struct SpeedCategoryTracker: Sendable {
         lat.append(latitude)
         lon.append(longitude)
         let n = t.count - 1
-        if isAnchor || pendingAnchor { anchor = n }
-        pendingAnchor = false
+        if isAnchor {
+            anchor = Anchor(t: time, latitude: latitude, longitude: longitude)
+        } else if let pending = pendingAnchor, n > 0, pending.t > t[n - 1], pending.t < time {
+            // Speed is still interpolated across it; only its position starts afresh.
+            anchor = pending
+        } else if pendingAnchor != nil {
+            // The anchor began this run (a gap broke it), so the run is already clean.
+            anchor = nil
+        }
+        pendingAnchor = nil
 
         best100m = updatedDistance(best100m)
         best500m = updatedDistance(best500m)
@@ -266,19 +284,27 @@ public struct SpeedCategoryTracker: Sendable {
 
     private mutating func updateAlpha() {
         let p500 = best500m.pointer
-        guard p500 >= anchor, let end = t.last else { return }
+        guard p500 >= 0, let end = t.last else { return }
         let target = d[t.count - 1] - Self.distances.medium
         guard target >= d[p500] else { return }
-        let start = time(in: p500, reaching: target)
+        var start = time(in: p500, reaching: target)
         guard end > start else { return }
         // Interpolate the start position along the segment; at these distances a straight
-        // line between two fixes is well inside GPS noise.
-        let f = (start - t[p500]) / (t[p500 + 1] - t[p500])
-        let startLat = lat[p500] + (lat[p500 + 1] - lat[p500]) * f
+        // line between two fixes is well inside GPS noise. An anchor inside the segment
+        // replaces the position before the jump.
+        var from = (t: t[p500], lat: lat[p500], lon: lon[p500])
+        if let anchor {
+            guard start >= anchor.t - Self.touchTolerance else { return }
+            start = max(start, anchor.t)
+            if anchor.t > from.t { from = (anchor.t, anchor.latitude, anchor.longitude) }
+        }
+        let next = (t: t[p500 + 1], lat: lat[p500 + 1], lon: lon[p500 + 1])
+        let f = next.t > from.t ? (start - from.t) / (next.t - from.t) : 0
+        let startLat = from.lat + (next.lat - from.lat) * f
         // Across the antimeridian, interpolate the short way round.
-        var dLon = lon[p500 + 1] - lon[p500]
+        var dLon = next.lon - from.lon
         if dLon > 180 { dLon -= 360 } else if dLon < -180 { dLon += 360 }
-        let startLon = lon[p500] + dLon * f
+        let startLon = from.lon + dLon * f
         let gap = Geo.distance(lat1: startLat, lon1: startLon, lat2: lat[t.count - 1], lon2: lon[t.count - 1])
         guard gap <= Self.alphaRadius else { return }
         let speed = Self.distances.medium / (end - start)
@@ -305,7 +331,7 @@ public struct SpeedCategoryTracker: Sendable {
     /// plus it. Windows end in time order, so those that can no longer overlap a future
     /// window move from `recent` into `settled`. Ties keep the earlier choice.
     private mutating func addWindow(mean: Double, range: ClosedRange<Double>) {
-        while recentStart < recent.count, recent[recentStart].end <= range.lowerBound {
+        while recentStart < recent.count, recent[recentStart].end <= range.lowerBound + Self.touchTolerance {
             settled = recent[recentStart].best
             recentStart += 1
         }
@@ -337,7 +363,6 @@ public struct SpeedCategoryTracker: Sendable {
         d.removeFirst(keep)
         lat.removeFirst(keep)
         lon.removeFirst(keep)
-        anchor = max(0, anchor - keep)
         best100m.pointer -= keep
         best500m.pointer -= keep
         nauticalMile.pointer -= keep

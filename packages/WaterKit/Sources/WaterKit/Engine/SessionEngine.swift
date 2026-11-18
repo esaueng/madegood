@@ -273,7 +273,7 @@ public struct SessionEngine: LiveAnalyzer {
                 t: fix.t, speed: speed, latitude: fix.latitude, longitude: fix.longitude, isAnchor: accepted.isAnchor)
         } else if accepted.isAnchor {
             // The position jump still breaks alpha's start-to-end check.
-            categoryTracker?.noteAnchor()
+            categoryTracker?.noteAnchor(t: fix.t, latitude: fix.latitude, longitude: fix.longitude)
         }
         // Auto-laps fall at whole multiples of the lap distance from the last manual lap,
         // so one lap's overshoot is not added to the next. The epsilon absorbs rounding

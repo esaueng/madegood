@@ -380,8 +380,8 @@ private func approx(_ a: Double?, _ b: Double, tolerance: Double = 0.01) -> Bool
         // The causal window ends at the last fix, with an interpolated start at 4 m/s.
         #expect(mean == 3.5)
         #expect(range == (0.5 * scale)...(2.5 * scale))
-        // The offline diagnostic can instead start at the first fix, averaging 4 m/s.
-        #expect((isShort ? offline.maxSpeed2s : offline.maxSpeed10s) == 4)
+        // waterkit-replay shows the same value as live and session detail.
+        #expect((isShort ? offline.maxSpeed2s : offline.maxSpeed10s) == mean)
     }
 
     @Test func storedAutoEventsAreRegeneratedNotReplayed() {

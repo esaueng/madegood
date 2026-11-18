@@ -135,6 +135,34 @@ private func close(_ a: ClosedRange<Double>?, _ b: ClosedRange<Double>, _ tolera
         #expect(close(replay.metrics.speedCategories?.best500m?.speed, 10))
     }
 
+    @Test func alphaMayStartAtASpeedlessAnchor() {
+        // Re-check regression: 10 m/s out and back, fixes rejected at 5–9 s, a re-anchor at
+        // 10 s without Doppler. Bracketing Doppler gives 500 m from 10 s to 60 s, and the
+        // route is back at the anchor's position at 60 s, so 10–60 s is an alpha.
+        var route = fixes(0...60, speed: { _ in 10 }, position: { $0 <= 35 ? 10 * $0 : 700 - 10 * $0 })
+        for i in 5...9 { route[i].horizontalAccuracy = 80 }
+        route[10].speed = nil
+        let replay = SessionReplay(
+            track: Track(sessionId: UUID(), sport: .windsurfing, startedAt: Date(timeIntervalSince1970: 0), gps: route))
+        #expect(replay.metrics.rejectedFixes == 5)
+        #expect(close(replay.metrics.speedCategories?.alpha500?.range, 10...60))
+        #expect(close(replay.metrics.speedCategories?.alpha500?.speed, 10))
+    }
+
+    @Test func fiveByTenToleratesRoundingAtTouchingWindows() {
+        // Re-check regression: fixes at 0, 1.001, 2.001, … 50.001 s. The window ending at
+        // 40.001 starts at 30.001 less a rounding error; it still only touches the one
+        // ending at 30.001.
+        let route = fixes(0...50, speed: { _ in 5 }).map { fix in
+            var fix = fix
+            if fix.t > 0 { fix.t += 0.001 }
+            return fix
+        }
+        let c = SpeedCategories.analyze(route)
+        #expect(close(c.best5x10s, 5))
+        #expect(c.best5x10sRanges.count == 5)
+    }
+
     @Test func alphaDoesNotSpanAPositionAnchor() {
         let route = fixes(0...60, speed: { _ in 10 }, position: { $0 <= 30 ? 10 * $0 : 600 - 10 * $0 })
         var tracker = SpeedCategoryTracker()
@@ -242,6 +270,21 @@ private func close(_ a: ClosedRange<Double>?, _ b: ClosedRange<Double>, _ tolera
         let replay = SessionReplay(track: track)
         #expect(stats.speedCategories == replay.metrics.speedCategories?.summaryFields)
         #expect((stats.speedCategories?.values.max() ?? 0) <= GPSFilter.Config().maxSpeed)
+    }
+
+    @Test func statsMaxSpeedsUseTheEnginesFilteredFixes() {
+        // Re-check regression: accurate fixes reporting 60 m/s are all rejected by the GPS
+        // filter, so the CLI shows no max or average speed, like live and session detail.
+        let track = Track(
+            sessionId: UUID(), sport: .kayak, startedAt: Date(timeIntervalSince1970: 0),
+            gps: fixes(0...200, speed: { _ in 60 }))
+        let stats = SessionStats(track: track)
+        let replay = SessionReplay(track: track)
+        #expect(stats.maxSpeed2s == replay.metrics.maxSpeed2s)
+        #expect(stats.maxSpeed10s == replay.metrics.maxSpeed10s)
+        #expect((stats.maxSpeed2s ?? 0) <= GPSFilter.Config().maxSpeed)
+        #expect((stats.maxSpeed10s ?? 0) <= GPSFilter.Config().maxSpeed)
+        #expect((stats.averageSpeed ?? 0) <= GPSFilter.Config().maxSpeed)
     }
 
     @Test func otherSportsDoNotTrackCategories() {
