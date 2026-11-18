@@ -31,19 +31,21 @@ final class PhoneSessionUITests: XCTestCase {
         app.activate()
         XCTAssertTrue(speed.waitForExistence(timeout: 10))
 
+        // Recording shows no way to end; pausing shows Resume and Save.
+        XCTAssertFalse(app.buttons["control.save"].exists)
         app.buttons["control.pause"].tap()
         XCTAssertTrue(app.staticTexts["pauseBadge"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["control.save"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["control.lap"].exists)
         attachScreenshot("3 paused")
         app.buttons["control.pause"].tap()
         XCTAssertTrue(app.staticTexts["pauseBadge"].waitForNonExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["control.save"].waitForNonExistence(timeout: 5))
         app.buttons["control.lap"].tap()
         waitForLabel(app.staticTexts["metric.lap"], "Lap 2")
         attachScreenshot("4 lap")
 
-        app.buttons["control.stop"].tap()
-        let confirm = app.buttons["End session"].firstMatch
-        XCTAssertTrue(confirm.waitForExistence(timeout: 10))
-        confirm.tap()
+        endSession(app)
         XCTAssertTrue(start.waitForExistence(timeout: 20))
         attachScreenshot("5 stopped")
     }

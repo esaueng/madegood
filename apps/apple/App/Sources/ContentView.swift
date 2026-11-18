@@ -350,7 +350,6 @@ private struct LiveView: View {
     let recorder: SessionRecorder
     let startedAt: Date
     let sport: Sport
-    @State private var confirmStop = false
     @State private var banner: SessionRecorder.DistanceAlertEvent?
 
     /// The sport's first screen, read once when the session opens.
@@ -457,22 +456,6 @@ private struct LiveView: View {
                         .clipShape(.rect(cornerRadius: 16))
                 }
 
-                HStack(spacing: 10) {
-                    LiveControl(
-                        title: recorder.isPaused ? "Resume" : "Pause",
-                        symbol: recorder.isPaused ? "play.fill" : "pause.fill", identifier: "control.pause"
-                    ) {
-                        if recorder.isPaused { recorder.resume() } else { recorder.pause() }
-                    }
-                    LiveControl(title: "Lap", symbol: "stopwatch", identifier: "control.lap") {
-                        SessionController.shared.lap()
-                    }
-                    LiveControl(title: "Mark", symbol: "flag", identifier: "control.mark") { recorder.mark() }
-                    LiveControl(title: "Stop", symbol: "stop.fill", tint: .red, identifier: "control.stop") {
-                        confirmStop = true
-                    }
-                }
-
                 if let error = recorder.lastError {
                     Label(error, systemImage: "exclamationmark.triangle")
                         .font(.footnote)
@@ -485,6 +468,10 @@ private struct LiveView: View {
             }
             .padding()
         }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            LiveControls(recorder: recorder, sport: sport, display: display)
+        }
+        .toolbar(.hidden, for: .tabBar)
         .navigationTitle("Recording")
         .navigationBarTitleDisplayMode(.inline)
         .overlay(alignment: .top) {
@@ -507,33 +494,114 @@ private struct LiveView: View {
             try? await Task.sleep(for: .seconds(5))
             if !Task.isCancelled { banner = nil }
         }
-        .confirmationDialog("End this session?", isPresented: $confirmStop, titleVisibility: .visible) {
-            Button("End session", role: .destructive) {
-                Task { await recorder.stop() }
-            }
-            .accessibilityIdentifier("control.confirmStop")
-        }
     }
 }
 
-private struct LiveControl: View {
-    let title: String
-    let symbol: String
-    var tint: Color = .accentColor
-    let identifier: String
-    let action: () -> Void
+/// The recording controls, pinned to the bottom within thumb reach. While recording:
+/// Lap and Mark, over a full-width Pause. After a pause: a summary with Resume and Save,
+/// so ending a session always takes two deliberate taps. Auto-pause keeps the recording
+/// controls; tapping Pause from there pauses for real.
+private struct LiveControls: View {
+    let recorder: SessionRecorder
+    let sport: Sport
+    let display: LiveDisplay
+    @State private var saving = false
 
     var body: some View {
-        Button(action: action) {
-            VStack(spacing: 4) {
-                Image(systemName: symbol).font(.title3)
-                Text(title).font(.caption.weight(.medium))
+        Group {
+            if recorder.metrics?.pauseState == .manuallyPaused {
+                paused
+            } else {
+                recording
             }
-            .frame(maxWidth: .infinity, minHeight: 56)
+        }
+        .padding(.horizontal)
+        .padding(.top, 12)
+        .padding(.bottom, 8)
+        .background(.background)
+        .animation(.snappy, value: recorder.metrics?.pauseState == .manuallyPaused)
+    }
+
+    private var recording: some View {
+        VStack(spacing: 12) {
+            HStack(spacing: 10) {
+                Button {
+                    SessionController.shared.lap()
+                } label: {
+                    Label("Lap", systemImage: "stopwatch").frame(maxWidth: .infinity, minHeight: 36)
+                }
+                .accessibilityIdentifier("control.lap")
+                Button {
+                    recorder.mark()
+                } label: {
+                    Label("Mark", systemImage: "flag").frame(maxWidth: .infinity, minHeight: 36)
+                }
+                .accessibilityIdentifier("control.mark")
+            }
+            .buttonStyle(.bordered)
+            .buttonBorderShape(.capsule)
+            .font(.body.weight(.semibold))
+
+            Button {
+                recorder.pause()
+            } label: {
+                Label("Pause", systemImage: "pause.fill")
+                    .font(.title3.weight(.bold))
+                    .frame(maxWidth: .infinity, minHeight: 52)
+            }
+            .buttonStyle(.borderedProminent)
+            .buttonBorderShape(.capsule)
+            .accessibilityIdentifier("control.pause")
+        }
+    }
+
+    @ViewBuilder private var pausedButtons: some View {
+        Button {
+            recorder.resume()
+        } label: {
+            Label("Resume", systemImage: "play.fill")
+                .lineLimit(1)
+                .fixedSize()
+                .frame(maxWidth: .infinity, minHeight: 52)
+        }
+        .buttonStyle(.borderedProminent)
+        .accessibilityIdentifier("control.pause")
+        Button {
+            saving = true
+            Task { await recorder.stop() }
+        } label: {
+            Label("Save", systemImage: "checkmark")
+                .lineLimit(1)
+                .fixedSize()
+                .frame(maxWidth: .infinity, minHeight: 52)
         }
         .buttonStyle(.bordered)
-        .tint(tint)
-        .accessibilityIdentifier(identifier)
+        .disabled(saving)
+        .accessibilityHint("Ends and saves the session")
+        .accessibilityIdentifier("control.save")
+    }
+
+    private var paused: some View {
+        let metrics = recorder.metrics
+        return VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Paused").font(.title3.weight(.bold))
+                Text(
+                    "\(sport.displayName) · \(display.distance(metrics?.distance ?? 0)) · \(Formatting.elapsed(metrics?.movingTime ?? 0))"
+                )
+                .font(.subheadline.monospacedDigit())
+                .foregroundStyle(.secondary)
+            }
+            // Side by side, or stacked when large text doesn't fit on one line.
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 10) { pausedButtons }
+                VStack(spacing: 10) { pausedButtons }
+            }
+            .buttonBorderShape(.capsule)
+            .font(.title3.weight(.bold))
+        }
+        .padding(16)
+        .background(.background.secondary, in: .rect(cornerRadius: 24, style: .continuous))
     }
 }
 
