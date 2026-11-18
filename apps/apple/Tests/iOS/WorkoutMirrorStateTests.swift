@@ -4,6 +4,22 @@ import XCTest
 @testable import MadeGood
 
 final class WorkoutMirrorStateTests: XCTestCase {
+    func testStopBeforeReconnectSnapshotClearsThePreviousStatus() {
+        let firstSource = NSObject()
+        let secondSource = NSObject()
+        let first = ObjectIdentifier(firstSource)
+        let second = ObjectIdentifier(secondSource)
+        var state = WorkoutMirrorState()
+        state.connect(first)
+        state.receive(snapshot(UUID(), sequence: 1), from: first)
+        state.disconnect(first)
+        state.connect(second)
+        XCTAssertNotNil(state.lastConfirmed)
+        state.stop(second)
+        XCTAssertNil(state.lastConfirmed)
+        XCTAssertFalse(state.isAttached)
+    }
+
     func testAttachmentBlocksUntilStoppedOrExplicitlyDismissedAfterSilence() {
         let source = NSObject()
         let connection = ObjectIdentifier(source)

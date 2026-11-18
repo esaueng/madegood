@@ -61,8 +61,8 @@ struct WorkoutMirrorState {
         guard self.connection == connection else { return }
         if confirmed, let snapshot = lastConfirmed {
             retiredSessions.insert(snapshot.sessionID)
-            lastConfirmed = nil
         }
+        lastConfirmed = nil
         disconnect(connection)
     }
 }
