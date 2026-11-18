@@ -136,7 +136,7 @@ private struct StartView: View {
                         Text("Recent")
                             .font(.title3.weight(.bold))
                             .fontDesign(.rounded)
-                            .foregroundStyle(.primary)
+                            .foregroundStyle(Color.primary)
                         Spacer()
                         Button("See All", action: showHistory)
                             .font(.subheadline.weight(.semibold))

@@ -57,19 +57,27 @@ private struct MonthHeader: View {
 
     var body: some View {
         let totals = SessionLibrary.totals(items)
-        HStack {
+        // Title over totals, so long totals never squeeze the month onto two lines.
+        VStack(alignment: .leading, spacing: 2) {
             Text(title)
-            Spacer()
+                .font(.title3.weight(.bold))
+                .fontDesign(.rounded)
+                // Concrete colors: section headers dim hierarchical styles.
+                .foregroundStyle(Color.primary)
             if totals.count > 0 {
                 // Totals mix sports, so they use the paddling (metric) distance unless set.
                 let display = UserSettings.display(for: .kayak)
                 Text(
                     "\(totals.count) \(totals.count == 1 ? "session" : "sessions") · \(display.distance(totals.distance)) · \(Formatting.duration(totals.movingTime))"
                 )
+                .font(.footnote.weight(.medium))
                 .monospacedDigit()
+                .foregroundStyle(Color.secondary)
                 .accessibilityIdentifier("month.totals")
             }
         }
+        .textCase(nil)
+        .padding(.bottom, 2)
     }
 }
 
@@ -91,7 +99,7 @@ struct SessionRow: View {
                 .frame(width: 36, height: 36)
                 .background(Color.accentColor.opacity(0.12), in: .circle)
             VStack(alignment: .leading, spacing: 2) {
-                Text(sport?.displayName ?? "Receiving…").font(.body.weight(.semibold))
+                Text(sport?.displayName ?? "Receiving…").font(.body.weight(.semibold)).fontDesign(.rounded)
                 if let startedAt = item.entry.startedAt {
                     Text(startedAt, format: .dateTime.weekday(.abbreviated).day().month().hour().minute())
                         .font(.footnote)
@@ -102,7 +110,9 @@ struct SessionRow: View {
             if let summary = item.summary {
                 let display = UserSettings.display(for: summary.sport)
                 VStack(alignment: .trailing, spacing: 2) {
-                    Text(display.distance(summary.metrics.distance)).font(.body.weight(.semibold).monospacedDigit())
+                    Text(display.distance(summary.metrics.distance))
+                        .font(.body.weight(.semibold).monospacedDigit())
+                        .fontDesign(.rounded)
                     Text(Formatting.elapsed(summary.metrics.movingTime))
                         .font(.footnote.monospacedDigit())
                         .foregroundStyle(.secondary)

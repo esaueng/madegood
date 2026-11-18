@@ -76,14 +76,19 @@ struct SessionDetailView: View {
         let metrics = analysis.replay.metrics
         List {
             Section {
-                Label {
-                    Text(
-                        analysis.session.startedAt,
-                        format: .dateTime.weekday(.wide).day().month().year().hour().minute())
-                } icon: {
-                    SportIcon(sport: sport, size: 22).foregroundStyle(Color.accentColor)
+                HStack(spacing: 12) {
+                    SportBadge(sport: sport, diameter: 44)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(analysis.session.startedAt, format: .dateTime.weekday(.wide).day().month(.wide).year())
+                            .font(.headline)
+                            .fontDesign(.rounded)
+                        Text(analysis.session.startedAt, format: .dateTime.hour().minute())
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
                 }
-                .font(.headline)
+                .padding(.vertical, 2)
+                .accessibilityElement(children: .combine)
                 if analysis.replay.fixes.count > 1 {
                     SpeedMap(fixes: analysis.replay.fixes)
                         .frame(height: 260)
