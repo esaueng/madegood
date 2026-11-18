@@ -13,6 +13,8 @@ struct LiveReadings: Codable, Equatable, Sendable {
     var heartRate: Double?
     var pauseState: LiveMetrics.PauseState
     var lap: Int?
+    /// Windsurfing only. Optional, so snapshots from an older watch app still decode.
+    var speedCategories: SpeedCategoryReadings?
 
     init(_ metrics: LiveMetrics?) {
         elapsed = metrics?.elapsed ?? 0
@@ -25,6 +27,7 @@ struct LiveReadings: Codable, Equatable, Sendable {
         heartRate = metrics?.heartRate
         pauseState = metrics?.pauseState ?? .moving
         lap = metrics.flatMap { $0.laps.isEmpty ? nil : $0.currentLap.index }
+        speedCategories = metrics?.speedCategories.map(SpeedCategoryReadings.init)
     }
 }
 
