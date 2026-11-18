@@ -352,7 +352,7 @@ struct SessionDetailView: View {
 
             if sport == .motorboating {
                 MotorboatDetailSection(
-                    metrics: metrics, startedAt: selectedTrack.startedAt, display: display, library: library)
+                    metrics: metrics, startedAt: analysis.session.startedAt, display: display, library: library)
             }
 
             if let categories = metrics.speedCategories {

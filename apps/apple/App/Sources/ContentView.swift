@@ -563,11 +563,20 @@ private struct LiveView: View {
         }
     }
 
+    /// The session on screen: this phone's recording, or the watch's mirrored one.
+    private var activeSessionID: UUID? {
+        if let watchWorkout { return watchWorkout.sessionID }
+        if case .recording(let sessionId, _, _) = recorder?.state { return sessionId }
+        return nil
+    }
+
     /// The motorboat log and the anchor alarm (PLAN §5), under the headline metrics.
     @ViewBuilder
     private func motorboatPage(display: LiveDisplay, readings: LiveReadings) -> some View {
         if sport == .motorboating {
-            MotorboatLiveCard(readings: readings, display: display, savedTrips: MotorboatStats.savedTrips(library))
+            MotorboatLiveCard(
+                readings: readings, display: display,
+                savedTrips: MotorboatStats.savedTrips(library, excluding: activeSessionID))
             AnchorAlarmRow()
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
