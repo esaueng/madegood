@@ -103,6 +103,13 @@ const record = (value: unknown): value is Record<string, unknown> =>
 const finite = (value: unknown) => typeof value === "number" && Number.isFinite(value);
 const trackDate = z.iso.datetime({ offset: true });
 
+function hasFiniteJSONNumbers(value: unknown): boolean {
+  if (typeof value === "number") return Number.isFinite(value);
+  if (Array.isArray(value)) return value.every(hasFiniteJSONNumbers);
+  if (record(value)) return Object.values(value).every(hasFiniteJSONNumbers);
+  return true;
+}
+
 function trackColumns(
   value: unknown,
   numbers: string[],
@@ -160,8 +167,9 @@ export async function checkLegTrack(bytes: Uint8Array, legId: string): Promise<s
           record(event) &&
           finite(event.t) &&
           typeof event.type === "string" &&
-          (event.data == null || record(event.data)),
+          (event.data == null || (record(event.data) && hasFiniteJSONNumbers(event.data))),
       ) ||
+      !hasFiniteJSONNumbers(track.summary) ||
       (track.analyzerVersion != null && typeof track.analyzerVersion !== "string")
     ) {
       return "The track v1 fields or sample columns are invalid.";

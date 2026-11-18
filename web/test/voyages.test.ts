@@ -35,9 +35,10 @@ async function trackBytes(id: string, latitude = 0.001, startedAt = leg.startedA
   });
 }
 async function gzipJSON(value: unknown) {
-  const gzip = new Blob([JSON.stringify(value)])
-    .stream()
-    .pipeThrough(new CompressionStream("gzip"));
+  return gzipText(JSON.stringify(value));
+}
+async function gzipText(text: string) {
+  const gzip = new Blob([text]).stream().pipeThrough(new CompressionStream("gzip"));
   return new Uint8Array(await new Response(gzip).arrayBuffer());
 }
 const putTrack = (bytes: Uint8Array, token: string): RequestInit => ({
@@ -228,7 +229,18 @@ describe("private voyage sync", () => {
       hr: { t: [], bpm: [] },
       events: [],
     });
-    for (const bytes of [malformed, foreign, brokenColumn]) {
+    const overflowing = await gzipText(
+      JSON.stringify({
+        v: 1,
+        sessionId: legId,
+        sport: "sailing",
+        startedAt: leg.startedAt,
+        gps: { t: [], lat: [], lon: [], spd: [], crs: [], hacc: [] },
+        hr: { t: [], bpm: [] },
+        events: [{ t: 0, type: "mark", data: { nested: ["synthetic-overflow"] } }],
+      }).replace('"synthetic-overflow"', "1e400"),
+    );
+    for (const bytes of [malformed, foreign, brokenColumn, overflowing]) {
       const result = await api(trackPath, putTrack(bytes, accessToken));
       expect(result.status).toBe(400);
       expect(await result.json()).toMatchObject({ error: "invalid_track" });
