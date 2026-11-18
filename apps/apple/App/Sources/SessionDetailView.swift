@@ -77,8 +77,13 @@ struct SessionDetailView: View {
         .onReceive(NotificationCenter.default.publisher(for: UserSettings.didChangeRemotely)) { _ in
             reloads += 1
         }
+        .onChange(of: analysis?.source) {
+            if editing?.source != analysis?.source { editing = nil }
+        }
         .sheet(item: $editing) { analysis in
-            SessionTrimEditor(analysis: analysis) { trim, preview in
+            SessionTrimEditor(
+                analysis: analysis, boundaryPack: DemoOffWater.boundaryPack(for: analysis.session.meta.sessionId)
+            ) { trim, preview in
                 try applyTrim(trim, preview: preview, to: analysis)
             }
         }
@@ -154,10 +159,15 @@ struct SessionDetailView: View {
         _ range: ClosedRange<Double>, title: String, data: SessionReplayView.Data, scroll: ScrollViewProxy,
         showsSpeedWindow: Bool = false
     ) {
+        selectHighlight(
+            SessionReplayView.Highlight(title: title, range: range, data: data, showsSpeedWindow: showsSpeedWindow),
+            scroll: scroll)
+    }
+
+    private func selectHighlight(_ highlight: SessionReplayView.Highlight, scroll: ScrollViewProxy) {
         isPlaying = false
-        replayHighlight = SessionReplayView.Highlight(
-            title: title, range: range, data: data, showsSpeedWindow: showsSpeedWindow)
-        selectedReplayElapsed = range.lowerBound
+        replayHighlight = highlight
+        selectedReplayElapsed = highlight.eventTime ?? highlight.range.lowerBound
         scroll.scrollTo("session.replay", anchor: .top)
     }
 
@@ -193,7 +203,7 @@ struct SessionDetailView: View {
         let sport = analysis.session.meta.sport
         let display = analysis.display
         let selectedTrack = analysis.current.selection.track
-        let selectedTrackDuration = analysis.current.selection.duration
+        let selectedTrackDuration = analysis.current.selection.retainedDuration
         let metrics = analysis.current.selection.replay.metrics
         let replayData = analysis.current.replayData
         List {
@@ -216,6 +226,24 @@ struct SessionDetailView: View {
                 }
                 .padding(.vertical, 2)
                 .accessibilityElement(children: .combine)
+            }
+
+            if !replayData.timeline.removedIntervals.isEmpty {
+                Section {
+                    ForEach(replayData.timeline.removedIntervals, id: \.self) { range in
+                        let start = SessionReplayView.Highlight.time(range.lowerBound)
+                        let end = SessionReplayView.Highlight.time(range.upperBound)
+                        Label("\(start) to \(end)", systemImage: "scissors")
+                            .monospacedDigit()
+                            .accessibilityElement(children: .ignore)
+                            .accessibilityLabel("\(start) to \(end)")
+                            .accessibilityIdentifier("replay.removedInterval")
+                    }
+                } header: {
+                    Text("Removed intervals")
+                } footer: {
+                    Text("Times follow the replay clock. Playback skips the removed intervals.")
+                }
             }
 
             if !replayData.timeline.points.isEmpty {
@@ -255,24 +283,35 @@ struct SessionDetailView: View {
                     }
                 }
                 .padding(.vertical, 6)
+                .id("session.stats")
             }
 
-            let heartRate = ChartSeries.heartRate(selectedTrack.hr)
-            if heartRate.count > 1 {
-                let start = min(replayData.timeline.start / 60, heartRate.first?.minutes ?? 0)
-                let end = max(heartRate.last?.minutes ?? 0, selectedTrackDuration / 60)
+            let heartRate = ChartSeries.heartRate(selectedTrack.hr, cuts: replayData.timeline.removedIntervals)
+            if heartRate.reduce(0, { $0 + $1.count }) > 1 {
+                let start = min(replayData.timeline.start / 60, heartRate.first?.first?.minutes ?? 0)
+                let end = max(heartRate.last?.last?.minutes ?? 0, replayData.timeline.duration / 60)
                 Section("Heart rate (bpm)") {
                     Chart {
-                        if let range = replayHighlight?.range {
+                        ForEach(replayHighlight?.ranges ?? [], id: \.self) { range in
                             RectangleMark(
                                 xStart: .value("Start", range.lowerBound / 60),
                                 xEnd: .value("End", range.upperBound / 60)
                             )
                             .foregroundStyle(Color.accentColor.opacity(0.2))
                         }
-                        ForEach(heartRate) { point in
-                            LineMark(x: .value("Minutes", point.minutes), y: .value("bpm", point.value))
-                                .foregroundStyle(Theme.coral)
+                        ForEach(heartRate.indices, id: \.self) { index in
+                            ForEach(heartRate[index]) { point in
+                                if heartRate[index].count == 1 {
+                                    PointMark(x: .value("Minutes", point.minutes), y: .value("bpm", point.value))
+                                        .foregroundStyle(Theme.coral)
+                                } else {
+                                    LineMark(
+                                        x: .value("Minutes", point.minutes), y: .value("bpm", point.value),
+                                        series: .value("Span", index)
+                                    )
+                                    .foregroundStyle(Theme.coral)
+                                }
+                            }
                         }
                     }
                     .chartXScale(domain: start...end)
@@ -281,6 +320,14 @@ struct SessionDetailView: View {
                     .frame(height: 140)
                 }
             }
+
+            SessionMomentsSection(
+                presentation: analysis.current, source: analysis.source, display: display,
+                highlightedTitle: replayHighlight?.title,
+                windChanged: {
+                    if replayHighlight?.eventTime != nil { replayHighlight = nil }
+                },
+                select: { selectHighlight($0, scroll: scroll) })
 
             if !metrics.laps.isEmpty {
                 Section("Laps") {
@@ -364,6 +411,11 @@ struct SessionDetailView: View {
                 Button("Delete session", role: .destructive) { confirmDelete = true }
             }
         }
+        .onChange(of: analysis.trim) { _, trim in
+            if trim != nil {
+                scroll.scrollTo("session.stats", anchor: .top)
+            }
+        }
     }
 
     private func exportGPX(_ analysis: Analysis) {
@@ -393,8 +445,16 @@ enum ChartSeries {
         var value: Double
     }
 
-    static func heartRate(_ samples: [HRSample]) -> [Point] {
-        bucket(samples.map { ($0.t, $0.bpm) })
+    static func heartRate(_ samples: [HRSample], cuts: [ClosedRange<Double>]) -> [[Point]] {
+        var start = samples.startIndex
+        var spans: [[Point]] = []
+        for cut in cuts {
+            let split = samples[start...].firstIndex { $0.t >= cut.upperBound } ?? samples.endIndex
+            spans.append(bucket(samples[start..<split].map { ($0.t, $0.bpm) }))
+            start = split
+        }
+        spans.append(bucket(samples[start...].map { ($0.t, $0.bpm) }))
+        return spans.filter { !$0.isEmpty }
     }
 
     static func bucket(_ values: [(t: Double, value: Double)], maxPoints: Int = 300) -> [Point] {

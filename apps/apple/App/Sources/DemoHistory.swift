@@ -9,9 +9,13 @@ enum DemoHistory {
 
     static func seedIfRequested() {
         #if DEBUG
-            guard ProcessInfo.processInfo.arguments.contains(launchArgument) else { return }
+            let arguments = ProcessInfo.processInfo.arguments
             let now = Date().timeIntervalSince1970
             let day = 86_400.0
+            if arguments.contains("-demoMoments") {
+                seedMoments(start: now - day)
+            }
+            guard arguments.contains(launchArgument) else { return }
             seed(id: "00000000-0000-4000-8000-00000000d001", sport: .sailing, start: now - 2 * day, minutes: 48) { t in
                 // Upwind beats: tack every 4 minutes, slower through each tack.
                 let leg = Int(t / 240)
@@ -35,8 +39,25 @@ enum DemoHistory {
     }
 
     #if DEBUG
+        private static func seedMoments(start: Double) {
+            seed(id: "00000000-0000-4000-8000-00000000d011", sport: .sailing, start: start, minutes: 1) { t in
+                // An observed turn through true north with a speed dip at the crossing.
+                let progress = min(1, max(0, (t - 12) / 8))
+                let speed = min(5, 2 + abs(t - 16) * 0.75)
+                return (speed, (315 + 90 * progress).truncatingRemainder(dividingBy: 360))
+            }
+            seed(
+                id: "00000000-0000-4000-8000-00000000d012", sport: .kayak, start: start, minutes: 10,
+                extraEvents: [.init(t: 90.5, type: .pause), .init(t: 150.5, type: .resume)]
+            ) { _ in
+                // A moving route through the manual pause makes the highlight gap visible.
+                (3, 90)
+            }
+        }
+
         private static func seed(
-            id: String, sport: Sport, start: Double, minutes: Int, motion: (Double) -> (speed: Double, course: Double)
+            id: String, sport: Sport, start: Double, minutes: Int, extraEvents: [SessionEvent] = [],
+            motion: (Double) -> (speed: Double, course: Double)
         ) {
             let sessionId = UUID(uuidString: id)!
             let folder = RecordingStore.folder(for: sessionId)
@@ -55,10 +76,11 @@ enum DemoHistory {
                 (lat, lon) = Geo.destination(lat: lat, lon: lon, bearing: course, distance: speed)
                 hr.append(HRSample(t: t, bpm: 105 + 25 * min(1, speed / 4) + 4 * sin(t / 50)))
             }
-            let events = [
-                SessionEvent(t: 0, type: .start), SessionEvent(t: duration / 2, type: .lap),
-                SessionEvent(t: duration, type: .stop),
-            ]
+            let events =
+                ([
+                    SessionEvent(t: 0, type: .start), SessionEvent(t: duration / 2, type: .lap),
+                    SessionEvent(t: duration, type: .stop),
+                ] + extraEvents).sorted { $0.t < $1.t }
             let meta = RawFormat.Meta(
                 sessionId: sessionId, sport: sport, startedAt: start, endedAt: start + duration,
                 clock: RawFormat.ClockAnchor(unix: start, uptime: 1_000),

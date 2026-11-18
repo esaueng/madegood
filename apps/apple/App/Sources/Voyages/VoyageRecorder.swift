@@ -183,9 +183,16 @@ class VoyageLaunchDelegate: NSObject, UIApplicationDelegate {
         _ application: UIApplication,
         didFinishLaunchingWithOptions options: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
+        Self.restoreActiveLeg(isReplayDemo: DemoOffWater.storage != nil) {
+            VoyageRecorder.shared.resumeAfterLaunch()
+        }
+        return true
+    }
+
+    static func restoreActiveLeg(isReplayDemo: Bool, using restore: () -> Void) {
+        guard !isReplayDemo else { return }
         // Recreate the location sessions promptly for an authorized, unfinished leg.
         // Core Location can deliver queued fixes after any kind of process launch.
-        VoyageRecorder.shared.resumeAfterLaunch()
-        return true
+        restore()
     }
 }

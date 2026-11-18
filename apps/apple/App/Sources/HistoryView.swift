@@ -256,13 +256,21 @@ private struct HistoryRouteThumbnail: View {
     var body: some View {
         Canvas { context, size in
             let scale = min(size.width, size.height) - 10
-            let points = route.points.map { point in
-                CGPoint(x: size.width / 2 + point.x * scale, y: size.height / 2 + point.y * scale)
+            for span in route.spans {
+                let points = span.map { point in
+                    CGPoint(x: size.width / 2 + point.x * scale, y: size.height / 2 + point.y * scale)
+                }
+                if points.count == 1, let point = points.first {
+                    let dot = CGRect(x: point.x - 1, y: point.y - 1, width: 2, height: 2)
+                    context.fill(Path(ellipseIn: dot), with: .color(.accentColor))
+                } else {
+                    var path = Path()
+                    path.addLines(points)
+                    context.stroke(
+                        path, with: .color(.accentColor),
+                        style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
+                }
             }
-            var path = Path()
-            path.addLines(points)
-            context.stroke(
-                path, with: .color(.accentColor), style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
         }
         .frame(width: 42, height: 36)
         .background(Color.accentColor.opacity(0.08), in: .rect(cornerRadius: 7))

@@ -12,6 +12,7 @@ let package = Package(
         .library(name: "WaterKit", targets: ["WaterKit"]),
         .executable(name: "waterkit-replay", targets: ["waterkit-replay"]),
         .executable(name: "waterkit-anonymize", targets: ["waterkit-anonymize"]),
+        .executable(name: "waterkit-boundary-check", targets: ["waterkit-boundary-check"]),
     ],
     targets: [
         // Thin C shim over the system zlib (macOS/iOS/watchOS SDKs; zlib1g-dev on Linux).
@@ -31,9 +32,13 @@ let package = Package(
             name: "waterkit-anonymize",
             dependencies: ["WaterKit"]
         ),
+        .executableTarget(
+            name: "waterkit-boundary-check",
+            dependencies: ["WaterKit"]
+        ),
         .testTarget(
             name: "WaterKitTests",
-            dependencies: ["WaterKit"],
+            dependencies: ["WaterKit", "CZlib"],
             resources: [.copy("Resources")]
         ),
     ],

@@ -223,10 +223,163 @@ import Testing
         let folder = try TempFolder()
         let id = RawSessionReaderTests.meta().sessionId
         let name = id.uuidString.lowercased() + ".json"
-        let data = Data(#"{"version":2}"#.utf8)
+        let data = Data(#"{"version":3}"#.utf8)
         try folder.write(name, data)
         let store = SessionTrimStore(directory: folder.url)
-        #expect(throws: SessionTrimStore.Error.unsupportedVersion(2)) { try store.load(sessionId: id) }
+        #expect(throws: SessionTrimStore.Error.unsupportedVersion(3)) { try store.load(sessionId: id) }
         #expect(try Data(contentsOf: folder.url.appendingPathComponent(name)) == data)
+    }
+
+    @Test func shortCutResetsDistanceAndSpeedAndKeepsBothBoundaryFixes() throws {
+        let times = [0.0, 1, 2, 2.25, 2.5, 3.5, 4.5]
+        let gps = times.map { t in
+            var fix = Self.fix(t, speed: t < 2.5 ? 2 : 8)
+            if t >= 2.5 { fix.longitude += 0.01 }
+            return fix
+        }
+        let raw = Self.session(
+            gps: gps, hr: times.map { HRSample(t: $0, bpm: $0 == 2.25 ? 200 : 100) },
+            events: [2.0, 2.25, 2.5].map { SessionEvent(t: $0, type: .mark) }, end: 5)
+        let trim = try SessionTrim(start: 1, end: 5, removing: [2...2.5])
+        let selected = try SessionSelection(session: raw, trim: trim, profile: Self.sailing)
+        let timeline = SessionReplayTimeline(replay: selected.replay, recordedFixes: selected.track.gps)
+        let left = try SessionSelection(session: raw, trim: SessionTrim(start: 1, end: 2), profile: Self.sailing)
+        let right = try SessionSelection(session: raw, trim: SessionTrim(start: 2.5, end: 5), profile: Self.sailing)
+
+        #expect(selected.retainedRanges == [1...2, 2.5...5])
+        #expect(selected.replayRanges == [0...1, 1.5...4])
+        #expect(selected.sourceTime(forReplayTime: 1.5) == 2.5)
+        #expect(selected.replayTime(forSourceTime: 2) == 1)
+        #expect(selected.duration == 4 && selected.retainedDuration == 3.5)
+        #expect(selected.replay.fixSpans.map { $0.map(\.t) } == [[0, 1], [1.5, 2.5, 3.5]])
+        #expect(selected.replay.metrics.rejectedFixes == 0)
+        #expect(selected.replay.metrics.distance == left.replay.metrics.distance + right.replay.metrics.distance)
+        #expect(selected.replay.metrics.movingTime == 3)
+        #expect(selected.replay.metrics.maxSpeed2s == 8)
+        #expect(selected.replay.metrics.maxSpeed2sRange == 1.5...3.5)
+        #expect(selected.replay.metrics.maxSpeed10s == nil)
+        #expect(selected.replay.metrics.heartRateMax == 100)
+        #expect(selected.replay.events.filter { $0.type == .mark }.map(\.t) == [1, 1.5])
+        #expect(selected.replay.metrics.laps.map(\.end) == [1])
+        #expect(selected.replay.metrics.currentLap.start == 1.5)
+
+        #expect(timeline.points.map(\.routeSegment) == [0, 0, 1, 1, 1])
+        #expect(timeline.selection(at: 1.25, speedWindow: 0...2).position == nil)
+        #expect(timeline.selection(at: 1.25, speedWindow: 0...2).speed == nil)
+        #expect(timeline.selection(at: 1).position != nil && timeline.selection(at: 1.5).position != nil)
+        #expect(timeline.selection(at: 1).routeDistance == timeline.selection(at: 1.5).routeDistance)
+        #expect(timeline.speedCurve(in: 0...2).isEmpty)
+        #expect(timeline.speedCurve(in: 1.5...3.5).map(\.speed) == [8, 8, 8])
+
+        let writer = GPXWriter()
+        let selectedGPX = String(decoding: writer.data(for: selected), as: UTF8.self)
+        #expect(writer.segments(of: selected).map { $0.map(\.t) } == [[0, 1], [1.5, 2.5, 3.5]])
+        #expect(selectedGPX.contains(#"<mg:removedInterval start="1.0" end="1.5"/>"#))
+        let originalPoints = writer.string(for: raw.track()).split(separator: "\n").filter { $0.contains("<trkpt ") }
+        let selectedPoints = selectedGPX.split(separator: "\n").filter { $0.contains("<trkpt ") }
+        #expect(selectedPoints == [1, 2, 4, 5, 6].map { originalPoints[$0] })
+    }
+
+    @Test func sidecarRoundTripPreservesAShortCutWhoseEndpointsRoundTogether() throws {
+        let start = 1.0.nextUp.nextUp
+        let cut = 6.0...6.0.nextUp
+        #expect(cut.lowerBound - start == cut.upperBound - start)
+        let raw = Self.session(gps: [2, cut.lowerBound, cut.upperBound, 8].map { Self.fix($0) }, end: 10)
+        let trim = try SessionTrim(start: start, end: 10, removing: [cut])
+        let folder = try TempFolder()
+        let store = SessionTrimStore(directory: folder.url)
+        try store.save(trim, for: raw)
+        let reloaded = try store.load(sessionId: raw.meta.sessionId)
+        let saved = try #require(reloaded)
+        let selected = try SessionSelection(session: raw, trim: saved)
+        let left = selected.replayTime(forSourceTime: cut.lowerBound)
+        let right = selected.replayTime(forSourceTime: cut.upperBound)
+        #expect(left < right)
+        #expect(selected.replay.fixSpans.map { $0.map(\.t) }.map(\.count) == [2, 2])
+        #expect(selected.replay.fixSpans[0].last?.t == left)
+        #expect(selected.replay.fixSpans[1].first?.t == right)
+        #expect(GPXWriter().segments(of: selected).map(\.count) == [2, 2])
+        let timeline = SessionReplayTimeline(replay: selected.replay, recordedFixes: selected.track.gps)
+        #expect(timeline.points.map(\.routeSegment) == [0, 0, 1, 1])
+    }
+
+    @Test(arguments: [2, 10])
+    func bestSpeedCannotSpanCutEvenWhenBothSidesHaveDoppler(window: Int) throws {
+        let end = Double(window) + 0.5
+        let cut = (end / 2 - 0.25)...(end / 2 + 0.25)
+        let times = [0, cut.lowerBound, cut.upperBound, end]
+        let raw = Self.session(gps: times.map { Self.fix($0) }, end: end)
+        let trim = try SessionTrim(start: 0, end: end, removing: [cut])
+        let original = try SessionSelection(session: raw, profile: Self.sailing)
+        let selected = try SessionSelection(session: raw, trim: trim, profile: Self.sailing)
+        if window == 2 {
+            #expect(original.replay.metrics.maxSpeed2s == 2)
+            #expect(selected.replay.metrics.maxSpeed2s == nil)
+        } else {
+            #expect(original.replay.metrics.maxSpeed10s == 2)
+            #expect(selected.replay.metrics.maxSpeed10s == nil)
+        }
+    }
+
+    @Test func manualPauseStateIsReadFromSourceAtEachSpan() throws {
+        let raw = Self.session(
+            gps: (0...12).map { Self.fix(Double($0)) },
+            events: [
+                SessionEvent(t: 1, type: .pause),
+                SessionEvent(t: 3, type: .resume),  // Removed; the right span starts moving.
+                SessionEvent(t: 6, type: .pause),  // Removed; the next span starts paused.
+                SessionEvent(t: 9, type: .resume),
+                SessionEvent(t: 11, type: .pause),
+                SessionEvent(t: 11, type: .resume),
+            ], end: 12)
+        let trim = try SessionTrim(start: 0, end: 12, removing: [2...4, 5...7, 10...11])
+        let selected = try SessionSelection(session: raw, trim: trim, profile: Self.sailing)
+
+        #expect(selected.replay.metrics.movingTime == 3)  // 0–1, 4–5 and 11–12.
+        #expect(selected.track.events.filter { $0.type == .pause }.map(\.t) == [1, 7, 11])
+        #expect(selected.track.events.filter { $0.type == .resume }.map(\.t) == [9, 11])
+        #expect(selected.replay.fixSpans.map { $0.map(\.t) } == [[0, 1, 2], [4, 5], [7, 8, 9, 10], [11, 12]])
+    }
+
+    @Test func emptyAcceptedSpanRetainsItsClockAndBothCuts() throws {
+        var rejected = Self.fix(3)
+        rejected.latitude = 91
+        let raw = Self.session(gps: [Self.fix(1), rejected, Self.fix(5)], end: 6)
+        let trim = try SessionTrim(retaining: [0...1, 2...3, 4...6])
+        let selected = try SessionSelection(session: raw, trim: trim, profile: Self.sailing)
+        let timeline = SessionReplayTimeline(replay: selected.replay, recordedFixes: selected.track.gps)
+        #expect(selected.replay.fixSpans.map(\.count) == [1, 0, 1])
+        #expect(selected.replay.removedIntervals == [1...2, 3...4])
+        #expect(selected.replay.metrics.rejectedFixes == 1)
+        #expect(selected.replay.metrics.distance == 0)
+        #expect(selected.retainedDuration == 4)
+        #expect(timeline.points.map(\.routeSegment) == [0, 1])
+        #expect(timeline.selection(at: 3).position == nil)
+        let writer = GPXWriter()
+        #expect(writer.segments(of: selected).map { $0.map(\.t) } == [[1], [5]])
+        let gpx = String(decoding: writer.data(for: selected), as: UTF8.self)
+        #expect(gpx.components(separatedBy: "<mg:removedInterval").count - 1 == 2)
+    }
+
+    @Test func readsLegacyAndVersionTwoSidecarsAndRestoresOriginal() throws {
+        let raw = Self.session(gps: (0...6).map { Self.fix(Double($0)) }, end: 6)
+        let folder = try TempFolder()
+        let id = raw.meta.sessionId
+        let name = id.uuidString.lowercased() + ".json"
+        try folder.write(name, Data(#"{"version":1,"start":1,"end":6}"#.utf8))
+        let store = SessionTrimStore(directory: folder.url)
+        #expect(try store.load(sessionId: id)?.retainedRanges == [1...6])
+        let trimmed = try SessionTrim(retaining: [1...2, 3...4, 5...6])
+        try store.save(trimmed, for: raw)
+        let sidecar = try Data(contentsOf: folder.url.appendingPathComponent(name))
+        let json = try #require(JSONSerialization.jsonObject(with: sidecar) as? [String: Any])
+        #expect(json["version"] as? Int == 2)
+        #expect((json["keptSpans"] as? [[String: Double]])?.map { $0["start"] } == [1, 3, 5])
+        #expect(try store.load(sessionId: id) == trimmed)
+        try store.restoreOriginal(sessionId: id)
+        let restored = try SessionSelection(session: raw, trim: store.load(sessionId: id))
+        #expect(restored.track == raw.track())
+        #expect(restored.replay.removedIntervals.isEmpty)
+        #expect(throws: SessionTrim.Error.invalidRemoval) { try SessionTrim(retaining: [1...3, 3...4]) }
     }
 }

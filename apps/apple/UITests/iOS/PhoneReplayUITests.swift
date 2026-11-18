@@ -176,6 +176,65 @@ final class PhoneReplayUITests: XCTestCase {
         XCTAssertEqual(duration.label, "48:00")
     }
 
+    @MainActor
+    func testRemoveMiddleSegmentAndRestoreOriginal() {
+        let app = launchDemoHistory()
+        app.tabBars.buttons["History"].tap()
+        let sailingRows = app.buttons.matching(identifier: "session.row").containing(.staticText, identifier: "Sailing")
+        let sailing = sailingRows.containing(.staticText, identifier: "48:00").firstMatch
+        let trimmedSailing = sailingRows.containing(.staticText, identifier: "Trimmed").firstMatch
+        XCTAssertTrue(sailing.waitForExistence(timeout: 15))
+        scrollTo(sailing, in: app)
+        sailing.tap()
+
+        let trim = app.buttons["session.trim"]
+        scrollTo(trim, in: app)
+        trim.tap()
+        let addCut = app.buttons["trim.addCut"]
+        scrollTo(addCut, in: app)
+        addCut.tap()
+        XCTAssertTrue(app.sliders["trim.cut.0.start"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.sliders["trim.cut.0.end"].exists)
+
+        let kept = element("trim.preview.Kept", in: app)
+        scrollTo(kept, in: app)
+        XCTAssertTrue(element("trim.preview.Original", in: app).exists)
+        let save = app.buttons["trim.save"]
+        let previewReady = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "enabled == true"), object: save)
+        XCTAssertEqual(XCTWaiter().wait(for: [previewReady], timeout: 10), .completed)
+        save.tap()
+
+        XCTAssertTrue(app.navigationBars["Sailing"].waitForExistence(timeout: 5))
+        app.terminate()
+        app.launch()
+        app.tabBars.buttons["History"].tap()
+        XCTAssertTrue(trimmedSailing.waitForExistence(timeout: 15))
+        scrollTo(trimmedSailing, in: app)
+        trimmedSailing.tap()
+        let cut = element("replay.removedInterval", in: app)
+        scrollTo(cut, in: app)
+        XCTAssertTrue(cut.exists)
+        let duration = app.staticTexts["stat.Total time"]
+        scrollTo(duration, in: app)
+        XCTAssertEqual(duration.label, "32:00")
+
+        scrollTo(trim, in: app)
+        trim.tap()
+        XCTAssertTrue(app.sliders["trim.cut.0.start"].waitForExistence(timeout: 5))
+        let restore = app.buttons["trim.restore"]
+        scrollTo(restore, in: app)
+        restore.tap()
+        XCTAssertTrue(app.navigationBars["Sailing"].waitForExistence(timeout: 5))
+        app.navigationBars.buttons["History"].tap()
+        XCTAssertTrue(sailing.waitForExistence(timeout: 10))
+        XCTAssertFalse(trimmedSailing.exists)
+        scrollTo(sailing, in: app)
+        sailing.tap()
+        scrollTo(duration, in: app)
+        XCTAssertEqual(duration.label, "48:00")
+    }
+
     private func secondsInTime(_ label: String) -> Double {
         label.split(separator: ":").compactMap { Double($0) }.reduce(0) { $0 * 60 + $1 }
     }

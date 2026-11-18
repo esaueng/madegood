@@ -265,24 +265,64 @@ Rules:
 ## Local trim metadata
 
 The trim store keeps one JSON file per session, named `<lowercase-session-id>.json`
-in an app-owned directory outside the recording folders. The file contains
-`{"version":1,"start":1.25,"end":5.5}`. Bounds are inclusive and use seconds from
-the original recording start. The store atomically replaces the file when an edit
-changes. Restore Original removes it. Raw recording v1 and track v1 keep their
-existing contents and schemas, and the trim metadata stays on the device.
+in an app-owned directory outside the recording folders. A beginning/end trim uses
+`{"version":1,"start":1.25,"end":5.5}`. An edit with interior cuts uses
+`{"version":2,"keptSpans":[{"start":1.25,"end":5.5},{"start":7,"end":10}]}`.
+Spans are ordered, strictly disjoint and positive in duration. Bounds are inclusive
+and use seconds from the original recording start, so a fix or event exactly at
+either cut boundary is retained. The store atomically replaces the file when an
+edit changes. Restore Original removes it. The edit metadata stays on the device
+outside the raw and track-v1 files.
 
 The selected track's start date shifts by the lower bound. Its GPS, heart rate
-and events use that shifted origin. GPX writes each retained fix's timestamp from
-the original recording clock. Preview uses the same replay as the original. It
-carries forward an active manual pause and recalculates auto-pause and auto-laps
-from the retained samples.
+and events use that shifted origin. Replay keeps the removed intervals visible on
+this clock and skips them during playback. Total time sums the lengths of the
+retained spans. GPS filtering, speed windows, lap ranges and interpolation start
+afresh after each cut. Analysis carries forward an active manual pause from the
+source clock and recalculates auto-pause and auto-laps from the retained samples.
+Off-water proposals use the original recording clock. An accepted proposal
+uses the same inclusive kept-span bounds as a manual cut.
 
-Future middle cuts should produce ordered, disjoint spans on the original clock.
-Replay each span independently and give GPX, maps and charts explicit span
-boundaries, including for gaps shorter than their usual split thresholds. Combine
-distance and time from the individual replays and take speed bests from windows
-within a span. Keep off-water suggestions on the original clock until the user
-accepts them as edits.
+Selected GPX writes each fix's timestamp from the original recording clock and
+begins a new track segment after a cut regardless of GPS gap length. The track's
+`extensions` contains one `mg:removedInterval` in namespace
+`urn:madegood:gpx:edit:1` for every cut. Its `start` and `end` attributes are
+numeric seconds from the GPX metadata start time. Readers that ignore the
+extension still see separate track segments.
+
+---
+
+## Boundary pack v1
+
+WaterKit's local off-water prototype reads a bounded synthetic `.mgwb` file. The first line is
+`MGWB ` followed by eight lowercase hex digits and LF. The digits encode zlib-compatible
+CRC-32 of the exact remaining bytes, including any final newline. The remainder is UTF-8 JSON.
+The importer validates the entire file before offering evidence. CRC-32 covers accidental
+corruption. The provenance fields are producer declarations.
+
+- `manifest` requires `formatVersion: 1`, a nonempty `packID`, positive integer `revision`,
+  a `provenance` object and finite nonnegative `uncertaintyMeters`. Provenance requires
+  `kind: "synthetic"`, plus nonempty `source`, `revision` and `license` strings.
+- `coverage` is the verified rectangle, with integer `westE6`, `eastE6`, `southE6`, `northE6`
+  bounds in WGS84 microdegrees. Each span is at most one degree and greater than zero. The
+  rectangle excludes the antimeridian and stays within 80 degrees of the equator.
+- `coastalWater`, `inlandWater`, `docks`, `bridges` and `unverified` are required polygon arrays.
+  Each polygon has an `outer` ring and a `holes` array. Vertices are `[longitudeE6, latitudeE6]`
+  and edges are straight in these coordinates. Closure is implicit. Rings are simple, with
+  unique vertices and no consecutive collinear triples. Holes are strictly inside the outer
+  ring and disjoint from one another. All vertices lie within the coverage rectangle. Water is
+  the union of its two layers outside masks and unverified areas.
+- Limits are 256 KiB per file, 256 vertices per polygon including holes, and 4096 vertices total.
+
+Clearance uses a distance floor of 110,000 m per degree of latitude and 110,000 m times the
+cosine of the maximum absolute latitude of the rectangle per degree of longitude. For paths
+inside coverage, these scales bound the WGS84 metric from below. Paths leaving the rectangle
+must first reach its edge, which also caps the reported distance. The adapter also caps clearance
+by every polygon ring, including internal seams and holes, then subtracts the combined source,
+processing and quantization uncertainty and one millimetre for floating-point roundoff. Fixes
+in or within that allowance of masks or water edges yield ambiguous evidence. Unverified areas
+and the exterior and uncertainty band of coverage yield unknown, including where another layer
+offers evidence. See the [local validation commands](off-water-suggestions.md#local-boundary-pack-prototype).
 
 ---
 

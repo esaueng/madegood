@@ -17,22 +17,34 @@ struct SessionReplayView: View {
     struct Highlight {
         let title: String
         let range: ClosedRange<Double>
+        let ranges: [ClosedRange<Double>]
+        let eventTime: Double?
         let isTrim: Bool
+        let removedIntervals: [ClosedRange<Double>]
         let route: [[CLLocationCoordinate2D]]
         let speedCurve: [(elapsed: Double, speed: Double)]
 
-        init(title: String, range: ClosedRange<Double>, data: Data, showsSpeedWindow: Bool) {
+        init(
+            title: String, range: ClosedRange<Double>, ranges: [ClosedRange<Double>]? = nil,
+            eventTime: Double? = nil, data: Data, showsSpeedWindow: Bool = false
+        ) {
             self.title = title
             self.range = range
+            self.ranges = ranges ?? [range]
+            self.eventTime = eventTime
             isTrim = false
-            route = data.route(in: range)
+            removedIntervals = []
+            route = self.ranges.flatMap { data.route(in: $0) }
             speedCurve = showsSpeedWindow ? data.timeline.speedCurve(in: range) : []
         }
 
-        init(keptRange: ClosedRange<Double>, preview: Data?) {
+        init(keptRange: ClosedRange<Double>, removedIntervals: [ClosedRange<Double>], preview: Data?) {
             title = "Kept"
             range = keptRange
+            ranges = [keptRange]
+            eventTime = nil
             isTrim = true
+            self.removedIntervals = removedIntervals
             speedCurve = []
             route = preview.map { $0.route(in: $0.timeline.start...$0.timeline.duration) } ?? []
         }
@@ -58,17 +70,28 @@ struct SessionReplayView: View {
 
     var body: some View {
         let selected = selection
+        let removedIntervals =
+            highlight?.isTrim == true ? (highlight?.removedIntervals ?? []) : data.timeline.removedIntervals
+        let insideCut = removedIntervals.contains {
+            selected.elapsed > $0.lowerBound && selected.elapsed < $0.upperBound
+        }
         let time =
             (highlight != nil && !isPlaying) || selected.elapsed < 0
             ? Highlight.time(selected.elapsed) : Formatting.elapsed(selected.elapsed)
         Section {
-            SessionReplayMap(data: data, selection: selected, time: time, highlight: highlight, select: seek)
-                .frame(height: 220)
-                .listRowInsets(EdgeInsets())
+            SessionReplayMap(
+                data: data, selection: selected, time: time, highlight: highlight,
+                insideCut: insideCut && highlight?.isTrim != true, select: seek
+            )
+            .frame(height: 220)
+            .listRowInsets(EdgeInsets())
 
             if let highlight {
                 Text(highlight.label)
                     .font(.subheadline.weight(.semibold).monospacedDigit())
+                    .accessibilityValue(
+                        highlight.route.count > 1 ? "\(highlight.route.count) highlighted route segments" : ""
+                    )
                     .accessibilityIdentifier("replay.range")
             }
 
@@ -120,12 +143,14 @@ struct SessionReplayView: View {
                         .buttonStyle(.borderless)
                         .accessibilityIdentifier("replay.playPause")
                     }
-                    chart(selected)
+                    chart(selected, removedIntervals: removedIntervals)
                         .frame(height: 140)
                         .accessibilityElement(children: .ignore)
                         .accessibilityLabel("Session replay")
                         .accessibilityValue(
-                            "\(time) elapsed, GPS speed \(selected.speed == nil ? "unavailable" : speed), route distance \(distance)"
+                            insideCut
+                                ? "\(time) elapsed, removed interval"
+                                : "\(time) elapsed, GPS speed \(selected.speed == nil ? "unavailable" : speed), route distance \(distance)"
                         )
                         .accessibilityAdjustableAction { direction in
                             let step = max(1, ((data.timeline.duration - data.timeline.start) / 100).rounded())
@@ -156,7 +181,11 @@ struct SessionReplayView: View {
                 }
                 guard !Task.isCancelled, isPlaying else { return }
                 let delta = startedAt.duration(to: clock.now).components
-                let next = min(data.timeline.duration, start + Double(delta.seconds) + Double(delta.attoseconds) / 1e18)
+                var next = start + Double(delta.seconds) + Double(delta.attoseconds) / 1e18
+                for cut in data.timeline.removedIntervals where cut.upperBound > start && next > cut.lowerBound {
+                    next += cut.upperBound - max(start, cut.lowerBound)
+                }
+                next = min(data.timeline.duration, next)
                 elapsed = next
                 if next >= data.timeline.duration {
                     isPlaying = false
@@ -174,22 +203,33 @@ struct SessionReplayView: View {
         onSeek(time)
     }
 
-    private func chart(_ selected: SessionReplayTimeline.Selection) -> some View {
+    private func chart(
+        _ selected: SessionReplayTimeline.Selection, removedIntervals: [ClosedRange<Double>]
+    ) -> some View {
         Chart {
             if let highlight {
-                RectangleMark(
-                    xStart: .value("Start", highlight.range.lowerBound / 60),
-                    xEnd: .value("End", highlight.range.upperBound / 60)
-                )
-                .foregroundStyle(Color.accentColor.opacity(0.2))
-                let boundaries =
-                    highlight.range.lowerBound == highlight.range.upperBound
-                    ? [highlight.range.lowerBound] : [highlight.range.lowerBound, highlight.range.upperBound]
-                ForEach(boundaries, id: \.self) { boundary in
-                    RuleMark(x: .value("Boundary", boundary / 60))
+                ForEach(highlight.ranges, id: \.self) { range in
+                    RectangleMark(
+                        xStart: .value("Start", range.lowerBound / 60),
+                        xEnd: .value("End", range.upperBound / 60)
+                    )
+                    .foregroundStyle(Color.accentColor.opacity(0.2))
+                    RuleMark(x: .value("Boundary", range.lowerBound / 60))
                         .foregroundStyle(Color.accentColor)
                         .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                    if range.upperBound != range.lowerBound {
+                        RuleMark(x: .value("Boundary", range.upperBound / 60))
+                            .foregroundStyle(Color.accentColor)
+                            .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                    }
                 }
+            }
+            ForEach(removedIntervals, id: \.self) { range in
+                RectangleMark(
+                    xStart: .value("Removed from", range.lowerBound / 60),
+                    xEnd: .value("Removed through", range.upperBound / 60)
+                )
+                .foregroundStyle(Theme.coral.opacity(0.2))
             }
             LinePlot(
                 data.speeds, x: .value("Minutes", \.minutes), y: .value("Speed", \.value),
@@ -413,9 +453,71 @@ private struct SessionReplayMap: View {
     let selection: SessionReplayTimeline.Selection
     let time: String
     let highlight: SessionReplayView.Highlight?
+    let insideCut: Bool
     let select: (Double) -> Void
 
     var body: some View {
+        Group {
+            if DemoOffWater.storage != nil {
+                offlineRoute
+            } else {
+                basemap
+            }
+        }
+        .accessibilityIdentifier("replay.map")
+        .overlay(alignment: .top) {
+            if selection.position == nil {
+                Text(insideCut ? "Removed interval" : "No GPS fix at this time")
+                    .font(.caption)
+                    .padding(6)
+                    .background(.regularMaterial, in: Capsule())
+                    .padding(8)
+                    .allowsHitTesting(false)
+            }
+        }
+    }
+
+    /// The synthetic fixture uses the same route fragments without loading map tiles.
+    private var offlineRoute: some View {
+        Canvas { context, size in
+            guard let rect = data.mapRect else { return }
+            let scale = min(size.width / rect.width, size.height / rect.height)
+            func project(_ coordinate: CLLocationCoordinate2D) -> CGPoint {
+                let point = MKMapPoint(coordinate)
+                return CGPoint(
+                    x: size.width / 2 + (point.x - rect.midX) * scale,
+                    y: size.height / 2 + (point.y - rect.midY) * scale)
+            }
+            func draw(_ coordinates: [CLLocationCoordinate2D], color: Color, width: CGFloat) {
+                if coordinates.count == 1, let coordinate = coordinates.first {
+                    let point = project(coordinate)
+                    let dot = CGRect(x: point.x - width / 2, y: point.y - width / 2, width: width, height: width)
+                    context.fill(Path(ellipseIn: dot), with: .color(color))
+                } else {
+                    var path = Path()
+                    path.addLines(coordinates.map(project))
+                    context.stroke(path, with: .color(color), style: StrokeStyle(lineWidth: width, lineCap: .round))
+                }
+            }
+            for line in data.lines {
+                let color = highlight?.isTrim == true ? Color.gray : line.level.map { Theme.speedScale[$0] } ?? .gray
+                draw(line.coordinates, color: color, width: 4)
+            }
+            for index in data.isolatedFixes {
+                draw([data.coordinates[index]], color: .gray, width: 6)
+            }
+            for fragment in highlight?.route ?? [] {
+                draw(fragment, color: .accentColor, width: 5)
+            }
+            if let position = selection.position {
+                draw([CLLocationCoordinate2D(position)], color: .accentColor, width: 12)
+            }
+        }
+        .background(.quaternary)
+        .accessibilityLabel("Synthetic route")
+    }
+
+    private var basemap: some View {
         MapReader { proxy in
             Map(initialPosition: data.mapRect.map { .rect($0) } ?? .automatic) {
                 ForEach(data.lines.indices, id: \.self) { index in
@@ -468,17 +570,6 @@ private struct SessionReplayMap: View {
                 SpatialTapGesture().onEnded { tap in
                     if let time = time(at: tap.location, on: proxy) { select(time) }
                 })
-        }
-        .accessibilityIdentifier("replay.map")
-        .overlay(alignment: .top) {
-            if selection.position == nil {
-                Text("No GPS fix at this time")
-                    .font(.caption)
-                    .padding(6)
-                    .background(.regularMaterial, in: Capsule())
-                    .padding(8)
-                    .allowsHitTesting(false)
-            }
         }
     }
 

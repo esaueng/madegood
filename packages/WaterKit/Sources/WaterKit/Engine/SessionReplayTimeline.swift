@@ -2,6 +2,9 @@
 /// Route distance follows the displayed line, including fixes recorded during pauses.
 /// The session summary continues to use the engine's moving-distance accounting.
 public struct SessionReplayTimeline: Sendable {
+    /// Longer steps are outages for the displayed route and replay split reporting.
+    static let maxRouteGap = 5.0
+
     public struct Position: Sendable {
         public let latitude: Double
         public let longitude: Double
@@ -17,7 +20,7 @@ public struct SessionReplayTimeline: Sendable {
 
     public struct Selection: Sendable {
         public let elapsed: Double
-        /// Absent outside the track or in a GPS gap.
+        /// Absent outside the track, in a GPS gap, or inside a removed interval.
         public let position: Position?
         /// Absent without a Doppler reading or readings bracketing the selection.
         public let speed: Double?
@@ -27,17 +30,24 @@ public struct SessionReplayTimeline: Sendable {
     public let points: [Point]
     public let start: Double
     public let duration: Double
-    private let speedProfile: SpeedProfile
+    public let removedIntervals: [ClosedRange<Double>]
+    private let speedProfiles: [SpeedProfile]
 
     public init(replay: SessionReplay, recordedFixes: [GPSFix], endTime: Double? = nil) {
         start = min(0, replay.fixes.first?.t ?? 0)
         duration = max(replay.metrics.elapsed, endTime ?? 0)
-        speedProfile = SpeedProfile(replay.fixes.filter { ($0.speed ?? -1) >= 0 })
+        removedIntervals = replay.removedIntervals
+        speedProfiles = replay.fixSpans.map { SpeedProfile($0.filter { ($0.speed ?? -1) >= 0 }) }
         // SessionReplay retains the accepted fixes but drops the anchor flags. Recover
         // those flags with the same filter, including recovery after consecutive rejects.
         var filter = GPSFilter()
         var anchors: Set<Double> = []
+        var nextSpan = 0
         for fix in recordedFixes.filter({ $0.t.isFinite }).sorted(by: { $0.t < $1.t }) {
+            while nextSpan < removedIntervals.count, fix.t >= removedIntervals[nextSpan].upperBound {
+                filter = GPSFilter()
+                nextSpan += 1
+            }
             if case .accepted(let accepted) = filter.ingest(fix), accepted.isAnchor {
                 anchors.insert(fix.t)
             }
@@ -51,7 +61,7 @@ public struct SessionReplayTimeline: Sendable {
             if let previous = points.last {
                 // A chart cursor should stop tracing the route over a recording
                 // outage even if the engine can still accept the next fix.
-                if anchors.contains(fix.t) || fix.t - previous.elapsed > 5 {
+                if anchors.contains(fix.t) || fix.t - previous.elapsed > Self.maxRouteGap {
                     segment += 1
                 } else {
                     distance += Geo.distance(
@@ -70,7 +80,8 @@ public struct SessionReplayTimeline: Sendable {
     /// A route outage still has no interpolated position.
     public func speedCurve(in window: ClosedRange<Double>) -> [(elapsed: Double, speed: Double)] {
         let gap = window.upperBound - window.lowerBound
-        guard let first = speedProfile.interpolatedValue(at: window.lowerBound, maxGap: gap),
+        guard let speedProfile = speedProfile(for: window),
+            let first = speedProfile.interpolatedValue(at: window.lowerBound, maxGap: gap),
             let last = speedProfile.interpolatedValue(at: window.upperBound, maxGap: gap),
             speedProfile.integral(from: window.lowerBound, to: window.upperBound, maxGap: gap) != nil
         else { return [] }
@@ -84,7 +95,8 @@ public struct SessionReplayTimeline: Sendable {
         let time = elapsed.isFinite ? min(max(start, elapsed), duration) : 0
         let windowSpeed = speedWindow.flatMap { window in
             window.contains(time)
-                ? speedProfile.interpolatedValue(at: time, maxGap: window.upperBound - window.lowerBound) : nil
+                ? speedProfile(for: window)?.interpolatedValue(at: time, maxGap: window.upperBound - window.lowerBound)
+                : nil
         }
         var low = 0
         var high = points.count
@@ -129,5 +141,13 @@ public struct SessionReplayTimeline: Sendable {
             speed = nil
         }
         return Selection(elapsed: time, position: position, speed: windowSpeed ?? speed, routeDistance: distance + step)
+    }
+
+    private func speedProfile(for window: ClosedRange<Double>) -> SpeedProfile? {
+        for (index, interval) in removedIntervals.enumerated() {
+            if window.upperBound <= interval.lowerBound { return speedProfiles[index] }
+            if window.lowerBound < interval.upperBound { return nil }
+        }
+        return speedProfiles.last
     }
 }

@@ -17,6 +17,11 @@ enum RecordingStore {
     }
 
     static var root: URL {
+        #if DEBUG && os(iOS)
+            if let demo = DemoOffWater.storage {
+                return demo.appendingPathComponent("Recordings", isDirectory: true)
+            }
+        #endif
         if let demoNamespace {
             let documents = recordingsRoot.deletingLastPathComponent()
             return documents.appendingPathComponent("DemoHistory", isDirectory: true)
