@@ -38,6 +38,17 @@ jobs:
           # Full history: the version's patch number is the commit count (scripts/testflight).
           fetch-depth: 0
 
+      # The version's patch number is the commit count, so an upload from any commit
+      # other than main's current tip (another branch, or a re-run of an older run)
+      # would ship a lower version than one already uploaded.
+      - name: Require main's current tip
+        run: |
+          tip="$(git ls-remote origin refs/heads/main | cut -f1)"
+          if [ "$(git rev-parse HEAD)" != "$tip" ]; then
+            echo "::error::This commit is not main's current tip ($tip); run the workflow from main."
+            exit 1
+          fi
+
       - uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d # v5.2.9
         with:
           install: true

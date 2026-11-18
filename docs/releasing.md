@@ -17,8 +17,9 @@ Every build gets a new version and build number without a commit:
 - **Version** (`CFBundleShortVersionString`): the major.minor from the xcconfig plus the
   number of commits on the built branch, for example `0.1.39`. Main only gains commits,
   so each merge ships a higher version; running the workflow twice on the same commit
-  gives the same version with a newer build number. Run it from `main`: another branch
-  has a different count and can produce a version that is out of order.
+  gives the same version with a newer build number. The workflow uploads only main's
+  current tip, and stops otherwise: another branch, or a re-run of an older run, would
+  ship a lower version than one already uploaded. A tag must point at that tip too.
 - **Build number** (`CFBundleVersion`): the UTC time of the build (`20261117.91530` for
   09:15:30), so it always increases, even when an older run is re-run.
 
