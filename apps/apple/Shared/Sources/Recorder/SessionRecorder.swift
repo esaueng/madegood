@@ -263,7 +263,7 @@ final class SessionRecorder {
         #endif
 
         if demo {
-            startDemoFeed(session: sessionId)
+            startDemoFeed(session: sessionId, sport: sport)
         } else if let writer = writers[.gps] {
             let location = LocationSource(writer: writer) { [weak self] line in
                 Task { @MainActor in self?.ingestFix(line, session: sessionId) }
@@ -492,14 +492,14 @@ final class SessionRecorder {
     }
 
     /// Feeds the synthetic route through the same path as real sensors (see `DemoFeed`).
-    private func startDemoFeed(session: UUID) {
+    private func startDemoFeed(session: UUID, sport: Sport) {
         loops.append(
             Task { [weak self] in
                 while !Task.isCancelled {
                     try? await Task.sleep(for: .seconds(1))
                     guard let self, self.isRecording else { return }
                     let now = Date().timeIntervalSince1970
-                    let fix = DemoFeed.fix(at: now, startUnix: self.startUnix)
+                    let fix = DemoFeed.fix(at: now, startUnix: self.startUnix, sport: sport)
                     let hr = DemoFeed.heartRate(at: now, startUnix: self.startUnix)
                     self.writers[.gps]?.append(fix)
                     self.writers[.hr]?.append(hr)

@@ -576,6 +576,9 @@ private struct LiveView: View {
                 primaryMetric(primary)
             }
             supportingMetrics(Array(supporting.prefix(3)))
+            if let categories = readings.speedCategories {
+                speedBests(categories, display: display)
+            }
             DisclosureGroup("More metrics") {
                 VStack(spacing: 12) {
                     ForEach(supporting.dropFirst(3)) { metric in
@@ -635,6 +638,30 @@ private struct LiveView: View {
         }
         .padding(12)
         .background(.background.secondary, in: .rect(cornerRadius: 12))
+    }
+
+    /// Windsurfing: the speedsurfing categories (docs/metrics.md), two to a row.
+    private func speedBests(_ categories: SpeedCategoryReadings, display: LiveDisplay) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Speed bests")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.secondary)
+            let column = GridItem(.flexible(), alignment: .leading)
+            LazyVGrid(columns: [column, column], alignment: .leading, spacing: 12) {
+                ForEach(categories.rows) { row in
+                    let metric = LiveMetric(id: row.id, title: row.title, text: display.speed(row.value))
+                    VStack(alignment: .leading, spacing: 2) {
+                        metric.caption.font(.caption)
+                        metric.reading(numberFont: .title3.weight(.semibold), unitFont: .footnote)
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(.background.secondary, in: .rect(cornerRadius: 12))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("live.speedBests")
     }
 
     private func metricRow(_ metric: LiveMetric) -> some View {

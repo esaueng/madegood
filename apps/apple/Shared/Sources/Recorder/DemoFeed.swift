@@ -20,14 +20,19 @@ enum DemoFeed {
     // `endedAt` behind the fixes).
     /// Constant speed of the synthetic boat, m/s.
     static let speed = 2.5
+    /// Windsurfing's demo board is faster, so its distance categories fill within a test.
+    static func speed(for sport: Sport?) -> Double {
+        sport == .windsurfing ? 8 : speed
+    }
     /// A fake origin in open water, like the anonymized fixtures (no real location).
     static let origin = (lat: 10.0, lon: -30.0)
 
     /// The fix at `ts` (unix time), heading east. Each fix is stamped with the real time it
     /// is made: a loop that runs late (a busy CI simulator) must not fall behind the
     /// session clock, or the engine treats its speed as stale.
-    static func fix(at ts: Double, startUnix: Double) -> RawFormat.GPSLine {
+    static func fix(at ts: Double, startUnix: Double, sport: Sport? = nil) -> RawFormat.GPSLine {
         let elapsed = max(0, ts - startUnix)
+        let speed = speed(for: sport)
         let point = Geo.destination(lat: origin.lat, lon: origin.lon, bearing: 90, distance: speed * elapsed)
         return RawFormat.GPSLine(ts: ts, lat: point.lat, lon: point.lon, hacc: 5, spd: speed, crs: 90)
     }

@@ -7,14 +7,18 @@ public struct SportProfile: Sendable, Hashable {
     public var autoLapDistance: Double?
     /// Whether the session is saved to Apple Health as a workout by default.
     public var savesWorkoutByDefault: Bool
+    /// Whether the engine tracks the speedsurfing categories (docs/metrics.md).
+    public var tracksSpeedCategories: Bool
 
     public init(
-        sport: Sport, autoPause: AutoPause.Config, autoLapDistance: Double? = nil, savesWorkoutByDefault: Bool = true
+        sport: Sport, autoPause: AutoPause.Config, autoLapDistance: Double? = nil, savesWorkoutByDefault: Bool = true,
+        tracksSpeedCategories: Bool? = nil
     ) {
         self.sport = sport
         self.autoPause = autoPause
         self.autoLapDistance = autoLapDistance
         self.savesWorkoutByDefault = savesWorkoutByDefault
+        self.tracksSpeedCategories = tracksSpeedCategories ?? (sport == .windsurfing)
     }
 
     /// Defaults from docs/PLAN.md §5: auto-pause is on for paddling and off for sailing,

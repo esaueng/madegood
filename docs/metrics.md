@@ -131,6 +131,30 @@ the replay cursor to the estimated wind-axis crossing. Both use the displayed
 selection's clock. The results require wind and sufficient track evidence and
 live in the detail view alongside the wind input.
 
+## Windsurf speed categories
+
+Windsurfing sessions track the speedsurfing categories from PLAN §5, live on the watch
+and phone and again in session detail. Both run the same streaming code over the
+engine's accepted fixes, so the results match. Every category uses Doppler speed,
+never position changes; position is used only for alpha's start-to-end check.
+
+Speed is linear between fixes, so Doppler distance over a span is the trapezoid
+integral of speed. Every span ends at a fix; its start is interpolated, between fixes
+if needed. A span never crosses an interval of more than 10 s between fixes (the
+2 s window: 2 s) or a removed interval. Exact ties keep the earlier span.
+
+| Category | Definition |
+|---|---|
+| 2 s | Best 2 s mean speed: the session's max 2 s speed |
+| 10 s | Best 10 s mean speed: the session's max 10 s speed |
+| 5 × 10 s | Mean of five 10 s windows that do not overlap (they may touch), picked greedily best first. Blank until five fit |
+| 100 m, 500 m, nautical mile | Distance over the shortest time to cover 100 m, 500 m or 1852 m of Doppler distance |
+| 1 hour | Doppler distance in the best 3600 s window, over 3600 s, including slow stretches |
+| Alpha 500 | The fastest 500 m span whose start position is within 50 m of the fix where it ends. The start position is interpolated between fixes. It may not start before a GPS re-anchor, where position jumped |
+
+Pauses do not stop the categories, as for the max speeds; GPS gaps do. Planing time
+and gybe count (PLAN §5) are not computed yet.
+
 ## Heart rate
 
 Current heart rate is the latest reading. Average is the mean of the readings, and max
@@ -138,8 +162,8 @@ the highest. Readings that are not positive and finite are ignored.
 
 ## Session summary
 
-Track v1 stores the analysis as `summary`, with `analyzerVersion` (currently `1.0.0`,
-bumped whenever a definition on this page changes):
+Track v1 stores the analysis as `summary`, with `analyzerVersion` (currently `1.1.0`,
+bumped whenever a definition on this page changes; 1.1.0 added the windsurf keys):
 
 | Key | Meaning |
 |---|---|
@@ -147,6 +171,7 @@ bumped whenever a definition on this page changes):
 | `movingTime`, `elapsed` | Moving time and total time, s |
 | `averageSpeed`, `maxSpeed2s`, `maxSpeed10s` | m/s; left out when unknown |
 | `heartRateAverage`, `heartRateMax` | bpm; left out without heart rate |
+| `best5x10s`, `best100m`, `best500m`, `bestNauticalMile`, `best1h`, `alpha500` | Windsurfing only, m/s; left out until the session has a span that qualifies (see "Windsurf speed categories") |
 | `laps` | Each lap's `start`, `end`, `distance`, `movingTime` and `auto`; empty with no laps |
 
 The track's events are the user's events plus the regenerated auto-pause, auto-resume
