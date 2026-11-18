@@ -92,6 +92,44 @@ manual lap. Auto-laps are recorded as `lap` events with `{"auto": true}`. Each l
 reports its start and end time, moving time, distance, and average speed (distance
 over moving time).
 
+## Paddling replay splits
+
+Kayak, canoe and SUP replay reports successive 1 km splits from the selected track.
+Workout laps remain separate. Manual laps and workout auto-laps do not reset the
+split counter. The engine's accepted GPS steps and confirmed moving intervals supply
+split distance and time. Steps to a new GPS anchor and steps longer than 5 seconds
+are left out, matching replay's route breaks. The workout totals can include steps
+between fixes more than 5 seconds apart when the GPS filter did not re-anchor.
+
+A complete split ends where accumulated distance crosses 1,000 m, interpolating time
+in proportion to distance along the last step. A final positive-distance remainder is
+reported as incomplete and ends at the last contributing fix. Average speed is
+distance over moving time. The result uses metres and seconds. Format distance and
+average speed with the selected sport's display units without changing split boundaries.
+
+Each result exposes its index, completion flag, exact elapsed bounds and contributing
+moving ranges. Replay can seek to the lower bound and highlight each moving range
+separately, preserving gaps between spans. A middle cut ends the current moving range
+but keeps the same split counter. Time and distance from the cut do not contribute.
+The bounds use the selected track's clock, including when a trim rebases it. Split
+results are computed for replay and are absent from the saved summary. Stroke rate
+and stroke-based intervals require motion data and
+validation against the labeled stroke count and rate targets in PLAN §5.
+
+## Sailing replay maneuvers
+
+The iPhone's Moments section uses a session-wide wind-from direction entered in
+degrees clockwise from true north. This input is optional and lives in the open
+detail view. With a direction, replay looks for a sustained course change across
+the wind axis with a Doppler speed dip. An upwind crossing is a tack and a
+downwind crossing is a gybe. Each retained span is analyzed independently. Pauses,
+GPS gaps and unreliable course or speed interrupt the evidence within a span.
+
+Each result highlights the detector's approach-to-departure bounds and moves
+the replay cursor to the estimated wind-axis crossing. Both use the displayed
+selection's clock. The results require wind and sufficient track evidence and
+live in the detail view alongside the wind input.
+
 ## Heart rate
 
 Current heart rate is the latest reading. Average is the mean of the readings, and max

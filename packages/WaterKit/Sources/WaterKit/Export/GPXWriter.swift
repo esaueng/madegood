@@ -10,13 +10,15 @@ import Foundation
 /// - `<ele>` when the fix has an altitude; `<time>` is `startedAt + t` in ISO 8601 UTC.
 /// - Doppler speed (m/s) and course (degrees true) in a Garmin TrackPointExtension v2 block.
 /// - A new `<trkseg>` after each pause→resume pair and after any gap between fixes longer
-///   than `segmentGap`.
+///   than `segmentGap`. Exporting a selection also starts a new segment after each cut.
 public struct GPXWriter: Sendable {
     public static let gpxNamespace = "http://www.topografix.com/GPX/1/1"
     public static let gpxSchemaLocation = "http://www.topografix.com/GPX/1/1/gpx.xsd"
     /// Garmin's TrackPointExtension v2, which most GPX readers understand.
     public static let trackPointExtensionNamespace = "http://www.garmin.com/xmlschemas/TrackPointExtension/v2"
     public static let trackPointExtensionSchemaLocation = "http://www.garmin.com/xmlschemas/TrackPointExtensionv2.xsd"
+    /// Local edit intervals, in seconds from the GPX metadata start time.
+    public static let editExtensionNamespace = "urn:madegood:gpx:edit:1"
     /// Default `segmentGap`, s. Longer than any normal GPS dropout at 1 Hz, short enough
     /// that a signal loss (watch under water, phone in a dry bag) is not drawn as a
     /// straight line across the chart.
@@ -42,15 +44,21 @@ public struct GPXWriter: Sendable {
 
     /// The selected GPX document, with the retained fixes' original timestamps.
     public func data(for selection: SessionSelection) -> Data {
-        Data(string(for: selection.track, originalClock: selection.originalGPSClock).utf8)
+        Data(
+            string(
+                for: selection.track, originalClock: selection.originalGPSClock,
+                removedIntervals: selection.replay.removedIntervals
+            ).utf8)
     }
 
     /// The GPX document.
     public func string(for track: Track) -> String {
-        string(for: track, originalClock: nil)
+        string(for: track, originalClock: nil, removedIntervals: [])
     }
 
-    private func string(for track: Track, originalClock: SessionSelection.OriginalGPSClock?) -> String {
+    private func string(
+        for track: Track, originalClock: SessionSelection.OriginalGPSClock?, removedIntervals: [ClosedRange<Double>]
+    ) -> String {
         let name = Self.escape(name ?? Self.displayName(track.sport))
         var xml = """
             <?xml version="1.0" encoding="UTF-8"?>
@@ -69,7 +77,14 @@ public struct GPXWriter: Sendable {
                 <type>\(Self.escape(track.sport.rawValue))</type>
 
             """
-        for segment in indexedSegments(of: track) {
+        if !removedIntervals.isEmpty {
+            xml += "    <extensions xmlns:mg=\"\(Self.editExtensionNamespace)\">\n"
+            for interval in removedIntervals {
+                xml += "      <mg:removedInterval start=\"\(interval.lowerBound)\" end=\"\(interval.upperBound)\"/>\n"
+            }
+            xml += "    </extensions>\n"
+        }
+        for segment in indexedSegments(of: track, editBreaks: removedIntervals.map(\.upperBound)) {
             xml += "    <trkseg>\n"
             for (offset, fix) in segment {
                 let date =
@@ -91,21 +106,26 @@ public struct GPXWriter: Sendable {
         indexedSegments(of: track).map { $0.map(\.element) }
     }
 
-    private func indexedSegments(of track: Track) -> [[(offset: Int, element: GPSFix)]] {
+    public func segments(of selection: SessionSelection) -> [[GPSFix]] {
+        indexedSegments(of: selection.track, editBreaks: selection.replay.removedIntervals.map(\.upperBound))
+            .map { $0.map(\.element) }
+    }
+
+    private func indexedSegments(of track: Track, editBreaks: [Double] = []) -> [[(offset: Int, element: GPSFix)]] {
         let fixes = track.gps.enumerated()
             .filter { Self.isExportable($0.element) }
             .sorted { $0.element.t != $1.element.t ? $0.element.t < $1.element.t : $0.offset < $1.offset }
-        let resumes = Self.resumeTimes(track.events)
+        let breaks = (Self.resumeTimes(track.events, editBreaks: editBreaks) + editBreaks).sorted()
 
         var segments: [[(offset: Int, element: GPSFix)]] = []
         var current: [(offset: Int, element: GPSFix)] = []
-        var nextResume = 0
+        var nextBreak = 0
         for indexed in fixes {
             let fix = indexed.element
             if let last = current.last?.element {
-                while nextResume < resumes.count && resumes[nextResume] <= last.t { nextResume += 1 }
-                let resumedBetween = nextResume < resumes.count && resumes[nextResume] <= fix.t
-                if resumedBetween || fix.t - last.t > segmentGap {
+                while nextBreak < breaks.count && breaks[nextBreak] <= last.t { nextBreak += 1 }
+                let breaksBetween = nextBreak < breaks.count && breaks[nextBreak] <= fix.t
+                if breaksBetween || fix.t - last.t > segmentGap {
                     segments.append(current)
                     current = []
                 }
@@ -125,14 +145,19 @@ public struct GPXWriter: Sendable {
 
     /// Times of `resume` events that follow a `pause`, sorted. A resume without an
     /// earlier pause, or a pause that is never resumed, splits nothing.
-    static func resumeTimes(_ events: [SessionEvent]) -> [Double] {
+    static func resumeTimes(_ events: [SessionEvent], editBreaks: [Double] = []) -> [Double] {
         let ordered = events.enumerated()
             .filter { $0.element.t.isFinite }
             .sorted { $0.element.t != $1.element.t ? $0.element.t < $1.element.t : $0.offset < $1.offset }
             .map(\.element)
         var paused = false
         var times: [Double] = []
+        var nextSpan = 0
         for event in ordered {
+            while nextSpan < editBreaks.count, event.t >= editBreaks[nextSpan] {
+                paused = false
+                nextSpan += 1
+            }
             if event.type == .pause {
                 paused = true
             } else if event.type == .resume && paused {

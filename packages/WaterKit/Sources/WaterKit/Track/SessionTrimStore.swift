@@ -12,13 +12,22 @@ public struct SessionTrimStore: Sendable {
         let version: Int
     }
 
-    private struct Record: Codable {
+    private struct LegacyRecord: Codable {
         let version: Int
         let start: Double
         let end: Double
     }
 
-    private static let version = 1
+    private struct Record: Codable {
+        struct Span: Codable {
+            let start: Double
+            let end: Double
+        }
+
+        let version: Int
+        let keptSpans: [Span]
+    }
+
     private let directory: URL
 
     public init(directory: URL) {
@@ -37,16 +46,31 @@ public struct SessionTrimStore: Sendable {
         }
         let decoder = JSONDecoder()
         let header = try decoder.decode(Header.self, from: data)
-        guard header.version == Self.version else { throw Error.unsupportedVersion(header.version) }
+        guard header.version == 1 || header.version == 2 else { throw Error.unsupportedVersion(header.version) }
+        if header.version == 1 {
+            let legacy = try decoder.decode(LegacyRecord.self, from: data)
+            return try SessionTrim(start: legacy.start, end: legacy.end)
+        }
         let record = try decoder.decode(Record.self, from: data)
-        return try SessionTrim(start: record.start, end: record.end)
+        let spans = try record.keptSpans.map { span in
+            guard span.start <= span.end else { throw SessionTrim.Error.invalidBounds }
+            return span.start...span.end
+        }
+        return try SessionTrim(retaining: spans)
     }
 
-    /// Atomically replaces a trim with a range on the original recording's timeline.
+    /// Atomically replaces a trim with retained spans on the original recording clock.
     public func save(_ trim: SessionTrim, for session: RawSession) throws {
         try trim.validate(in: session)
-        let record = Record(version: Self.version, start: trim.range.lowerBound, end: trim.range.upperBound)
-        let data = try JSONEncoder().encode(record)
+        let encoder = JSONEncoder()
+        let data: Data
+        if trim.retainedRanges.count == 1 {
+            data = try encoder.encode(
+                LegacyRecord(version: 1, start: trim.range.lowerBound, end: trim.range.upperBound))
+        } else {
+            let spans = trim.retainedRanges.map { Record.Span(start: $0.lowerBound, end: $0.upperBound) }
+            data = try encoder.encode(Record(version: 2, keptSpans: spans))
+        }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try data.write(to: url(for: session.meta.sessionId), options: .atomic)
     }

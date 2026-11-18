@@ -19,7 +19,7 @@ final class SessionLibrary {
             sport = selection.track.sport
             startedAt = selection.track.startedAt
             metrics = selection.replay.metrics
-            historyRoute = HistoryRoute(fixes: selection.replay.fixes)
+            historyRoute = HistoryRoute(fixSpans: selection.replay.fixSpans)
             self.isTrimmed = isTrimmed
             self.trimUnavailable = trimUnavailable
         }
@@ -84,7 +84,9 @@ final class SessionLibrary {
     }
 
     private nonisolated static var trimStore: SessionTrimStore {
-        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let support =
+            DemoOffWater.storage
+            ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         let trims = support.appendingPathComponent("SessionTrims", isDirectory: true)
         if let namespace = RecordingStore.demoNamespace {
             return SessionTrimStore(directory: trims.appendingPathComponent(namespace.uuidString, isDirectory: true))

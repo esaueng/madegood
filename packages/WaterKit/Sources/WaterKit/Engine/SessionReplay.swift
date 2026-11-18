@@ -7,9 +7,35 @@ public struct SessionReplay: Sendable {
     /// The user's events plus the engine's regenerated auto-pause, auto-resume and
     /// auto-lap events, in time order.
     public var events: [SessionEvent]
+    /// Post-session fixed-distance splits for kayak, canoe and SUP. Workout laps
+    /// are in `metrics.laps` and `metrics.currentLap`.
+    public let paddlingSplits: [PaddlingSplit]
+
+    /// Open intervals on the replay clock whose samples were removed by a local edit.
+    /// Both boundary instants of each interval are retained.
+    public let removedIntervals: [ClosedRange<Double>]
+
+    /// Accepted fixes in each retained span, in order. A span may be empty.
+    public var fixSpans: [ArraySlice<GPSFix>] {
+        var start = fixes.startIndex
+        var spans: [ArraySlice<GPSFix>] = []
+        for interval in removedIntervals {
+            let split = fixes[start...].firstIndex { $0.t >= interval.upperBound } ?? fixes.endIndex
+            spans.append(fixes[start..<split])
+            start = split
+        }
+        spans.append(fixes[start...])
+        return spans
+    }
 
     public init(track: Track, profile: SportProfile? = nil) {
-        var engine = SessionEngine(profile: profile ?? .standard(for: track.sport))
+        self.init(track: track, profile: profile, removedIntervals: [])
+    }
+
+    init(track: Track, profile: SportProfile?, removedIntervals: [ClosedRange<Double>]) {
+        self.removedIntervals = removedIntervals
+        var engine = SessionEngine(
+            profile: profile ?? .standard(for: track.sport), recordsMovement: track.sport.isPaddling)
         // Events the engine generated live are stored with {"auto": true}. They are left
         // out here and regenerated; fed back in, an auto-pause would act as a manual one.
         let userEvents = track.events.filter { $0.data?["auto"] != .bool(true) }
@@ -22,7 +48,12 @@ public struct SessionReplay: Sendable {
         samples.sort { $0.t != $1.t ? $0.t < $1.t : $0.order < $1.order }
 
         var fixes: [GPSFix] = []
-        for (_, _, sample) in samples {
+        var nextSpan = 0
+        for (time, _, sample) in samples {
+            while nextSpan < removedIntervals.count, time >= removedIntervals[nextSpan].upperBound {
+                engine.skipRemovedInterval(removedIntervals[nextSpan])
+                nextSpan += 1
+            }
             let accepted = engine.snapshot.acceptedFixes
             engine.ingest(sample)
             if case .gps(let fix) = sample, engine.snapshot.acceptedFixes > accepted { fixes.append(fix) }
@@ -30,6 +61,7 @@ public struct SessionReplay: Sendable {
         metrics = engine.snapshot
         self.fixes = fixes
         events = (userEvents + engine.generatedEvents).sorted { $0.t < $1.t }
+        paddlingSplits = PaddlingSplit.makeSplits(from: engine.movementIntervals ?? [])
     }
 
     /// Version of the analysis that produced `summary` and the generated events. Bump it

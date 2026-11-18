@@ -122,7 +122,7 @@ final class VoyageSyncAppDelegate: VoyageLaunchDelegate {
         _ application: UIApplication, handleEventsForBackgroundURLSession identifier: String,
         completionHandler: @escaping () -> Void
     ) {
-        guard let sync = PrivateVoyageSync.shared else {
+        guard DemoOffWater.storage == nil, let sync = PrivateVoyageSync.shared else {
             completionHandler()
             return
         }

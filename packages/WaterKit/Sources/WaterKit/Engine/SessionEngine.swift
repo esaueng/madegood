@@ -104,6 +104,17 @@ public struct SessionEngine: LiveAnalyzer {
         var autoLapOrigin: Double
     }
 
+    struct MovementInterval: Sendable {
+        let elapsedRange: ClosedRange<Double>
+        let distance: Double
+
+        var duration: Double { elapsedRange.upperBound - elapsedRange.lowerBound }
+    }
+
+    /// Opt-in for post-session analysis. Live sessions only need the aggregate totals.
+    private(set) var movementIntervals: [MovementInterval]?
+    private var pendingResumeIntervals: [MovementInterval] = []
+
     private var mode = Mode.moving
     private var movingTime = 0.0
     private var distance = 0.0
@@ -112,7 +123,11 @@ public struct SessionEngine: LiveAnalyzer {
     /// While moving: totals when the speed first fell below the pause threshold.
     private var slow: Mark?
     /// While auto-paused: time and totals accumulated since the speed first rose.
-    private var fast: Mark?
+    private var fast: Mark? {
+        didSet {
+            if fast == nil { pendingResumeIntervals.removeAll(keepingCapacity: true) }
+        }
+    }
     /// Recent accepted fixes with a speed, for the current and windowed speeds.
     private var recent: [GPSFix] = []
     private typealias SpeedBest = (mean: Double, range: ClosedRange<Double>)
@@ -132,14 +147,41 @@ public struct SessionEngine: LiveAnalyzer {
     /// Set by a manual resume: the interval from the last fix spans the pause, so the
     /// next fix starts a new interval instead of closing that one.
     private var intervalBroken = false
+    private var retainedSpanStart: Double?
 
     public init(profile: SportProfile, filter: GPSFilter.Config = GPSFilter.Config()) {
         self.profile = profile
         self.filter = GPSFilter(config: filter)
     }
 
+    init(profile: SportProfile, recordsMovement: Bool) {
+        self.init(profile: profile)
+        if recordsMovement { movementIntervals = [] }
+    }
+
     public init(sport: Sport) {
         self.init(profile: .standard(for: sport))
+    }
+
+    /// Replay-only boundary between retained spans. Keep totals and winning speed
+    /// windows, while starting the GPS and pause analysis afresh after the edit.
+    mutating func skipRemovedInterval(_ interval: ClosedRange<Double>) {
+        if lapStart.since < interval.lowerBound {
+            closeLap(at: interval.lowerBound, isAuto: false)
+        }
+        lapStart = LapStart(
+            since: interval.upperBound, movingTime: movingTime, distance: distance, autoLapOrigin: distance)
+        autoLapsSinceManual = 0
+        retainedSpanStart = interval.upperBound
+        filter = GPSFilter(config: filter.config)
+        lastAccepted = nil
+        course = nil
+        recent.removeAll(keepingCapacity: true)
+        intervalBroken = false
+        mode = .moving
+        slow = nil
+        fast = nil
+        heartRate = nil
     }
 
     public mutating func ingest(_ sample: Sample) {
@@ -232,6 +274,9 @@ public struct SessionEngine: LiveAnalyzer {
         case .moving:
             movingTime += dt
             distance += step
+            if dt > 0 {
+                movementIntervals?.append(MovementInterval(elapsedRange: intervalStart...t, distance: step))
+            }
             guard config.enabled, let speed else { return }
             if speed < config.pauseBelow {
                 let mark = slow ?? Mark(since: t, movingTime: movingTime, distance: distance)
@@ -245,6 +290,11 @@ public struct SessionEngine: LiveAnalyzer {
                         : mark
                     movingTime = mark.movingTime
                     distance = mark.distance
+                    // The checkpoint keeps the intervals that had been booked by this
+                    // time, including when a manual lap closed between fixes.
+                    while let last = movementIntervals?.last, last.elapsedRange.upperBound > mark.since {
+                        movementIntervals?.removeLast()
+                    }
                     mode = .autoPaused
                     slow = nil
                     generatedEvents.append(SessionEvent(t: mark.since, type: .pause, data: ["auto": true]))
@@ -261,10 +311,14 @@ public struct SessionEngine: LiveAnalyzer {
             mark.movingTime += dt
             mark.distance += step
             fast = mark
+            if dt > 0, movementIntervals != nil {
+                pendingResumeIntervals.append(MovementInterval(elapsedRange: intervalStart...t, distance: step))
+            }
             if t - mark.since >= config.resumeAfter {
                 // Date the resume back to when the boat started moving again.
                 movingTime += mark.movingTime
                 distance += mark.distance
+                movementIntervals?.append(contentsOf: pendingResumeIntervals)
                 mode = .moving
                 fast = nil
                 generatedEvents.append(SessionEvent(t: mark.since, type: .resume, data: ["auto": true]))
@@ -317,7 +371,8 @@ public struct SessionEngine: LiveAnalyzer {
             slow = nil
             fast = nil
         case .resume:
-            if mode == .manuallyPaused { intervalBroken = true }
+            // At a cut boundary there is no pre-pause fix to disconnect in this span.
+            if mode == .manuallyPaused, event.t != retainedSpanStart { intervalBroken = true }
             if mode != .moving { mode = .moving }
             slow = nil
             fast = nil
