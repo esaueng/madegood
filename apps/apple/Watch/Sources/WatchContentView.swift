@@ -81,14 +81,15 @@ private struct StartScreen: View {
     var showsAbout = true
     @State private var store = SettingsStore.shared
     @State private var settingsSport: Sport?
+    @State private var titleScale: CGFloat = 1
 
     var body: some View {
         ScrollView {
-            VStack(spacing: 8) {
+            VStack(spacing: 6) {
                 ForEach(store.startList(), id: \.self) { sport in
                     SportCard(
                         sport: sport, detail: detail(for: sport), countdownMinutes: store[sport].countdownMinutes,
-                        start: { controller.begin(sport) }, openSettings: { settingsSport = sport })
+                        titleScale: titleScale, start: { controller.begin(sport) }, openSettings: { settingsSport = sport })
                 }
                 if let error = controller.recorder.lastError {
                     Text(error).font(.footnote).foregroundStyle(.red)
@@ -106,6 +107,9 @@ private struct StartScreen: View {
                     .padding(.top, 4)
                 }
             }
+        }
+        .onPreferenceChange(TitleScaleKey.self) { scale in
+            titleScale = max(0.7, scale)
         }
         .navigationTitle(AppInfo.name)
         .toolbar {
@@ -137,61 +141,105 @@ private struct SportCard: View {
     let sport: Sport
     let detail: String?
     let countdownMinutes: Int
+    /// Shared by every card so the titles stay one size (see `TitleScaleKey`).
+    let titleScale: CGFloat
     let start: () -> Void
     let openSettings: () -> Void
     @Environment(\.isLuminanceReduced) private var isLuminanceReduced
+    @ScaledMetric(relativeTo: .headline) private var titleSize: CGFloat = 17
+    @State private var titleWidth: CGFloat = 0
+    @State private var availableWidth: CGFloat = 0
 
     var body: some View {
-        Button(action: start) {
-            VStack(alignment: .leading, spacing: 2) {
-                SportIcon(sport: sport, size: 26)
-                    .foregroundStyle(Theme.cream)
-                    .frame(width: 34, height: 34)
-                    .background(Theme.brightTeal.opacity(isLuminanceReduced ? 0.4 : 1), in: .circle)
-                    .padding(.bottom, 2)
-                Text(sport.displayName)
-                    .font(.title3.weight(.semibold))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
-                if let detail {
-                    Text(detail)
-                        .font(.footnote.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.8)
-                } else if countdownMinutes > 0 {
-                    Label("\(countdownMinutes) min countdown", systemImage: "timer")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+        HStack(spacing: 0) {
+            Button(action: start) {
+                HStack(spacing: 8) {
+                    SportIcon(sport: sport, size: 24)
+                        .foregroundStyle(Theme.cream)
+                        .frame(width: 32, height: 32)
+                        .background(Theme.brightTeal.opacity(isLuminanceReduced ? 0.4 : 1), in: .circle)
+                    VStack(alignment: .leading, spacing: 1) {
+                        title
+                        subtitle
+                    }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.leading, 8)
+                .padding(.vertical, 8)
+                .contentShape(.rect)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .background(
-                Theme.teal.opacity(isLuminanceReduced ? 0.25 : 0.55),
-                in: .rect(cornerRadius: 24, style: .continuous)
-            )
-            .contentShape(.rect(cornerRadius: 24, style: .continuous))
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(sport.displayName)
-        .accessibilityValue(detail.map { "Last session \($0)" } ?? "")
-        .accessibilityHint("Starts a session")
-        .accessibilityIdentifier("sport.\(sport.rawValue)")
-        .overlay(alignment: .topTrailing) {
+            .buttonStyle(.plain)
+            .accessibilityLabel(sport.displayName)
+            .accessibilityValue(detail.map { "Last session \($0)" } ?? "")
+            .accessibilityHint("Starts a session")
+            .accessibilityIdentifier("sport.\(sport.rawValue)")
+
             Button(action: openSettings) {
                 Image(systemName: "gearshape.fill")
-                    .font(.body)
-                    .frame(width: 40, height: 40)
+                    .font(.system(size: 17))
+                    .frame(width: 34, height: 44)
+                    .contentShape(.rect)
             }
             .buttonStyle(.plain)
             .foregroundStyle(Theme.cream.opacity(0.9))
-            .padding(4)
+            .padding(.trailing, 2)
             .accessibilityLabel("\(sport.displayName) settings")
             .accessibilityIdentifier("sportSettings.open.\(sport.rawValue)")
         }
+        .background(
+            Theme.teal.opacity(isLuminanceReduced ? 0.25 : 0.55),
+            in: .rect(cornerRadius: 22, style: .continuous)
+        )
+        .preference(key: TitleScaleKey.self, value: fittingScale)
+    }
+
+    private var title: some View {
+        Text(sport.displayName)
+            .font(.system(size: titleSize * titleScale, weight: .semibold))
+            .lineLimit(1)
+            // Backstop for rounding between the measured and the drawn size.
+            .minimumScaleFactor(0.9)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { availableWidth = $0 }
+            .background {
+                // The name's width at full size, to work out the scale it needs.
+                Text(sport.displayName)
+                    .font(.system(size: titleSize, weight: .semibold))
+                    .fixedSize()
+                    .hidden()
+                    .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { titleWidth = $0 }
+            }
+    }
+
+    @ViewBuilder private var subtitle: some View {
+        Group {
+            if let detail {
+                Text(detail).monospacedDigit()
+            } else if countdownMinutes > 0 {
+                Label("\(countdownMinutes) min countdown", systemImage: "timer")
+            } else {
+                Text("Tap to start")
+            }
+        }
+        .font(.footnote)
+        .foregroundStyle(.secondary)
+        .lineLimit(1)
+        .minimumScaleFactor(0.8)
+    }
+
+    /// The scale at which this card's name fits on one line, at most 1.
+    private var fittingScale: CGFloat {
+        guard titleWidth > 0, availableWidth > 0 else { return 1 }
+        return min(1, availableWidth / titleWidth)
+    }
+}
+
+/// The smallest title scale any sport card needs, so every card can use it and the
+/// titles on the start screen stay one size.
+private struct TitleScaleKey: PreferenceKey {
+    static let defaultValue: CGFloat = 1
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = min(value, nextValue())
     }
 }
 
