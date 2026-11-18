@@ -26,6 +26,7 @@ import Testing
         let leg = try store.startLeg(in: voyage.id, at: 100)
         try store.record(fix(120), receivedAt: 120)
         #expect(throws: VoyageStore.StoreError.clockBehind) { try store.record(fix(110), receivedAt: 110) }
+        #expect(throws: VoyageStore.StoreError.clockBehind) { try store.record(fix(121), receivedAt: 110) }
         #expect(throws: VoyageStore.StoreError.clockBehind) { try store.resumeLeg(at: 110) }
         #expect(store.activeLeg?.id == leg.id)
         try store.resumeLeg(at: 122)
@@ -34,7 +35,8 @@ import Testing
         #expect(store.activeLatestGap == VoyageGap(start: 120, end: 123))
     }
 
-    @Test func noisyMovingFixesEndTheStationaryCoverageAssumption() throws {
+    @Test(arguments: [true, false])
+    func noisyMovingFixesEndTheStationaryCoverageAssumption(hasPosition: Bool) throws {
         let folder = try TempFolder()
         var store = try VoyageStore(root: folder.url)
         let voyage = try store.createVoyage(named: "Synthetic passage")
@@ -43,7 +45,7 @@ import Testing
         store.setStationaryPause(true)
         let inaccurate = VoyagePosition(
             timestamp: 135, latitude: 0, longitude: 0.001, horizontalAccuracy: 120, speed: 3, course: 90)
-        #expect(try !store.record(inaccurate, isStationary: false))
+        #expect(try !store.record(hasPosition ? inaccurate : nil, isStationary: false, receivedAt: 135))
         #expect(try store.record(fix(170), isStationary: false))
         #expect(try store.track(for: leg).last?.gapBefore == VoyageGap(start: 101, end: 170))
     }

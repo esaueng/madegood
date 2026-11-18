@@ -118,11 +118,18 @@ public struct VoyageStore {
     /// Returns true for a fresh usable position, including positions skipped by sampling.
     @discardableResult
     public mutating func record(
-        _ position: VoyagePosition, isStationary: Bool? = nil, receivedAt: TimeInterval? = nil
+        _ position: VoyagePosition?, isStationary: Bool? = nil, receivedAt: TimeInterval? = nil
     ) throws -> Bool {
         guard let leg = activeLeg else { throw StoreError.noActiveLeg }
         guard var sampling else { throw StoreError.captureStopped }
         if let receivedAt, receivedAt + 1 < sampling.lastCoverage { throw StoreError.clockBehind }
+        guard let position, receivedAt.map({ position.timestamp <= $0 + 1 }) ?? true else {
+            if isStationary == false {
+                sampling.stationaryPause = false
+                self.sampling = sampling
+            }
+            return false
+        }
         let previousTime = sampling.lastSeen
         let point = sampling.ingest(position, isStationary: isStationary)
         if let point {

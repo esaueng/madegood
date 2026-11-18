@@ -137,24 +137,22 @@ final class VoyageRecorder {
             }
             return true
         }
-        if let location = update.location, let line = LocationSource.line(for: location) {
-            let position = VoyagePosition(
+        let position = update.location.flatMap { location -> VoyagePosition? in
+            guard let line = LocationSource.line(for: location) else { return nil }
+            return VoyagePosition(
                 timestamp: line.ts, latitude: line.lat, longitude: line.lon,
                 horizontalAccuracy: location.horizontalAccuracy, speed: line.spd, course: line.crs)
-            let now = Self.now
-            if line.ts <= now + 1 {
-                do {
-                    if try store?.record(position, isStationary: update.stationary, receivedAt: now) == true {
-                        locationStatus = "Recording positions"
-                    }
-                } catch VoyageStore.StoreError.clockBehind {
-                    interrupt(VoyageStore.StoreError.clockBehind.localizedDescription)
-                    return false
-                } catch {
-                    interrupt("Couldn’t save a position. \(error.localizedDescription)")
-                    return false
-                }
+        }
+        do {
+            if try store?.record(position, isStationary: update.stationary, receivedAt: Self.now) == true {
+                locationStatus = "Recording positions"
             }
+        } catch VoyageStore.StoreError.clockBehind {
+            interrupt(VoyageStore.StoreError.clockBehind.localizedDescription)
+            return false
+        } catch {
+            interrupt("Couldn’t save a position. \(error.localizedDescription)")
+            return false
         }
         if update.stationary {
             store?.setStationaryPause(true)
