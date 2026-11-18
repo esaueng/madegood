@@ -189,9 +189,10 @@ live in the detail view alongside the wind input.
 ## Motorboating
 
 - **Trip:** the session's distance (above), shown in nautical miles by default.
-- **Log total:** live, the trip plus every saved motorboat session on the iPhone; in
-  session detail ("Log to date"), the trip plus every saved motorboat session that
-  started before it.
+- **Log total:** live, the trip plus every saved motorboat session on the iPhone, leaving
+  out the session in progress and any recording still being written; in session detail
+  ("Log to date"), the trip plus every saved motorboat session whose recording started
+  before it. Order uses the original recording start, so trimming never changes it.
 - **Engine time:** moving time made of intervals whose mean Doppler speed (the mean of
   the two fixes' speeds, or the one known) is at least 1.0 m/s (about 1.9 kn). It follows
   the same pauses, auto-pause roll-backs and GPS anchors as moving time, so it never
