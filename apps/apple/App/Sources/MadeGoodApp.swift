@@ -2,6 +2,8 @@ import SwiftUI
 
 @main
 struct MadeGoodApp: App {
+    @UIApplicationDelegateAdaptor(VoyageLaunchDelegate.self) private var voyageDelegate
+
     init() {
         UserSettings.resetIfRequested()
         UserSettings.migrate()

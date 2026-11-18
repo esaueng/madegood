@@ -58,13 +58,17 @@ struct VoyageSampling {
         self.interrupted = interrupted
     }
 
-    private var lastCoverage: TimeInterval { lastSeen ?? lastSaved?.timestamp ?? startedAt }
+    var lastCoverage: TimeInterval { lastSeen ?? lastSaved?.timestamp ?? startedAt }
 
-    mutating func ingest(_ position: VoyagePosition) -> VoyageTrackPoint? {
+    mutating func ingest(_ position: VoyagePosition, isStationary: Bool? = nil) -> VoyageTrackPoint? {
         let time = position.timestamp
-        guard position.isUsable, time >= acceptsFrom,
+        guard time >= acceptsFrom,
             lastSeen.map({ time > $0 }) ?? lastSaved.map({ time > $0.timestamp }) ?? true
         else { return nil }
+        guard position.isUsable else {
+            if isStationary == false { stationaryPause = false }
+            return nil
+        }
 
         let gap = gap(until: time)
         stationaryPause = false

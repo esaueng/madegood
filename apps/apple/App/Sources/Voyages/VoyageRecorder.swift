@@ -1,11 +1,14 @@
 import CoreLocation
 import Foundation
 import Observation
+import UIKit
 import WaterKit
 
 /// Owned by the phone's tab shell so capture continues across navigation.
 @MainActor @Observable
 final class VoyageRecorder {
+    static let shared = VoyageRecorder()
+
     private var store: VoyageStore?
     private var updateTask: Task<Void, Never>?
     private var serviceSession: CLServiceSession?
@@ -27,6 +30,12 @@ final class VoyageRecorder {
         guard store == nil else { return }
         do {
             var root = URL.applicationSupportDirectory.appending(path: "Voyages", directoryHint: .isDirectory)
+            #if DEBUG
+                if let id = ProcessInfo.processInfo.environment["MADEGOOD_TEST_VOYAGES"].flatMap(UUID.init(uuidString:))
+                {
+                    root = URL.temporaryDirectory.appending(path: id.uuidString, directoryHint: .isDirectory)
+                }
+            #endif
             let library = try VoyageStore(root: root)
             var attributes = URLResourceValues()
             attributes.isExcludedFromBackup = true
@@ -49,6 +58,16 @@ final class VoyageRecorder {
     func resumeLeg() {
         guard !isCapturing else { return }
         if perform({ try store?.resumeLeg(at: Self.now) }) != nil { startUpdates() }
+    }
+
+    func resumeForBackgroundLocation() {
+        openLibrary()
+        guard !isCapturing, activeLeg != nil,
+            [.authorizedAlways, .authorizedWhenInUse].contains(CLLocationManager().authorizationStatus)
+        else { return }
+        if perform({ try store?.resumeLeg(at: Self.now, acceptQueuedPositions: true) }) != nil {
+            startUpdates()
+        }
     }
 
     func endLeg() {
@@ -122,11 +141,15 @@ final class VoyageRecorder {
             let position = VoyagePosition(
                 timestamp: line.ts, latitude: line.lat, longitude: line.lon,
                 horizontalAccuracy: location.horizontalAccuracy, speed: line.spd, course: line.crs)
-            if line.ts <= Self.now + 1 {
+            let now = Self.now
+            if line.ts <= now + 1 {
                 do {
-                    if try store?.record(position) == true {
+                    if try store?.record(position, isStationary: update.stationary, receivedAt: now) == true {
                         locationStatus = "Recording positions"
                     }
+                } catch VoyageStore.StoreError.clockBehind {
+                    interrupt(VoyageStore.StoreError.clockBehind.localizedDescription)
+                    return false
                 } catch {
                     interrupt("Couldn’t save a position. \(error.localizedDescription)")
                     return false
@@ -153,5 +176,22 @@ final class VoyageRecorder {
         backgroundSession = nil
         serviceSession?.invalidate()
         serviceSession = nil
+    }
+}
+
+@MainActor
+class VoyageLaunchDelegate: NSObject, UIApplicationDelegate {
+    func application(
+        _ application: UIApplication,
+        didFinishLaunchingWithOptions options: [UIApplication.LaunchOptionsKey: Any]? = nil
+    ) -> Bool {
+        let backgroundLaunch = options?[.location] != nil || application.applicationState == .background
+        #if DEBUG
+            let demo = ProcessInfo.processInfo.arguments.contains("-demoVoyageBackgroundLaunch")
+        #else
+            let demo = false
+        #endif
+        if backgroundLaunch || demo { VoyageRecorder.shared.resumeForBackgroundLocation() }
+        return true
     }
 }

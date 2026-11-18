@@ -4,6 +4,50 @@ import Testing
 @testable import WaterKit
 
 @Suite struct VoyageTests {
+    @Test func backgroundResumeCanAcceptQueuedFixesAfterTheCommittedPrefix() throws {
+        let folder = try TempFolder()
+        var store = try VoyageStore(root: folder.url)
+        let voyage = try store.createVoyage(named: "Synthetic passage")
+        let leg = try store.startLeg(in: voyage.id, at: 100)
+        try store.record(fix(101))
+
+        var recovered = try VoyageStore(root: folder.url)
+        try recovered.resumeLeg(at: 160, acceptQueuedPositions: true)
+        #expect(try !recovered.record(fix(101)))
+        #expect(try recovered.record(fix(130)))
+        #expect(recovered.activeLeg?.id == leg.id)
+        #expect(recovered.activeLatestGap == VoyageGap(start: 101, end: 130))
+    }
+
+    @Test func clockRollbackPreservesTheLegAndMakesTheInterruptionRecoverable() throws {
+        let folder = try TempFolder()
+        var store = try VoyageStore(root: folder.url)
+        let voyage = try store.createVoyage(named: "Synthetic passage")
+        let leg = try store.startLeg(in: voyage.id, at: 100)
+        try store.record(fix(120), receivedAt: 120)
+        #expect(throws: VoyageStore.StoreError.clockBehind) { try store.record(fix(110), receivedAt: 110) }
+        #expect(throws: VoyageStore.StoreError.clockBehind) { try store.resumeLeg(at: 110) }
+        #expect(store.activeLeg?.id == leg.id)
+        try store.resumeLeg(at: 122)
+        #expect(try store.record(fix(123), receivedAt: 123))
+        #expect(try store.track(for: leg).map(\.position.timestamp) == [120, 123])
+        #expect(store.activeLatestGap == VoyageGap(start: 120, end: 123))
+    }
+
+    @Test func noisyMovingFixesEndTheStationaryCoverageAssumption() throws {
+        let folder = try TempFolder()
+        var store = try VoyageStore(root: folder.url)
+        let voyage = try store.createVoyage(named: "Synthetic passage")
+        let leg = try store.startLeg(in: voyage.id, at: 100)
+        try store.record(fix(101, speed: 0))
+        store.setStationaryPause(true)
+        let inaccurate = VoyagePosition(
+            timestamp: 135, latitude: 0, longitude: 0.001, horizontalAccuracy: 120, speed: 3, course: 90)
+        #expect(try !store.record(inaccurate, isStationary: false))
+        #expect(try store.record(fix(170), isStationary: false))
+        #expect(try store.track(for: leg).last?.gapBefore == VoyageGap(start: 101, end: 170))
+    }
+
     @Test func reopensAndFinishesTheSameLegAfterATornWrite() throws {
         let folder = try TempFolder()
         var store = try VoyageStore(root: folder.url)

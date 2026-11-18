@@ -3,11 +3,20 @@ import XCTest
 
 final class PhoneVoyageUITests: XCTestCase {
     @MainActor func testRecoversTheActiveLegAndShowsTheGapAfterResume() throws {
+        try recoverActiveLeg(simulateBackgroundLaunch: false)
+    }
+
+    @MainActor func testBackgroundLaunchRestartsTheActiveLeg() throws {
+        try recoverActiveLeg(simulateBackgroundLaunch: true)
+    }
+
+    @MainActor private func recoverActiveLeg(simulateBackgroundLaunch: Bool) throws {
         continueAfterFailure = false
         defer { XCUIDevice.shared.location = nil }
 
         let name = "Synthetic passage \(UUID().uuidString.prefix(8))"
         let app = XCUIApplication()
+        app.launchEnvironment["MADEGOOD_TEST_VOYAGES"] = UUID().uuidString
         app.launch()
         openVoyages(in: app)
         app.buttons["New Voyage"].tap()
@@ -32,18 +41,19 @@ final class PhoneVoyageUITests: XCTestCase {
         XCTAssertGreaterThan(countBeforeRestart, 0)
 
         app.terminate()
+        if simulateBackgroundLaunch { app.launchArguments.append("-demoVoyageBackgroundLaunch") }
         app.launch()
         openVoyages(in: app)
         let activeLeg = element("voyage.activeLeg", in: app)
         XCTAssertTrue(activeLeg.waitForExistence(timeout: 10))
-        XCTAssertEqual(activeLeg.value as? String, "Capture interrupted")
+        XCTAssertEqual(activeLeg.value as? String, simulateBackgroundLaunch ? "Recording" : "Capture interrupted")
         activeLeg.tap()
         let resume = app.buttons["Resume Leg"]
-        XCTAssertTrue(resume.waitForExistence(timeout: 10))
+        if !simulateBackgroundLaunch { XCTAssertTrue(resume.waitForExistence(timeout: 10)) }
         XCTAssertTrue(lastFix.exists)
         let recoveredCount = try XCTUnwrap((savedCount.value as? String).flatMap(Int.init))
         XCTAssertGreaterThanOrEqual(recoveredCount, countBeforeRestart)
-        resume.tap()
+        if !simulateBackgroundLaunch { resume.tap() }
         simulatePosition(longitude: -29.999)
         XCTAssertTrue(app.staticTexts["Latest Capture Gap"].waitForExistence(timeout: 20))
         let resumedCount = try XCTUnwrap((savedCount.value as? String).flatMap(Int.init))

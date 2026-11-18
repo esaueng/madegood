@@ -6,7 +6,7 @@ import WaterKit
 struct ContentView: View {
     @State private var controller = SessionController.shared
     @State private var library = SessionLibrary()
-    @State private var voyageRecorder = VoyageRecorder()
+    @State private var voyageRecorder = VoyageRecorder.shared
     @State private var tab = AppTab.record
 
     enum AppTab: Hashable { case record, voyages, history, settings }

@@ -18,7 +18,7 @@ public struct VoyageLeg: Codable, Identifiable, Sendable {
 /// so recording never rewrites the accumulated track.
 public struct VoyageStore {
     public enum StoreError: LocalizedError {
-        case emptyName, unknownVoyage, activeLegExists, noActiveLeg, captureStopped, unsupportedVersion
+        case emptyName, unknownVoyage, activeLegExists, noActiveLeg, captureStopped, unsupportedVersion, clockBehind
 
         public var errorDescription: String? {
             switch self {
@@ -28,6 +28,8 @@ public struct VoyageStore {
             case .noActiveLeg: "There is no active leg."
             case .captureStopped: "Resume the active leg to record positions."
             case .unsupportedVersion: "This version of MadeGood cannot open the voyage library."
+            case .clockBehind:
+                "The iPhone clock is behind the last recorded position. Check Date & Time before resuming."
             }
         }
     }
@@ -94,11 +96,12 @@ public struct VoyageStore {
         return leg
     }
 
-    public mutating func resumeLeg(at time: TimeInterval) throws {
+    public mutating func resumeLeg(at time: TimeInterval, acceptQueuedPositions: Bool = false) throws {
         guard let leg = activeLeg else { throw StoreError.noActiveLeg }
         try recoverTrack(for: leg)
+        guard time + 1 >= (activeLastFix?.timestamp ?? leg.startedAt) else { throw StoreError.clockBehind }
         sampling = VoyageSampling(
-            startedAt: leg.startedAt, acceptsFrom: max(time, leg.startedAt),
+            startedAt: leg.startedAt, acceptsFrom: acceptQueuedPositions ? leg.startedAt : max(time, leg.startedAt),
             lastSaved: activeLastFix, interrupted: true)
     }
 
@@ -114,12 +117,14 @@ public struct VoyageStore {
 
     /// Returns true for a fresh usable position, including positions skipped by sampling.
     @discardableResult
-    public mutating func record(_ position: VoyagePosition) throws -> Bool {
+    public mutating func record(
+        _ position: VoyagePosition, isStationary: Bool? = nil, receivedAt: TimeInterval? = nil
+    ) throws -> Bool {
         guard let leg = activeLeg else { throw StoreError.noActiveLeg }
         guard var sampling else { throw StoreError.captureStopped }
+        if let receivedAt, receivedAt + 1 < sampling.lastCoverage { throw StoreError.clockBehind }
         let previousTime = sampling.lastSeen
-        let point = sampling.ingest(position)
-        guard sampling.lastSeen != previousTime else { return false }
+        let point = sampling.ingest(position, isStationary: isStationary)
         if let point {
             do {
                 try append(point, to: leg)
@@ -133,7 +138,7 @@ public struct VoyageStore {
             if let gap = point.gapBefore { activeLatestGap = gap }
         }
         self.sampling = sampling
-        return true
+        return sampling.lastSeen != previousTime
     }
 
     @discardableResult
