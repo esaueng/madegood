@@ -86,7 +86,8 @@ gitignored. They are never committed.
 | Name | Kind | Purpose |
 |---|---|---|
 | `JWT_SIGNING_KEY` | secret | Signs API access tokens (HS256). At least 32 characters of randomness. |
-| `APPLE_AUDIENCES` | var in `wrangler.jsonc` | Comma-separated Sign in with Apple audiences: your iOS bundle ID, later also your web Services ID. |
+| `APPLE_AUDIENCES` | var in `wrangler.jsonc` | Comma-separated Sign in with Apple audiences for the apps: your iOS bundle ID. |
+| `APPLE_WEB_CLIENT_ID` | var in `wrangler.jsonc` | Your Sign in with Apple **Services ID** for the website. Empty turns web sign-in off. |
 
 ```sh
 # Local development: web/.dev.vars
@@ -104,3 +105,14 @@ their refresh token, so nobody is signed out.
 
 Sign-in fetches Apple's public keys from `https://appleid.apple.com/auth/keys` and
 caches them in memory for an hour.
+
+### Web sign-in
+
+The website signs in with Apple's web flow and keeps its tokens in HttpOnly cookies.
+In the Apple Developer portal, create a Services ID with Sign in with Apple enabled,
+add your domain, and register the return URL
+`https://<your domain>/api/auth/web/apple/callback` (Apple requires HTTPS and a
+registered domain, so per-PR preview URLs cannot sign in unless registered). Put the
+Services ID in `APPLE_WEB_CLIENT_ID`. Users who signed in on the iPhone get the same
+account on the web, because Apple uses the same user identifier for an app and its
+Services IDs when the Services ID is grouped with the app's primary App ID.

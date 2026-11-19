@@ -178,6 +178,13 @@ const SHARED_SUMMARY_NUMBERS = [
   "averageSpeed",
   "maxSpeed2s",
   "maxSpeed10s",
+  // Windsurf speed categories: speeds only, no positions.
+  "best5x10s",
+  "best100m",
+  "best500m",
+  "bestNauticalMile",
+  "best1h",
+  "alpha500",
 ] as const;
 const SHARED_LAP_NUMBERS = ["start", "end", "distance", "movingTime"] as const;
 const MAX_SHARED_LAPS = 1000;

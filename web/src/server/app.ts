@@ -7,6 +7,7 @@ import { me } from "./routes/me";
 import { sessionRoutes } from "./routes/sessions";
 import { voyageLiveRoutes, voyageViewerPage } from "./routes/voyage-live";
 import { voyageRoutes } from "./routes/voyages";
+import { webAuth } from "./routes/web-auth";
 
 export type AppEnv = { Bindings: Env };
 
@@ -19,6 +20,8 @@ export function createApp() {
   api.route("/", sessionRoutes);
   api.route("/", voyageLiveRoutes);
   api.route("/", voyageRoutes);
+  // Plain Hono routes: browser redirects and cookies, left out of the OpenAPI document.
+  api.route("/", webAuth);
 
   api.openAPIRegistry.registerComponent("securitySchemes", "bearerAuth", {
     type: "http",

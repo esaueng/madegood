@@ -388,6 +388,7 @@ describe("visibility", () => {
       movingTime: 3300,
       elapsed: 3600,
       maxSpeed10s: 2.4,
+      best500m: 2.2,
       heartRateMax: 150,
       start: { lat: 0.0001, lon: 0.0002 },
       laps: [
@@ -406,6 +407,7 @@ describe("visibility", () => {
         movingTime: 3300,
         elapsed: 3600,
         maxSpeed10s: 2.4,
+        best500m: 2.2,
         laps: [{ start: 0, end: 600, distance: 1000, movingTime: 590, auto: true }],
       });
     }

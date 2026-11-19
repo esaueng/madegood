@@ -228,6 +228,74 @@
         },
         "additionalProperties": false
       },
+      "MeStats": {
+        "type": "object",
+        "properties": {
+          "sessions": {
+            "type": "integer"
+          },
+          "distanceM": {
+            "type": "number",
+            "description": "Sum of known distances, m."
+          },
+          "movingS": {
+            "type": "number",
+            "description": "Sum of known moving times, s."
+          },
+          "durationS": {
+            "type": "number",
+            "description": "Sum of known elapsed times, s."
+          },
+          "bySport": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "sessions": {
+                  "type": "integer"
+                },
+                "distanceM": {
+                  "type": "number",
+                  "description": "Sum of known distances, m."
+                },
+                "movingS": {
+                  "type": "number",
+                  "description": "Sum of known moving times, s."
+                },
+                "durationS": {
+                  "type": "number",
+                  "description": "Sum of known elapsed times, s."
+                },
+                "sport": {
+                  "type": "string",
+                  "enum": [
+                    "sailing",
+                    "windsurfing",
+                    "motorboating",
+                    "kayak",
+                    "canoe",
+                    "sup"
+                  ]
+                }
+              },
+              "required": [
+                "sessions",
+                "distanceM",
+                "movingS",
+                "durationS",
+                "sport"
+              ]
+            }
+          }
+        },
+        "required": [
+          "sessions",
+          "distanceM",
+          "movingS",
+          "durationS",
+          "bySport"
+        ]
+      },
       "SessionList": {
         "type": "object",
         "properties": {
@@ -1280,6 +1348,42 @@
         "responses": {
           "204": {
             "description": "The account and its data are gone."
+          },
+          "401": {
+            "description": "Missing or invalid access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/me/stats": {
+      "get": {
+        "summary": "Totals over the signed-in user's sessions",
+        "description": "Counts and sums over every session the user has, overall and per sport.",
+        "tags": [
+          "account"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The totals.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MeStats"
+                }
+              }
+            }
           },
           "401": {
             "description": "Missing or invalid access token.",

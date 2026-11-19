@@ -40,11 +40,12 @@ export class InvalidIdentityToken extends Error {}
 
 /**
  * Verifies a Sign in with Apple identity token: Apple's signature (RS256), issuer,
- * audience and expiry. Returns Apple's stable user identifier (`sub`).
+ * audience, expiry and, when given, the nonce. Returns Apple's stable user identifier (`sub`).
  */
 export async function verifyAppleIdentityToken(
   token: string,
   audiences: string[],
+  options: { nonce?: string } = {},
 ): Promise<{ sub: string }> {
   if (audiences.length === 0) throw new Error("APPLE_AUDIENCES is not configured");
   try {
@@ -56,6 +57,10 @@ export async function verifyAppleIdentityToken(
     });
     if (typeof payload.sub !== "string" || payload.sub === "") {
       throw new InvalidIdentityToken("missing subject");
+    }
+    // The web flow binds the token to the browser that started it (OpenID Connect nonce).
+    if (options.nonce !== undefined && payload.nonce !== options.nonce) {
+      throw new InvalidIdentityToken("nonce mismatch");
     }
     return { sub: payload.sub };
   } catch (err) {
