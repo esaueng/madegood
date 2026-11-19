@@ -10,3 +10,5 @@ filter:
     - getVoyageSharing
     - changeVoyageSharing
     - postVoyagePositions
+    - putSession
+    - putSessionTrack

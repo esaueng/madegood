@@ -43,6 +43,8 @@ struct SettingsView: View {
                     Text("System follows your iPhone. The watch app is always dark.")
                 }
 
+                SessionSyncSection()
+
                 if voyageSync != nil {
                     PrivateVoyageAccountSection()
                 }

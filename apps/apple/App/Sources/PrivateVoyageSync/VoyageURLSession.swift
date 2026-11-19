@@ -2,13 +2,22 @@ import Foundation
 
 /// Keep the upload task attached when iOS suspends the app. Acknowledgements are
 /// journalled by the outbox, so a completion lost at process exit can be replayed.
+/// Session sync (SessionSync) uses its own instance under `sessionTrackIdentifier`.
 @MainActor
-final class VoyageURLSession: NSObject, VoyageTransport, URLSessionTaskDelegate {
+final class VoyageURLSession: NSObject, SessionSyncTransport, URLSessionTaskDelegate {
     static let identifier = (Bundle.main.bundleIdentifier ?? "app.madegood") + ".private-voyage-track"
+    static let sessionTrackIdentifier = (Bundle.main.bundleIdentifier ?? "app.madegood") + ".session-track"
+
+    /// The background session's identifier.
+    let backgroundIdentifier: String
+
+    init(backgroundIdentifier: String = VoyageURLSession.identifier) {
+        self.backgroundIdentifier = backgroundIdentifier
+    }
 
     private lazy var foreground = URLSession(configuration: .ephemeral, delegate: self, delegateQueue: .main)
     private lazy var background: URLSession = {
-        let config = URLSessionConfiguration.background(withIdentifier: Self.identifier)
+        let config = URLSessionConfiguration.background(withIdentifier: backgroundIdentifier)
         config.httpShouldSetCookies = false
         config.sessionSendsLaunchEvents = true
         return URLSession(configuration: config, delegate: self, delegateQueue: .main)
@@ -17,6 +26,21 @@ final class VoyageURLSession: NSObject, VoyageTransport, URLSessionTaskDelegate 
     private var inspectingTasks = false
     private var completedDuringInspection: [Int: Result<HTTPURLResponse, Error>] = [:]
     private var backgroundCompletion: (() -> Void)?
+    /// Events finished before `reconnect` stored the system's completion handler.
+    private var finishedEventsEarly = false
+    private var onCompletion: (@MainActor (String, Int?) -> Void)?
+
+    func activate(onCompletion: @escaping @MainActor (String, Int?) -> Void) {
+        self.onCompletion = onCompletion
+        _ = background
+    }
+
+    func reconcileUploads(keep: (String?, URLRequest?) -> Bool) async {
+        let tasks = await background.allTasks
+        for task in tasks where !keep(task.taskDescription, task.originalRequest) {
+            task.cancel()
+        }
+    }
 
     func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
         let (data, response) = try await foreground.data(for: request)
@@ -25,6 +49,10 @@ final class VoyageURLSession: NSObject, VoyageTransport, URLSessionTaskDelegate 
     }
 
     func upload(_ request: URLRequest, file: URL, key: VoyageUploadKey) async throws -> HTTPURLResponse {
+        try await upload(request, file: file, taskDescription: key.taskDescription)
+    }
+
+    func upload(_ request: URLRequest, file: URL, taskDescription: String) async throws -> HTTPURLResponse {
         inspectingTasks = true
         let existing = await background.allTasks
         inspectingTasks = false
@@ -33,11 +61,11 @@ final class VoyageURLSession: NSObject, VoyageTransport, URLSessionTaskDelegate 
         try Task.checkCancellation()
 
         let match = existing.first {
-            $0.taskDescription == key.taskDescription && $0.originalRequest?.url == request.url
+            $0.taskDescription == taskDescription && $0.originalRequest?.url == request.url
         }
         if let match, let result = finished[match.taskIdentifier] { return try result.get() }
         let task = match ?? background.uploadTask(with: request, fromFile: file)
-        task.taskDescription = key.taskDescription
+        task.taskDescription = taskDescription
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 waiters[task.taskIdentifier] = continuation
@@ -58,6 +86,11 @@ final class VoyageURLSession: NSObject, VoyageTransport, URLSessionTaskDelegate 
     }
 
     func reconnect(completion: @escaping () -> Void) {
+        if finishedEventsEarly {
+            finishedEventsEarly = false
+            completion()
+            return
+        }
         backgroundCompletion = completion
         _ = background
     }
@@ -71,6 +104,10 @@ final class VoyageURLSession: NSObject, VoyageTransport, URLSessionTaskDelegate 
                 if let error { throw error }
                 guard let http = task.response as? HTTPURLResponse else { throw VoyageAPIError.invalidResponse }
                 return http
+            }
+            // Journal the outcome even when nothing is waiting (a background relaunch).
+            if let description = task.taskDescription {
+                onCompletion?(description, error == nil ? (task.response as? HTTPURLResponse)?.statusCode : nil)
             }
             if let waiter = waiters.removeValue(forKey: task.taskIdentifier) {
                 waiter.resume(with: result)
@@ -89,9 +126,12 @@ final class VoyageURLSession: NSObject, VoyageTransport, URLSessionTaskDelegate 
 
     nonisolated func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
         MainActor.assumeIsolated {
-            let completion = backgroundCompletion
+            guard let completion = backgroundCompletion else {
+                finishedEventsEarly = true
+                return
+            }
             backgroundCompletion = nil
-            completion?()
+            completion()
         }
     }
 }
