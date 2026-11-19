@@ -27,9 +27,10 @@ Apple processes an upload in about 10–30 minutes; the **Internal** TestFlight
 group has automatic distribution on, so its testers get the build without further
 steps.
 
-Session sync: the workflow passes the repository variable `MADEGOOD_API_URL` (Settings →
-Secrets and variables → Actions → Variables, for example `https://<your-worker>/api`) into the
-build. Without it, TestFlight builds show sync as not set up.
+Session sync: the workflow passes the repository secret `MADEGOOD_API_URL` (Settings →
+Secrets and variables → Actions → Secrets, for example `https://<your-worker>/api`) into the
+build. It is a secret rather than a variable so the log masks it (the host names your Workers
+subdomain), and failure logs redact it before upload. Without it, TestFlight builds show sync as not set up.
 
 ## One-time setup (for a fork or a new team)
 
