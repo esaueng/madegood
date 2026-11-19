@@ -169,21 +169,39 @@ export async function signOut(): Promise<void> {
   await fetch("/api/auth/web/signout", { method: "POST", credentials: "same-origin" });
 }
 
-export const EXPORT_URL = "/api/me/export";
+export type ExportPart = {
+  part: number;
+  /** Path under /api. */
+  url: string;
+  filename: string;
+  contents: "account" | "tracks";
+  tracks: number;
+  bytes: number;
+};
+export type ExportManifest = {
+  createdAt: string;
+  trackCount: number;
+  trackBytes: number;
+  parts: ExportPart[];
+};
+
+/** The export's parts (GET /api/me/export). Each part is a separate ZIP download. */
+export const fetchExportManifest = () => apiJson<ExportManifest>("/me/export");
 
 /**
- * Checks that an export can start (signed in, cookies fresh, not over the size limit) with
- * a HEAD request, so the browser's own download of EXPORT_URL then streams to disk.
+ * Checks that a part can be downloaded (signed in, cookies fresh, tracks unchanged since the
+ * manifest) with a HEAD request, then lets the browser download it, streaming to disk.
  */
-export async function checkExport(): Promise<void> {
-  const response = await apiFetch("/me/export", { method: "HEAD" });
+export async function downloadExportPart(part: ExportPart): Promise<void> {
+  const response = await apiFetch(part.url, { method: "HEAD" });
   if (!response.ok) {
     throw new ApiError(
       response.status,
-      response.status === 413 ? "export_too_large" : undefined,
+      response.status === 409 ? "export_changed" : undefined,
       `Export failed: ${response.status}`,
     );
   }
+  window.location.assign(`/api${part.url}`);
 }
 
 /** Full-page navigation to Apple's sign-in, returning to `next` afterwards. */

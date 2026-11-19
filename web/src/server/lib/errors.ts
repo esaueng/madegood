@@ -29,6 +29,7 @@ export const errorCodes = [
   "stale_revision",
   "revision_mismatch",
   "export_too_large",
+  "export_changed",
 ] as const;
 export type ErrorCode = (typeof errorCodes)[number];
 

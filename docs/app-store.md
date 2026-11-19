@@ -144,12 +144,15 @@ session.
 - **Files app:** recordings live in the app's Documents folder, visible in Files
   (`UIFileSharingEnabled`).
 - **All recordings (iPhone):** Settings → Your Data → Export All Recordings zips every
-  recording folder on the phone and opens the share sheet.
-- **Account-wide export (website):** Settings → Export all my data downloads a ZIP from
-  `GET /api/me/export`: `account.json` (profile, settings, Apple user identifier),
-  `sessions.json`, `privacy-zones.json`, `voyages.json` and every track file as uploaded.
-  The Worker streams it from D1 and R2 without buffering the tracks, and refuses (413)
-  accounts with more than 20,000 track files or 1 GiB of tracks.
+  recording folder on the phone and opens the share sheet. Export files are deleted when
+  the share sheet finishes, and any left over are deleted at launch.
+- **Account-wide export (website):** Settings → Export all my data lists the parts from
+  `GET /api/me/export`, each a ZIP download. The account part holds `account.json`
+  (profile, settings, Apple user identifier), `sessions.json`, `privacy-zones.json` and
+  `voyages.json`, written page by page from D1. Track parts hold at most 200 track files
+  as uploaded (about 256 MiB planned, 512 MiB at most), read with their listed ETag so a
+  replaced track is exported at its current revision; a file a part cannot include is
+  listed in its `errors.json`. Accounts with more than 20,000 track files are refused.
 
 ## Review notes (draft)
 

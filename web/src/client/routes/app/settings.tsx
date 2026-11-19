@@ -8,9 +8,9 @@ import type { Draft } from "@/components/zone-map";
 import {
   ApiError,
   addZone,
-  checkExport,
   deleteZone,
-  EXPORT_URL,
+  downloadExportPart,
+  fetchExportManifest,
   fetchZones,
   type Me,
   signInUrl,
@@ -208,32 +208,89 @@ function Zones() {
   );
 }
 
+const formatBytes = (bytes: number) =>
+  bytes < 1024 * 1024
+    ? `${Math.max(1, Math.round(bytes / 1024))} KB`
+    : `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+
 function ExportData() {
-  const prepare = useMutation({
-    mutationFn: checkExport,
-    // The browser downloads the archive itself, streaming it to disk.
-    onSuccess: () => window.location.assign(EXPORT_URL),
+  const manifest = useMutation({ mutationFn: fetchExportManifest });
+  const [downloaded, setDownloaded] = useState<Set<number>>(new Set());
+  const download = useMutation({
+    mutationFn: downloadExportPart,
+    onSuccess: (_, part) => setDownloaded((done) => new Set(done).add(part.part)),
   });
-  const tooLarge = prepare.error instanceof ApiError && prepare.error.status === 413;
+  const changed = download.error instanceof ApiError && download.error.status === 409;
+  const tooLarge = manifest.error instanceof ApiError && manifest.error.status === 413;
+  const parts = manifest.data?.parts ?? [];
+  let trackStart = 0;
   return (
     <section className="grid gap-3" aria-labelledby="export-data">
       <h2 id="export-data" className="text-lg font-semibold">
         Export your data
       </h2>
       <p className="max-w-prose text-sm text-muted-foreground">
-        Download a ZIP file with your profile, settings, privacy zones, every session's details and
-        every track file as you uploaded it. Track files contain precise locations and times.
+        Download ZIP files with your profile, settings, privacy zones, every session's details and
+        every track file as you uploaded it. Track files contain precise locations and times. Large
+        accounts come in several parts; download each one.
       </p>
       <div>
-        <Button variant="outline" disabled={prepare.isPending} onClick={() => prepare.mutate()}>
-          <Download /> {prepare.isPending ? "Preparing…" : "Export all my data"}
+        <Button
+          variant="outline"
+          disabled={manifest.isPending}
+          onClick={() => {
+            setDownloaded(new Set());
+            download.reset();
+            manifest.mutate();
+          }}
+        >
+          <Download /> {manifest.isPending ? "Preparing…" : "Export all my data"}
         </Button>
       </div>
-      {prepare.isError && (
+      {manifest.isError && (
         <p className="text-sm text-red-600" role="alert">
           {tooLarge
-            ? "Your account holds too much to export at once. Download sessions one at a time from the iPhone app instead."
+            ? "Your account holds too many tracks to export at once. Download sessions one at a time from the iPhone app instead."
             : "Could not start the export. Try again."}
+        </p>
+      )}
+      {parts.length > 0 && (
+        <ol className="grid gap-2" aria-label="Export parts">
+          {parts.map((part) => {
+            const label =
+              part.contents === "account"
+                ? "Account and session details"
+                : `Tracks ${trackStart + 1}–${trackStart + part.tracks}`;
+            trackStart += part.tracks;
+            return (
+              <li
+                key={part.part}
+                className="flex flex-wrap items-center justify-between gap-2 rounded-xl border bg-card px-4 py-2 text-sm"
+              >
+                <span>
+                  Part {part.part} of {parts.length}: {label}
+                  {part.contents === "tracks" && (
+                    <span className="text-muted-foreground"> · {formatBytes(part.bytes)}</span>
+                  )}
+                </span>
+                <Button
+                  size="sm"
+                  variant={downloaded.has(part.part) ? "ghost" : "outline"}
+                  disabled={download.isPending}
+                  onClick={() => download.mutate(part)}
+                >
+                  <Download /> {downloaded.has(part.part) ? "Download again" : "Download"}
+                </Button>
+              </li>
+            );
+          })}
+        </ol>
+      )}
+      {download.isError && (
+        <p className="text-sm text-red-600" role="alert">
+          {changed
+            ? "Your sessions changed since the export started. Click Export all my data again."
+            : "Could not download this part. Try again."}
         </p>
       )}
     </section>

@@ -86,7 +86,7 @@ struct SettingsView: View {
             }
             .navigationTitle("Settings")
             .sheet(item: $exportedAll) { file in
-                ShareSheet(url: file.url)
+                ShareSheet(url: file.url) { ExportFiles.discard(file.url) }
             }
             .navigationDestination(for: Sport.self) { sport in
                 SportSettingsForm(sport: sport)

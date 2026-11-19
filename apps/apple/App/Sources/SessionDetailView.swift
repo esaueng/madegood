@@ -94,7 +94,7 @@ struct SessionDetailView: View {
             }
         }
         .sheet(item: $share) { file in
-            ShareSheet(url: file.url)
+            ShareSheet(url: file.url) { ExportFiles.discard(file.url) }
         }
         .confirmationDialog("Delete this session?", isPresented: $confirmDelete, titleVisibility: .visible) {
             Button("Delete", role: .destructive) {
@@ -577,8 +577,8 @@ struct SessionDetailView: View {
         isPlaying = false
         let track = analysis.current.selection.track
         let name = "\(track.sport.rawValue)-\(Int(track.startedAt.timeIntervalSince1970)).gpx"
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent(name)
         do {
+            let url = try ExportFiles.url(named: name)
             try GPXWriter().data(for: analysis.current.selection).write(to: url, options: .atomic)
             share = ShareFile(url: url)
         } catch {
@@ -640,12 +640,16 @@ enum ChartSeries {
     }
 }
 
-/// The system share sheet for one file (AirDrop, Files, Mail).
+/// The system share sheet for one file (AirDrop, Files, Mail). `onComplete` runs once the
+/// chosen activity has finished with the file, or the sheet was dismissed without one.
 struct ShareSheet: UIViewControllerRepresentable {
     let url: URL
+    var onComplete: () -> Void = {}
 
     func makeUIViewController(context: Context) -> UIActivityViewController {
-        UIActivityViewController(activityItems: [url], applicationActivities: nil)
+        let controller = UIActivityViewController(activityItems: [url], applicationActivities: nil)
+        controller.completionWithItemsHandler = { _, _, _, _ in onComplete() }
+        return controller
     }
 
     func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}

@@ -140,7 +140,8 @@
               "session_deleted",
               "stale_revision",
               "revision_mismatch",
-              "export_too_large"
+              "export_too_large",
+              "export_changed"
             ]
           },
           "message": {
@@ -300,6 +301,66 @@
           "movingS",
           "durationS",
           "bySport"
+        ]
+      },
+      "ExportManifest": {
+        "type": "object",
+        "properties": {
+          "createdAt": {
+            "type": "string"
+          },
+          "trackCount": {
+            "type": "integer"
+          },
+          "trackBytes": {
+            "type": "integer"
+          },
+          "parts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "part": {
+                  "type": "integer"
+                },
+                "url": {
+                  "type": "string",
+                  "description": "Path of this part's ZIP, under the API root."
+                },
+                "filename": {
+                  "type": "string"
+                },
+                "contents": {
+                  "type": "string",
+                  "enum": [
+                    "account",
+                    "tracks"
+                  ]
+                },
+                "tracks": {
+                  "type": "integer"
+                },
+                "bytes": {
+                  "type": "integer",
+                  "description": "Planned bytes of track files."
+                }
+              },
+              "required": [
+                "part",
+                "url",
+                "filename",
+                "contents",
+                "tracks",
+                "bytes"
+              ]
+            }
+          }
+        },
+        "required": [
+          "createdAt",
+          "trackCount",
+          "trackBytes",
+          "parts"
         ]
       },
       "PrivacyZoneList": {
@@ -1475,7 +1536,7 @@
       "get": {
         "operationId": "exportAccount",
         "summary": "Download all of the signed-in user's data",
-        "description": "A ZIP archive, streamed: `account.json`, `sessions.json`, `privacy-zones.json`, `voyages.json`, a README and every track file as uploaded (owner versions, not the shared projection). Refused with 413 above 20000 track files or 1073741824 bytes of tracks.",
+        "description": "Without `part`: a JSON manifest listing the parts. Part 1 is a ZIP of `account.json`, `sessions.json`, `privacy-zones.json`, `voyages.json` and a README. Later parts are ZIPs of at most 200 track files as uploaded (owner versions); fetch them with the manifest's `url`. A part request for a track list that has changed since the manifest gets 409; fetch the manifest again. A file a part cannot include is listed in its `errors.json`. Refused with 413 above 20000 track files.",
         "tags": [
           "account"
         ],
@@ -1484,14 +1545,71 @@
             "bearerAuth": []
           }
         ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 20001
+            },
+            "required": false,
+            "name": "part",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{32}$"
+            },
+            "required": false,
+            "name": "v",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            },
+            "required": false,
+            "name": "from",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "required": false,
+            "name": "to",
+            "in": "query"
+          }
+        ],
         "responses": {
           "200": {
-            "description": "The archive.",
+            "description": "The manifest, or one part's archive.",
             "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExportManifest"
+                }
+              },
               "application/zip": {
                 "schema": {
                   "type": "string",
                   "format": "binary"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The part parameters are invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
                 }
               }
             }
@@ -1506,8 +1624,18 @@
               }
             }
           },
+          "409": {
+            "description": "The account's tracks changed since the manifest (`export_changed`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
           "413": {
-            "description": "The account holds too much to export in one archive (`export_too_large`).",
+            "description": "The account holds too many tracks to export (`export_too_large`).",
             "content": {
               "application/json": {
                 "schema": {

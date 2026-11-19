@@ -19,5 +19,11 @@ final class PhoneExportUITests: XCTestCase {
             .matching(NSPredicate(format: "label CONTAINS[c] %@", "madegood-recordings")).firstMatch
         XCTAssertTrue(caption.waitForExistence(timeout: 30))
         attachScreenshot("Export all recordings")
+
+        // Dismissing the sheet deletes the zip; the app stays usable for another export.
+        app.swipeDown(velocity: .fast)
+        let again = app.buttons["settings.exportAll"]
+        XCTAssertTrue(again.waitForExistence(timeout: 10))
+        XCTAssertTrue(again.isEnabled)
     }
 }
