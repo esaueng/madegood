@@ -350,6 +350,11 @@ struct SessionDetailView: View {
                 .id("session.stats")
             }
 
+            if sport == .motorboating {
+                MotorboatDetailSection(
+                    metrics: metrics, startedAt: analysis.session.startedAt, display: display, library: library)
+            }
+
             if let categories = metrics.speedCategories {
                 speedBests(categories, analysis: analysis, scroll: scroll)
             }

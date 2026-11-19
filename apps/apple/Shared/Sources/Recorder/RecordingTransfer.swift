@@ -53,6 +53,11 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
         active.withLock { $0.contains(name) }
     }
 
+    /// Whether a recording folder is still being written on this device.
+    func isRecording(_ folder: URL) -> Bool {
+        isActive(folder.lastPathComponent)
+    }
+
     // MARK: Watch: sending
 
     #if os(watchOS)

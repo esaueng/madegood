@@ -79,6 +79,12 @@ struct SportSettingsForm: View {
                 }
             }
 
+            #if os(iOS)
+                if sport == .motorboating {
+                    FuelSettingsSection(sport: sport)
+                }
+            #endif
+
             Section {
                 Toggle("Save to Health", isOn: store.binding(sport, \.savesWorkout))
                     .accessibilityIdentifier("sportSettings.saveWorkout")
@@ -102,6 +108,57 @@ struct SportSettingsForm: View {
         .navigationTitle(sport.displayName)
     }
 }
+
+#if os(iOS)
+    /// Burn rates for the motorboat fuel estimate, entered in the chosen unit per hour and
+    /// stored in litres per hour.
+    private struct FuelSettingsSection: View {
+        let sport: Sport
+        @State private var store = SettingsStore.shared
+
+        var body: some View {
+            let unit = store[sport].fuelUnit
+            Section {
+                Picker("Fuel unit", selection: store.binding(sport, \.fuelUnit)) {
+                    Text("Litres").tag(VolumeUnit.litres)
+                    Text("US gallons").tag(VolumeUnit.usGallons)
+                }
+                .accessibilityIdentifier("sportSettings.fuelUnit")
+                rateField("Under way", field: \.fuelBurnRate, unit: unit, identifier: "sportSettings.fuelBurn")
+                rateField("Idle", field: \.idleFuelBurnRate, unit: unit, identifier: "sportSettings.fuelIdleBurn")
+            } header: {
+                Text("Fuel estimate")
+            } footer: {
+                Text(
+                    "Your engine's burn per hour at cruising speed, and while idling or manoeuvring (0 if you shut it down). Fuel is shown as an estimate, never a measurement."
+                )
+            }
+        }
+
+        private func rateField(
+            _ title: String, field: WritableKeyPath<SportSettings, Double?>, unit: VolumeUnit, identifier: String
+        ) -> some View {
+            let binding = Binding<Double?>(
+                get: { store[sport][keyPath: field].map { (unit.fromLitres($0) * 100).rounded() / 100 } },
+                set: { value in
+                    store.update(sport) { settings in
+                        let litres = value.map(unit.toLitres)
+                        let valid = litres.map { $0.isFinite && $0 >= 0 && $0 <= SportSettings.maxFuelBurnRate } ?? true
+                        settings[keyPath: field] = valid ? litres : nil
+                    }
+                })
+            return LabeledContent(title) {
+                HStack(spacing: 4) {
+                    TextField("Off", value: binding, format: .number.precision(.fractionLength(0...2)))
+                        .keyboardType(.decimalPad)
+                        .multilineTextAlignment(.trailing)
+                        .accessibilityIdentifier(identifier)
+                    Text("\(unit.symbol)/h").foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+#endif
 
 extension LiveScreen {
     var title: String {

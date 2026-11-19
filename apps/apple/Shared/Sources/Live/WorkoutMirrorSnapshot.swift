@@ -6,6 +6,8 @@ struct LiveReadings: Codable, Equatable, Sendable {
     var elapsed: Double
     var movingTime: Double
     var distance: Double
+    /// Moving time under way (motorboat engine time), s. Nil from older watch builds.
+    var underWayTime: Double?
     var speed: Double?
     var averageSpeed: Double?
     var maxSpeed10s: Double?
@@ -23,6 +25,7 @@ struct LiveReadings: Codable, Equatable, Sendable {
         elapsed = metrics?.elapsed ?? 0
         movingTime = metrics?.movingTime ?? 0
         distance = metrics?.distance ?? 0
+        underWayTime = metrics?.underWayTime
         speed = metrics?.speed
         averageSpeed = metrics?.averageSpeed
         maxSpeed10s = metrics?.maxSpeed10s
