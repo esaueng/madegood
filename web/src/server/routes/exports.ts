@@ -41,17 +41,19 @@ const ExportBody = z
       .openapi({
         description: "Set once `ready`. Part 1 holds manifest.json, which lists every part.",
       }),
+    omitted: z.number().int().openapi({
+      description:
+        "Set once `ready`: files left out of the export, each listed in errors.json in part 1.",
+    }),
     error: z.string().nullable(),
   })
   .openapi("AccountExport");
 
 function toBody(job: ExportJob): z.infer<typeof ExportBody> {
-  const parts =
-    job.status === "ready"
-      ? (JSON.parse(job.partsJson) as { part: number; bytes: number }[])
-          .sort((a, b) => a.part - b.part)
-          .map((p) => ({ ...p, url: `/me/exports/${job.id}/parts/${p.part}` }))
-      : [];
+  const committed = job.status === "ready" ? (JSON.parse(job.partsJson) as CommittedPart[]) : [];
+  const parts = committed
+    .sort((a, b) => a.part - b.part)
+    .map((p) => ({ part: p.part, bytes: p.bytes, url: `/me/exports/${job.id}/parts/${p.part}` }));
   return {
     id: job.id,
     status: job.status,
@@ -59,6 +61,7 @@ function toBody(job: ExportJob): z.infer<typeof ExportBody> {
     expiresAt: job.expiresAt === null ? null : new Date(job.expiresAt).toISOString(),
     progress: { done: Math.min(job.cursor, job.totalItems), total: job.totalItems },
     parts,
+    omitted: committed.find((p) => p.part === 1)?.omitted ?? 0,
     error: job.error,
   };
 }

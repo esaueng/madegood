@@ -373,6 +373,10 @@
             },
             "description": "Set once `ready`. Part 1 holds manifest.json, which lists every part."
           },
+          "omitted": {
+            "type": "integer",
+            "description": "Set once `ready`: files left out of the export, each listed in errors.json in part 1."
+          },
           "error": {
             "type": [
               "string",
@@ -387,6 +391,7 @@
           "expiresAt",
           "progress",
           "parts",
+          "omitted",
           "error"
         ]
       },

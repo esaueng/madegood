@@ -197,6 +197,8 @@ export type AccountExport = {
   progress: { done: number; total: number };
   /** Set once ready; `url` is a path under /api. */
   parts: { part: number; bytes: number; url: string }[];
+  /** Files left out of a ready export; errors.json in part 1 lists them. */
+  omitted: number;
   error: string | null;
 };
 

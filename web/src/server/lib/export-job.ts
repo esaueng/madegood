@@ -111,7 +111,14 @@ const listingKey = (userId: string, exportId: string, part: number, attempt: str
   `${exportPrefix(userId, exportId)}part-${part}-${attempt}.json`;
 
 /** A committed part, as `parts_json` records it. */
-export type CommittedPart = { part: number; bytes: number; key: string; listing?: string };
+export type CommittedPart = {
+  part: number;
+  bytes: number;
+  key: string;
+  listing?: string;
+  /** Part 1 only: how many files errors.json lists (left out of the export). */
+  omitted?: number;
+};
 
 /** How long a claimed step is protected from another attempt (a crashed one is retried). */
 export const CLAIM_LEASE_MS = 10 * 60 * 1000;
@@ -318,19 +325,48 @@ export async function createExportJob(
       )
       .returning();
     if (!job) {
-      await env.TRACKS.delete(key);
-      await db.delete(exportJobs).where(eq(exportJobs.id, exportId));
+      await abandonJob(env, db, userId, exportId, written);
       return { kind: "account_gone" };
     }
     return { kind: "created", job };
   } catch (error) {
-    if (written) await env.TRACKS.delete(key).catch(() => {});
-    await db
-      .delete(exportJobs)
-      .where(eq(exportJobs.id, exportId))
-      .catch(() => {});
+    await abandonJob(env, db, userId, exportId, written).catch(() => {});
     throw error;
   }
+}
+
+/** The error of a job whose objects still have to be deleted; the sweep retries. */
+export const CLEANUP_PENDING = "The export could not be started.";
+
+/**
+ * Removes a job that could not be started. The row goes only once its snapshot is deleted;
+ * otherwise it is marked failed, and the sweep deletes the prefix and then the row. (If even
+ * that update fails, the row stays queued: the sweep resumes it, and the step either builds
+ * from the snapshot or fails the job, deleting the prefix.)
+ */
+async function abandonJob(
+  env: ExportEnv,
+  db: Db,
+  userId: string,
+  exportId: string,
+  written: boolean,
+) {
+  let deleted = true;
+  if (written) {
+    try {
+      await env.TRACKS.delete(snapshotKey(userId, exportId));
+    } catch {
+      deleted = false;
+    }
+  }
+  if (deleted) {
+    await db.delete(exportJobs).where(eq(exportJobs.id, exportId));
+    return;
+  }
+  await db
+    .update(exportJobs)
+    .set({ status: "failed", error: CLEANUP_PENDING, partsJson: "[]", updatedAt: Date.now() })
+    .where(eq(exportJobs.id, exportId));
 }
 
 export const firstMessage = (job: ExportJob): ExportMessage => ({
@@ -722,9 +758,7 @@ async function buildDataPart(
   return { part, bytes, key, listing: listingAt, next };
 }
 
-const README = `MadeGood account export
-
-Your data comes in several ZIP files ("parts"). This one, part 1, holds:
+const README_BODY = `Your data comes in several ZIP files ("parts"). This one, part 1, holds:
 
 manifest.json        Every part and every file in it. Check it to see that you have all parts.
 account.json         Your profile and settings, and Apple's identifier for your sign-in.
@@ -745,6 +779,14 @@ tracks/voyages/      Voyage leg tracks, in the same format.
 
 Units are SI: metres, seconds, metres per second, degrees. Times are UTC (ISO 8601).
 `;
+
+/** README.txt, which names any left-out files at the top so they are not missed. */
+export const readme = (omitted: number) =>
+  `MadeGood account export\n\n${
+    omitted > 0
+      ? `${omitted === 1 ? "1 item" : `${omitted} items`} could not be included. errors.json in this part lists each one and why.\n\n`
+      : ""
+  }${README_BODY}`;
 
 /** Writes part 1 (documents and the manifest) from the parts' listings. */
 async function buildFirstPart(
@@ -784,7 +826,7 @@ async function buildFirstPart(
     errors: errors.length,
   };
   async function* entries(): AsyncGenerator<ZipEntry> {
-    yield { name: "README.txt", data: async () => encoder.encode(README) };
+    yield { name: "README.txt", data: async () => encoder.encode(readme(errors.length)) };
     yield {
       name: "account.json",
       data: async () =>
@@ -800,12 +842,14 @@ async function buildFirstPart(
   }
   const key = partKey(job.userId, job.id, 1, attempt);
   const bytes = await uploadStream(env.TRACKS, key, zipStream(entries(), new Date()), calls);
-  return { part: 1, bytes, key };
+  return { part: 1, bytes, key, omitted: errors.length };
 }
 
 export type StepHooks = {
   /** After this attempt wrote its part, before it commits. */
   beforeCommit?: () => Promise<void>;
+  /** Right after the commit landed (tests use it to fail after the commit). */
+  afterCommit?: () => Promise<void>;
 };
 
 /**
@@ -819,7 +863,7 @@ export type StepHooks = {
  *    the listing's `next`, and `parts_json` records the part's keys. An attempt that loses
  *    (its claim expired and another committed) deletes only its own objects.
  * Throws on storage failures after deleting its objects and releasing its claim; the queue
- * retries and the sweep resumes.
+ * retries and the sweep resumes. A failure after the commit deletes nothing.
  */
 export async function runExportStep(
   env: ExportEnv,
@@ -857,6 +901,9 @@ export async function runExportStep(
   const discard = async () => {
     if (written.length > 0) await env.TRACKS.delete(written).catch(() => {});
   };
+  // Set once the commit lands: from then on this attempt's objects belong to the job, and no
+  // failure (an account check that throws, say) may delete them.
+  let committed = false;
 
   try {
     const object = await env.TRACKS.get(snapshotKey(job.userId, job.id));
@@ -907,6 +954,8 @@ export async function runExportStep(
         await dropIfJobGone(env, db, job);
         return null;
       }
+      committed = true;
+      await hooks.afterCommit?.();
       if (!(await accountActive(db, job.userId))) {
         await failJob(env, updated, "The account is being deleted.");
         return null;
@@ -934,11 +983,16 @@ export async function runExportStep(
       await dropIfJobGone(env, db, job);
       return null;
     }
+    committed = true;
+    await hooks.afterCommit?.();
     if (!(await accountActive(db, job.userId))) {
       await failJob(env, done, "The account is being deleted.");
     }
     return null;
   } catch (error) {
+    // After the commit the claim is already released and the cursor has moved on; the
+    // failed account check is repeated by the next step or the sweep.
+    if (committed) throw error;
     await discard();
     await env.DB.prepare(
       "UPDATE export_jobs SET attempt = NULL, attempt_at = NULL WHERE id = ? AND attempt = ?",
@@ -1034,6 +1088,18 @@ export async function sweepExports(
       counts.resumed += 1;
     }
   }
+  // Jobs that could not be started: delete what they left, then the row.
+  const abandoned = await db
+    .select()
+    .from(exportJobs)
+    .where(and(eq(exportJobs.status, "failed"), eq(exportJobs.error, CLEANUP_PENDING)))
+    .orderBy(asc(exportJobs.updatedAt))
+    .limit(50);
+  for (const job of abandoned) {
+    await deletePrefix(env.TRACKS, exportPrefix(job.userId, job.id));
+    await db.delete(exportJobs).where(eq(exportJobs.id, job.id));
+    counts.removed += 1;
+  }
   const old = await db
     .delete(exportJobs)
     .where(
@@ -1043,7 +1109,7 @@ export async function sweepExports(
       ),
     )
     .returning({ id: exportJobs.id });
-  counts.removed = old.length;
+  counts.removed += old.length;
   return counts;
 }
 

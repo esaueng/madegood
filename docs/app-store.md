@@ -151,8 +151,10 @@ session.
   ZIP parts in R2 (at most 500 MiB each): session and voyage documents, then every track
   as uploaded. Part 1 holds `README.txt`, `account.json` (profile, settings, Apple user
   identifier), `privacy-zones.json`, `manifest.json` (every part and file) and, if needed,
-  `errors.json` (files that could not be included, with the reason). The page shows
-  progress, then a download link per part; the parts are deleted after 7 days. One
+  `errors.json` (files that could not be included, with the reason; a session document
+  over 256 KiB is one). The page shows progress, then a download link per part and, if
+  anything was left out, how many items and a pointer to `errors.json`, which the README
+  also names at the top; the parts are deleted after 7 days. One
   export at a time, three a day.
 
 ## Review notes (draft)

@@ -262,8 +262,11 @@ Settings → Export all my data on the website runs a background job
   looked up by the frozen IDs and written one compact JSON line per session, the stored
   summary embedded as is), then tracks by their frozen key and ETag. A part stops at 500 MiB, 400 items or
   700 storage calls, then queues the next step. A track replaced since the snapshot is
-  exported at its current version (noted in `manifest.json`); one that is gone is listed
-  in `errors.json`.
+  exported at its current version (noted in `manifest.json`); one that is gone, and a
+  session document over 256 KiB, is listed in `errors.json`. The job reports how many
+  items were left out (`omitted`), and the README names them at the top.
+- A failure after a part commits never deletes that part. A job whose snapshot could not
+  be deleted after a failed start is kept as failed until the sweep deletes its objects.
 - The last step writes part 1 (README, account, privacy zones, manifest, errors) and marks
   the job ready for 7 days.
 - The cron sweep deletes expired parts, re-sends the step of a job untouched for 30

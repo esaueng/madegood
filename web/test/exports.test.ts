@@ -1,9 +1,12 @@
 import { env } from "cloudflare:workers";
+import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
 import { describe, expect, it } from "vitest";
+import { exportJobs } from "../src/server/db/schema";
 import {
   Calls,
   CLAIM_LEASE_MS,
+  CLEANUP_PENDING,
   type CommittedPart,
   createExportJob,
   EXPORT_TTL_MS,
@@ -128,6 +131,21 @@ async function createManual(owner: SignIn) {
   const result = await createExportJob(manual(), owner.user.id);
   if (result.kind !== "created") throw new Error(result.kind);
   return result.job;
+}
+
+/** Polls the API until the export is no longer queued or building. */
+async function poll(token: string, id: string) {
+  for (let i = 0; i < 100; i++) {
+    const response = await api(`/me/exports/${id}`, { headers: bearer(token) });
+    const body = (await response.json()) as {
+      status: string;
+      omitted: number;
+      parts: { part: number; url: string; bytes: number }[];
+    };
+    if (body.status !== "queued" && body.status !== "building") return body;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error("the export never finished");
 }
 
 describe("account export jobs", () => {
@@ -403,19 +421,6 @@ describe("account export jobs", () => {
 });
 
 describe("/api/me/exports", () => {
-  const poll = async (token: string, id: string) => {
-    for (let i = 0; i < 100; i++) {
-      const response = await api(`/me/exports/${id}`, { headers: bearer(token) });
-      const body = (await response.json()) as {
-        status: string;
-        parts: { part: number; url: string; bytes: number }[];
-      };
-      if (body.status !== "queued" && body.status !== "building") return body;
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
-    throw new Error("the export never finished");
-  };
-
   it("starts an export on the queue, reports it and serves its parts to the owner only", async () => {
     const owner = await signIn();
     const stranger = await signIn();
@@ -712,5 +717,138 @@ describe("review of the #79 redesign", () => {
       owner.user.id,
     );
     expect(count?.n).toBe(3);
+  });
+});
+
+describe("scoped re-check of #79", () => {
+  const objects = async (userId: string, exportId: string) =>
+    (await env.TRACKS.list({ prefix: `users/${userId}/exports/${exportId}/` })).objects.map(
+      (o) => o.key,
+    );
+
+  /** `target` with `name` replaced by a function that throws. */
+  const breaking = <T extends object>(target: T, name: string, when: (arg: unknown) => boolean) =>
+    new Proxy(target, {
+      get(t, p) {
+        const value = Reflect.get(t, p);
+        if (typeof value !== "function") return value;
+        if (p !== name) return value.bind(t);
+        return (arg: unknown, ...rest: unknown[]) => {
+          if (when(arg)) throw new Error(`synthetic ${name} failure`);
+          return value.call(t, arg, ...rest);
+        };
+      },
+    });
+
+  it("finding 1: a failure after a part commits keeps that part and its listing", async () => {
+    const owner = await signIn();
+    const a = await sessionWithTrack(owner, new Uint8Array([1]));
+    const job = await createManual(owner);
+    const fail = { afterCommit: async () => Promise.reject(new Error("synthetic account check")) };
+
+    // The data part commits, then the step throws (as a failing accountActive() would).
+    await expect(
+      runExportStep(manual(), firstMessage(job), undefined, undefined, fail),
+    ).rejects.toThrow("synthetic account check");
+    const row = await jobRow(job.id);
+    const committed = JSON.parse(row?.partsJson ?? "[]") as CommittedPart[];
+    expect(committed).toHaveLength(1);
+    const keys = await objects(owner.user.id, job.id);
+    expect(keys).toContain(committed[0]?.key);
+    expect(keys).toContain(committed[0]?.listing);
+
+    // The queue's retry of the old message is stale; the sweep resumes from the new cursor.
+    expect(await runExportStep(manual(), firstMessage(job))).toBeNull();
+    const [resumed] = await drizzle(env.DB)
+      .select()
+      .from(exportJobs)
+      .where(eq(exportJobs.id, job.id));
+    if (!resumed) throw new Error("the job is gone");
+
+    // Part 1 commits too, then the step throws: the job stays ready with every part.
+    await expect(
+      runExportStep(manual(), firstMessage(resumed), undefined, undefined, fail),
+    ).rejects.toThrow("synthetic account check");
+    expect((await jobRow(job.id))?.status).toBe("ready");
+    const names = [...(await readParts(owner.user.id, job.id)).values()].flat().map((e) => e.name);
+    expect(names).toContain(`tracks/sessions/${a.id}.track.v1.gz`);
+    expect(names).toContain("manifest.json");
+  });
+
+  it("finding 2: a snapshot that cannot be deleted keeps its job row until the sweep deletes it", async () => {
+    const owner = await signIn();
+    await sessionWithTrack(owner, new Uint8Array([1]));
+    const storage = {
+      // The total_items update fails, and so does deleting the snapshot.
+      DB: breaking(env.DB, "prepare", (q) =>
+        /^update "export_jobs" set "total_items"/.test(String(q)),
+      ),
+      TRACKS: breaking(env.TRACKS, "delete", () => true),
+    };
+    await expect(createExportJob(storage, owner.user.id)).rejects.toThrow("synthetic prepare");
+    const row = await one<{ id: string; status: string; error: string }>(
+      "select id, status, error from export_jobs where user_id = ?",
+      owner.user.id,
+    );
+    expect(row).toMatchObject({ status: "failed", error: CLEANUP_PENDING });
+    const id = row?.id ?? "";
+    expect(await objects(owner.user.id, id)).toEqual([
+      `users/${owner.user.id}/exports/${id}/snapshot.json`,
+    ]);
+    // A failed job does not block a new export.
+    expect((await createExportJob(manual(), owner.user.id)).kind).toBe("created");
+
+    await sweepExports(manual(), null);
+    expect(await objects(owner.user.id, id)).toEqual([]);
+    expect(await one("select id from export_jobs where id = ?", id)).toBeNull();
+
+    // When the delete works, the row goes at once.
+    const other = await signIn();
+    await expect(
+      createExportJob({ DB: storage.DB, TRACKS: env.TRACKS }, other.user.id),
+    ).rejects.toThrow("synthetic prepare");
+    expect(await one("select id from export_jobs where user_id = ?", other.user.id)).toBeNull();
+    expect(
+      (await env.TRACKS.list({ prefix: `users/${other.user.id}/exports/` })).objects,
+    ).toHaveLength(0);
+  });
+
+  it("finding 4: a session left out is counted on the export and named at the top of the README", async () => {
+    const owner = await signIn();
+    await sessionWithTrack(owner, new Uint8Array([1]));
+    const big = crypto.randomUUID();
+    await sql(
+      "insert into sessions (id, user_id, sport, started_at, notes) values (?, ?, 'sup', ?, ?)",
+      big,
+      owner.user.id,
+      START_MS + 1,
+      "n".repeat(SESSION_DOC_MAX_BYTES + 1),
+    );
+    const started = await api("/me/exports", {
+      method: "POST",
+      headers: bearer(owner.accessToken),
+    });
+    const { id } = (await started.json()) as { id: string };
+    const ready = await poll(owner.accessToken, id);
+    expect(ready).toMatchObject({ status: "ready", omitted: 1 });
+    const first = (await readParts(owner.user.id, id)).get(1) ?? [];
+    const readme = text(first.find((e) => e.name === "README.txt")?.data ?? new Uint8Array());
+    expect(readme.split("\n").slice(0, 3)).toEqual([
+      "MadeGood account export",
+      "",
+      "1 item could not be included. errors.json in this part lists each one and why.",
+    ]);
+    expect(parse(first, "errors.json")).toEqual([expect.objectContaining({ reason: "too_large" })]);
+    // Without errors, the API reports none and the README has no such line.
+    const clean = await signIn();
+    const job = await createManual(clean);
+    await runAll(firstMessage(job));
+    const cleanFirst = (await readParts(clean.user.id, job.id)).get(1) ?? [];
+    const cleanReadme = text(
+      cleanFirst.find((e) => e.name === "README.txt")?.data ?? new Uint8Array(),
+    );
+    expect(cleanReadme.split("\n")[2]).toMatch(/^Your data comes in several ZIP files/);
+    const body = await api(`/me/exports/${job.id}`, { headers: bearer(clean.accessToken) });
+    expect(await body.json()).toMatchObject({ status: "ready", omitted: 0 });
   });
 });
