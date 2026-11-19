@@ -149,7 +149,9 @@ extension SettingsView {
                     exportMessage = "There are no recordings on this iPhone yet."
                 }
             } catch {
-                exportMessage = "Couldn’t export your recordings. Try again."
+                exportMessage =
+                    error is CancellationError
+                    ? nil : "Couldn’t export your recordings. Check that there is free storage, then try again."
             }
         }
     }

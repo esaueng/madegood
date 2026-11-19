@@ -68,8 +68,7 @@ public enum RawFormatConversion {
         written: inout [URL], progress: @escaping (Double) -> Void
     ) throws {
         let fm = FileManager.default
-        let names = try fm.contentsOfDirectory(atPath: folder.path)
-            .filter(RawSessionReader.isRecordingFileName).sorted()
+        let names = try recordingFiles(in: folder)
         let sizes = names.map { name in
             ((try? fm.attributesOfItem(atPath: folder.appendingPathComponent(name).path))?[.size] as? NSNumber)?
                 .int64Value ?? 0
@@ -116,6 +115,33 @@ public enum RawFormatConversion {
             }
             done += size
             progress(Double(done) / Double(total))
+        }
+    }
+
+    /// The recording's own file names in `folder`, checked as the reader would: each must be
+    /// a regular file (a directory or symbolic link named like a stream is never copied), and
+    /// no stream may be there both plain and gzipped. Either problem makes the recording
+    /// unreadable (`isInvalidRecording`).
+    static func recordingFiles(in folder: URL) throws -> [String] {
+        let names = try FileManager.default.contentsOfDirectory(atPath: folder.path)
+            .filter(RawSessionReader.isRecordingFileName).sorted()
+        for name in names where !RawSessionReader.isRegularFile(folder.appendingPathComponent(name)) {
+            throw RawSessionReader.Error.notARegularFile(name)
+        }
+        for stream in RawFormat.Stream.allCases where names.contains(stream.fileName) && names.contains(stream.gzippedFileName) {
+            throw RawSessionReader.Error.bothPlainAndGzipped(stream.rawValue)
+        }
+        return names
+    }
+
+    /// Whether `error` from `exportCopy` means the recording itself is not readable (its
+    /// meta, its file layout, or a stream that is not gzip or inflates past the limit), as
+    /// opposed to a storage failure (no space, a write error) that should stop an export.
+    public static func isInvalidRecording(_ error: any Swift.Error) -> Bool {
+        switch error {
+        case is RawSessionReader.Error: true
+        case Gzip.Error.invalidData, Gzip.Error.outputTooLarge, Gzip.Error.inputTooLarge: true
+        default: false
         }
     }
 
