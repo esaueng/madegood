@@ -72,5 +72,9 @@ final class PrivacyManifestTests: XCTestCase {
         let url = try XCTUnwrap(AppInfo.privacyPolicyURL)
         XCTAssertEqual(url.scheme, "https")
         XCTAssertEqual(url.lastPathComponent, "privacy")
+        // The production workers.dev address is turned off (it returns 404); the site lives on
+        // its custom domain. A fork sets its own site in Local.xcconfig.
+        let host = try XCTUnwrap(url.host())
+        XCTAssertFalse(host.hasSuffix(".workers.dev"), "privacy link points at \(host)")
     }
 }
