@@ -15,6 +15,8 @@ const jwks = {
 };
 
 const realFetch = globalThis.fetch;
+/** The hosts lib/wind.ts calls; answered by the stand-in in test/open-meteo.ts. */
+const OPEN_METEO_HOSTS = new Set(["api.open-meteo.com", "archive-api.open-meteo.com"]);
 export const jwksRequests: string[] = [];
 vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
   const url = input instanceof Request ? input.url : String(input);
@@ -22,7 +24,7 @@ vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     jwksRequests.push(url);
     return Response.json(jwks);
   }
-  if (new URL(url).hostname.endsWith("open-meteo.com")) return openMeteo(new URL(url));
+  if (OPEN_METEO_HOSTS.has(new URL(url).hostname)) return openMeteo(new URL(url));
   return realFetch(input, init);
 });
 

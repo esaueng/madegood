@@ -1,5 +1,5 @@
 // A stand-in for Open-Meteo, so post-processing never reaches the network in tests.
-// test/apple.ts routes every request to an open-meteo.com host here.
+// test/apple.ts routes requests for the Open-Meteo hosts lib/wind.ts uses here.
 
 export const openMeteoRequests: URL[] = [];
 
