@@ -118,9 +118,10 @@ final class ExportFilesTests: XCTestCase {
         let zip = try XCTUnwrap(made?.zip)
         XCTAssertEqual(made?.skipped, 0)
         // Only the zip is left in the exports folder: the staging copy is gone.
-        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: exports.path), ["madegood-recordings.zip"])
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: exports.path), [zip.lastPathComponent])
         XCTAssertEqual(zip.deletingLastPathComponent().standardizedFileURL, exports.standardizedFileURL)
-        XCTAssertEqual(zip.lastPathComponent, "madegood-recordings.zip")
+        XCTAssertTrue(zip.lastPathComponent.hasPrefix("madegood-recordings-"))
+        XCTAssertEqual(zip.pathExtension, "zip")
         XCTAssertTrue(exists(zip))
 
         // What the share sheet's completion handler does.
@@ -232,6 +233,124 @@ final class ExportFilesTests: XCTestCase {
         XCTAssertEqual((try? FileManager.default.contentsOfDirectory(atPath: exports.path)) ?? [], [])
     }
 
+    // Scoped re-check of #91.
+
+    /// Finding 1: a cached copy from an earlier build (old key scheme) is deleted at launch,
+    /// and a cached copy that is not valid is never returned: it is made again.
+    func testCachedCopiesAreCheckedBeforeTheyAreUsed() async throws {
+        let library = root.appendingPathComponent("Recordings", isDirectory: true)
+        let folder = try v1Recording(in: library)
+        let fm = FileManager.default
+        let entryRoot = cache.appendingPathComponent(folder.lastPathComponent, isDirectory: true)
+        // What an earlier build left: an entry under the old key, holding a directory.
+        let old = entryRoot.appendingPathComponent("v\(RawFormat.version)-\(ZipExport.revisionKey(of: folder))", isDirectory: true)
+            .appendingPathComponent(folder.lastPathComponent, isDirectory: true)
+        try fm.createDirectory(at: old.appendingPathComponent("gps.ndjson"), withIntermediateDirectories: true)
+        ZipExport.prunePrepared(keeping: [folder.lastPathComponent], root: cache)
+        XCTAssertFalse(exists(old.deletingLastPathComponent()), "an old-scheme entry outlived launch")
+
+        // An entry under the current key that is not valid (a stream directory holding an
+        // old clock file, and a stream both plain and gzipped).
+        let current = entryRoot.appendingPathComponent(ZipExport.cacheKey(of: folder), isDirectory: true)
+            .appendingPathComponent(folder.lastPathComponent, isDirectory: true)
+        try fm.createDirectory(at: current.appendingPathComponent("gps.ndjson"), withIntermediateDirectories: true)
+        try Gzip.compress(RawFormat.line(RawFormat.V1.ClockAnchor(unix: start, uptime: 5_000)))
+            .write(to: current.appendingPathComponent("gps.ndjson/clock.ndjson.gz"))
+        try Data().write(to: current.appendingPathComponent("hr.ndjson"))
+        try Gzip.compress(Data()).write(to: current.appendingPathComponent("hr.ndjson.gz"))
+        try RawFormat.encodeMeta(meta()).write(to: current.appendingPathComponent("meta.json"))
+
+        let prepared = try await ZipExport.preparedRecording(folder: folder, root: cache)
+        XCTAssertEqual(prepared, current)
+        XCTAssertEqual(try fm.contentsOfDirectory(atPath: prepared.path).sorted(), ["clock.ndjson.gz", "meta.json", "motion.ndjson.gz"])
+        XCTAssertFalse(try allText(in: prepared).contains("uptime"))
+    }
+
+    /// Finding 2: a filesystem error is never taken for an empty library or an invalid
+    /// recording: the export fails, and nothing is left.
+    func testFilesystemErrorsFailTheExport() async throws {
+        // The library path is a file: listing it fails.
+        let notAFolder = root.appendingPathComponent("RecordingsFile")
+        try Data("x".utf8).write(to: notAFolder)
+        do {
+            _ = try await ZipExport.zipAllRecordings(root: notAFolder, in: exports, cache: cache)
+            XCTFail("a library that cannot be listed is not an empty one")
+        } catch {
+            XCTAssertFalse(RawFormatConversion.isInvalidRecording(error), "\(error)")
+        }
+        // A recording folder that cannot be read: not skipped as invalid.
+        let library = root.appendingPathComponent("Recordings", isDirectory: true)
+        _ = try v2Recording(in: library)
+        let locked = try v2Recording(in: library)
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: locked.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: locked.path) }
+        do {
+            _ = try await ZipExport.zipAllRecordings(root: library, in: exports, cache: cache)
+            XCTFail("an unreadable folder must fail the export, not be skipped")
+        } catch {
+            XCTAssertFalse(RawFormatConversion.isInvalidRecording(error), "\(error)")
+        }
+        XCTAssertEqual((try? FileManager.default.contentsOfDirectory(atPath: exports.path)) ?? [], [])
+        // A missing library is still an empty one.
+        let missing = try await ZipExport.zipAllRecordings(
+            root: root.appendingPathComponent("Missing", isDirectory: true), in: exports, cache: cache)
+        XCTAssertNil(missing)
+    }
+
+    /// Finding 3: an export cancelled while it waits for a recording's turn gives the turn
+    /// up without preparing that recording.
+    func testCancelledWhileWaitingForATurnPreparesNothing() async throws {
+        let library = root.appendingPathComponent("Recordings", isDirectory: true)
+        let folder = try v1Recording(in: library)
+        let (exportsURL, cacheURL) = (exports, cache)
+        let waiting = LockedTask()
+        let changedKey = LockedValues()
+        try await ZipExport.withPreparedRecording(folder: folder, root: cacheURL) { _ in
+            // A new revision, then an export that has to wait for this turn, cancelled meanwhile.
+            try Data("{}\n".utf8).write(to: folder.appendingPathComponent("hr.ndjson"))
+            changedKey.append(1)
+            waiting.set(Task { try await ZipExport.zipAllRecordings(root: library, in: exportsURL, cache: cacheURL) })
+            Thread.sleep(forTimeInterval: 0.2)
+            waiting.cancel()
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+        do {
+            _ = try await waiting.value()
+            XCTFail("a cancelled export must not finish")
+        } catch {
+            XCTAssertTrue(error is CancellationError, "\(error)")
+        }
+        let entry = cache.appendingPathComponent(folder.lastPathComponent, isDirectory: true)
+            .appendingPathComponent(ZipExport.cacheKey(of: folder), isDirectory: true)
+        XCTAssertFalse(exists(entry), "the cancelled export prepared the new revision anyway")
+        XCTAssertEqual((try? FileManager.default.contentsOfDirectory(atPath: exports.path)) ?? [], [])
+        // The turn was given back: the recording can be prepared now.
+        let prepared = try await ZipExport.preparedRecording(folder: folder, root: cache)
+        XCTAssertTrue(exists(prepared))
+    }
+
+    /// Finding 4: each export has a zip of its own, so a failed export never deletes an
+    /// earlier one that may still be open in a share sheet.
+    func testAFailedExportLeavesAnEarlierZipAlone() async throws {
+        let library = root.appendingPathComponent("Recordings", isDirectory: true)
+        _ = try v2Recording(in: library)
+        let madeFirst = try await ZipExport.zipAllRecordings(root: library, in: exports, cache: cache)
+        let madeSecond = try await ZipExport.zipAllRecordings(root: library, in: exports, cache: cache)
+        let first = try XCTUnwrap(madeFirst?.zip)
+        let second = try XCTUnwrap(madeSecond?.zip)
+        XCTAssertNotEqual(first, second)
+        XCTAssertTrue(exists(first))
+        // A storage failure: the earlier zips stay.
+        let blocked = root.appendingPathComponent("BlockedCache")
+        try Data("x".utf8).write(to: blocked)
+        _ = try? await ZipExport.zipAllRecordings(root: library, in: exports, cache: blocked)
+        XCTAssertTrue(exists(first))
+        XCTAssertTrue(exists(second))
+        XCTAssertEqual(
+            try FileManager.default.contentsOfDirectory(atPath: exports.path).sorted(),
+            [first.lastPathComponent, second.lastPathComponent].sorted())
+    }
+
     func testNoZipForAnEmptyLibrary() async throws {
         let library = root.appendingPathComponent("Empty", isDirectory: true)
         try FileManager.default.createDirectory(at: library, withIntermediateDirectories: true)
@@ -291,5 +410,9 @@ private final class LockedTask: @unchecked Sendable {
             cancelRequested = true
             task?.cancel()
         }
+    }
+    func value() async throws -> ZipExport.AllRecordings? {
+        guard let task = lock.withLock({ task }) else { return nil }
+        return try await task.value
     }
 }

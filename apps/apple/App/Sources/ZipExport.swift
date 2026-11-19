@@ -24,10 +24,20 @@ enum ZipExport {
         return String(hash, radix: 16)
     }
 
-    /// The cache entry name of a prepared copy: the raw format version it was converted to
-    /// and the recording's revision, so a newer app never reuses an older conversion.
+    /// The version of how a prepared copy is made. Bump it whenever the preparation changes
+    /// what may be in a copy, so no copy made by an older build is ever reused. 2: only
+    /// regular files, and no stream both plain and gzipped (review of #91).
+    static let prepareSchema = 2
+
+    /// The start of every current cache entry name; entries without it are from an older
+    /// build and are deleted at launch.
+    static var cacheKeyPrefix: String { "v\(RawFormat.version)-p\(prepareSchema)-" }
+
+    /// The cache entry name of a prepared copy: the raw format version it was converted to,
+    /// the preparation schema and the recording's revision, so a newer app never reuses an
+    /// older conversion.
     static func cacheKey(of folder: URL) -> String {
-        "v\(RawFormat.version)-\(revisionKey(of: folder))"
+        cacheKeyPrefix + revisionKey(of: folder)
     }
 
     /// Work on a recording's cache entry, by recording: one at a time per recording, so
@@ -42,12 +52,20 @@ enum ZipExport {
             let previous = tails[name]
             let task = Task.detached(priority: .userInitiated) { () throws -> T in
                 await previous?.value
+                // Cancelled while waiting for the turn: give it up without preparing.
+                try Task.checkCancellation()
                 return try work()
             }
             let tail = Task.detached { _ = try? await task.value }
             tails[name] = tail
             defer { if tails[name] == tail { tails[name] = nil } }
-            return try await task.value
+            // The work is detached (it holds the turn); a cancelled caller cancels it, and the
+            // conversion stops between files and chunks. The turn ends when the work does.
+            return try await withTaskCancellationHandler {
+                try await task.value
+            } onCancel: {
+                task.cancel()
+            }
         }
     }
     private static let preparations = Preparations()
@@ -57,12 +75,19 @@ enum ZipExport {
         try? FileManager.default.removeItem(at: root.appendingPathComponent(folder.lastPathComponent, isDirectory: true))
     }
 
-    /// Deletes prepared copies of recordings that no longer exist, and leftovers of an
-    /// interrupted preparation (older than an hour, so never one still running). Call at launch.
+    /// Deletes prepared copies of recordings that no longer exist, copies made by an older
+    /// build (`cacheKeyPrefix`), and leftovers of an interrupted preparation (older than an
+    /// hour, so never one still running). Call at launch.
     static func prunePrepared(keeping names: Set<String>, root: URL = preparedRoot, now: Date = Date()) {
         let fm = FileManager.default
-        for name in (try? fm.contentsOfDirectory(atPath: root.path)) ?? [] where !names.contains(name) {
+        for name in (try? fm.contentsOfDirectory(atPath: root.path)) ?? [] {
             let url = root.appendingPathComponent(name)
+            if names.contains(name) {
+                for entry in (try? fm.contentsOfDirectory(atPath: url.path)) ?? [] where !entry.hasPrefix(cacheKeyPrefix) {
+                    try? fm.removeItem(at: url.appendingPathComponent(entry))
+                }
+                continue
+            }
             if name.hasPrefix(".partial-") {
                 let modified = (try? fm.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
                 if let modified, now.timeIntervalSince(modified) < 3600 { continue }
@@ -103,8 +128,13 @@ enum ZipExport {
         let prepared = recordingRoot.appendingPathComponent(cacheKey(of: folder), isDirectory: true)
             .appendingPathComponent(name, isDirectory: true)
         if fm.fileExists(atPath: prepared.path) {
-            progress(1)
-            return prepared
+            // Checked again before it is used: only the recording's own regular files, laid
+            // out as the reader accepts. Anything else is made again.
+            if (try? isValidPreparedCopy(prepared)) == true {
+                progress(1)
+                return prepared
+            }
+            try fm.removeItem(at: prepared)
         }
         // Earlier revisions (and format versions) of this recording are stale now.
         try? fm.removeItem(at: recordingRoot)
@@ -119,6 +149,17 @@ enum ZipExport {
             // Prepared meanwhile for the same revision (by another process): use it.
         }
         return prepared
+    }
+
+    /// Whether a prepared copy holds only the recording's own regular files, with no stream
+    /// both plain and gzipped (`RawFormatConversion.recordingFiles`).
+    static func isValidPreparedCopy(_ prepared: URL) throws -> Bool {
+        let all = try FileManager.default.contentsOfDirectory(atPath: prepared.path)
+        do {
+            return try RawFormatConversion.recordingFiles(in: prepared).count == all.count
+        } catch where RawFormatConversion.isInvalidRecording(error) {
+            return false
+        }
     }
 
     /// Shares a recording (`preparedRecording`) as a zip in `ExportFiles.directory`.
@@ -181,13 +222,16 @@ enum ZipExport {
         guard let skipped = try await stageAllRecordings(root: root, into: folder, cache: cache, progress: progress)
         else { return nil }
         try Task.checkCancellation()
+        // A name of its own: an earlier export's zip may still be open in a share sheet, and
+        // a failure here must delete only what this attempt made.
+        let name = "madegood-recordings-\(UUID().uuidString.prefix(8).lowercased()).zip"
         let archive: URL
         do {
             archive = try await Task.detached(priority: .userInitiated) {
-                try zip(folder: folder, name: "madegood-recordings.zip", in: directory)
+                try zip(folder: folder, name: name, in: directory)
             }.value
         } catch {
-            try? fm.removeItem(at: directory.appendingPathComponent("madegood-recordings.zip"))
+            try? fm.removeItem(at: directory.appendingPathComponent(name))
             throw error
         }
         if Task.isCancelled {
@@ -205,12 +249,16 @@ enum ZipExport {
         root: URL, into destination: URL, cache: URL = preparedRoot,
         progress: @escaping @Sendable (Double) -> Void = { _ in }
     ) async throws -> Int? {
-        let folders = try await Task.detached(priority: .userInitiated) { () -> [URL] in
+        let folders = try await Task.detached(priority: .userInitiated) { () throws -> [URL] in
             let fm = FileManager.default
-            return ((try? fm.contentsOfDirectory(
-                at: root, includingPropertiesForKeys: [.isDirectoryKey], options: .skipsHiddenFiles)) ?? [])
-                .filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
-                .sorted { $0.lastPathComponent < $1.lastPathComponent }
+            // No library folder yet: no recordings. Any error listing it, or reading what is
+            // in it, fails the export rather than leaving recordings out unnoticed.
+            guard fm.fileExists(atPath: root.path) else { return [] }
+            return try fm.contentsOfDirectory(
+                at: root, includingPropertiesForKeys: [.isDirectoryKey], options: .skipsHiddenFiles
+            )
+            .filter { try $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
         }.value
         guard !folders.isEmpty else { return nil }
         try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)

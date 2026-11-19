@@ -245,6 +245,26 @@ import Testing
         #expect(!RawFormatConversion.isInvalidRecording(POSIXError(.ENOSPC)))
     }
 
+    /// Scoped re-check of #91, finding 2: a missing meta.json is an invalid recording, but
+    /// a storage error is not (it must fail an export, not skip the recording).
+    @Test func aMissingMetaIsInvalidAndAStorageErrorIsNot() throws {
+        let temp = try TempFolder()
+        let empty = temp.url.appendingPathComponent("empty")
+        try FileManager.default.createDirectory(at: empty, withIntermediateDirectories: true)
+        do {
+            _ = try RawSessionReader.readMeta(folder: empty)
+            Issue.record("read a folder without meta.json")
+        } catch {
+            #expect(RawFormatConversion.isInvalidRecording(error))
+            guard case RawSessionReader.Error.missingMeta = error else {
+                Issue.record("unexpected \(error)")
+                return
+            }
+        }
+        #expect(!RawFormatConversion.isInvalidRecording(CocoaError(.fileReadNoPermission)))
+        #expect(!RawFormatConversion.isInvalidRecording(CancellationError()))
+    }
+
     @Test func aSampleOnAnAnchorStaysInTheEarlierSegment() throws {
         let temp = try TempFolder()
         let folder = temp.url

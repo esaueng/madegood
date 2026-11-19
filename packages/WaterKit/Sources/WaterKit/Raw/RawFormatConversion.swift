@@ -78,6 +78,9 @@ public enum RawFormatConversion {
         progress(0)
 
         for (name, size) in zip(names, sizes) {
+            // A cancelled task stops between files (and between chunks, below); what was
+            // written is removed by the caller.
+            if Task.isCancelled { throw CancellationError() }
             let source = folder.appendingPathComponent(name)
             let target = destination.appendingPathComponent(name)
             if fm.fileExists(atPath: target.path) { try fm.removeItem(at: target) }
@@ -122,10 +125,10 @@ public enum RawFormatConversion {
     /// a regular file (a directory or symbolic link named like a stream is never copied), and
     /// no stream may be there both plain and gzipped. Either problem makes the recording
     /// unreadable (`isInvalidRecording`).
-    static func recordingFiles(in folder: URL) throws -> [String] {
+    public static func recordingFiles(in folder: URL) throws -> [String] {
         let names = try FileManager.default.contentsOfDirectory(atPath: folder.path)
             .filter(RawSessionReader.isRecordingFileName).sorted()
-        for name in names where !RawSessionReader.isRegularFile(folder.appendingPathComponent(name)) {
+        for name in names where try !RawSessionReader.isRegularFile(folder.appendingPathComponent(name)) {
             throw RawSessionReader.Error.notARegularFile(name)
         }
         for stream in RawFormat.Stream.allCases where names.contains(stream.fileName) && names.contains(stream.gzippedFileName) {
@@ -205,6 +208,7 @@ public enum RawFormatConversion {
 
         var read: Int64 = 0
         let next: () throws -> Data? = {
+            if Task.isCancelled { throw CancellationError() }
             let data = try input.read(upToCount: chunk)
             read += Int64(data?.count ?? 0)
             progress(read)

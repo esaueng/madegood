@@ -12,9 +12,10 @@ public enum RawSessionReader {
     }
 
     /// Whether `url` is a regular file itself: not a directory, and not a symbolic link
-    /// (which is not followed).
-    static func isRegularFile(_ url: URL) -> Bool {
-        (try? FileManager.default.attributesOfItem(atPath: url.path))?[.type] as? FileAttributeType == .typeRegular
+    /// (which is not followed). Throws if its attributes cannot be read: that is a storage
+    /// problem, not proof that the recording is invalid.
+    static func isRegularFile(_ url: URL) throws -> Bool {
+        try FileManager.default.attributesOfItem(atPath: url.path)[.type] as? FileAttributeType == .typeRegular
     }
 
     public static func isRecordingFileName(_ name: String) -> Bool {
@@ -146,8 +147,17 @@ public enum RawSessionReader {
         folder: URL
     ) throws -> (meta: RawFormat.Meta, legacyClock: RawFormat.V1.ClockAnchor?) {
         let url = folder.appendingPathComponent(RawFormat.metaFileName)
-        guard FileManager.default.fileExists(atPath: url.path) else { throw Error.missingMeta(folder) }
-        guard isRegularFile(url) else { throw Error.notARegularFile(RawFormat.metaFileName) }
+        // Missing is an invalid recording; a meta.json that cannot be looked at (permissions,
+        // storage) is an error of its own, not proof that the recording is invalid.
+        let attributes: [FileAttributeKey: Any]
+        do {
+            attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        } catch let error as CocoaError where error.code == .fileReadNoSuchFile || error.code == .fileNoSuchFile {
+            throw Error.missingMeta(folder)
+        }
+        guard attributes[.type] as? FileAttributeType == .typeRegular else {
+            throw Error.notARegularFile(RawFormat.metaFileName)
+        }
         let data = try Data(contentsOf: url)
 
         struct Header: Decodable {
