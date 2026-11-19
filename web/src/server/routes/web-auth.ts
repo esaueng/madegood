@@ -1,11 +1,10 @@
-import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
 import { Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import type { AppEnv } from "../app";
 import { InvalidIdentityToken, parseAudiences, verifyAppleIdentityToken } from "../auth/apple";
 import {
-  hashRefreshToken,
+  endRefreshFamily,
   issueTokenPair,
   rotateRefreshToken,
   signAccessToken,
@@ -19,7 +18,6 @@ import {
   setSessionCookies,
   WEB_AUTH_PATH,
 } from "../auth/web-cookies";
-import { refreshTokens } from "../db/schema";
 import { apiError } from "../lib/errors";
 
 // Sign in with Apple for the website, kept out of the OpenAPI document: these are browser
@@ -136,7 +134,10 @@ webAuth.post("/auth/web/apple/callback", async (c) => {
   }
   const db = drizzle(c.env.DB);
   const { user } = await findOrCreateUser(db, sub, displayNameFrom(form.user));
-  setSessionCookies(c, await issueTokenPair(db, user.id, c.env.JWT_SIGNING_KEY));
+  setSessionCookies(
+    c,
+    await issueTokenPair(db, user.id, c.env.JWT_SIGNING_KEY, { bindSession: true }),
+  );
   const next = safeNext(typeof pending.next === "string" ? pending.next : null);
   return c.redirect(`${new URL(c.req.url).origin}${next}`, 303);
 });
@@ -152,7 +153,7 @@ webAuth.post("/auth/web/refresh", async (c) => {
     clearSessionCookies(c);
     return apiError(c, 401, "invalid_refresh_token", "Sign in again.");
   }
-  const accessToken = await signAccessToken(result.userId, c.env.JWT_SIGNING_KEY);
+  const accessToken = await signAccessToken(result.userId, c.env.JWT_SIGNING_KEY, result.familyId);
   setSessionCookies(c, { accessToken, refreshToken: result.refreshToken });
   return c.body(null, 204);
 });
@@ -161,12 +162,9 @@ webAuth.post("/auth/web/signout", async (c) => {
   c.header("Cache-Control", "no-store");
   if (!sameOrigin(c)) return apiError(c, 403, "forbidden", "Requests must come from this site.");
   const token = refreshCookie(c);
-  if (token) {
-    await drizzle(c.env.DB)
-      .update(refreshTokens)
-      .set({ revokedAt: Date.now() })
-      .where(eq(refreshTokens.tokenHash, await hashRefreshToken(token)));
-  }
+  // Ends the whole sign-in, including a successor that a concurrent refresh with the
+  // same cookie may have just issued; its access token stops working too (middleware.ts).
+  if (token) await endRefreshFamily(drizzle(c.env.DB), token);
   clearSessionCookies(c);
   return c.body(null, 204);
 });

@@ -4,8 +4,11 @@ import { decodeJwt } from "jose";
 import { describe, expect, it } from "vitest";
 import {
   consumeRefreshToken,
+  endRefreshFamily,
   hashRefreshToken,
+  REFRESH_REUSE_GRACE_MS,
   revokeAllRefreshTokens,
+  rotateRefreshToken,
 } from "../src/server/auth/tokens";
 import { forgerKey, identityToken, jwksRequests, postJson, type SignIn, signIn } from "./apple";
 
@@ -98,6 +101,23 @@ describe("POST /api/auth/apple", () => {
   });
 });
 
+/** Moves a rotated token's revocation `ms` into the past. */
+async function ageRotation(token: string, ms: number) {
+  await env.DB.prepare("update refresh_tokens set revoked_at = revoked_at - ? where token_hash = ?")
+    .bind(ms, await hashRefreshToken(token))
+    .run();
+}
+
+const tokenRow = async (token: string) => {
+  const row = await env.DB.prepare(
+    "select id, user_id as userId, family_id as familyId from refresh_tokens where token_hash = ?",
+  )
+    .bind(await hashRefreshToken(token))
+    .first<{ id: string; userId: string; familyId: string }>();
+  if (!row) throw new Error("no refresh token row");
+  return row;
+};
+
 describe("POST /api/auth/refresh", () => {
   const refresh = (refreshToken: string) => postJson("/auth/refresh", { refreshToken });
 
@@ -124,6 +144,8 @@ describe("POST /api/auth/refresh", () => {
     const rotated = (await (await refresh(session.refreshToken)).json()) as {
       refreshToken: string;
     };
+    // Past the grace window for replays (REFRESH_REUSE_GRACE_MS).
+    await ageRotation(session.refreshToken, REFRESH_REUSE_GRACE_MS + 1000);
 
     const replay = await refresh(session.refreshToken);
     expect(replay.status).toBe(401);
@@ -197,6 +219,72 @@ describe("POST /api/auth/refresh", () => {
     const expired = await refresh(session.refreshToken);
     expect(expired.status).toBe(401);
     expect(await expired.json()).toMatchObject({ error: "invalid_refresh_token" });
+  });
+});
+
+describe("refresh-token families (review of #63)", () => {
+  const refresh = (refreshToken: string) => postJson("/auth/refresh", { refreshToken });
+  const sameAccount = async (sub: string) => [
+    await signIn({ identityToken: await identityToken({ sub }) }),
+    await signIn({ identityToken: await identityToken({ sub }) }),
+  ];
+
+  it("gives a token replayed within the grace window a live successor, not a reuse alarm", async () => {
+    const [browser, phone] = await sameAccount("001234.grace.0001");
+    if (!browser || !phone) throw new Error("sign-in failed");
+    const first = await refresh(browser.refreshToken); // tab 1
+    const second = await refresh(browser.refreshToken); // tab 2, same cookie
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    const a = (await first.json()) as { refreshToken: string };
+    const b = (await second.json()) as { refreshToken: string };
+    expect(a.refreshToken).not.toBe(b.refreshToken);
+    // Both successors and the other device keep working, in the same family.
+    expect((await tokenRow(a.refreshToken)).familyId).toBe(
+      (await tokenRow(b.refreshToken)).familyId,
+    );
+    for (const token of [a.refreshToken, b.refreshToken, phone.refreshToken]) {
+      expect((await refresh(token)).status).toBe(200);
+    }
+  });
+
+  it("gives no grace once the family is revoked for reuse", async () => {
+    const session = await signIn();
+    expect((await refresh(session.refreshToken)).status).toBe(200);
+    await revokeAllRefreshTokens(drizzle(env.DB), session.user.id);
+    const replay = await refresh(session.refreshToken);
+    expect(await replay.json()).toMatchObject({ error: "refresh_token_reused" });
+  });
+
+  it("treats a token from a signed-out family as invalid, keeping other devices", async () => {
+    const [browser, phone] = await sameAccount("001234.signout.0001");
+    if (!browser || !phone) throw new Error("sign-in failed");
+    const rotated = (await (await refresh(browser.refreshToken)).json()) as {
+      refreshToken: string;
+    };
+    // Sign-out presents the old token after a refresh already rotated it.
+    await endRefreshFamily(drizzle(env.DB), browser.refreshToken);
+    for (const token of [browser.refreshToken, rotated.refreshToken]) {
+      const response = await refresh(token);
+      expect(await response.json()).toMatchObject({ error: "invalid_refresh_token" });
+    }
+    expect((await refresh(phone.refreshToken)).status).toBe(200);
+  });
+
+  // The interleaving: a refresh reads the token, sign-out ends the family, then the
+  // refresh writes. It must issue nothing and must not sign out the other devices.
+  it("issues nothing when sign-out lands between a refresh's read and write", async () => {
+    const [browser, phone] = await sameAccount("001234.interleave.0001");
+    if (!browser || !phone) throw new Error("sign-in failed");
+    const db = drizzle(env.DB);
+    const row = await tokenRow(browser.refreshToken); // the refresh's read
+    await endRefreshFamily(db, browser.refreshToken); // sign-out
+    expect(await consumeRefreshToken(db, row)).toBeNull(); // the refresh's write
+    expect(await rotateRefreshToken(db, browser.refreshToken)).toEqual({
+      ok: false,
+      reason: "invalid",
+    });
+    expect((await refresh(phone.refreshToken)).status).toBe(200);
   });
 });
 

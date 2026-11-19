@@ -10,8 +10,9 @@ import { ACCESS_TOKEN_TTL_S, REFRESH_TOKEN_TTL_MS } from "./tokens";
 export const ACCESS_COOKIE = "mg_at";
 export const REFRESH_COOKIE = "mg_rt";
 /**
- * Not a credential: a script-readable hint that this browser has a web session, so the
- * site skips /api/me and the refresh call for visitors who never signed in.
+ * Not a credential: a script-readable hint that this browser has a web session, holding
+ * the access cookie's expiry in epoch seconds. The site skips /api/me for visitors who
+ * never signed in, and refreshes before the access cookie lapses.
  */
 export const SIGNED_IN_COOKIE = "mg_web";
 /** State and nonce of a sign-in in progress, for the Apple callback. */
@@ -37,7 +38,9 @@ export function setSessionCookies(
     sameSite: "Strict",
     maxAge: Math.floor(REFRESH_TOKEN_TTL_MS / 1000),
   });
-  setCookie(c, SIGNED_IN_COOKIE, "1", {
+  // The hint carries the access cookie's expiry (epoch s) so the site refreshes in time.
+  const accessExpiresAt = Math.floor(Date.now() / 1000) + ACCESS_TOKEN_TTL_S;
+  setCookie(c, SIGNED_IN_COOKIE, String(accessExpiresAt), {
     path: "/",
     secure: true,
     sameSite: "Lax",

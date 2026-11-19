@@ -32,6 +32,7 @@ import {
   positionAt,
   speedScaleMax,
   type Track,
+  trackForViewer,
 } from "@/lib/track";
 
 // MapLibre and Recharts are large; load them only on this page, after the stats.
@@ -95,7 +96,7 @@ function SessionPage() {
         track.isPending ? (
           <div className="h-72 animate-pulse rounded-xl border bg-muted sm:h-[28rem]" />
         ) : track.data ? (
-          <Replay track={track.data} units={units} />
+          <Replay source={track.data} isOwner={s.isOwner} units={units} />
         ) : (
           <p className="rounded-xl border border-dashed p-6 text-center text-muted-foreground">
             {track.isError ? "The track could not be loaded." : "The track is not available."}
@@ -196,7 +197,9 @@ function Stats({ session, units }: { session: Session; units: Units }) {
 
 const RATES = [10, 30, 60, 120];
 
-function Replay({ track, units }: { track: Track; units: Units }) {
+function Replay({ source, isOwner, units }: { source: Track; isOwner: boolean; units: Units }) {
+  // Heart rate is the owner's alone; memoized so the map and charts keep their caches.
+  const track = useMemo(() => trackForViewer(source, isOwner), [source, isOwner]);
   const [cursorT, setCursorT] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [rate, setRate] = useState(30);

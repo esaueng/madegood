@@ -53,10 +53,17 @@ export const refreshTokens = sqliteTable(
     expiresAt: timestamp("expires_at").notNull(),
     createdAt: timestamp("created_at").notNull().default(sql`(unixepoch('subsec') * 1000)`),
     revokedAt: timestamp("revoked_at"),
+    /**
+     * The sign-in this token descends from: the first token's ID, shared by every
+     * successor. Signing out ends the whole family. Null only on rows from before 0004,
+     * which that migration backfills with the row's own ID.
+     */
+    familyId: text("family_id"),
   },
   (table) => [
     uniqueIndex("refresh_tokens_hash_unique").on(table.tokenHash),
     index("refresh_tokens_user").on(table.userId),
+    index("refresh_tokens_family").on(table.familyId),
   ],
 );
 
