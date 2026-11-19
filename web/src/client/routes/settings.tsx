@@ -1,16 +1,19 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
-import { LocateFixed, Trash2 } from "lucide-react";
+import { Download, LocateFixed, Trash2 } from "lucide-react";
 import { lazy, Suspense, useState } from "react";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { VISIBILITY } from "@/components/visibility";
 import type { Draft } from "@/components/zone-map";
 import {
+  ApiError,
   addZone,
   deleteZone,
+  fetchLatestExport,
   fetchZones,
   type Me,
   signInUrl,
+  startExport,
   type Units,
   updateMe,
   type Visibility,
@@ -48,6 +51,7 @@ function Settings() {
       <h1 className="text-2xl font-semibold">Settings</h1>
       <Preferences me={me} />
       <Zones />
+      <ExportData />
     </div>
   );
 }
@@ -199,6 +203,115 @@ function Zones() {
         </ul>
       ) : (
         zones.isSuccess && <p className="text-sm text-muted-foreground">No privacy zones yet.</p>
+      )}
+    </section>
+  );
+}
+
+const formatBytes = (bytes: number) =>
+  bytes < 1024 * 1024
+    ? `${Math.max(1, Math.round(bytes / 1024))} KB`
+    : `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+
+const exportQueryKey = ["me", "export"] as const;
+
+function ExportData() {
+  const queryClient = useQueryClient();
+  const latest = useQuery({
+    queryKey: exportQueryKey,
+    queryFn: fetchLatestExport,
+    // Poll while it builds; afterwards now and then, which also keeps the session cookies
+    // fresh for the plain download links.
+    refetchInterval: (query) => {
+      const status = query.state.data?.status;
+      return status === "queued" || status === "building" ? 2_000 : 5 * 60_000;
+    },
+  });
+  const start = useMutation({
+    mutationFn: startExport,
+    onSuccess: (job) => queryClient.setQueryData(exportQueryKey, job),
+  });
+  const job = latest.data ?? null;
+  const running = job?.status === "queued" || job?.status === "building";
+  const percent =
+    job && job.progress.total > 0 ? Math.floor((100 * job.progress.done) / job.progress.total) : 0;
+  const limited = start.error instanceof ApiError && start.error.status === 429;
+  return (
+    <section className="grid gap-3" aria-labelledby="export-data">
+      <h2 id="export-data" className="text-lg font-semibold">
+        Export your data
+      </h2>
+      <p className="max-w-prose text-sm text-muted-foreground">
+        Get ZIP files with your profile, settings, privacy zones, every session's details and every
+        track file as you uploaded it. Track files contain precise locations and times. Preparing a
+        large account takes a few minutes; the files are kept for 7 days.
+      </p>
+      {running ? (
+        <p className="text-sm" role="status" aria-live="polite">
+          Preparing… {percent}%
+        </p>
+      ) : (
+        <div>
+          <Button variant="outline" disabled={start.isPending} onClick={() => start.mutate()}>
+            <Download />{" "}
+            {start.isPending
+              ? "Starting…"
+              : job?.status === "failed" || job?.status === "expired"
+                ? "Start again"
+                : job?.status === "ready"
+                  ? "Export again"
+                  : "Export all my data"}
+          </Button>
+        </div>
+      )}
+      {job?.status === "failed" && (
+        <p className="text-sm text-red-600" role="alert">
+          The last export could not be finished{job.error ? `: ${job.error}` : "."}
+        </p>
+      )}
+      {job?.status === "expired" && (
+        <p className="text-sm text-muted-foreground">The last export's files have expired.</p>
+      )}
+      {start.isError && (
+        <p className="text-sm text-red-600" role="alert">
+          {limited
+            ? "You have started several exports today. Try again tomorrow."
+            : "Could not start the export. Try again."}
+        </p>
+      )}
+      {job?.status === "ready" && job.omitted > 0 && (
+        <p className="text-sm text-amber-700 dark:text-amber-400" role="status">
+          {job.omitted === 1 ? "1 item couldn't" : `${job.omitted} items couldn't`} be included —
+          see errors.json in part 1.
+        </p>
+      )}
+      {job?.status === "ready" && (
+        <ol className="grid gap-2" aria-label="Export files">
+          {job.parts.map((part) => (
+            <li
+              key={part.part}
+              className="flex flex-wrap items-center justify-between gap-2 rounded-xl border bg-card px-4 py-2 text-sm"
+            >
+              <span>
+                Part {part.part} of {job.parts.length}
+                {part.part === 1 ? " (start here: list of all files)" : ""}
+                <span className="text-muted-foreground"> · {formatBytes(part.bytes)}</span>
+              </span>
+              <a
+                className={buttonVariants({ size: "sm", variant: "outline" })}
+                href={`/api${part.url}`}
+                download
+              >
+                <Download /> Download part {part.part}
+              </a>
+            </li>
+          ))}
+        </ol>
+      )}
+      {job?.status === "ready" && job.expiresAt && (
+        <p className="text-xs text-muted-foreground">
+          Available until {new Date(job.expiresAt).toLocaleDateString()}.
+        </p>
       )}
     </section>
   );

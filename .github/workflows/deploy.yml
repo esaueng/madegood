@@ -174,12 +174,12 @@ jobs:
         run: pnpm build
       # wrangler deploy fails when a queue in wrangler.jsonc does not exist yet. Before the
       # migrations, so a token without Queues permission fails before any schema change.
-      - name: Create the post-processing queues if missing
+      - name: Create the post-processing and export queues if missing
         working-directory: web
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
-          for queue in madegood-postprocess madegood-postprocess-dlq; do
+          for queue in madegood-postprocess madegood-postprocess-dlq madegood-exports; do
             pnpm exec wrangler queues info "$queue" > /dev/null 2>&1 \
               || pnpm exec wrangler queues create "$queue"
           done

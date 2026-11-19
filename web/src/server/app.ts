@@ -2,6 +2,7 @@ import { OpenAPIHono } from "@hono/zod-openapi";
 import { HTTPException } from "hono/http-exception";
 import { apiError } from "./lib/errors";
 import { auth } from "./routes/auth";
+import { exportRoutes } from "./routes/exports";
 import { health } from "./routes/health";
 import { me } from "./routes/me";
 import { privacyZoneRoutes } from "./routes/privacy-zones";
@@ -19,6 +20,7 @@ export function createApp() {
   api.route("/", health);
   api.route("/", auth);
   api.route("/", me);
+  api.route("/", exportRoutes);
   api.route("/", privacyZoneRoutes);
   api.route("/", sessionRoutes);
   api.route("/", voyageLiveRoutes);
