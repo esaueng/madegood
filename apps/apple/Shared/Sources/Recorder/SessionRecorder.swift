@@ -297,6 +297,14 @@ final class SessionRecorder {
         }
 
         writers[.events]?.append(RawFormat.EventLine(ts: anchor.unix, type: .start))
+        if sport == .sailing {
+            // The start line in use, pinged during the countdown (docs/formats.md, events).
+            for ping in StartLineController.shared.pings {
+                writers[.events]?.append(
+                    RawFormat.EventLine(
+                        ts: anchor.unix, type: .linePing, data: ping.eventData(age: anchor.unix - ping.time)))
+            }
+        }
         startLoops()
         clockObserver = NotificationCenter.default.addObserver(
             forName: .NSSystemClockDidChange, object: nil, queue: .main
@@ -449,6 +457,12 @@ final class SessionRecorder {
                 ManOverboard.Position(
                     latitude: line.lat, longitude: line.lon, at: Date(timeIntervalSince1970: line.ts),
                     speed: line.spd, course: line.crs))
+            if StartLineController.shared.ocs != nil {
+                StartLineController.shared.recorded(
+                    GPSFix(
+                        t: line.ts, latitude: line.lat, longitude: line.lon, horizontalAccuracy: line.hacc,
+                        speed: line.spd, course: line.crs))
+            }
         }
     }
 

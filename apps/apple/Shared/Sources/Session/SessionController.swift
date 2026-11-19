@@ -94,6 +94,12 @@ final class SessionController {
         countdown = Countdown(
             id: countdownID, sport: sport, timer: StartCountdown(duration: seconds, startingAt: Self.now), canSync: sport == .sailing)
         Haptics.play(.countdownStarted)
+        if sport == .sailing {
+            // The start line needs positions before recording starts.
+            StartLineController.shared.countdownBegan { [weak self] in
+                self?.countdown?.timer.remaining(at: Self.now) ?? 0
+            }
+        }
         runTicker()
         // On the watch, a prepared workout session keeps the app running with the wrist
         // down, so the buzzes and the start stay on time.
@@ -113,18 +119,19 @@ final class SessionController {
         countdown.timer.sync(at: Self.now)
         self.countdown = countdown
         Haptics.play(.sync)
-        if countdown.timer.isFinished(at: Self.now) { finishCountdown() }
+        if countdown.timer.isFinished(at: Self.now) { finishCountdown(atGun: true) }
     }
 
     /// Skips the rest of the countdown and starts recording now.
     func startNow() {
         guard countdown != nil else { return }
-        finishCountdown()
+        finishCountdown(atGun: false)
     }
 
     func cancelCountdown() {
         ticker?.cancel()
         ticker = nil
+        if countdown?.sport == .sailing { StartLineController.shared.countdownEnded(atGun: false) }
         countdown = nil
         recorder.cancelPrepared()
     }
@@ -180,14 +187,15 @@ final class SessionController {
                 }
                 previous = now
                 if countdown.timer.isFinished(at: now) {
-                    self.finishCountdown()
+                    self.finishCountdown(atGun: true)
                     return
                 }
             }
         }
     }
 
-    private func finishCountdown() {
+    /// `atGun`: the countdown reached zero (by itself or a sync), rather than Start now.
+    private func finishCountdown(atGun: Bool) {
         guard let countdown else { return }
         #if os(iOS)
             if WatchWorkoutMirror.shared.isAttached {
@@ -197,6 +205,7 @@ final class SessionController {
         #endif
         ticker?.cancel()
         ticker = nil
+        if countdown.sport == .sailing { StartLineController.shared.countdownEnded(atGun: atGun) }
         self.countdown = nil
         Haptics.play(.recordingStarted)
         startRecording(countdown.sport)

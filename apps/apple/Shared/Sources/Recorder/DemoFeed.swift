@@ -94,6 +94,42 @@ enum DemoFeed {
         return RawFormat.GPSLine(ts: ts, lat: point.lat, lon: point.lon, hacc: 5, spd: v, crs: course)
     }
 
+    // MARK: Start line
+
+    /// With `-demoOCS`, the demo boat is over the start line at the gun.
+    static let ocsArgument = "-demoOCS"
+
+    /// The demo start line: 200 m long, pin → boat 84° (6° off square to the demo wind, so
+    /// the boat end is favoured), centred 30 m south of the origin. The recorded route
+    /// starts at the origin, on the course side.
+    static let startLineBearing = 84.0
+    static var startLineCentre: (lat: Double, lon: Double) {
+        Geo.destination(lat: origin.lat, lon: origin.lon, bearing: 180, distance: 30)
+    }
+
+    /// Wind axis during the demo countdown, degrees true (from the north).
+    static let prestartWind = 0.0
+
+    static func startLineEnd(_ end: StartLineEnd) -> (lat: Double, lon: Double) {
+        let centre = startLineCentre
+        return Geo.destination(
+            lat: centre.lat, lon: centre.lon, bearing: startLineBearing + (end == .pin ? 180 : 0), distance: 100)
+    }
+
+    /// The boat during the countdown: sailing square at the line, reaching it 3 s after
+    /// the gun (5 s before with `-demoOCS`), at the demo speed.
+    static func prestartFix(at ts: Double, remaining: Double) -> GPSFix {
+        let late = ProcessInfo.processInfo.arguments.contains(ocsArgument) ? -5.0 : 3.0
+        let behind = speed * (remaining + late)
+        let toLine = startLineBearing - 90
+        let centre = startLineCentre
+        let point = Geo.destination(
+            lat: centre.lat, lon: centre.lon, bearing: behind >= 0 ? toLine + 180 : toLine, distance: abs(behind))
+        return GPSFix(
+            t: ts, latitude: point.lat, longitude: point.lon, horizontalAccuracy: 5, speed: speed,
+            course: (toLine + 360).truncatingRemainder(dividingBy: 360))
+    }
+
     /// Synthetic wrist motion for paddling, at 25 Hz: a steady 64 SPM for kayak (two
     /// strokes per wrist cycle) and 48 SPM for canoe and SUP, repeating every 10 minutes.
     static let motionRate = 25.0
