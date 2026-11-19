@@ -179,6 +179,10 @@ final class PhoneReplayUITests: XCTestCase {
         XCTAssertEqual(duration.label, "48:00")
     }
 
+    /// Drags in the trim sheet run down the list's side margin: once a cut is added, the
+    /// replay map sits mid-screen and drags that start on it pan the map, not the form.
+    private static let trimMargin: CGFloat = 0.025
+
     @MainActor
     func testRemoveMiddleSegmentAndRestoreOriginal() {
         let app = launchDemoHistory()
@@ -194,13 +198,13 @@ final class PhoneReplayUITests: XCTestCase {
         scrollTo(trim, in: app)
         trim.tap()
         let addCut = app.buttons["trim.addCut"]
-        scrollTo(addCut, in: app)
+        scrollTo(addCut, in: app, column: Self.trimMargin)
         addCut.tap()
         XCTAssertTrue(app.sliders["trim.cut.0.start"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.sliders["trim.cut.0.end"].exists)
 
         let kept = element("trim.preview.Kept", in: app)
-        scrollTo(kept, in: app)
+        scrollTo(kept, in: app, column: Self.trimMargin)
         XCTAssertTrue(element("trim.preview.Original", in: app).exists)
         let save = app.buttons["trim.save"]
         let previewReady = XCTNSPredicateExpectation(
@@ -226,7 +230,7 @@ final class PhoneReplayUITests: XCTestCase {
         trim.tap()
         XCTAssertTrue(app.sliders["trim.cut.0.start"].waitForExistence(timeout: 5))
         let restore = app.buttons["trim.restore"]
-        scrollTo(restore, in: app)
+        scrollTo(restore, in: app, column: Self.trimMargin)
         restore.tap()
         XCTAssertTrue(app.navigationBars["Sailing"].waitForExistence(timeout: 5))
         app.navigationBars.buttons["History"].tap()

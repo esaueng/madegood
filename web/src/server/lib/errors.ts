@@ -28,8 +28,11 @@ export const errorCodes = [
   "session_deleted",
   "stale_revision",
   "revision_mismatch",
-  "export_too_large",
-  "export_changed",
+  "postprocess_unavailable",
+  "track_replaced",
+  "export_in_progress",
+  "export_not_ready",
+  "rate_limited",
 ] as const;
 export type ErrorCode = (typeof errorCodes)[number];
 

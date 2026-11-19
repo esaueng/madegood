@@ -106,7 +106,7 @@ export async function readBody(
  *
  * WaterKit writes keys sorted, so `v` and `sessionId` come after the GPS columns and
  * cannot be checked from a prefix. The post-processing consumer reads the whole file and
- * checks them (TODO in routes/sessions.ts).
+ * checks them (lib/postprocess.ts).
  */
 export async function checkTrack(bytes: Uint8Array): Promise<string | null> {
   // 10-byte header + 8-byte trailer; CM 8 is deflate, the only method gzip defines.

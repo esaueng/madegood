@@ -39,6 +39,26 @@ export type Session = {
   summary: Record<string, unknown> | null;
   analyzerVersion: string | null;
   hasTrack: boolean;
+  /** Server post-processing of the track (docs/self-hosting.md). */
+  processing: "none" | "pending" | "done" | "too_large" | "invalid";
+  /** The owner's whole track, or for others only what the shared track shows. */
+  bounds: { south: number; west: number; north: number; east: number } | null;
+  trackStartedAt: string | null;
+  trackEndedAt: string | null;
+  /** Modelled wind (Open-Meteo), for public and unlisted sessions only. */
+  wind: {
+    source: "open-meteo-forecast" | "open-meteo-archive";
+    directionDeg: number | null;
+    speedMps: number | null;
+    gustMps: number | null;
+    samples: {
+      t: string;
+      directionDeg: number | null;
+      speedMps: number | null;
+      gustMps: number | null;
+    }[];
+    fetchedAt: string;
+  } | null;
   isOwner: boolean;
   createdAt: string;
   updatedAt: string;

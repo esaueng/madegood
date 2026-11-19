@@ -66,8 +66,13 @@ extension XCTestCase {
         app.descendants(matching: .any)[identifier].firstMatch
     }
 
-    /// Swipes up until the element can be tapped.
-    func scrollTo(_ element: XCUIElement, in app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
+    /// Swipes up until the element can be tapped. `column` is where across the window the
+    /// drags run (0...1): pass a side margin when an interactive map can sit mid-screen, or
+    /// the drags pan the map instead of scrolling.
+    func scrollTo(
+        _ element: XCUIElement, in app: XCUIApplication, column: CGFloat = 0.5,
+        file: StaticString = #filePath, line: UInt = #line
+    ) {
         // An element can exist before it has a usable frame (a lazy row still off screen, or
         // a slow simulator mid-layout); asking for hittability then fails the test, so
         // scroll until its frame is inside the window first.
@@ -80,8 +85,8 @@ extension XCTestCase {
         for _ in 0..<8 where !reachable() {
             // A slow drag, like a finger: the watch ignores XCUITest's quick swipes.
             let window = app.windows.firstMatch
-            let low = window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.8))
-            let high = window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.35))
+            let low = window.coordinate(withNormalizedOffset: CGVector(dx: column, dy: 0.8))
+            let high = window.coordinate(withNormalizedOffset: CGVector(dx: column, dy: 0.35))
             low.press(forDuration: 0.05, thenDragTo: high, withVelocity: .slow, thenHoldForDuration: 0.1)
         }
         XCTAssertTrue(reachable(), "\(element) never became hittable", file: file, line: line)
