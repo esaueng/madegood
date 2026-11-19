@@ -1,6 +1,6 @@
 import { and, eq, isNull } from "drizzle-orm";
 import type { drizzle } from "drizzle-orm/d1";
-import { type Session, sessions, users } from "../db/schema";
+import { pendingR2Deletes, type Session, sessions, users } from "../db/schema";
 import { CLEARED_DERIVED } from "./postprocess";
 import {
   collectKeys,
@@ -12,6 +12,7 @@ import {
   selectSessionTrackKeys,
   UPLOAD_GRACE_MS,
 } from "./r2-garbage";
+import { userPrefix } from "./storage";
 import { TRACK_CONTENT_TYPE } from "./track";
 
 type Db = ReturnType<typeof drizzle>;
@@ -129,6 +130,7 @@ export async function replaceSessionMetadata(
       // The detached track goes now (its data may be what the user has trimmed away);
       // older recorded leftovers of the user go once no upload can still attach them.
       await collectKeys(db, bucket, keysOf(results[0]));
+      await recordLegacyLeftovers(db, bucket, userId, id, null);
       await collectUserGarbage(db, bucket, userId);
     }
     return { kind: "updated", session: updated };
@@ -218,24 +220,37 @@ export async function deleteSessionRow(
 
 export type StoreResult =
   /** `replaced`: a concurrent upload of the same revision attached after this one. */
-  { kind: "attached"; etag: string; httpEtag: string; replaced: boolean } | { kind: "detached" };
+  | { kind: "attached"; etag: string; httpEtag: string; replaced: boolean }
+  | { kind: "detached" }
+  /** The upload took so long that its object was collected: send it again (a new key). */
+  | { kind: "expired" };
+
+/** An error thrown after the attach committed: the stored track is the new one. */
+export class AfterCommit extends Error {}
 
 /**
  * Stores a track under its own key (unique per upload attempt) and attaches it while the
  * row is still at `revision` and the account is active:
  * 1. the key is recorded for deletion before the put (lib/r2-garbage.ts), so an object
  *    that never attaches is always collected, whatever fails after;
- * 2. one D1 batch records the key being replaced, attaches the new one (compare-and-swap
- *    on the row's revision and the account) and removes the new key's record if it
- *    attached.
- * No two uploads share a key, so cleanup after a failure deletes only its own object.
- * `hooks` let tests interleave.
+ * 2. one D1 batch consumes that record and attaches the key, only while the record is
+ *    still unclaimed by a collector, and records the key being replaced. A collector that
+ *    claimed the record first wins: the attach fails (`expired`) and the client retries.
+ * 3. Only after that batch succeeds is the replaced object deleted (it is recorded, so a
+ *    failure here leaves it for the collector).
+ * No two uploads share a key, and every deletion claims its record first, so no cleanup can
+ * delete an attached object. Errors after the commit come wrapped in `AfterCommit`, so the
+ * caller never discards a committed upload. `hooks` let tests interleave.
  */
 export async function storeTrack(
   db: Db,
   bucket: R2Bucket,
   input: { id: string; userId: string; revision: number; key: string; bytes: Uint8Array },
-  hooks: { afterPut?: () => Promise<void>; afterAttach?: () => Promise<void> } = {},
+  hooks: {
+    afterPut?: () => Promise<void>;
+    afterAttach?: () => Promise<void>;
+    readBack?: () => Promise<{ key: string | null } | undefined>;
+  } = {},
 ): Promise<StoreResult> {
   const { id, userId, revision, key, bytes } = input;
   const d1 = db.$client;
@@ -247,33 +262,93 @@ export async function storeTrack(
   const now = Date.now();
   const at = `id = ? AND user_id = ? AND deleted_at IS NULL AND upload_revision = ? AND ${ACTIVE_ACCOUNT}`;
   const atBinds = [id, userId, revision, userId];
-  const replaced = `${at} AND track_key <> ?`;
+  const mine = "EXISTS (SELECT 1 FROM pending_r2_deletes WHERE key = ? AND claim IS NULL)";
+  const replaced = `${at} AND track_key <> ? AND ${mine}`;
   const results = await d1.batch([
-    selectSessionTrackKeys(d1, replaced, [...atBinds, key]),
-    recordSessionTrackKeys(d1, replaced, [...atBinds, key], now),
+    selectSessionTrackKeys(d1, replaced, [...atBinds, key, key]),
+    recordSessionTrackKeys(d1, replaced, [...atBinds, key, key], now),
+    // Consume this upload's record only if the attach below will happen...
+    d1
+      .prepare(
+        `DELETE FROM pending_r2_deletes WHERE key = ? AND claim IS NULL
+           AND EXISTS (SELECT 1 FROM sessions WHERE ${at})`,
+      )
+      .bind(key, ...atBinds),
+    // ...and attach only if it was consumed (changes() is the DELETE's row count).
     d1
       .prepare(
         `UPDATE sessions SET track_key = ?, track_etag = ?, ${CLEAR_DERIVED_SQL}, updated_at = ?
-         WHERE ${at}`,
+         WHERE ${at} AND changes() = 1`,
       )
       .bind(key, object.etag, now, ...atBinds),
-    d1.prepare("DELETE FROM pending_r2_deletes WHERE key = ? AND changes() = 1").bind(key),
   ]);
-  if (results[2]?.meta.changes !== 1) return { kind: "detached" };
-  // The track this one replaced goes now; it was attached, so no upload is still writing it.
-  await collectKeys(db, bucket, keysOf(results[0]));
-  await hooks.afterAttach?.();
-  const [row] = await db
-    .select({ key: sessions.trackKey })
-    .from(sessions)
-    .where(and(eq(sessions.id, id), eq(sessions.userId, userId)));
-  await collectUserGarbage(db, bucket, userId);
-  return {
-    kind: "attached",
-    etag: object.etag,
-    httpEtag: object.httpEtag,
-    replaced: row?.key !== key,
-  };
+  if (results[3]?.meta.changes !== 1) {
+    const [record] = await db
+      .select({ claim: pendingR2Deletes.claim })
+      .from(pendingR2Deletes)
+      .where(eq(pendingR2Deletes.key, key));
+    return !record || record.claim !== null ? { kind: "expired" } : { kind: "detached" };
+  }
+  // Committed: from here on nothing may delete this upload's object.
+  try {
+    // The track this one replaced goes now; it was attached, so no upload is still writing it.
+    await collectKeys(db, bucket, keysOf(results[0]));
+    await recordLegacyLeftovers(db, bucket, userId, id, key);
+    await hooks.afterAttach?.();
+    const row = hooks.readBack
+      ? await hooks.readBack()
+      : (
+          await db
+            .select({ key: sessions.trackKey })
+            .from(sessions)
+            .where(and(eq(sessions.id, id), eq(sessions.userId, userId)))
+        )[0];
+    await collectUserGarbage(db, bucket, userId);
+    return {
+      kind: "attached",
+      etag: object.etag,
+      httpEtag: object.httpEtag,
+      replaced: row?.key !== key,
+    };
+  } catch (error) {
+    throw new AfterCommit("The track is stored; a step after it failed.", { cause: error });
+  }
+}
+
+/**
+ * Track objects from before per-upload keys (`track.v1.gz`, `track.v1.r<revision>.gz`) that
+ * a failed cleanup left under the session's prefix: no ledger row knows them, so the
+ * prefix is listed once per successful upload (as the old cleanup did) and any such key
+ * the row does not name is recorded and deleted. Per-upload keys are always recorded, so
+ * they are left to the ledger.
+ */
+export async function recordLegacyLeftovers(
+  db: Db,
+  bucket: R2Bucket,
+  userId: string,
+  sessionId: string,
+  current: string | null,
+): Promise<void> {
+  try {
+    const legacy = /\/track\.v1(\.r\d+)?\.gz$/;
+    const prefix = `${userPrefix(userId)}sessions/${sessionId}/`;
+    const leftovers: string[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await bucket.list({ prefix, cursor, limit: 1000 });
+      for (const o of page.objects) {
+        if (o.key !== current && legacy.test(o.key)) leftovers.push(o.key);
+      }
+      cursor = page.truncated ? page.cursor : undefined;
+    } while (cursor);
+    if (leftovers.length === 0) return;
+    const d1 = db.$client;
+    const now = Date.now() - UPLOAD_GRACE_MS - 1;
+    await d1.batch(leftovers.map((key) => recordKey(d1, key, userId, now)));
+    await collectKeys(db, bucket, leftovers);
+  } catch (error) {
+    console.warn("Could not clean up older track objects; the next upload retries.", error);
+  }
 }
 
 /** Deletes an upload's own object that did not attach (and its record). */

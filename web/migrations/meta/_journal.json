@@ -71,6 +71,13 @@
       "when": 1795082973977,
       "tag": "0009_account_deletion_jobs",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1795085748932,
+      "tag": "0010_r2_ledger_claims",
+      "breakpoints": true
     }
   ]
 }

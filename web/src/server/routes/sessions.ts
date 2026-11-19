@@ -9,6 +9,7 @@ import { enqueuePostprocess, ensureUserRequeued, publicIsCurrent } from "../lib/
 import { createRouter } from "../lib/router";
 import { SHARED_TRACK_MAX_FIXES, shareTrack } from "../lib/session-privacy";
 import {
+  AfterCommit,
   accountActive,
   collectUserGarbage,
   deleteSessionRow,
@@ -553,7 +554,8 @@ const putTrackRoute = createRoute({
     ),
     415: errorResponse(`The body is not sent as ${TRACK_CONTENT_TYPE}.`),
     503: errorResponse(
-      "The track is stored but could not be queued for processing (`postprocess_unavailable`). " +
+      "The upload took too long and its object was collected (`upload_expired`; upload again), or " +
+        "the track is stored but could not be queued for processing (`postprocess_unavailable`). " +
         "Repeat the upload.",
     ),
   },
@@ -794,14 +796,26 @@ sessionRoutes.openapi(putTrackRoute, async (c) => {
   // Its own object per upload attempt, attached only while the row is still at this
   // revision (and the account active), so no upload can replace or delete another's track.
   // The key is recorded for deletion before the put and unrecorded when it attaches
-  // (lib/r2-garbage.ts): after any failure the object is still collected.
+  // (lib/r2-garbage.ts): after any failure the object is still collected. A failure after
+  // the attach committed (`AfterCommit`) never discards it; the discard itself claims the
+  // record first, so it deletes nothing that attached, even after an ambiguous failure.
   const key = trackKey(userPrefix(userId), id, revision);
   const stored = await storeTrack(db, c.env.TRACKS, { id, userId, revision, key, bytes }).catch(
     async (error: unknown): Promise<never> => {
-      await discardUpload(db, c.env.TRACKS, key).catch(() => {});
+      if (!(error instanceof AfterCommit)) {
+        await discardUpload(db, c.env.TRACKS, key).catch(() => {});
+      }
       throw error;
     },
   );
+  if (stored.kind === "expired") {
+    return apiError(
+      c,
+      503,
+      "upload_expired",
+      "The upload took too long and was discarded; upload the track again.",
+    );
+  }
   const attached = stored.kind === "attached";
   if (!attached || (await isTombstoned(db, userId, id))) {
     if (attached) {

@@ -291,17 +291,23 @@ to `scripts/testflight` as a build setting.
   doubling, at most 6 hours) so others still run; after 8 failed passes each failure is
   logged as `{"event":"account_deletion_failing",…}` (search Workers observability for it).
   Without the cron trigger (previews) the data is still removed by the request, and the
-  account record goes the next time that Apple ID signs in, or the account's token is used,
-  after the 20 minutes.
+  account record goes the next time that Apple ID signs in after the 20 minutes; until
+  then the Apple ID stays reserved. The record also waits until every upload record of the
+  account is older than 15 minutes, so a late upload's object is collected first.
 - Every write (sessions, tracks, privacy zones, voyages, live sharing, post-processing,
   refresh tokens) requires the account to be active in the same SQL statement, so nothing
   authorized before a deletion lands after it.
 - Track objects: every upload attempt writes its own key
   (`sessions/<id>/track.v1.r<revision>.<attempt>.gz`). Keys no row names any more go into
   `pending_r2_deletes` in the same D1 batch as the change that detaches them, and an
-  upload records its key before writing it (and unrecords it when it attaches). Detached
+  upload records its key before writing it (and unrecords it when it attaches). Every
+  deletion first claims the record with a conditional update and deletes the object only
+  if it won; an upload attaches only while its record is unclaimed (else it answers 503
+  `upload_expired` and the app uploads again), so no cleanup can delete an attached object. Detached
   tracks are deleted at once; recorded uploads that never attached are collected after 15
-  minutes by later uploads of the user and by the cron trigger. Account deletion collects
+  minutes by later uploads of the user and by the cron trigger. Fixed-key tracks from
+  before per-upload keys (`track.v1.gz`, `track.v1.r<revision>.gz`) that a failed cleanup
+  left behind are found by listing the session's prefix on its next upload. Account deletion collects
   all of the user's recorded keys, inside or outside their prefix.
 - Workers observability is on in `wrangler.jsonc` (`observability.enabled`), so
   Cloudflare keeps request logs for your account; turn it off there if you do not want

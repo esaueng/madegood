@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, lte } from "drizzle-orm";
+import { and, asc, eq, isNull, lt, lte, or } from "drizzle-orm";
 import type { drizzle } from "drizzle-orm/d1";
 import { pendingR2Deletes } from "../db/schema";
 
@@ -27,6 +27,9 @@ export function recordSessionTrackKeys(
   binds: unknown[],
   now = Date.now(),
 ): D1PreparedStatement {
+  // A key a row names is attached, never an upload still being written, so it may be
+  // collected at once: it is recorded as already past the upload grace.
+  now -= UPLOAD_GRACE_MS + 1;
   return d1
     .prepare(
       `INSERT OR IGNORE INTO pending_r2_deletes (key, user_id, created_at)
@@ -50,17 +53,73 @@ export function selectSessionTrackKeys(
 export const keysOf = (result: D1Result | undefined) =>
   ((result?.results ?? []) as { key: string }[]).map((r) => r.key);
 
+/** How long a claim protects a key; a collector that died is replaced after this. */
+export const CLAIM_LEASE_MS = 10 * 60 * 1000;
+
+/**
+ * Claims recorded keys and deletes their objects: one conditional UPDATE ... RETURNING
+ * takes the rows nobody holds (or whose claim lapsed), and only the objects of rows this
+ * call won are deleted, then those rows. An upload attaches its key only while its row is
+ * unclaimed (session-upload.ts), so no collector can delete an object that is attached, or
+ * becomes attached. Returns the keys deleted. On an R2 failure the claimed rows stay and
+ * are handed back (or, if even that fails, taken again once the claim lapses).
+ */
+export async function claimAndDelete(
+  d1: D1Database,
+  bucket: R2Bucket,
+  keys: string[],
+  options: { before?: number; now?: number } = {},
+): Promise<string[]> {
+  if (keys.length === 0) return [];
+  const now = options.now ?? Date.now();
+  const claim = crypto.randomUUID();
+  const won: string[] = [];
+  for (let i = 0; i < keys.length; i += 90) {
+    const chunk = keys.slice(i, i + 90);
+    const placeholders = chunk.map(() => "?").join(", ");
+    const { results } = await d1
+      .prepare(
+        `UPDATE pending_r2_deletes SET claim = ?, claimed_at = ?
+         WHERE key IN (${placeholders})
+           AND (claim IS NULL OR claimed_at < ?)
+           AND created_at <= ?
+         RETURNING key`,
+      )
+      .bind(claim, now, ...chunk, now - CLAIM_LEASE_MS, options.before ?? now)
+      .all<{ key: string }>();
+    won.push(...results.map((r) => r.key));
+  }
+  if (won.length === 0) return [];
+  try {
+    for (let i = 0; i < won.length; i += 1000) await bucket.delete(won.slice(i, i + 1000));
+  } catch (error) {
+    // Hand the keys back so the next collection takes them without waiting for the lease.
+    await d1
+      .prepare("UPDATE pending_r2_deletes SET claim = NULL, claimed_at = NULL WHERE claim = ?")
+      .bind(claim)
+      .run()
+      .catch(() => {});
+    throw error;
+  }
+  for (let i = 0; i < won.length; i += 90) {
+    const chunk = won.slice(i, i + 90);
+    await d1
+      .prepare(
+        `DELETE FROM pending_r2_deletes WHERE claim = ? AND key IN (${chunk.map(() => "?").join(", ")})`,
+      )
+      .bind(claim, ...chunk)
+      .run();
+  }
+  return won;
+}
+
 /**
  * Collects specific recorded keys now: ones just detached from a row (never an upload in
  * flight). On failure their records stay for the next collection.
  */
 export async function collectKeys(db: Db, bucket: R2Bucket, keys: string[]): Promise<void> {
-  if (keys.length === 0) return;
   try {
-    await bucket.delete(keys);
-    for (let i = 0; i < keys.length; i += 50) {
-      await db.delete(pendingR2Deletes).where(inArray(pendingR2Deletes.key, keys.slice(i, i + 50)));
-    }
+    await claimAndDelete(db.$client, bucket, keys);
   } catch (error) {
     console.warn("Could not delete detached tracks now; they stay recorded.", error);
   }
@@ -74,9 +133,9 @@ export function recordKey(d1: D1Database, key: string, userId: string, now = Dat
 }
 
 /**
- * Deletes recorded objects and then their rows: the oldest `limit`, of one user or all, and
- * only those recorded before `before` (so an upload in flight keeps its object until it
- * has had time to attach). Returns how many keys were collected.
+ * Collects recorded objects: the oldest `limit`, of one user or all, and only those
+ * recorded before `before` (so an upload in flight keeps its object until it has had time
+ * to attach). Each key is claimed first (`claimAndDelete`). Returns how many were collected.
  */
 export async function collectR2Garbage(
   db: Db,
@@ -84,31 +143,38 @@ export async function collectR2Garbage(
   options: { userId?: string; before?: number; limit?: number } = {},
 ): Promise<number> {
   const limit = options.limit ?? 1000;
-  const conditions = [];
+  const now = Date.now();
+  const before = options.before ?? now;
+  const conditions = [
+    lte(pendingR2Deletes.createdAt, before),
+    or(isNull(pendingR2Deletes.claim), lt(pendingR2Deletes.claimedAt, now - CLAIM_LEASE_MS)),
+  ];
   if (options.userId !== undefined) conditions.push(eq(pendingR2Deletes.userId, options.userId));
-  if (options.before !== undefined)
-    conditions.push(lte(pendingR2Deletes.createdAt, options.before));
   let collected = 0;
   for (;;) {
     const rows = await db
       .select({ key: pendingR2Deletes.key })
       .from(pendingR2Deletes)
-      .where(conditions.length > 0 ? and(...conditions) : undefined)
+      .where(and(...conditions))
       .orderBy(asc(pendingR2Deletes.createdAt), asc(pendingR2Deletes.key))
       .limit(Math.min(limit - collected, 1000));
     if (rows.length === 0) return collected;
-    const keys = rows.map((r) => r.key);
-    await bucket.delete(keys);
-    for (let i = 0; i < keys.length; i += 50) {
-      await db.delete(pendingR2Deletes).where(inArray(pendingR2Deletes.key, keys.slice(i, i + 50)));
-    }
-    collected += keys.length;
-    if (collected >= limit || rows.length < 1000) return collected;
+    const won = await claimAndDelete(
+      db.$client,
+      bucket,
+      rows.map((r) => r.key),
+      { before, now },
+    );
+    collected += won.length;
+    if (collected >= limit || rows.length < 1000 || won.length === 0) return collected;
   }
 }
 
-/** Deletes one recorded key now (an upload discarding its own object). */
-export async function discardKey(db: Db, bucket: R2Bucket, key: string): Promise<void> {
-  await bucket.delete(key);
-  await db.delete(pendingR2Deletes).where(eq(pendingR2Deletes.key, key));
+/**
+ * Deletes an upload's own object if it never attached: the upload claims its own row like a
+ * collector, so after an attach (row gone) or a collector's claim it deletes nothing, even
+ * when the upload does not know whether its attach committed.
+ */
+export async function discardKey(db: Db, bucket: R2Bucket, key: string): Promise<boolean> {
+  return (await claimAndDelete(db.$client, bucket, [key])).length > 0;
 }

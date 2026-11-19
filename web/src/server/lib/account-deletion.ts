@@ -2,9 +2,9 @@ import { and, asc, eq, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
 import { AccountDeleting } from "../auth/account-state";
 import { findOrCreateUser } from "../auth/users";
-import { type User, users } from "../db/schema";
+import { pendingR2Deletes, type User, users } from "../db/schema";
 import { purgeAccountVoyages } from "../live/registry";
-import { collectR2Garbage, recordSessionTrackKeys } from "./r2-garbage";
+import { collectR2Garbage, recordSessionTrackKeys, UPLOAD_GRACE_MS } from "./r2-garbage";
 import { deletePrefix, userPrefix } from "./storage";
 
 // Account deletion (DELETE /api/me) as a durable job.
@@ -21,8 +21,9 @@ import { deletePrefix, userPrefix } from "./storage";
 // rows it deletes in the batch that deletes them. Each pass collects the ledger, sweeps the
 // user's prefix (export parts from #79 included) and purges live shares; every step is
 // idempotent, so a failure is repeated by the next pass. Passes come from the request, the
-// scheduled sweep (backoff per job, oldest due first), and opportunistically from a sign-in
-// attempt or an authenticated request once the grace period is over. After
+// scheduled sweep (backoff per job, oldest due first), and from a sign-in attempt for the
+// account's Apple ID once the grace period is over (where no cron runs, such as previews,
+// that sign-in is what finishes the deletion; until then the Apple ID stays reserved). After
 // DELETION_GRACE_MS (longer than an access token lives) a pass collects and sweeps one last
 // time, then deletes the user row, which cascades to tombstones and export jobs.
 
@@ -89,8 +90,14 @@ export async function runAccountDeletion(
     d1.prepare("DELETE FROM refresh_tokens WHERE user_id = ?").bind(userId),
   ]);
   const collect = async () => {
-    // Every recorded key of the user, in or out of the prefix, and whatever the prefix holds.
-    await collectR2Garbage(db, env.TRACKS, { userId, limit: Number.MAX_SAFE_INTEGER });
+    // Every recorded key of the user, in or out of the prefix, once no upload can still be
+    // writing it (an upload records its key before its put lands), then whatever the prefix
+    // holds. A younger record is left for a later pass.
+    await collectR2Garbage(db, env.TRACKS, {
+      userId,
+      before: now - UPLOAD_GRACE_MS,
+      limit: Number.MAX_SAFE_INTEGER,
+    });
     await deletePrefix(env.TRACKS, userPrefix(userId));
   };
   await collect();
@@ -104,9 +111,27 @@ export async function runAccountDeletion(
     return "pending";
   }
   // Last pass after the grace period: anything an in-flight request wrote has landed (and
-  // was recorded) by now. Then the account record, which cascades to the rest.
+  // was recorded) by now. The account record goes only once the user's ledger is empty, so
+  // a late upload's record is collected (after its own grace) by a later pass, which then
+  // sweeps the prefix again; never is a record consumed before its put can have landed.
   await collect();
   if (env.VOYAGE_LIVE) await purgeAccountVoyages(env as Env, userId);
+  const [left] = await db
+    .select({
+      count: sql<number>`count(*)`,
+      oldest: sql<number | null>`min(${pendingR2Deletes.createdAt})`,
+    })
+    .from(pendingR2Deletes)
+    .where(eq(pendingR2Deletes.userId, userId));
+  if ((left?.count ?? 0) > 0) {
+    await db
+      .update(users)
+      .set({
+        deletionNextAt: Math.max((left?.oldest ?? now) + UPLOAD_GRACE_MS + 1000, now + 60_000),
+      })
+      .where(eq(users.id, userId));
+    return "pending";
+  }
   await db.delete(users).where(and(eq(users.id, userId), isNotNull(users.deletedAt)));
   return "done";
 }
@@ -181,16 +206,6 @@ export const graceOver = (deletedAt: number, now = Date.now()) =>
 export async function finishIfDue(env: DeletionEnv, error: AccountDeleting): Promise<boolean> {
   if (!error.userId || error.deletedAt === undefined || !graceOver(error.deletedAt)) return false;
   return (await runScheduledDeletion(env, error.userId)) === "done";
-}
-
-/** For an authenticated request from a deleting account: finish it in the background if due. */
-export function finishInBackground(
-  env: DeletionEnv,
-  ctx: Pick<ExecutionContext, "waitUntil"> | null,
-  user: Pick<User, "id" | "deletedAt">,
-) {
-  if (!ctx || user.deletedAt === null || !graceOver(user.deletedAt)) return;
-  ctx.waitUntil(runScheduledDeletion(env, user.id).then(() => undefined));
 }
 
 /**

@@ -32,6 +32,7 @@ export const errorCodes = [
   "track_replaced",
   "account_mismatch",
   "account_deleting",
+  "upload_expired",
 ] as const;
 export type ErrorCode = (typeof errorCodes)[number];
 

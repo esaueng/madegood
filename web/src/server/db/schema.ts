@@ -267,6 +267,13 @@ export const pendingR2Deletes = sqliteTable(
     key: text("key").primaryKey(),
     userId: text("user_id").notNull(),
     createdAt: timestamp("created_at").notNull(),
+    /**
+     * The collector (or upload discarding its own object) that holds this key, and since
+     * when: it deletes the object only after winning this claim, and an upload attaches its
+     * key only while the row is unclaimed (lib/r2-garbage.ts).
+     */
+    claim: text("claim"),
+    claimedAt: timestamp("claimed_at"),
   },
   (table) => [index("pending_r2_deletes_user").on(table.userId, table.createdAt)],
 );

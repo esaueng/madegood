@@ -11,8 +11,9 @@ import {
   sweepAccountDeletions,
 } from "../src/server/lib/account-deletion";
 import { processMessage } from "../src/server/lib/postprocess";
-import { collectR2Garbage, UPLOAD_GRACE_MS } from "../src/server/lib/r2-garbage";
+import { claimAndDelete, collectR2Garbage, UPLOAD_GRACE_MS } from "../src/server/lib/r2-garbage";
 import {
+  AfterCommit,
   discardUpload,
   insertSession,
   replaceSessionMetadata,
@@ -373,5 +374,153 @@ describe("finding 5: no sign-in family survives the lock", () => {
     expect(
       (await api("/me", { headers: { authorization: `Bearer ${owner.accessToken}` } })).status,
     ).toBe(401);
+  });
+});
+
+describe("extra review of #78", () => {
+  async function sessionAt(userId: string, revision = 0) {
+    const id = crypto.randomUUID();
+    await insertSession(db(), { id, userId, revision, fields });
+    return id;
+  }
+  const rowKey = async (id: string) =>
+    (await one<{ k: string | null }>("select track_key as k from sessions where id = ?", id))?.k ??
+    null;
+  const bytes = new Uint8Array([0x1f, 0x8b, 1]);
+
+  it("1: a failure after the attach committed never deletes the new object", async () => {
+    const owner = await signIn();
+    const id = await sessionAt(owner.user.id);
+    const key = trackKey(userPrefix(owner.user.id), id, 0);
+    await expect(
+      storeTrack(
+        db(),
+        env.TRACKS,
+        { id, userId: owner.user.id, revision: 0, key, bytes },
+        {
+          readBack: async () => {
+            throw new Error("synthetic D1 read failure");
+          },
+        },
+      ),
+    ).rejects.toBeInstanceOf(AfterCommit);
+    expect(await rowKey(id)).toBe(key);
+    expect(await env.TRACKS.head(key)).not.toBeNull();
+    // Even a discard after an ambiguous failure deletes nothing: the record is gone.
+    expect(await discardUpload(db(), env.TRACKS, key)).toBe(false);
+    expect(await env.TRACKS.head(key)).not.toBeNull();
+  });
+
+  it("2: a collector that claimed an upload's record first wins; the attach then fails", async () => {
+    const owner = await signIn();
+    const id = await sessionAt(owner.user.id);
+    const key = trackKey(userPrefix(owner.user.id), id, 0);
+    const result = await storeTrack(
+      db(),
+      env.TRACKS,
+      { id, userId: owner.user.id, revision: 0, key, bytes },
+      {
+        afterPut: async () => {
+          // A collector took the record as stale (a very slow upload) and is about to
+          // delete the object: it holds the claim.
+          await sql(
+            "update pending_r2_deletes set claim = 'collector', claimed_at = ? where key = ?",
+            Date.now(),
+            key,
+          );
+        },
+      },
+    );
+    expect(result.kind).toBe("expired");
+    expect(await rowKey(id)).toBeNull();
+    // The collector's claim is intact, so it goes on to delete the object safely.
+    const record = await one<{ claim: string }>(
+      "select claim from pending_r2_deletes where key = ?",
+      key,
+    );
+    expect(record?.claim).toBe("collector");
+  });
+
+  it("2: once an upload attached, a collector holding its stale key deletes nothing", async () => {
+    const owner = await signIn();
+    const id = await sessionAt(owner.user.id);
+    const key = trackKey(userPrefix(owner.user.id), id, 0);
+    // The collector selected the key while it was stale...
+    const stale = [key];
+    const result = await storeTrack(db(), env.TRACKS, {
+      id,
+      userId: owner.user.id,
+      revision: 0,
+      key,
+      bytes,
+    });
+    expect(result.kind).toBe("attached");
+    // ...and claims it after the attach consumed the record: it wins nothing.
+    expect(await claimAndDelete(env.DB, env.TRACKS, stale, { before: Date.now() + 1 })).toEqual([]);
+    expect(await env.TRACKS.head(key)).not.toBeNull();
+    expect(await rowKey(id)).toBe(key);
+  });
+
+  it("3: the final pass waits for a young upload record instead of orphaning its object", async () => {
+    const owner = await signIn();
+    const id = await sessionAt(owner.user.id);
+    const requestedAt = Date.now() - DELETION_GRACE_MS - 1000;
+    await requestAccountDeletion(env.DB, owner.user.id, requestedAt);
+    // An upload authorized before the lock recorded its key just now; its put lands late.
+    const key = trackKey(userPrefix(owner.user.id), id, 0);
+    await sql(
+      "insert into pending_r2_deletes (key, user_id, created_at) values (?, ?, ?)",
+      key,
+      owner.user.id,
+      Date.now(),
+    );
+    expect(await runAccountDeletion(env, owner.user.id)).toBe("pending");
+    await env.TRACKS.put(key, "late put");
+    // The account record stays (still locked) until the record is past the grace.
+    expect(await one("select id from users where id = ?", owner.user.id)).not.toBeNull();
+    const later = Date.now() + UPLOAD_GRACE_MS + 1000;
+    expect(await runAccountDeletion(env, owner.user.id, later)).toBe("done");
+    expect(await env.TRACKS.head(key)).toBeNull();
+    expect(
+      await one("select key from pending_r2_deletes where user_id = ?", owner.user.id),
+    ).toBeNull();
+    expect(await one("select id from users where id = ?", owner.user.id)).toBeNull();
+  });
+
+  it("4: a request with the account's token no longer tries to finish the deletion", async () => {
+    const owner = await signIn();
+    await requestAccountDeletion(env.DB, owner.user.id, Date.now() - DELETION_GRACE_MS - 1000);
+    const response = await api("/me", {
+      headers: { authorization: `Bearer ${owner.accessToken}` },
+    });
+    expect(response.status).toBe(401);
+    // Only a sign-in for the Apple ID, or the cron, finishes it.
+    expect(await one("select id from users where id = ?", owner.user.id)).not.toBeNull();
+  });
+
+  it("5: an upload removes fixed-key tracks from before per-upload keys", async () => {
+    const owner = await signIn();
+    const id = await sessionAt(owner.user.id, 2);
+    const prefix = `${userPrefix(owner.user.id)}sessions/${id}/`;
+    // Left behind by a cleanup that failed before the upgrade; no ledger row knows them.
+    for (const name of ["track.v1.gz", "track.v1.r1.gz"])
+      await env.TRACKS.put(prefix + name, "old");
+    const key = trackKey(userPrefix(owner.user.id), id, 2);
+    expect(
+      (await storeTrack(db(), env.TRACKS, { id, userId: owner.user.id, revision: 2, key, bytes }))
+        .kind,
+    ).toBe("attached");
+    const left = (await env.TRACKS.list({ prefix })).objects.map((o) => o.key);
+    expect(left).toEqual([key]);
+
+    // And a newer revision's metadata, which detaches the track, does the same.
+    await env.TRACKS.put(`${prefix}track.v1.r2.gz`, "old");
+    await replaceSessionMetadata(db(), env.TRACKS, {
+      id,
+      userId: owner.user.id,
+      revision: 3,
+      fields,
+    });
+    expect((await env.TRACKS.list({ prefix })).objects).toHaveLength(0);
   });
 });
