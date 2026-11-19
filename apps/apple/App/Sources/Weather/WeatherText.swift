@@ -7,11 +7,15 @@ struct WeatherText {
     let weather: WeatherNow
     let outlook: WaterOutlook
     let speedUnit: SpeedUnit
+    /// The clock warnings are worded against ("soon", "by 3 PM"): now, not when the
+    /// conditions were fetched, so a cached answer doesn't keep saying "soon".
+    let now: Double
 
-    init(_ weather: WeatherNow, speedUnit: SpeedUnit) {
+    init(_ weather: WeatherNow, speedUnit: SpeedUnit, now: Date = .now) {
         self.weather = weather
         outlook = WaterOutlook(weather)
         self.speedUnit = speedUnit
+        self.now = now.timeIntervalSince1970
     }
 
     private var gust: Double { max(weather.windGust ?? 0, weather.windSpeed) }
@@ -36,7 +40,8 @@ struct WeatherText {
 
     var temperature: String {
         Measurement(value: weather.temperature, unit: UnitTemperature.celsius)
-            .formatted(.measurement(width: .narrow, usage: .weather, numberFormatStyle: .number.precision(.fractionLength(0))))
+            .formatted(
+                .measurement(width: .narrow, usage: .weather, numberFormatStyle: .number.precision(.fractionLength(0))))
     }
 
     /// Whole numbers: a model's wind is no better than that.
@@ -54,9 +59,9 @@ struct WeatherText {
 
     var warning: String? {
         switch outlook.warning {
-        case .thunder(let at)?: "Thunder likely \(Self.when(at, now: weather.time))"
-        case .gusts(let at, let speed)?: "Gusts to \(self.speed(speed)) \(Self.when(at, now: weather.time))"
-        case .rain(let at)?: "Rain likely \(Self.when(at, now: weather.time))"
+        case .thunder(let at)?: "Thunder likely \(Self.when(at, now: now))"
+        case .gusts(let at, let speed)?: "Gusts to \(self.speed(speed)) \(Self.when(at, now: now))"
+        case .rain(let at)?: "Rain likely \(Self.when(at, now: now))"
         case nil: nil
         }
     }

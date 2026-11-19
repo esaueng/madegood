@@ -50,7 +50,8 @@ struct WeatherCard: View {
     /// One row; at accessibility text sizes the words go above the buttons.
     private var offer: some View {
         let stacked = dynamicTypeSize.isAccessibilitySize
-        let layout = stacked ? AnyLayout(VStackLayout(alignment: .leading, spacing: 10)) : AnyLayout(HStackLayout(spacing: 12))
+        let layout =
+            stacked ? AnyLayout(VStackLayout(alignment: .leading, spacing: 10)) : AnyLayout(HStackLayout(spacing: 12))
         return layout {
             HStack(spacing: 12) {
                 Image(systemName: "sun.haze.fill")
@@ -210,7 +211,8 @@ private struct ConditionsCard: View {
     /// When every craft rates the same, one capsule with all their icons.
     @ViewBuilder private func chips(_ outlook: WaterOutlook) -> some View {
         let ratings = crafts.map { outlook.ratings[$0] ?? .fair }
-        let groups: [[WaterOutlook.Craft]] = Set(ratings).count == 1 && crafts.count > 1 ? [crafts] : crafts.map { [$0] }
+        let groups: [[WaterOutlook.Craft]] =
+            Set(ratings).count == 1 && crafts.count > 1 ? [crafts] : crafts.map { [$0] }
         ForEach(groups, id: \.self) { group in
             let rating = outlook.ratings[group[0]] ?? .fair
             HStack(spacing: 4) {

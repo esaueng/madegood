@@ -194,4 +194,16 @@ final class LocalWeatherRequestTests: XCTestCase {
         XCTAssertEqual(WeatherText.compass(-90), "W")
         XCTAssertEqual(WeatherText.when(1_000, now: 0), "soon")
     }
+
+    /// Regression: a cached answer's warning is worded against the clock, not the fetch.
+    func testWarningTimeFollowsTheClock() {
+        let thunderAt = 1_800_003_600.0
+        let weather = WeatherNow(
+            time: 1_800_000_000, temperature: 20, code: 1, windSpeed: 5, windFrom: 225,
+            hours: [.init(time: thunderAt + 3_600, code: 95)])
+        let fresh = WeatherText(weather, speedUnit: .knots, now: Date(timeIntervalSince1970: weather.time))
+        XCTAssertTrue(fresh.warning?.hasPrefix("Thunder likely by ") == true, fresh.warning ?? "nil")
+        let later = WeatherText(weather, speedUnit: .knots, now: Date(timeIntervalSince1970: thunderAt - 600))
+        XCTAssertEqual(later.warning, "Thunder likely soon")
+    }
 }

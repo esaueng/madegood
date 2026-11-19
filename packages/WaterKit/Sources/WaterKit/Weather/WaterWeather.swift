@@ -316,24 +316,31 @@ public struct WaterOutlook: Sendable, Equatable {
 
     /// The first thing worth knowing in the next three hours, if the current hour
     /// doesn't already show it: thunder, then gusts building to too windy, then rain.
+    ///
+    /// Open-Meteo's hourly gusts and precipitation probability describe the hour *before*
+    /// each timestamp, so the value stamped 15:00 covers 14:00–15:00. Every hourly value
+    /// is read that way (the weather code too, to warn early rather than late): a
+    /// warning starts at the beginning of that hour, or now if it has begun.
     static func warning(_ weather: WeatherNow, sky: Sky) -> Warning? {
-        let coming = weather.hours.filter {
-            $0.time + 3_600 > weather.time && $0.time <= weather.time + lookahead
-        }
+        let now = weather.time
+        let coming = weather.hours.filter { $0.time > now && $0.time - 3_600 <= now + lookahead }
+        func start(_ hour: WeatherNow.Hour) -> Double { max(hour.time - 3_600, now) }
         if sky != .thunderstorm, let hour = coming.first(where: { Self.sky(code: $0.code) == .thunderstorm }) {
-            return .thunder(at: max(hour.time, weather.time))
+            return .thunder(at: start(hour))
         }
         let gustNow = max(weather.windGust ?? 0, weather.windSpeed)
         if gustNow < dangerousGust,
             let hour = coming.first(where: { ($0.gust ?? 0) >= dangerousGust }), let gust = hour.gust
         {
-            return .gusts(at: max(hour.time, weather.time), speed: coming.compactMap(\.gust).max() ?? gust)
+            return .gusts(at: start(hour), speed: coming.compactMap(\.gust).max() ?? gust)
         }
         let wet: Set<Sky> = [.rain, .drizzle, .snow, .thunderstorm]
         if !wet.contains(sky),
-            let hour = coming.first(where: { ($0.precipitationProbability ?? 0) >= 60 || wet.contains(Self.sky(code: $0.code)) })
+            let hour = coming.first(where: {
+                ($0.precipitationProbability ?? 0) >= 60 || wet.contains(Self.sky(code: $0.code))
+            })
         {
-            return .rain(at: max(hour.time, weather.time))
+            return .rain(at: start(hour))
         }
         return nil
     }

@@ -13,7 +13,8 @@ struct WeatherScene: View {
 
     var body: some View {
         TimelineView(.animation(minimumInterval: 1 / 30, paused: reduceMotion)) { context in
-            let t = reduceMotion ? 1.3 : context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 3_600)
+            let t =
+                reduceMotion ? 1.3 : context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 3_600)
             Canvas { canvas, size in
                 SceneDrawing(weather: weather, outlook: outlook, size: size, t: t).draw(in: &canvas)
             }
@@ -149,7 +150,9 @@ private struct SceneDrawing {
             with: .linearGradient(
                 Gradient(colors: [rgb(1, 0.92, 0.45), rgb(1, 0.74, 0.25)]), startPoint: CGPoint(x: c.x, y: c.y - r),
                 endPoint: CGPoint(x: c.x, y: c.y + r)))
-        face(&context, center: CGPoint(x: c.x, y: c.y + r * 0.08), size: r, expression: .happy, ink: rgb(0.55, 0.3, 0.05))
+        face(
+            &context, center: CGPoint(x: c.x, y: c.y + r * 0.08), size: r, expression: .happy, ink: rgb(0.55, 0.3, 0.05)
+        )
         // Rosy cheeks.
         for side in [-1.0, 1.0] {
             let cheek = CGRect(x: c.x + side * r * 0.52 - r * 0.15, y: c.y + r * 0.22, width: r * 0.3, height: r * 0.18)
@@ -167,7 +170,8 @@ private struct SceneDrawing {
                 Gradient(colors: [rgb(0.85, 0.9, 1).opacity(0.25), .clear]), center: c, startRadius: r,
                 endRadius: r * 2.2))
         var moon = Path(ellipseIn: CGRect(x: c.x - r, y: c.y - r, width: r * 2, height: r * 2))
-        moon = moon.subtracting(Path(ellipseIn: CGRect(x: c.x - r * 0.35, y: c.y - r * 1.15, width: r * 2, height: r * 2)))
+        moon = moon.subtracting(
+            Path(ellipseIn: CGRect(x: c.x - r * 0.35, y: c.y - r * 1.15, width: r * 2, height: r * 2)))
         context.fill(moon, with: .color(rgb(0.96, 0.94, 0.82)))
         // A closed eye and a small smile on the crescent's inner side.
         var eye = Path()
@@ -240,7 +244,8 @@ private struct SceneDrawing {
         var path = Path()
         let puffs: [(Double, Double, Double)] = [(-20, 4, 12), (-6, -6, 15), (12, -2, 13), (24, 6, 9)]
         for (dx, dy, r) in puffs {
-            path.addEllipse(in: CGRect(x: c.x + (dx - r) * s, y: c.y + (dy - r) * s, width: r * 2 * s, height: r * 2 * s))
+            path.addEllipse(
+                in: CGRect(x: c.x + (dx - r) * s, y: c.y + (dy - r) * s, width: r * 2 * s, height: r * 2 * s))
         }
         path.addRoundedRect(
             in: CGRect(x: c.x - 30 * s, y: c.y + 2 * s, width: 62 * s, height: 13 * s),
@@ -362,7 +367,8 @@ private struct SceneDrawing {
             path.addArc(
                 center: CGPoint(x: head, y: y - curl), radius: curl, startAngle: .degrees(90),
                 endAngle: .degrees(windSign > 0 ? -60 : 240), clockwise: windSign < 0)
-            context.stroke(path, with: .color(.white.opacity(alpha)), style: StrokeStyle(lineWidth: 1.6, lineCap: .round))
+            context.stroke(
+                path, with: .color(.white.opacity(alpha)), style: StrokeStyle(lineWidth: 1.6, lineCap: .round))
         }
     }
 
@@ -440,7 +446,9 @@ private struct SceneDrawing {
             var cap = Path()
             cap.move(to: CGPoint(x: x - widthNow / 2, y: y + 1))
             cap.addQuadCurve(to: CGPoint(x: x + widthNow / 2, y: y + 1), control: CGPoint(x: x, y: y - 3))
-            context.stroke(cap, with: .color(.white.opacity(0.85 * sin(phase * .pi))), style: StrokeStyle(lineWidth: 2, lineCap: .round))
+            context.stroke(
+                cap, with: .color(.white.opacity(0.85 * sin(phase * .pi))),
+                style: StrokeStyle(lineWidth: 2, lineCap: .round))
         }
     }
 
@@ -516,7 +524,9 @@ private struct SceneDrawing {
         if sky == .fog { boat.opacity = 0.7 }
         drawBoatShape(&boat, s: s)
 
-        face(&boat, center: CGPoint(x: -s * 0.05, y: s * 0.03), size: s * 0.16, expression: boatExpression, ink: rgb(0.25, 0.1, 0.08))
+        face(
+            &boat, center: CGPoint(x: -s * 0.05, y: s * 0.03), size: s * 0.16, expression: boatExpression,
+            ink: rgb(0.25, 0.1, 0.08))
         if boatExpression == .sleepy { drawZs(&boat, origin: CGPoint(x: s * 0.2, y: -s * 0.3)) }
         if rig == .reefed || rig == .furled || outlook.wind >= .fresh { drawSpray(&boat, s: s) }
     }
@@ -532,11 +542,15 @@ private struct SceneDrawing {
         let boomEnd = CGPoint(x: s * 0.5, y: rig == .slack || rig == .furled ? -s * 0.16 : -s * 0.2)
 
         boat.stroke(
-            Path { $0.move(to: CGPoint(x: 0, y: -s * 0.08)); $0.addLine(to: masthead) },
+            Path {
+                $0.move(to: CGPoint(x: 0, y: -s * 0.08)); $0.addLine(to: masthead)
+            },
             with: .color(wood), style: StrokeStyle(lineWidth: 2, lineCap: .round))
         // Forestay to the bow.
         boat.stroke(
-            Path { $0.move(to: CGPoint(x: 0, y: -s * 0.95)); $0.addLine(to: CGPoint(x: -s * 0.5, y: -s * 0.1)) },
+            Path {
+                $0.move(to: CGPoint(x: 0, y: -s * 0.95)); $0.addLine(to: CGPoint(x: -s * 0.5, y: -s * 0.1))
+            },
             with: .color(wood.opacity(0.6)), lineWidth: 0.7)
 
         switch rig {
@@ -560,7 +574,8 @@ private struct SceneDrawing {
             boat.stroke(creases, with: .color(.black.opacity(0.16)), lineWidth: 0.8)
             var jib = Path()
             jib.move(to: CGPoint(x: -s * 0.03, y: -s * 0.9))
-            jib.addQuadCurve(to: CGPoint(x: -s * 0.34 - stir, y: -s * 0.14), control: CGPoint(x: -s * 0.08, y: -s * 0.4))
+            jib.addQuadCurve(
+                to: CGPoint(x: -s * 0.34 - stir, y: -s * 0.14), control: CGPoint(x: -s * 0.08, y: -s * 0.4))
             jib.addLine(to: CGPoint(x: -s * 0.03, y: -s * 0.14))
             jib.closeSubpath()
             boat.fill(jib, with: .color(rgb(0.9, 0.93, 0.92).opacity(0.92)))
@@ -577,9 +592,11 @@ private struct SceneDrawing {
                 control: CGPoint(x: s * (0.26 + belly), y: head * 0.55))
             main.addLine(to: CGPoint(x: s * 0.03, y: gooseneck.y))
             main.closeSubpath()
-            boat.fill(main, with: .linearGradient(
-                Gradient(colors: [sailColor, rgb(0.84, 0.87, 0.86)]), startPoint: CGPoint(x: 0, y: 0),
-                endPoint: CGPoint(x: s * 0.5, y: 0)))
+            boat.fill(
+                main,
+                with: .linearGradient(
+                    Gradient(colors: [sailColor, rgb(0.84, 0.87, 0.86)]), startPoint: CGPoint(x: 0, y: 0),
+                    endPoint: CGPoint(x: s * 0.5, y: 0)))
             boat.stroke(main, with: .color(.black.opacity(0.12)), lineWidth: 0.8)
             // Batten lines show the sail is pulling.
             var battens = Path()
@@ -593,8 +610,9 @@ private struct SceneDrawing {
             if rig == .reefed {
                 // The reefed-down sail bundled on the boom.
                 boat.fill(
-                    Path(roundedRect: CGRect(x: s * 0.03, y: gooseneck.y - s * 0.07, width: s * 0.46, height: s * 0.07),
-                         cornerRadius: s * 0.035),
+                    Path(
+                        roundedRect: CGRect(x: s * 0.03, y: gooseneck.y - s * 0.07, width: s * 0.46, height: s * 0.07),
+                        cornerRadius: s * 0.035),
                     with: .color(sailColor.opacity(0.85)))
             }
             var jib = Path()
@@ -610,8 +628,9 @@ private struct SceneDrawing {
         case .furled:
             // Sails stowed: the main lashed to the boom, the jib rolled on the forestay.
             boat.fill(
-                Path(roundedRect: CGRect(x: s * 0.02, y: gooseneck.y - s * 0.09, width: s * 0.48, height: s * 0.09),
-                     cornerRadius: s * 0.045),
+                Path(
+                    roundedRect: CGRect(x: s * 0.02, y: gooseneck.y - s * 0.09, width: s * 0.48, height: s * 0.09),
+                    cornerRadius: s * 0.045),
                 with: .color(sailColor))
             var ties = Path()
             for i in 1...3 {
@@ -621,13 +640,18 @@ private struct SceneDrawing {
             }
             boat.stroke(ties, with: .color(Theme.coral), lineWidth: 1.2)
             boat.stroke(
-                Path { $0.move(to: CGPoint(x: -s * 0.04, y: -s * 0.86)); $0.addLine(to: CGPoint(x: -s * 0.44, y: -s * 0.16)) },
+                Path {
+                    $0.move(to: CGPoint(x: -s * 0.04, y: -s * 0.86));
+                    $0.addLine(to: CGPoint(x: -s * 0.44, y: -s * 0.16))
+                },
                 with: .color(sailColor), style: StrokeStyle(lineWidth: 3, lineCap: .round))
         }
 
         // Boom.
         boat.stroke(
-            Path { $0.move(to: gooseneck); $0.addLine(to: boomEnd) },
+            Path {
+                $0.move(to: gooseneck); $0.addLine(to: boomEnd)
+            },
             with: .color(wood), style: StrokeStyle(lineWidth: 1.8, lineCap: .round))
 
         drawPennant(&boat, masthead: masthead, s: s)
@@ -640,9 +664,11 @@ private struct SceneDrawing {
         hull.addLine(to: CGPoint(x: -s * 0.34, y: s * 0.17))
         hull.addQuadCurve(to: CGPoint(x: -s * 0.56, y: -s * 0.1), control: CGPoint(x: -s * 0.52, y: s * 0.12))
         hull.closeSubpath()
-        boat.fill(hull, with: .linearGradient(
-            Gradient(colors: [Theme.coral, rgb(0.82, 0.4, 0.28)]), startPoint: CGPoint(x: 0, y: -s * 0.1),
-            endPoint: CGPoint(x: 0, y: s * 0.17)))
+        boat.fill(
+            hull,
+            with: .linearGradient(
+                Gradient(colors: [Theme.coral, rgb(0.82, 0.4, 0.28)]), startPoint: CGPoint(x: 0, y: -s * 0.1),
+                endPoint: CGPoint(x: 0, y: s * 0.17)))
         boat.fill(
             Path(CGRect(x: -s * 0.56, y: -s * 0.12, width: s * 1.14, height: s * 0.035)),
             with: .color(Theme.pearl.opacity(0.9)))
@@ -665,7 +691,8 @@ private struct SceneDrawing {
         var pennant = Path()
         pennant.move(to: masthead)
         pennant.addQuadCurve(to: tip, control: mid)
-        let back = CGPoint(x: masthead.x + windSign * sin(a) * s * 0.02, y: masthead.y + s * 0.07 * (1 - strength * 0.4))
+        let back = CGPoint(
+            x: masthead.x + windSign * sin(a) * s * 0.02, y: masthead.y + s * 0.07 * (1 - strength * 0.4))
         pennant.addQuadCurve(to: back, control: CGPoint(x: (tip.x + back.x) / 2, y: (tip.y + back.y) / 2 + s * 0.02))
         pennant.closeSubpath()
         context.fill(pennant, with: .color(Theme.coral))
@@ -756,7 +783,9 @@ private struct SceneDrawing {
                 context.stroke(lid, with: .color(ink), style: StrokeStyle(lineWidth: max(1, s * 0.07), lineCap: .round))
             } else {
                 let r = expression == .worried ? s * 0.11 : s * 0.085
-                context.fill(Path(ellipseIn: CGRect(x: ex - r, y: eyeY - r * 1.15, width: r * 2, height: r * 2.3)), with: .color(ink))
+                context.fill(
+                    Path(ellipseIn: CGRect(x: ex - r, y: eyeY - r * 1.15, width: r * 2, height: r * 2.3)),
+                    with: .color(ink))
                 if expression == .worried || expression == .delighted {
                     let glint = r * 0.4
                     context.fill(
@@ -768,7 +797,8 @@ private struct SceneDrawing {
                 var brow = Path()
                 brow.move(to: CGPoint(x: ex - side * s * 0.14, y: eyeY - s * 0.26))
                 brow.addLine(to: CGPoint(x: ex + side * s * 0.08, y: eyeY - s * 0.15))
-                context.stroke(brow, with: .color(ink), style: StrokeStyle(lineWidth: max(1, s * 0.07), lineCap: .round))
+                context.stroke(
+                    brow, with: .color(ink), style: StrokeStyle(lineWidth: max(1, s * 0.07), lineCap: .round))
             }
         }
         let mouthY = c.y + s * 0.14
@@ -782,7 +812,8 @@ private struct SceneDrawing {
             context.stroke(mouth, with: .color(ink), style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
         case .delighted:
             mouth.move(to: CGPoint(x: c.x - s * 0.16, y: mouthY - s * 0.02))
-            mouth.addQuadCurve(to: CGPoint(x: c.x + s * 0.16, y: mouthY - s * 0.02), control: CGPoint(x: c.x, y: mouthY + s * 0.26))
+            mouth.addQuadCurve(
+                to: CGPoint(x: c.x + s * 0.16, y: mouthY - s * 0.02), control: CGPoint(x: c.x, y: mouthY + s * 0.26))
             mouth.closeSubpath()
             context.fill(mouth, with: .color(ink))
         case .worried:

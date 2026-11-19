@@ -105,11 +105,12 @@ import Testing
         let coming = WaterOutlook(
             weather(code: 1, wind: 5, hours: [.init(time: hour, code: 2), .init(time: hour + 7_200, code: 95)]))
         #expect(coming.mood == .stormComing)
-        #expect(coming.warning == .thunder(at: hour + 7_200))
+        // The 17:00 value covers 16:00–17:00, so the warning starts at 16:00.
+        #expect(coming.warning == .thunder(at: hour + 3_600))
         #expect(coming.ratings.values.allSatisfy { $0 == .stayAshore })
 
         // Thunder beyond three hours isn't a warning yet.
-        let later = WaterOutlook(weather(code: 1, wind: 5, hours: [.init(time: hour + 4 * 3_600, code: 95)]))
+        let later = WaterOutlook(weather(code: 1, wind: 5, hours: [.init(time: hour + 5 * 3_600, code: 95)]))
         #expect(later.mood == .sailingBreeze)
         #expect(later.warning == nil)
     }
@@ -118,19 +119,34 @@ import Testing
         let gusts = WaterOutlook(
             weather(
                 code: 1, wind: 5, gust: 8,
-                hours: [.init(time: hour, code: 1, gust: 8), .init(time: hour + 3_600, code: 1, gust: 19),
-                        .init(time: hour + 7_200, code: 1, gust: 22)]))
-        #expect(gusts.warning == .gusts(at: hour + 3_600, speed: 22))
+                hours: [
+                    .init(time: hour, code: 1, gust: 8), .init(time: hour + 3_600, code: 1, gust: 19),
+                    .init(time: hour + 7_200, code: 1, gust: 22),
+                ]))
+        #expect(gusts.warning == .gusts(at: hour, speed: 22))
         #expect(gusts.mood == .sailingBreeze)
 
         let rain = WaterOutlook(
             weather(code: 1, wind: 3, hours: [.init(time: hour + 3_600, code: 3, precipitationProbability: 70)]))
-        #expect(rain.warning == .rain(at: hour + 3_600))
+        #expect(rain.warning == .rain(at: hour))
         // Already raining: nothing to warn of.
         let wet = WaterOutlook(weather(code: 63, wind: 3, hours: [.init(time: hour + 3_600, code: 63)]))
         #expect(wet.warning == nil)
         #expect(wet.mood == .rain)
         #expect(wet.ratings[.paddle] == .fair)
+    }
+
+    /// Regression: hourly values describe the hour before their timestamp. At 14:05 the
+    /// 15:00 gust is already happening, so the warning starts now, not at 15:00; and the
+    /// 14:00 value (13:00–14:00) is history.
+    @Test func hourlyValuesCoverThePrecedingHour() {
+        let fivepast = WeatherNow(
+            time: hour + 300, temperature: 15, code: 1, windSpeed: 5, windGust: 8, windFrom: 225,
+            hours: [
+                .init(time: hour, code: 95, gust: 25, precipitationProbability: 90),
+                .init(time: hour + 3_600, code: 1, gust: 20),
+            ])
+        #expect(WaterOutlook(fivepast).warning == .gusts(at: hour + 300, speed: 20))
     }
 
     @Test func fogAndSnowMoods() {

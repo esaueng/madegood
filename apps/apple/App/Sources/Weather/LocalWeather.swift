@@ -120,7 +120,10 @@ final class LocalWeather {
         }
         do {
             let position = try await location.position()
+            // The user may have turned this off while the fix was pending: send nothing.
+            guard isEnabled else { return }
             let weather = try await OpenMeteo.fetchCurrent(latitude: position.latitude, longitude: position.longitude)
+            guard isEnabled else { return }
             self.weather = weather
             fetchedAt = .now
             if let data = try? JSONEncoder().encode(Saved(weather: weather, fetchedAt: .now)) {
@@ -185,7 +188,11 @@ final class OneShotLocation: NSObject, CLLocationManagerDelegate {
         var longitude: Double
     }
 
+    /// A fix that hasn't come by then fails, so a silent Core Location never wedges refresh.
+    static let timeout: Duration = .seconds(20)
+
     private let manager = CLLocationManager()
+    private var request = 0
     private var authorization: [CheckedContinuation<CLAuthorizationStatus, Never>] = []
     private var waiting: [CheckedContinuation<Position, Error>] = []
 
@@ -209,11 +216,21 @@ final class OneShotLocation: NSObject, CLLocationManagerDelegate {
         }
         return try await withCheckedThrowingContinuation { continuation in
             waiting.append(continuation)
-            if waiting.count == 1 { manager.requestLocation() }
+            guard waiting.count == 1 else { return }
+            request += 1
+            let id = request
+            manager.requestLocation()
+            Task { [weak self] in
+                try? await Task.sleep(for: Self.timeout)
+                guard let self, self.request == id, !self.waiting.isEmpty else { return }
+                self.manager.stopUpdatingLocation()
+                self.finish(.failure(Failure.unavailable))
+            }
         }
     }
 
     private func finish(_ result: Result<Position, Error>) {
+        request += 1  // a late timeout for this request does nothing
         let pending = waiting
         waiting = []
         for continuation in pending { continuation.resume(with: result) }
@@ -277,7 +294,8 @@ final class OneShotLocation: NSObject, CLLocationManagerDelegate {
             case .drizzle: return sample(53, 12, wind: 3, gust: 6, cloud: 95)
             case .sailingBreeze: return sample(1, 21, wind: 6.5, gust: 9.5, cloud: 25)
             case .glassy: return sample(0, 23, wind: 0.8, gust: 1.6, cloud: 5)
-            case .sunny: return sample(0, 25, wind: 2.8, gust: 4.5, cloud: 5, next: hours([0, 1, 3], rain: [0, 10, 65]))
+            case .sunny:
+                return sample(0, 25, wind: 2.8, gust: 4.5, cloud: 5, next: hours([0, 1, 3], rain: [0, 10, 65]))
             case .partlyCloudy: return sample(2, 18, wind: 3, gust: 5, cloud: 50)
             case .cloudy: return sample(3, 14, wind: 2.6, gust: 4, cloud: 100)
             case .clearNight: return sample(0, 12, wind: 2.2, gust: 3.5, cloud: 5, day: false)
