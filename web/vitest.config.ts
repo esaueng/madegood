@@ -11,6 +11,16 @@ export default defineConfig(async () => {
       cloudflareTest({
         wrangler: { configPath: "./wrangler.jsonc" },
         miniflare: {
+          // Deliver post-processing messages at once instead of after wrangler.jsonc's
+          // 5 s batch window, so tests that wait for the consumer stay fast.
+          queueConsumers: {
+            "madegood-postprocess": {
+              maxBatchSize: 10,
+              maxBatchTimeout: 0,
+              maxRetries: 5,
+              deadLetterQueue: "madegood-postprocess-dlq",
+            },
+          },
           bindings: {
             TEST_MIGRATIONS: migrations,
             VOYAGE_LIVE_LOCAL: "1",

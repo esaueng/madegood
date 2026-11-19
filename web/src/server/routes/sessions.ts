@@ -5,11 +5,13 @@ import type { Context } from "hono";
 import { optionalAuth, requireAuth } from "../auth/middleware";
 import { privacyZones, type Session, sessions, sessionTombstones, users } from "../db/schema";
 import { apiError, errorResponse } from "../lib/errors";
+import { enqueuePostprocess, ensureUserRequeued, publicIsCurrent } from "../lib/postprocess";
 import { createRouter } from "../lib/router";
 import { SHARED_TRACK_MAX_FIXES, shareTrack } from "../lib/session-privacy";
 import {
   deleteOlderTracks,
   replaceSessionMetadata,
+  storeTrack,
   UPLOAD_REVISION_HEADER,
 } from "../lib/session-upload";
 import { deletePrefix, userPrefix } from "../lib/storage";
@@ -24,6 +26,7 @@ import {
   TrackTooLarge,
   trackKey,
 } from "../lib/track";
+import type { StoredWind } from "../lib/wind";
 
 type SessionsEnv = {
   Bindings: Env;
@@ -166,6 +169,40 @@ const UpdateSessionRequest = z
   .strict()
   .openapi("UpdateSessionRequest");
 
+const BoundsBody = z
+  .object({
+    south: z.number(),
+    west: z.number(),
+    north: z.number(),
+    east: z.number().openapi({ description: "Less than `west` when the box crosses 180°." }),
+  })
+  .openapi("Bounds", { description: "A bounding box, degrees (WGS 84)." });
+
+const nullableNumber = z.number().nullable();
+const WindBody = z
+  .object({
+    source: z.enum(["open-meteo-forecast", "open-meteo-archive"]),
+    directionDeg: nullableNumber.openapi({
+      description: "Mean direction the wind blows from, degrees true.",
+    }),
+    speedMps: nullableNumber.openapi({ description: "Mean speed at 10 m, m/s." }),
+    gustMps: nullableNumber.openapi({ description: "Strongest hourly gust at 10 m, m/s." }),
+    samples: z.array(
+      z.object({
+        t: isoTime,
+        directionDeg: nullableNumber,
+        speedMps: nullableNumber,
+        gustMps: nullableNumber,
+      }),
+    ),
+    fetchedAt: isoTime,
+  })
+  .openapi("SessionWind", {
+    description:
+      "Hourly model values from the hour before the start to the hour after the end. " +
+      "Not an observation; not for navigation.",
+  });
+
 const SessionBody = z
   .object({
     id: z.string().openapi({ format: "uuid" }),
@@ -183,6 +220,30 @@ const SessionBody = z
     summary: z.record(z.string(), z.unknown()).nullable(),
     analyzerVersion: z.string().nullable(),
     hasTrack: z.boolean().openapi({ description: "Whether a track file has been uploaded." }),
+    processing: z.enum(["none", "pending", "done", "too_large", "invalid"]).openapi({
+      description:
+        "Server post-processing of the uploaded track: `none` without a track (or for a " +
+        "track uploaded before post-processing existed), `pending` until it has run, then " +
+        "`done`, or `too_large`/`invalid` when no data could be derived.",
+    }),
+    bounds: BoundsBody.nullable().openapi({
+      description:
+        "The track's bounding box, null until processed. The owner gets the whole track's; " +
+        "everyone else the box of what the shared track shows (privacy zones cut out).",
+    }),
+    trackStartedAt: isoTime.nullable().openapi({
+      description:
+        "First GPS fix, once processed: the owner gets the whole track's, everyone else the " +
+        "first fix the shared track shows.",
+    }),
+    trackEndedAt: isoTime.nullable().openapi({
+      description: "Last GPS fix, once processed; as for `trackStartedAt`.",
+    }),
+    wind: WindBody.nullable().openapi({
+      description:
+        "Modelled wind from Open-Meteo for the session's time and area, fetched only while " +
+        "the session is public or unlisted. Null when not fetched or not available.",
+    }),
     isOwner: z.boolean().openapi({ description: "Whether the caller owns the session." }),
     createdAt: isoTime,
     updatedAt: isoTime,
@@ -254,7 +315,53 @@ export function viewSummary(
   return shared;
 }
 
-function toSessionBody(session: Session, viewerId: string | null): z.infer<typeof SessionBody> {
+function processingState(session: Session): z.infer<typeof SessionBody>["processing"] {
+  if (session.trackKey === null || session.trackEtag === null) return "none";
+  if (session.processedEtag !== session.trackEtag || session.postprocessStatus === null) {
+    return "pending";
+  }
+  return session.postprocessStatus;
+}
+
+function boundsOf(session: Session, owner: boolean): z.infer<typeof BoundsBody> | null {
+  const box = owner
+    ? [session.minLat, session.minLon, session.maxLat, session.maxLon]
+    : [session.publicMinLat, session.publicMinLon, session.publicMaxLat, session.publicMaxLon];
+  const [south, west, north, east] = box;
+  if (south == null || west == null || north == null || east == null) return null;
+  return { south, west, north, east };
+}
+
+function windOf(session: Session): z.infer<typeof WindBody> | null {
+  if (session.windJson === null) return null;
+  const wind = JSON.parse(session.windJson) as StoredWind;
+  if (wind.status !== "ok") return null;
+  return {
+    source: wind.source,
+    directionDeg: wind.directionDeg,
+    speedMps: wind.speedMps,
+    gustMps: wind.gustMps,
+    samples: wind.samples.map((sample) => ({ ...sample, t: iso(sample.t) })),
+    fetchedAt: iso(wind.fetchedAt),
+  };
+}
+
+/**
+ * `ownerZonesVersion` is the owner's users.zones_version. Others get public derived data
+ * only while it was computed at that version (lib/postprocess.ts); without it, none.
+ */
+function toSessionBody(
+  session: Session,
+  viewerId: string | null,
+  ownerZonesVersion?: number | null,
+): z.infer<typeof SessionBody> {
+  const owner = session.userId === viewerId;
+  const processed = processingState(session) === "done";
+  const shown = processed && (owner || publicIsCurrent(session, ownerZonesVersion));
+  // The owner's times cover the whole track; others get the first and last visible fix.
+  const [startedAt, endedAt] = owner
+    ? [session.trackStartedAt, session.trackEndedAt]
+    : [session.publicTrackStartedAt, session.publicTrackEndedAt];
   return {
     id: session.id,
     sport: session.sport,
@@ -271,7 +378,13 @@ function toSessionBody(session: Session, viewerId: string | null): z.infer<typeo
     summary: viewSummary(session, viewerId),
     analyzerVersion: session.analyzerVersion,
     hasTrack: session.trackKey !== null,
-    isOwner: session.userId === viewerId,
+    processing: processingState(session),
+    bounds: shown ? boundsOf(session, owner) : null,
+    trackStartedAt: shown && startedAt !== null ? iso(startedAt) : null,
+    trackEndedAt: shown && endedAt !== null ? iso(endedAt) : null,
+    // Wind is public data cut with the zones too: others see it only while current.
+    wind: owner || publicIsCurrent(session, ownerZonesVersion) ? windOf(session) : null,
+    isOwner: owner,
     createdAt: iso(session.createdAt),
     updatedAt: iso(session.updatedAt),
   };
@@ -408,7 +521,9 @@ const putTrackRoute = createRoute({
   description:
     `The body is the gzipped track v1 file (docs/formats.md), sent as \`${TRACK_CONTENT_TYPE}\` ` +
     `with no Content-Encoding, at most ${TRACK_MAX_BYTES} bytes. PUT the session's metadata ` +
-    "first, with the same `revision`. Repeating the upload replaces the file.",
+    "first, with the same `revision`. Repeating the upload replaces the file. The server then " +
+    "derives the session's bounds, track times and (for shared sessions) wind in the " +
+    "background; `processing` on the session reports progress.",
   tags: ["sessions"],
   security,
   middleware: [requireAuth] as const,
@@ -429,9 +544,14 @@ const putTrackRoute = createRoute({
     410: errorResponse("The caller deleted this session (`session_deleted`)."),
     412: revisionErrorResponse(
       "`revision` is not the stored metadata revision: older (`stale_revision`) or newer " +
-        "(`revision_mismatch`; PUT the metadata first).",
+        "(`revision_mismatch`; PUT the metadata first), or a concurrent upload of the same " +
+        "revision replaced this one's bytes (`track_replaced`; upload again).",
     ),
     415: errorResponse(`The body is not sent as ${TRACK_CONTENT_TYPE}.`),
+    503: errorResponse(
+      "The track is stored but could not be queued for processing (`postprocess_unavailable`). " +
+        "Repeat the upload.",
+    ),
   },
 });
 
@@ -626,9 +746,15 @@ sessionRoutes.openapi(putRoute, async (c) => {
 
 sessionRoutes.openapi(getRoute, async (c) => {
   const { id } = c.req.valid("param");
-  const session = await findSession(drizzle(c.env.DB), id);
+  const db = drizzle(c.env.DB);
+  const session = await findSession(db, id);
   if (!session || !canView(session, c.var.viewerId)) return notFound(c);
-  return c.json(toSessionBody(session, c.var.viewerId), 200);
+  if (session.userId === c.var.viewerId) return c.json(toSessionBody(session, c.var.viewerId), 200);
+  const [owner] = await db
+    .select({ zonesVersion: users.zonesVersion })
+    .from(users)
+    .where(eq(users.id, session.userId));
+  return c.json(toSessionBody(session, c.var.viewerId, owner?.zonesVersion), 200);
 });
 
 sessionRoutes.openapi(putTrackRoute, async (c) => {
@@ -672,21 +798,8 @@ sessionRoutes.openapi(putTrackRoute, async (c) => {
   // One object per revision, attached only while the row is still at that revision, so a
   // delayed older upload can never replace the track of a newer one.
   const key = trackKey(userPrefix(userId), id, revision);
-  const object = await c.env.TRACKS.put(key, bytes, {
-    httpMetadata: { contentType: TRACK_CONTENT_TYPE },
-  });
-  const [attached] = await db
-    .update(sessions)
-    .set({ trackKey: key, updatedAt: Date.now() })
-    .where(
-      and(
-        eq(sessions.id, id),
-        eq(sessions.userId, userId),
-        isNull(sessions.deletedAt),
-        eq(sessions.uploadRevision, revision),
-      ),
-    )
-    .returning({ id: sessions.id });
+  const stored = await storeTrack(db, c.env.TRACKS, { id, userId, revision, key, bytes });
+  const attached = stored.kind === "attached";
   if (!attached || (await isTombstoned(db, userId, id))) {
     // The session was deleted, or moved to a newer revision, while the body was uploading
     // (review of #37). DELETE removes the row before the objects, so either it already
@@ -705,11 +818,42 @@ sessionRoutes.openapi(putTrackRoute, async (c) => {
   }
   await deleteOlderTracks(c.env.TRACKS, userId, id, revision);
 
-  // TODO(post-processing): enqueue the session for the queue consumer (docs/PLAN.md §7),
-  // which reads the whole track, checks `v` and `sessionId`, computes the bbox and start
-  // geohash, and fetches wind. There is no Queue binding yet.
+  // Post-processing (lib/postprocess.ts) reads the whole track, checks `v` and `sessionId`,
+  // derives the bounds and times, and fetches wind for shared sessions. A failed send is a
+  // 503: the client repeats the upload, which is idempotent and queues it again.
+  // Always for the ETag R2 holds, so the stored track is processed even when this upload
+  // lost a race with another one of the same revision.
+  try {
+    await enqueuePostprocess(c.env, c.executionCtx, [
+      { v: 1, sessionId: id, userId, revision, etag: stored.etag },
+    ]);
+  } catch (error) {
+    console.error("Could not queue post-processing.", error);
+    return apiError(
+      c,
+      503,
+      "postprocess_unavailable",
+      "The track is stored but could not be processed; upload it again.",
+    );
+  }
 
-  c.header("ETag", object.httpEtag);
+  // A zone change whose reprocessing could not be queued earlier is retried here.
+  await ensureUserRequeued(c.env, c.executionCtx, userId).catch((error) =>
+    console.warn("Could not queue a pending zone change.", error),
+  );
+
+  if (stored.replaced) {
+    // Never report success for bytes that are not the stored ones; 412 makes the client
+    // send the metadata and track again, as for a revision change.
+    c.header(UPLOAD_REVISION_HEADER, String(revision));
+    return apiError(
+      c,
+      412,
+      "track_replaced",
+      "Another upload of this revision replaced the track; upload it again.",
+    );
+  }
+  c.header("ETag", stored.httpEtag);
   return c.body(null, 204);
 });
 
@@ -792,7 +936,18 @@ sessionRoutes.openapi(patchRoute, async (c) => {
     .set({ ...changes, updatedAt: Date.now() })
     .where(mine)
     .returning();
-  return session ? c.json(toSessionBody(session, userId), 200) : notFound(c);
+  if (!session) return notFound(c);
+  // Wind is fetched only for sessions others can see; sharing one queues the lookup.
+  if (session.visibility !== "private" && session.windJson === null && session.trackEtag) {
+    try {
+      await enqueuePostprocess(c.env, c.executionCtx, [
+        { v: 1, sessionId: id, userId, revision: session.uploadRevision, etag: session.trackEtag },
+      ]);
+    } catch (error) {
+      console.warn("Could not queue the wind lookup.", error);
+    }
+  }
+  return c.json(toSessionBody(session, userId), 200);
 });
 
 sessionRoutes.openapi(deleteRoute, async (c) => {

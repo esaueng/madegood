@@ -43,6 +43,23 @@
   },
   "migrations": [{ "tag": "voyage-live-v1", "new_sqlite_classes": ["VoyageLive"] }],
   "r2_buckets": [{ "binding": "TRACKS", "bucket_name": "madegood-tracks" }],
+  // Upload post-processing (src/server/lib/postprocess.ts, docs/self-hosting.md). A message
+  // that fails max_retries times lands in the dead-letter queue, which has no consumer:
+  // inspect or replay it from the dashboard.
+  "queues": {
+    "producers": [{ "binding": "POSTPROCESS", "queue": "madegood-postprocess" }],
+    "consumers": [
+      {
+        "queue": "madegood-postprocess",
+        "max_batch_size": 10,
+        "max_batch_timeout": 5,
+        "max_retries": 5,
+        "dead_letter_queue": "madegood-postprocess-dlq"
+      }
+    ]
+  },
+  // Sweep for privacy zone changes whose reprocessing could not be queued (postprocess.ts).
+  "triggers": { "crons": ["*/30 * * * *"] },
   "env": {
     // Per-PR previews use their own database and bucket, never production data.
     "preview": {
@@ -63,7 +80,11 @@
       // Sharing is disabled here. Preview version uploads cannot apply Durable Object migrations.
       "durable_objects": { "bindings": [] },
       "migrations": [],
-      "r2_buckets": [{ "binding": "TRACKS", "bucket_name": "madegood-tracks-preview" }]
+      "r2_buckets": [{ "binding": "TRACKS", "bucket_name": "madegood-tracks-preview" }],
+      // No queue: preview version uploads cannot set queue consumers. Without the binding
+      // the Worker post-processes each upload after responding (waitUntil, one attempt).
+      "queues": {},
+      "triggers": { "crons": [] }
     }
   }
 }
