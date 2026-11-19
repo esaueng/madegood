@@ -73,7 +73,8 @@ function Privacy() {
               Open-Meteo
             </a>{" "}
             the session's average position rounded to 0.5° (about 50 km) and its dates, with no
-            account, identifier or cookie, and gets back the modelled wind.
+            account, identifier or cookie, and gets back the modelled wind. (The server can also ask
+            Open-Meteo for shared sessions; see below.)
           </li>
           <li>Files you choose to share or export (GPX, raw recordings, ZIP files).</li>
         </ul>
@@ -104,11 +105,58 @@ function Privacy() {
             <strong>Sign-in tokens</strong>, stored as hashes, so the apps and this website stay
             signed in. MadeGood holds no tokens from Apple.
           </li>
+          <li>
+            <strong>Data worked out from each track</strong> after it is uploaded: the area it
+            covers (a bounding box), a coarse start location (geohash), the times of the first and
+            last position, and for shared sessions a second bounding box and times with your privacy
+            zones cut out, and the wind (below). Only you see the first set; others see only the
+            version with your zones cut out.
+          </li>
+          <li>
+            <strong>Deleted session IDs:</strong> when you delete a session, its ID and the time are
+            kept so a device that still has the recording cannot upload it again. They are removed
+            with your account.
+          </li>
         </ul>
+        <p>
+          <strong>Wind for shared sessions.</strong> When a session is unlisted or public, the
+          server asks{" "}
+          <a href="https://open-meteo.com" className={link}>
+            Open-Meteo
+          </a>{" "}
+          for the wind during it, automatically. It sends one position, the center of the session's
+          area with your privacy zones already cut out, rounded to 0.1° (about 11 km), and the UTC
+          dates the session spans. No account, session ID, track or time of day is sent. Private
+          sessions never cause a request. The answer is stored with the session.
+        </p>
         <p>
           The raw motion data the watch records stays on your devices. Your data is used only to
           show you your sessions, sync them and share what you choose to share.
         </p>
+      </Section>
+
+      <Section id="voyages" title="Voyages">
+        <p>
+          Voyages (multi-day passages made of legs) are recorded on the iPhone and stay there.
+          Syncing them to the server and sharing them live are being built and are{" "}
+          <strong>not available</strong> in the released apps or on this service yet. When they are,
+          this is what they will hold:
+        </p>
+        <ul>
+          <li>
+            <strong>Private voyage sync</strong>, only for a leg you choose to sync: the voyage's
+            title, boat name and times, each leg's names, times and distance, and the leg's track
+            file (GPS positions). Only you can see them. They are deleted with your account.
+          </li>
+          <li>
+            <strong>Live voyage sharing</strong>, only while you share a voyage: its recent
+            positions (at most 10,000), kept in a Cloudflare Durable Object. Anyone with the live
+            link can follow the boat, delayed by up to a day if you choose and with your privacy
+            zones hidden; the link expires after at most 7 days. Pausing hides the position at once,
+            and stopping (or starting a new link) deletes the stored positions. Deleting your
+            account deletes them too.
+          </li>
+        </ul>
       </Section>
 
       <Section id="sharing" title="Sharing">
@@ -147,10 +195,10 @@ function Privacy() {
 
       <Section id="hosting" title="Where it runs">
         <p>
-          The server and this website run on Cloudflare (Workers, D1 and R2). Cloudflare keeps
-          request logs, which include IP addresses and the addresses of the pages and API calls
-          requested, for a limited time, to run and debug the service. MadeGood uses no other
-          services and gives your data to no one else.
+          The server and this website run on Cloudflare (Workers, D1, R2, Queues and Durable
+          Objects). Cloudflare keeps request logs, which include IP addresses and the addresses of
+          the pages and API calls requested, for a limited time, to run and debug the service.
+          MadeGood uses no other services and gives your data to no one else.
         </p>
       </Section>
 
@@ -158,11 +206,12 @@ function Privacy() {
         <ul>
           <li>
             Export a session as GPX or its raw recording from the iPhone, or all recordings on the
-            iPhone from Settings. Export everything in your account as a ZIP file from{" "}
+            iPhone from Settings. Export everything in your account from{" "}
             <Link to="/app/settings" className={link}>
               Settings
             </Link>{" "}
-            on this website.
+            on this website: ZIP files with your profile, settings, privacy zones, session details
+            and every track as you uploaded it (large accounts come in several parts).
           </li>
           <li>
             Delete a session, and it is removed from the server at once. A device that still has the
@@ -170,9 +219,19 @@ function Privacy() {
           </li>
           <li>
             Delete your account in the iPhone app (Settings → Account → Delete Account) or on this
-            website's Settings page. That removes every session, track, privacy zone, setting and
-            sign-in from the server immediately. Recordings on your devices and workouts in Apple
-            Health are not affected.
+            website's Settings page. At that moment every sign-in ends and the account is locked: it
+            cannot sign in, and nothing can be read from it or added to it. The same request deletes
+            your sessions, tracks, privacy zones, settings, voyages and shared positions. If any
+            part of that fails, the server tries again every 30 minutes until it is done. About 20
+            minutes after your request (at the next run after that) the account record itself is
+            deleted, with the deleted session IDs; only then can the same Apple ID start a new,
+            empty account. Recordings on your devices and workouts in Apple Health are not affected.
+          </li>
+          <li>
+            Processing a track after upload goes through a queue. A job that keeps failing is set
+            aside for up to 4 days (Cloudflare's queue retention) so the problem can be fixed; such
+            a job holds only IDs (session, account, revision), no positions, and is deleted when it
+            expires or is replayed. A job for a deleted account does nothing.
           </li>
           <li>
             Data stays on the server until you delete it. Cloudflare's database recovery can keep

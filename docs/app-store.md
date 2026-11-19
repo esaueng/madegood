@@ -16,7 +16,7 @@ get a rejection.
 | 1 | **No in-app account deletion.** The API has `DELETE /api/me`, but neither the iPhone app (Settings → Account offers only Sign Out) nor the website calls it. | Guideline 5.1.1(v): an app that lets people create an account must let them start deleting it in the app. |
 | 2 | **Sign in with Apple tokens are not revoked on deletion.** The Worker verifies identity tokens but never calls Apple's token revocation endpoint. | Apple asks apps using Sign in with Apple to revoke tokens when an account is deleted. Revoking needs a Sign in with Apple private key held as a Worker secret. |
 | 3 | ~~No privacy policy.~~ Done: the website serves it at `/privacy`, linked from the landing page footer and iPhone Settings → About → Privacy Policy (`MADEGOOD_SITE_URL` in `Config/MadeGood.xcconfig`). Use `<site>/privacy` as the App Store Connect privacy policy URL. | Required in App Store Connect for every app, and for HealthKit apps in particular. |
-| 4 | ~~No privacy manifest.~~ Done: `App/Resources/PrivacyInfo.xcprivacy` and `Watch/Resources/PrivacyInfo.xcprivacy` declare tracking off, the collected types in the label table below, and the required-reason APIs in use: UserDefaults (CA92.1), system boot time via `ProcessInfo.systemUptime` (35F9.1) and file timestamps of the app's own recordings (C617.1). No disk-space or active-keyboard APIs are used. | Apps that use required-reason APIs must declare a reason in a privacy manifest. |
+| 4 | ~~No privacy manifest.~~ Done: `App/Resources/PrivacyInfo.xcprivacy` and `Watch/Resources/PrivacyInfo.xcprivacy` declare tracking off, the collected types in the label table below, and the required-reason APIs in use: UserDefaults (CA92.1), system boot time via `ProcessInfo.systemUptime` (35F9.1 for on-device timers; 8FFB.1 for the clock anchor in each recording's `meta.json`, which leaves the device with the recording) and file timestamps of the app's own recordings (C617.1). No disk-space or active-keyboard APIs are used; the widget extensions use none of these APIs. | Apps that use required-reason APIs must declare a reason in a privacy manifest. |
 | 5 | **TestFlight builds have no sync.** `MADEGOOD_API_URL` is empty in `apps/apple/Config/MadeGood.xcconfig`, and CI has no `Local.xcconfig`. | Reviewers would see "Account sync isn't set up in this build." The label answers below assume sync is on; if it ships off, most of the "collected" rows go away. |
 | 6 | ~~Health permission strings.~~ Done: the Health, motion and location strings in `Project.swift` now say what the app does (saves workouts with route and heart rate; motion counts paddle strokes). | Reviewers check that purpose strings describe what the app actually does (5.1.1(i)). |
 | 7 | **No full data export.** PLAN §7 lists `GET /api/me/export`; it does not exist yet. Per-session export does (below). | Not an App Store requirement, but the privacy policy should not promise it until it ships. |
@@ -54,7 +54,10 @@ file themselves).
 session's detail, the phone sends Open-Meteo the selection's mean position rounded to
 0.5° (about 50 km) and its UTC start and end dates, with no account, key, cookies or
 identifiers (docs/metrics.md). It answers the request in real time and is not linked to
-the user. Proposed: not declared as collected (it is not retained for the developer),
+the user. Since #72 the **server** also asks Open-Meteo, automatically, for unlisted
+and public sessions only: the center of the session's zone-cut bounds rounded to 0.1°
+(about 11 km) and the UTC dates, nothing else (`web/src/server/lib/wind.ts`); the answer
+is stored with the session. The privacy policy describes both. Proposed: not declared as collected (it is not retained for the developer),
 but described in the privacy policy. Confirm.
 
 **Data shared publicly.** A session is private by default. The owner can make it
