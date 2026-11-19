@@ -332,7 +332,15 @@ extension SessionReplayView {
         struct RouteLine: Sendable {
             var level: Int?
             var coordinates: [CLLocationCoordinate2D]
+            /// The continuous GPS run the line belongs to; only lines in the same run join.
+            var segment: Int = 0
         }
+
+        /// The most speed-colored lines the map draws. Each `MapPolyline` is its own Metal
+        /// overlay, and a noisy speed trace makes one per color change: hundreds on a 48-minute
+        /// session, enough to exhaust the simulator GPU's buffers (MapKit aborts) and to weigh
+        /// on a phone's.
+        static let maxRouteLines = 64
 
         let timeline: SessionReplayTimeline
         let speeds: [SpeedPoint]
@@ -369,7 +377,9 @@ extension SessionReplayView {
                         lines[lines.count - 1].coordinates.append(coordinates[index])
                     } else {
                         lines.append(
-                            RouteLine(level: level, coordinates: [coordinates[index - 1], coordinates[index]]))
+                            RouteLine(
+                                level: level, coordinates: [coordinates[index - 1], coordinates[index]],
+                                segment: point.routeSegment))
                     }
                 }
 
@@ -388,9 +398,54 @@ extension SessionReplayView {
             if speedRunCount == 1, let last = speeds.last { isolatedSpeeds.append(last) }
             self.speeds = speeds
             self.isolatedSpeeds = isolatedSpeeds
-            self.lines = lines
+            self.lines = Self.simplified(lines, maxCount: Self.maxRouteLines)
             self.isolatedFixes = isolatedFixes
             mapRect = Self.fittedRect(coordinates)
+        }
+
+        /// Joins consecutive color runs into lines of about equal step count, each colored by
+        /// the speed level that covers most of its distance, so at most `maxCount` lines
+        /// remain (plus one per GPS gap). Keeps every coordinate, so the route's shape is
+        /// unchanged; only brief speed changes lose their own color.
+        static func simplified(_ lines: [RouteLine], maxCount: Int) -> [RouteLine] {
+            guard maxCount > 0, lines.count > maxCount else { return lines }
+            // Lines in a GPS run share their joining fix, so count the steps between fixes.
+            let steps = lines.reduce(0) { $0 + max($1.coordinates.count - 1, 0) }
+            let target = max(1, (steps + maxCount - 1) / maxCount)
+            var result: [RouteLine] = []
+            result.reserveCapacity(maxCount)
+            // The open line's parts, kept outside a RouteLine so appends don't copy.
+            var coordinates: [CLLocationCoordinate2D] = []
+            var segment = 0
+            var weights: [(level: Int?, metres: Double)] = []
+            func close() {
+                guard let first = weights.first else { return }
+                // The first level to reach the largest distance wins a tie, so output is stable.
+                let level = weights.dropFirst().reduce(first) { $1.metres > $0.metres ? $1 : $0 }.level
+                result.append(RouteLine(level: level, coordinates: coordinates, segment: segment))
+                coordinates = []
+                weights = []
+            }
+            for line in lines {
+                if !weights.isEmpty, segment != line.segment { close() }
+                if weights.isEmpty {
+                    segment = line.segment
+                    coordinates = line.coordinates
+                } else {
+                    coordinates.append(contentsOf: line.coordinates.dropFirst())
+                }
+                let metres = zip(line.coordinates, line.coordinates.dropFirst()).reduce(0.0) {
+                    $0 + MKMapPoint($1.0).distance(to: MKMapPoint($1.1))
+                }
+                if let index = weights.firstIndex(where: { $0.level == line.level }) {
+                    weights[index].metres += metres
+                } else {
+                    weights.append((line.level, metres))
+                }
+                if coordinates.count - 1 >= target { close() }
+            }
+            close()
+            return result
         }
 
         /// Clip each continuous route segment at the precise time bounds.
