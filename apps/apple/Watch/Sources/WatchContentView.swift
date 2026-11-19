@@ -837,6 +837,16 @@ struct ManOverboardPage: View {
                             .font(.footnote).foregroundStyle(.secondary)
                             .accessibilityIdentifier("mob.waiting")
                     }
+                    if let issue = manOverboard.locationIssue {
+                        Text(ManOverboardNotes.locationIssue(issue))
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(.orange)
+                            .accessibilityIdentifier("mob.locationIssue")
+                    }
+                    if manOverboard.mark != nil, manOverboard.awaitingFixSince != nil {
+                        Text("A press here is waiting for a position").font(.footnote)
+                            .accessibilityIdentifier("mob.pending")
+                    }
                     if let mark = manOverboard.mark {
                         if let note = ManOverboardNotes.markQuality(mark) {
                             Text(note)

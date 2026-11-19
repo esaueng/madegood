@@ -1,5 +1,6 @@
 import MapKit
 import SwiftUI
+import UIKit
 import WaterKit
 
 /// The way back to the man-overboard mark (docs/PLAN.md §5) on the iPhone: distance and
@@ -23,20 +24,27 @@ struct ManOverboardScreen: View {
                     .foregroundStyle(.red)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .accessibilityAddTraits(.isHeader)
+                if let issue = manOverboard.locationIssue {
+                    LocationIssueBanner(issue: issue)
+                }
                 TimelineView(.periodic(from: .now, by: 1)) { context in
                     let _ = context.date  // re-evaluate freshness every second
                     guidanceView(display: display)
                 }
                 if let mark = manOverboard.mark {
-                    ManOverboardMap(mark: mark, points: points)
+                    ManOverboardMap(mark: mark, others: manOverboard.otherMarks, points: points)
                         .frame(height: 260)
                         .clipShape(.rect(cornerRadius: 16))
                         .accessibilityIdentifier("mob.map")
                 }
+                if !manOverboard.otherMarks.isEmpty {
+                    otherMarks(display: display)
+                }
                 Button(role: .destructive) {
                     confirmClear = true
                 } label: {
-                    Label("Clear mark", systemImage: "xmark.circle")
+                    // With only a press waiting, clearing cancels it.
+                    Label(manOverboard.mark == nil ? "Cancel press" : "Clear mark", systemImage: "xmark.circle")
                         .frame(maxWidth: .infinity, minHeight: 44)
                 }
                 .buttonStyle(.bordered)
@@ -48,7 +56,10 @@ struct ManOverboardScreen: View {
                     Button("Clear mark", role: .destructive) { manOverboard.clear() }
                         .accessibilityIdentifier("mob.confirmClear")
                 } message: {
-                    Text("The way back to it will no longer be shown.")
+                    Text(
+                        manOverboard.otherMarks.isEmpty
+                            ? "The way back to it will no longer be shown."
+                            : "The way back to it will no longer be shown. The next mark becomes the target.")
                 }
             }
             .padding()
@@ -107,17 +118,54 @@ struct ManOverboardScreen: View {
                     .multilineTextAlignment(.center)
             }
             if let mark = manOverboard.mark {
-                Text("Marked \(mark.markedAt, style: .relative) ago")
-                    .font(.subheadline)
+                // Which device's mark the arrow points to.
+                Text("\(ManOverboardNotes.origin(mark)) \(mark.markedAt, style: .relative) ago")
+                    .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.secondary)
-            } else if let pressed = manOverboard.awaitingFixSince {
-                Text("Pressed \(pressed, style: .relative) ago; marks the first position")
+                    .multilineTextAlignment(.center)
+                    .accessibilityIdentifier("mob.origin")
+            }
+            if let pressed = manOverboard.awaitingFixSince {
+                // A press on this device waiting for a position is never dropped, even when
+                // a watch mark arrives meanwhile: it becomes its own mark at its first fix.
+                Text("Pressed here \(pressed, style: .relative) ago; marks the first position")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
+                    .accessibilityIdentifier("mob.pending")
             }
         }
         .frame(maxWidth: .infinity)
+    }
+
+    /// Marks other than the target, with distance and a way to steer to each.
+    private func otherMarks(display: LiveDisplay) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Other marks")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.secondary)
+            ForEach(manOverboard.otherMarks, id: \.identity) { other in
+                HStack(alignment: .firstTextBaseline) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(ManOverboardNotes.origin(other)).font(.subheadline.weight(.semibold))
+                        if let guidance = manOverboard.guidance(to: other) {
+                            Text("\(display.distance(guidance.distance)) · \(LiveDisplay.course(guidance.bearing)) true")
+                                .font(.subheadline.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    Spacer(minLength: 8)
+                    Button("Steer to this") { manOverboard.target(other.identity) }
+                        .buttonStyle(.bordered)
+                        .accessibilityLabel("Steer to this mark")
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("mob.other")
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(.background.secondary, in: .rect(cornerRadius: 12))
     }
 
     private func arrowLabel(_ guidance: ManOverboard.Guidance) -> String {
@@ -165,6 +213,9 @@ struct ManOverboardCard: View {
                                     positionAge: manOverboard.positionAge(), hasMark: manOverboard.mark != nil)
                             )
                             .font(.subheadline)
+                        }
+                        if let issue = manOverboard.locationIssue, guidance == nil {
+                            Text(ManOverboardNotes.locationIssue(issue)).font(.footnote.weight(.semibold))
                         }
                         if let mark = manOverboard.mark, let note = ManOverboardNotes.markQuality(mark) {
                             Text(note).font(.footnote.weight(.semibold))
@@ -257,6 +308,8 @@ struct ManOverboardButton: View {
 /// map: an interactive map in the scrolling screen caught the swipes meant to scroll it.
 struct ManOverboardMap: View {
     let mark: ManOverboard.Mark
+    /// Marks other than the target, shown in orange.
+    var others: [ManOverboard.Mark] = []
     var points: [SessionRecorder.TrackPoint] = []
 
     var body: some View {
@@ -265,6 +318,13 @@ struct ManOverboardMap: View {
         Map(initialPosition: .automatic, interactionModes: []) {
             if coordinates.count > 1 {
                 MapPolyline(coordinates: coordinates).stroke(Color.accentColor, lineWidth: 4)
+            }
+            ForEach(others, id: \.identity) { other in
+                Marker(
+                    "MOB", systemImage: "figure.wave",
+                    coordinate: CLLocationCoordinate2D(latitude: other.latitude, longitude: other.longitude)
+                )
+                .tint(.orange)
             }
             Marker("MOB", systemImage: "figure.wave", coordinate: markCoordinate).tint(.red)
             UserAnnotation()
@@ -302,5 +362,34 @@ struct PhoneManOverboardControl: View {
                 show()
             },
             show: show)
+    }
+}
+
+/// Location is denied, restricted, approximate or unavailable: said at once, with a way
+/// to fix it in Settings where the user can.
+struct LocationIssueBanner: View {
+    let issue: ManOverboard.LocationIssue
+    @Environment(\.openURL) private var openURL
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label(ManOverboardNotes.locationIssue(issue), systemImage: "location.slash.fill")
+                .font(.headline)
+                .foregroundStyle(.black)
+                .accessibilityIdentifier("mob.locationIssue")
+            if issue == .denied || issue == .reducedAccuracy, let url = URL(string: UIApplication.openSettingsURLString) {
+                Button {
+                    openURL(url)
+                } label: {
+                    Text("Open Settings").font(.headline).foregroundStyle(.white)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.black)
+                .accessibilityIdentifier("mob.openSettings")
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.orange, in: .rect(cornerRadius: 12))
     }
 }

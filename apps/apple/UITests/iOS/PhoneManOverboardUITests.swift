@@ -162,6 +162,22 @@ final class PhoneManOverboardUITests: XCTestCase {
         XCTAssertTrue(app.buttons["mob.card"].waitForNonExistence(timeout: 10))
     }
 
+    /// With location denied, a MOB press says so at once, offers Settings, and keeps the
+    /// press waiting rather than failing silently.
+    func testDeniedLocationIsShownAtOnce() {
+        let app = launchDemoApp(extraArguments: ["-demoLocationIssue", "denied", "-app.appearance", "light"])
+        let mob = element("control.mob", in: app)
+        XCTAssertTrue(mob.waitForExistence(timeout: 15))
+        mob.press(forDuration: 1.2)
+        XCTAssertTrue(element("mob.locationIssue", in: app).waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["mob.openSettings"].exists)
+        XCTAssertTrue(app.staticTexts["mob.pending"].exists)
+        XCTAssertEqual(app.staticTexts["mob.waiting"].label, "Getting a position to mark")
+        attachScreenshot("14 location denied")
+        clearMark(app)
+        XCTAssertTrue(app.buttons["sport.kayak"].waitForExistence(timeout: 10))
+    }
+
     private func startKayak(_ app: XCUIApplication, waitForSpeed: Bool = true) {
         let kayak = app.buttons["sport.kayak"]
         XCTAssertTrue(kayak.waitForExistence(timeout: 15))

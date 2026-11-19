@@ -14,17 +14,26 @@
             var movingTime: String
             /// "Paused" or "Auto-paused", or nil while moving.
             var pauseLabel: String?
-            /// Man-overboard guidance ("120 m · 245°", or "Waiting for GPS") while a mark is
-            /// set, else nil. Optional, so states from earlier builds still decode.
+            /// Man-overboard guidance ("120 m · 245°", "Waiting for GPS", or a location
+            /// problem) while a mark is set or a press waits, else nil. The fields below are
+            /// optional too, so states from earlier builds still decode.
             var manOverboard: String? = nil
             /// Whether `manOverboard` is distance and bearing from a fresh position (it
             /// expires with the content's stale date) rather than a waiting message.
             var manOverboardHasGuidance: Bool? = nil
+            /// Whether `manOverboard` says location is denied, restricted or approximate.
+            var manOverboardLocationIssue: Bool? = nil
+            /// How far to trust the mark ("Marked from a position 32 s old"), if not fully.
+            var manOverboardNote: String? = nil
+            /// When the fix behind the guidance was measured; the stale date follows it.
+            var manOverboardFixAt: Date? = nil
 
-            /// No mark, a mark waiting for a position, or a mark with guidance: a change
+            /// No mark, waiting for a position, guidance, or a location problem: a change
             /// between these goes out at once.
             var manOverboardKind: Int {
-                manOverboard == nil ? 0 : manOverboardHasGuidance == true ? 2 : 1
+                guard manOverboard != nil else { return 0 }
+                if manOverboardLocationIssue == true { return 3 }
+                return manOverboardHasGuidance == true ? 2 : 1
             }
         }
 

@@ -71,9 +71,11 @@ final class WatchWorkoutMirror: NSObject, HKWorkoutSessionDelegate {
         state.receive(snapshot, from: connection)
         guard let accepted = state.lastConfirmed, accepted != before else { return }
         // A mark on the watch shows on the phone too, and stays until cleared (PLAN §5).
-        // ManOverboard keeps, across relaunches, which watch mark it took and which marks
-        // were cleared, by mark ID.
-        if ManOverboard.shared.applyMirrored(accepted.manOverboard, sessionID: accepted.sessionID) {
+        // ManOverboard keeps, across relaunches, which watch marks it took (with the
+        // sequence that delivered each) and which were cleared, by mark ID.
+        if ManOverboard.shared.applyMirrored(
+            accepted.manOverboardMarks, sessionID: accepted.sessionID, sequence: accepted.sequence)
+        {
             Haptics.play(.manOverboard)
         }
     }
@@ -112,7 +114,7 @@ final class WatchWorkoutMirror: NSObject, HKWorkoutSessionDelegate {
             receive(
                 WorkoutMirrorSnapshot(
                     sessionID: UUID(), sequence: 1, sport: .canoe, sentAt: .now, readings: readings,
-                    manOverboard: mark),
+                    manOverboardMarks: mark.map { [$0] } ?? []),
                 from: connection)
         }
     #endif

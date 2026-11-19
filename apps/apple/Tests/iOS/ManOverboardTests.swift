@@ -1,3 +1,4 @@
+import CoreLocation
 import Foundation
 import WaterKit
 import XCTest
@@ -5,22 +6,29 @@ import XCTest
 @testable import MadeGood
 
 /// The iPhone's man-overboard rules: guidance geometry (shared with the watch), position
-/// age, marking without a session, following the watch's mark by ID, and the mirror and
-/// Live Activity formats.
+/// age, marking without a session, several marks, following the watch's marks by ID and
+/// snapshot sequence, location problems, and the mirror and Live Activity formats.
 @MainActor
 final class ManOverboardTests: XCTestCase {
     // A fake position in open water, like the anonymized fixtures.
     private let origin = (lat: 10.0, lon: -30.0)
     private var defaults: UserDefaults!
     private var suiteName = ""
+    private let session = UUID()
 
-    override func setUp() {
+    override func setUp() async throws {
         suiteName = "ManOverboardTests.\(UUID().uuidString)"
         defaults = UserDefaults(suiteName: suiteName)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         defaults.removePersistentDomain(forName: suiteName)
+    }
+
+    private func makeManOverboard() -> ManOverboard {
+        let manOverboard = ManOverboard(defaults: defaults)
+        manOverboard.lastKnownPosition = { nil }
+        return manOverboard
     }
 
     private func mark(
@@ -37,6 +45,10 @@ final class ManOverboardTests: XCTestCase {
         let at = Date(timeIntervalSince1970: 1_010)
         return ManOverboard.Position(
             latitude: origin.lat, longitude: origin.lon, at: at, speed: speed, course: course, receivedAt: at)
+    }
+
+    private func freshFix() -> ManOverboard.Position {
+        ManOverboard.Position(latitude: origin.lat, longitude: origin.lon, at: Date())
     }
 
     // MARK: Guidance
@@ -61,7 +73,7 @@ final class ManOverboardTests: XCTestCase {
         }
     }
 
-    // MARK: Position age (review finding 2)
+    // MARK: Position age
 
     func testALateDeliveredFixIsOldFromItsOwnTimestamp() {
         // Measured 30 s before it arrived: stale on arrival, and marked with its real age.
@@ -88,22 +100,19 @@ final class ManOverboardTests: XCTestCase {
     }
 
     func testAPressWithAStalePositionStillMarksAndSaysHowOld() {
-        let manOverboard = ManOverboard(defaults: defaults)
-        let uptime = ProcessInfo.processInfo.systemUptime
+        let manOverboard = makeManOverboard()
         manOverboard.update(
-            ManOverboard.Position(
-                latitude: origin.lat, longitude: origin.lon, at: Date().addingTimeInterval(-40),
-                receivedUptime: uptime))
+            ManOverboard.Position(latitude: origin.lat, longitude: origin.lon, at: Date().addingTimeInterval(-40)))
         guard case .marked(let marked) = manOverboard.press() else { return XCTFail("did not mark") }
         XCTAssertGreaterThanOrEqual(marked.positionAge, 40)
         XCTAssertNil(manOverboard.guidance(), "no guidance from a stale fix")
         XCTAssertTrue(ManOverboardNotes.markQuality(marked)?.hasPrefix("Marked from a position 4") == true)
     }
 
-    // MARK: Marking without a session (review finding 1)
+    // MARK: Marking without a session
 
     func testAPressWithNoPositionMarksTheFirstFix() throws {
-        let manOverboard = ManOverboard(defaults: defaults)
+        let manOverboard = makeManOverboard()
         let pressed = Date().addingTimeInterval(-5)
         XCTAssertEqual(manOverboard.press(at: pressed), .awaitingFix)
         XCTAssertTrue(manOverboard.isActive)
@@ -111,155 +120,238 @@ final class ManOverboardTests: XCTestCase {
         manOverboard.stopOwnUpdates()
 
         // The press survives a relaunch while it waits.
-        let relaunched = ManOverboard(defaults: defaults)
+        let relaunched = makeManOverboard()
         XCTAssertEqual(relaunched.awaitingFixSince, pressed)
 
-        relaunched.update(ManOverboard.Position(latitude: origin.lat, longitude: origin.lon, at: Date()))
+        relaunched.update(freshFix())
         let marked = try XCTUnwrap(relaunched.mark)
         XCTAssertEqual(marked.markedAt, pressed)
+        XCTAssertNil(marked.origin)
         XCTAssertNil(relaunched.awaitingFixSince)
         XCTAssertEqual(ManOverboardNotes.markQuality(marked), "Position from 5 s after MOB was pressed")
         XCTAssertNotNil(relaunched.guidance())
     }
 
+    /// Re-check finding 1: a press that gets no fix falls back to the last known position,
+    /// with its age, instead of waiting forever.
+    func testAWaitingPressFallsBackToTheLastKnownPosition() throws {
+        let manOverboard = makeManOverboard()
+        XCTAssertEqual(manOverboard.press(), .awaitingFix)
+        XCTAssertFalse(manOverboard.resolveAwaitingWithLastKnown(), "nothing known yet: keep waiting")
+        XCTAssertNotNil(manOverboard.awaitingFixSince)
+
+        manOverboard.lastKnownPosition = {
+            ManOverboard.Position(latitude: 10.001, longitude: -30.0, at: Date().addingTimeInterval(-120))
+        }
+        XCTAssertTrue(manOverboard.resolveAwaitingWithLastKnown())
+        let marked = try XCTUnwrap(manOverboard.mark)
+        XCTAssertEqual(marked.latitude, 10.001)
+        XCTAssertGreaterThanOrEqual(marked.positionAge, 120)
+        XCTAssertTrue(ManOverboardNotes.markQuality(marked)?.hasPrefix("Marked from a position 2 min") == true)
+        XCTAssertNil(manOverboard.awaitingFixSince)
+        manOverboard.stopOwnUpdates()
+    }
+
+    /// Re-check finding 1: denied, restricted and approximate location are named at once.
+    func testLocationProblemsAreRecognizedFromTheAuthorization() {
+        XCTAssertEqual(ManOverboard.issue(status: .denied, accuracy: .fullAccuracy), .denied)
+        XCTAssertEqual(ManOverboard.issue(status: .restricted, accuracy: .fullAccuracy), .restricted)
+        XCTAssertEqual(ManOverboard.issue(status: .authorizedWhenInUse, accuracy: .reducedAccuracy), .reducedAccuracy)
+        XCTAssertNil(ManOverboard.issue(status: .authorizedWhenInUse, accuracy: .fullAccuracy))
+        XCTAssertNil(ManOverboard.issue(status: .notDetermined, accuracy: .fullAccuracy))
+        XCTAssertTrue(ManOverboardNotes.locationIssue(.denied).contains("Settings"))
+        XCTAssertTrue(ManOverboardNotes.locationIssue(.reducedAccuracy).contains("Settings"))
+    }
+
     func testClearCancelsAWaitingPress() {
-        let manOverboard = ManOverboard(defaults: defaults)
+        let manOverboard = makeManOverboard()
         _ = manOverboard.press()
         manOverboard.clear()
         XCTAssertFalse(manOverboard.isActive)
-        manOverboard.update(ManOverboard.Position(latitude: origin.lat, longitude: origin.lon, at: Date()))
+        manOverboard.update(freshFix())
         XCTAssertNil(manOverboard.mark)
     }
 
-    // MARK: Following the watch by mark ID (review findings 3 and 5)
+    // MARK: Several marks (re-check finding 3)
 
-    private let session = UUID()
+    func testAWatchMarkNeverDiscardsAWaitingPhonePress() throws {
+        let manOverboard = makeManOverboard()
+        XCTAssertEqual(manOverboard.press(), .awaitingFix)
+        let watch = mark(at: (0, 100))
+        XCTAssertTrue(manOverboard.applyMirrored([watch], sessionID: session, sequence: 1))
+        XCTAssertNotNil(manOverboard.awaitingFixSince, "the phone press still waits")
+        XCTAssertEqual(manOverboard.mark?.origin, .watch)
+        XCTAssertEqual(ManOverboardNotes.origin(try XCTUnwrap(manOverboard.mark)), "Marked on Apple Watch")
+
+        // The phone press resolves at its first fix as its own mark, now the target.
+        manOverboard.update(freshFix())
+        XCTAssertEqual(manOverboard.marks.count, 2)
+        XCTAssertNil(manOverboard.mark?.origin)
+        XCTAssertEqual(manOverboard.otherMarks.map(\.identity), [watch.identity])
+        manOverboard.stopOwnUpdates()
+    }
+
+    func testTheTargetCanBeChangedAndClearingMovesToTheNext() throws {
+        let manOverboard = makeManOverboard()
+        manOverboard.update(freshFix())
+        let first = try XCTUnwrap(manOverboard.markNow())
+        let second = try XCTUnwrap(manOverboard.markNow())
+        XCTAssertEqual(manOverboard.mark, second)
+        manOverboard.target(first.identity)
+        XCTAssertEqual(manOverboard.mark, first)
+        manOverboard.clear()
+        XCTAssertEqual(manOverboard.marks, [second])
+        // And the list outlives a relaunch.
+        XCTAssertEqual(makeManOverboard().marks, [second])
+    }
+
+    // MARK: Following the watch by mark ID and sequence
+
+    private func update(
+        _ incoming: [ManOverboard.Mark]?, sequence: UInt64 = 5, held: [ManOverboard.Mark] = [],
+        adopted: [ManOverboard.Adopted] = [], cleared: [ManOverboard.Cleared] = [], sessionID: UUID? = nil
+    ) -> ManOverboard.MirrorUpdate {
+        ManOverboard.mirrorUpdate(
+            incoming: incoming, sessionID: sessionID ?? session, sequence: sequence, held: held, adopted: adopted,
+            cleared: cleared)
+    }
 
     func testANewWatchMarkIsAdopted() {
         let watch = mark(at: (0, 100))
-        XCTAssertEqual(
-            ManOverboard.mirrorUpdate(incoming: watch, sessionID: session, local: nil, adopted: nil, cleared: []),
-            .adopt(watch))
-        // It replaces the phone's own mark: a new emergency on the watch is news.
+        XCTAssertEqual(update([watch]).adopt, [watch])
+        // Alongside the phone's own mark, not instead of it.
         let phone = mark(at: (90, 50), markedAt: 2_000)
-        XCTAssertEqual(
-            ManOverboard.mirrorUpdate(incoming: watch, sessionID: session, local: phone, adopted: nil, cleared: []),
-            .adopt(watch))
+        XCTAssertEqual(update([watch], held: [phone]).adopt, [watch])
+        XCTAssertEqual(update([watch], held: [phone]).clear, [])
     }
 
     func testAClearedMarkStaysClearedWhateverItsTimestamp() {
         let cleared = mark(at: (0, 100))
-        // The same mark decoded with a timestamp a rounding step away is still the same mark.
         var rounded = cleared
         rounded.markedAt = cleared.markedAt.addingTimeInterval(0.000_1)
-        XCTAssertEqual(
-            ManOverboard.mirrorUpdate(
-                incoming: rounded, sessionID: session, local: nil, adopted: nil, cleared: [cleared.identity]),
-            .keep)
+        XCTAssertTrue(update([rounded], cleared: [.init(markID: cleared.identity)]).isEmpty)
     }
 
     func testANewWatchMarkIsAdoptedEvenIfTheWatchClockIsBehind() {
         let cleared = mark(at: (0, 100), markedAt: 2_000)
         let newer = mark(at: (45, 80), markedAt: 1_000)  // the watch clock went backward
-        XCTAssertEqual(
-            ManOverboard.mirrorUpdate(
-                incoming: newer, sessionID: session, local: nil, adopted: nil, cleared: [cleared.identity]),
-            .adopt(newer))
+        XCTAssertEqual(update([newer], cleared: [.init(markID: cleared.identity)]).adopt, [newer])
     }
 
-    func testAWatchMarkTakenOnceIsNotRetakenOverThePhonesOwn() {
+    func testAWatchMarkTakenOnceIsNotRetaken() {
         let watch = mark(at: (0, 100))
-        let phone = mark(at: (90, 30))
-        let adopted = ManOverboard.Adopted(markID: watch.identity, sessionID: session)
-        XCTAssertEqual(
-            ManOverboard.mirrorUpdate(incoming: watch, sessionID: session, local: phone, adopted: adopted, cleared: []),
-            .keep)
+        let adopted = [ManOverboard.Adopted(markID: watch.identity, sessionID: session, sequence: 3)]
+        XCTAssertTrue(update([watch], sequence: 9, adopted: adopted).isEmpty)
     }
 
     func testClearingOnTheWatchClearsOnlyTheMarkItGave() {
         let watch = mark(at: (0, 100))
-        let adopted = ManOverboard.Adopted(markID: watch.identity, sessionID: session)
-        XCTAssertEqual(
-            ManOverboard.mirrorUpdate(incoming: nil, sessionID: session, local: watch, adopted: adopted, cleared: []),
-            .clear)
-        // The phone's own mark stays, and so does one from another recording.
         let phone = mark(at: (90, 30))
-        XCTAssertEqual(
-            ManOverboard.mirrorUpdate(incoming: nil, sessionID: session, local: phone, adopted: adopted, cleared: []),
-            .keep)
-        XCTAssertEqual(
-            ManOverboard.mirrorUpdate(incoming: nil, sessionID: UUID(), local: watch, adopted: adopted, cleared: []),
-            .keep)
-        // An older watch app never sends the field, so it never gave a mark to clear.
-        XCTAssertEqual(
-            ManOverboard.mirrorUpdate(incoming: nil, sessionID: session, local: phone, adopted: nil, cleared: []),
-            .keep)
+        let adopted = [ManOverboard.Adopted(markID: watch.identity, sessionID: session, sequence: 3)]
+        XCTAssertEqual(update([], sequence: 4, held: [phone, watch], adopted: adopted).clear, [watch.identity])
+        // Another recording, or an older watch app (no field), clears nothing.
+        XCTAssertTrue(update([], sequence: 4, held: [watch], adopted: adopted, sessionID: UUID()).isEmpty)
+        XCTAssertTrue(update(nil, sequence: 4, held: [watch], adopted: adopted).isEmpty)
     }
 
-    func testAMarkWithoutAnIDHasAStableIdentity() throws {
-        let legacy = mark(at: (0, 100), id: nil)
-        let decoded = try JSONDecoder().decode(ManOverboard.Mark.self, from: JSONEncoder().encode(legacy))
-        XCTAssertNil(decoded.id)
-        XCTAssertEqual(decoded.identity, legacy.identity)
-        XCTAssertNotEqual(mark(at: (0, 101), id: nil).identity, legacy.identity)
-        XCTAssertEqual(
-            ManOverboard.mirrorUpdate(
-                incoming: decoded, sessionID: session, local: nil, adopted: nil, cleared: [legacy.identity]),
-            .keep)
+    /// Re-check finding 2: a snapshot older than the one that delivered the mark cannot
+    /// clear it, even after a relaunch lost the in-memory sequence.
+    func testAnOlderCachedSnapshotCannotClearAMarkAfterRelaunch() {
+        let watch = mark(at: (0, 100))
+        XCTAssertTrue(makeManOverboard().applyMirrored([watch], sessionID: session, sequence: 12))
+
+        let relaunched = makeManOverboard()
+        relaunched.applyMirrored([], sessionID: session, sequence: 11)  // cached, from before the mark
+        XCTAssertEqual(relaunched.marks.map(\.identity), [watch.identity])
+        relaunched.applyMirrored([], sessionID: session, sequence: 12)  // the same snapshot number
+        XCTAssertEqual(relaunched.marks.map(\.identity), [watch.identity])
+
+        // Nor did the old snapshot mark it cleared: it is still held, and a newer
+        // snapshot without it clears it then.
+        relaunched.applyMirrored([], sessionID: session, sequence: 13)
+        XCTAssertTrue(relaunched.marks.isEmpty)
+        XCTAssertFalse(makeManOverboard().applyMirrored([watch], sessionID: session, sequence: 14))
     }
 
     func testAPhoneClearOutlivesARelaunch() {
         let watch = mark(at: (0, 100))
-        let first = ManOverboard(defaults: defaults)
-        XCTAssertTrue(first.applyMirrored(watch, sessionID: session))
+        let first = makeManOverboard()
+        XCTAssertTrue(first.applyMirrored([watch], sessionID: session, sequence: 1))
         first.clear()
-
-        let relaunched = ManOverboard(defaults: defaults)
-        XCTAssertFalse(relaunched.applyMirrored(watch, sessionID: session))
-        XCTAssertNil(relaunched.mark)
+        let relaunched = makeManOverboard()
+        XCTAssertFalse(relaunched.applyMirrored([watch], sessionID: session, sequence: 2))
+        XCTAssertTrue(relaunched.marks.isEmpty)
     }
 
     func testAWatchClearWhileThePhoneWasClosedClearsOnRelaunch() {
         let watch = mark(at: (0, 100))
-        let first = ManOverboard(defaults: defaults)
-        XCTAssertTrue(first.applyMirrored(watch, sessionID: session))
-
-        // Relaunched: the first snapshot from the same recording has no mark.
-        let relaunched = ManOverboard(defaults: defaults)
-        XCTAssertEqual(relaunched.mark, watch)
-        relaunched.applyMirrored(nil, sessionID: session)
-        XCTAssertNil(relaunched.mark)
-        // And it does not come back.
-        XCTAssertFalse(ManOverboard(defaults: defaults).applyMirrored(watch, sessionID: session))
+        XCTAssertTrue(makeManOverboard().applyMirrored([watch], sessionID: session, sequence: 7))
+        let relaunched = makeManOverboard()
+        XCTAssertEqual(relaunched.mark?.identity, watch.identity)
+        relaunched.applyMirrored([], sessionID: session, sequence: 30)
+        XCTAssertTrue(relaunched.marks.isEmpty)
+        XCTAssertFalse(makeManOverboard().applyMirrored([watch], sessionID: session, sequence: 31))
     }
 
-    func testASnapshotFromAnotherRecordingDoesNotClearAfterRelaunch() {
-        let watch = mark(at: (0, 100))
-        XCTAssertTrue(ManOverboard(defaults: defaults).applyMirrored(watch, sessionID: session))
-        let relaunched = ManOverboard(defaults: defaults)
-        relaunched.applyMirrored(nil, sessionID: UUID())
-        XCTAssertEqual(relaunched.mark, watch)
+    // MARK: Legacy marks without an ID (re-check finding 5)
+
+    func testALegacyIdentityIsStableAndUsesTheFixTimeAndAge() throws {
+        let legacy = mark(at: (0, 100), id: nil)
+        let decoded = try JSONDecoder().decode(ManOverboard.Mark.self, from: JSONEncoder().encode(legacy))
+        XCTAssertNil(decoded.id)
+        XCTAssertEqual(decoded.identity, legacy.identity)
+        // Same place and press time, a different fix: a different mark.
+        var otherFix = legacy
+        otherFix.positionAt = legacy.positionAt.addingTimeInterval(-3)
+        XCTAssertNotEqual(otherFix.identity, legacy.identity)
+        var otherAge = legacy
+        otherAge.positionAge = 12
+        XCTAssertNotEqual(otherAge.identity, legacy.identity)
+    }
+
+    func testAClearedLegacyMarkIsScopedToItsRecording() {
+        let legacy = mark(at: (0, 100), id: nil)
+        let clearedHere = [ManOverboard.Cleared(markID: legacy.identity, recordingID: session)]
+        XCTAssertTrue(update([legacy], cleared: clearedHere).isEmpty)
+        // The same values from another recording are another mark.
+        XCTAssertEqual(update([legacy], cleared: clearedHere, sessionID: UUID()).adopt, [legacy])
+        // A real ID clears everywhere.
+        let real = mark(at: (0, 100))
+        XCTAssertTrue(update([real], cleared: [.init(markID: real.identity)], sessionID: UUID()).isEmpty)
+    }
+
+    func testClearingAnAdoptedLegacyMarkRecordsItsRecording() {
+        let legacy = mark(at: (0, 100), id: nil)
+        let manOverboard = makeManOverboard()
+        XCTAssertTrue(manOverboard.applyMirrored([legacy], sessionID: session, sequence: 1))
+        manOverboard.clear()
+        let other = UUID()
+        XCTAssertTrue(makeManOverboard().applyMirrored([legacy], sessionID: other, sequence: 1))
     }
 
     // MARK: Formats
 
-    func testMirrorSnapshotsWithAndWithoutTheMarkDecode() throws {
+    func testMirrorSnapshotsWithAndWithoutTheMarksDecode() throws {
         var readings = LiveReadings(nil)
         readings.speed = 2
         let old = WorkoutMirrorSnapshot(
             sessionID: UUID(), sequence: 1, sport: .sailing, sentAt: Date(timeIntervalSince1970: 1_000),
             readings: readings)
         let oldJSON = try JSONEncoder().encode(old)
-        // An older watch app's snapshot has no such key at all.
         XCTAssertFalse(String(decoding: oldJSON, as: UTF8.self).contains("manOverboard"))
-        XCTAssertNil(try JSONDecoder().decode(WorkoutMirrorSnapshot.self, from: oldJSON).manOverboard)
+        XCTAssertNil(try JSONDecoder().decode(WorkoutMirrorSnapshot.self, from: oldJSON).manOverboardMarks)
 
         var new = old
-        new.manOverboard = mark(at: (0, 100))
+        new.manOverboardMarks = [mark(at: (0, 100))]
         let decoded = try JSONDecoder().decode(WorkoutMirrorSnapshot.self, from: JSONEncoder().encode(new))
         XCTAssertEqual(decoded, new)
-        XCTAssertEqual(decoded.manOverboard?.id, new.manOverboard?.id)
-        XCTAssertEqual(decoded.version, WorkoutMirrorSnapshot.currentVersion)
+        XCTAssertEqual(decoded.manOverboardMarks?.first?.id, new.manOverboardMarks?.first?.id)
+    }
+
+    func testAMarkSavedAsTheSingleEarlierFormatStillLoads() throws {
+        let saved = mark(at: (0, 100))
+        defaults.set(try JSONEncoder().encode(saved), forKey: "manOverboard.mark")
+        XCTAssertEqual(makeManOverboard().marks, [saved])
     }
 
     func testLiveActivityStateFromAnEarlierBuildDecodes() throws {
@@ -269,53 +361,60 @@ final class ManOverboardTests: XCTestCase {
         XCTAssertEqual(state.manOverboardKind, 0)
     }
 
-    // MARK: Live Activity (review finding 4)
+    // MARK: Live Activity
 
     private func activityState() -> SessionActivityAttributes.ContentState {
         SessionActivityAttributes.ContentState(
             speed: "5.0 kn", speedNumber: "5.0", distance: "1.2 nm", movingTime: "0:12:00", pauseLabel: nil)
     }
 
+    private let guidance = ManOverboard.Guidance(distance: 120, bearing: 245, arrow: 245, isCourseRelative: false)
+
     func testManOverboardChangesBypassTheThrottle() {
         let display = UserSettings.display(for: .sailing)
+        let fixAt = Date(timeIntervalSince1970: 999)
         let plain = activityState()
         let guided = plain.withManOverboard(
-            isActive: true,
-            guidance: ManOverboard.Guidance(distance: 120, bearing: 245, arrow: 245, isCourseRelative: false),
+            isActive: true, guidance: guidance, fixAt: fixAt, mark: mark(at: (0, 100)), locationIssue: nil,
             display: display)
-        let waiting = plain.withManOverboard(isActive: true, guidance: nil, display: display)
+        let waiting = plain.withManOverboard(
+            isActive: true, guidance: nil, fixAt: nil, mark: mark(at: (0, 100)), locationIssue: nil, display: display)
+        let denied = plain.withManOverboard(
+            isActive: true, guidance: nil, fixAt: nil, mark: nil, locationIssue: .denied, display: display)
         XCTAssertEqual(waiting.manOverboard, "Waiting for GPS")
-        XCTAssertEqual(guided.manOverboardHasGuidance, true)
+        XCTAssertEqual(denied.manOverboard, ManOverboardNotes.locationIssue(.denied))
 
         let sent = Date(timeIntervalSince1970: 1_000)
         let soon = sent.addingTimeInterval(1)
-        // Marked, guidance lost, cleared: each goes out at once.
-        XCTAssertTrue(SessionActivityController.shouldSend(guided, after: plain, lastUpdate: sent, now: soon))
-        XCTAssertTrue(SessionActivityController.shouldSend(waiting, after: guided, lastUpdate: sent, now: soon))
-        XCTAssertTrue(SessionActivityController.shouldSend(plain, after: waiting, lastUpdate: sent, now: soon))
+        // Marked, guidance lost, location denied, cleared: each goes out at once.
+        for (state, last) in [(guided, plain), (waiting, guided), (denied, waiting), (plain, denied)] {
+            XCTAssertTrue(SessionActivityController.shouldSend(state, after: last, lastUpdate: sent, now: soon))
+        }
         // A new distance waits for the throttle.
         var closer = guided
         closer.manOverboard = "100 m · 245°"
         XCTAssertFalse(SessionActivityController.shouldSend(closer, after: guided, lastUpdate: sent, now: soon))
         let later = sent.addingTimeInterval(SessionActivityController.minimumUpdateInterval)
         XCTAssertTrue(SessionActivityController.shouldSend(closer, after: guided, lastUpdate: sent, now: later))
-        // Unchanged guidance is resent to move its stale date on; plain content is not.
-        XCTAssertTrue(SessionActivityController.shouldSend(guided, after: guided, lastUpdate: sent, now: later))
         XCTAssertFalse(SessionActivityController.shouldSend(plain, after: plain, lastUpdate: sent, now: later))
     }
 
-    func testManOverboardContentGoesStaleAndIsStrippedAtTheEnd() {
+    /// Re-check finding 4: the stale date follows the fix, and the Lock Screen keeps the
+    /// warning about a mark from an old position.
+    func testLiveActivityStalenessFollowsTheFixAndCarriesTheMarkWarning() {
         let display = UserSettings.display(for: .sailing)
-        let now = Date(timeIntervalSince1970: 1_000)
+        let fixAt = Date(timeIntervalSince1970: 1_000)
+        var stale = mark(at: (0, 100))
+        stale.positionAge = 32
         let guided = activityState().withManOverboard(
-            isActive: true,
-            guidance: ManOverboard.Guidance(distance: 120, bearing: 245, arrow: 245, isCourseRelative: false),
-            display: display)
-        XCTAssertEqual(SessionActivityController.staleDate(for: guided, now: now), now.addingTimeInterval(10))
-        XCTAssertNil(SessionActivityController.staleDate(for: activityState(), now: now))
+            isActive: true, guidance: guidance, fixAt: fixAt, mark: stale, locationIssue: nil, display: display)
+        XCTAssertEqual(SessionActivityController.staleDate(for: guided), fixAt.addingTimeInterval(10))
+        XCTAssertEqual(guided.manOverboardNote, "Marked from a position 32 s old")
+        XCTAssertNil(SessionActivityController.staleDate(for: activityState()))
 
         let final = SessionActivityController.finalState(guided)
         XCTAssertNil(final.manOverboard)
+        XCTAssertNil(final.manOverboardNote)
         XCTAssertEqual(final.manOverboardKind, 0)
         XCTAssertEqual(final.distance, guided.distance)
     }

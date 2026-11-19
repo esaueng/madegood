@@ -17,6 +17,21 @@ enum ManOverboardNotes {
         return nil
     }
 
+    /// Why this device cannot mark or steer back, and what to do about it.
+    static func locationIssue(_ issue: ManOverboard.LocationIssue) -> String {
+        switch issue {
+        case .denied: "Location access is off. Allow it in Settings."
+        case .restricted: "Location is restricted on this device."
+        case .reducedAccuracy: "Precise location is off. Turn it on in Settings."
+        case .unavailable: "Location is unavailable."
+        }
+    }
+
+    /// Which device marked the target, when that is worth saying.
+    static func origin(_ mark: ManOverboard.Mark) -> String {
+        mark.origin == .watch ? "Marked on Apple Watch" : "Marked on this device"
+    }
+
     /// Why there is no guidance now: no position yet, or the last one is too old.
     static func waiting(positionAge: TimeInterval?, hasMark: Bool) -> String {
         guard hasMark else { return "Getting a position to mark" }

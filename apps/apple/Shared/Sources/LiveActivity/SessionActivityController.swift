@@ -30,7 +30,7 @@
                 sportName: sport.displayName, sportIcon: sport.iconName, startedAt: startedAt)
             let state = Self.state(nil, sport: sport)
             do {
-                let content = ActivityContent(state: state, staleDate: Self.staleDate(for: state, now: Date()))
+                let content = ActivityContent(state: state, staleDate: Self.staleDate(for: state))
                 let activity = try Activity.request(attributes: attributes, content: content)
                 self.activity = activity
                 lastState = state
@@ -53,7 +53,7 @@
             lastUpdate = now
             lastState = state
             let id = activity.id
-            let staleDate = Self.staleDate(for: state, now: now)
+            let staleDate = Self.staleDate(for: state)
             enqueue {
                 // Look the activity up inside the task: Activity is not Sendable.
                 for activity in Activity<SessionActivityAttributes>.activities where activity.id == id {
@@ -99,13 +99,12 @@
                 movingTime: Formatting.elapsed(metrics?.movingTime ?? 0),
                 pauseLabel: metrics.flatMap { LiveDisplay.pauseLabel($0.pauseState) }
             )
-            .withManOverboard(
-                isActive: ManOverboard.shared.isActive, guidance: ManOverboard.shared.guidance(), display: display)
+            .withManOverboard(ManOverboard.shared, display: display)
         }
 
-        /// Pause and man-overboard changes (marked, guidance lost or back, cleared) go out
-        /// at once; otherwise at most every few seconds. While a mark shows, an unchanged
-        /// state is still resent then, to push its stale date on.
+        /// Pause and man-overboard changes (marked, guidance lost or back, a location
+        /// problem, cleared) go out at once; otherwise at most every few seconds. Each new
+        /// fix changes the state (its time), so guidance and its stale date keep moving.
         nonisolated static func shouldSend(
             _ state: SessionActivityAttributes.ContentState, after last: SessionActivityAttributes.ContentState?,
             lastUpdate: Date, now: Date
@@ -113,12 +112,14 @@
             guard let last else { return true }
             if state.pauseLabel != last.pauseLabel || state.manOverboardKind != last.manOverboardKind { return true }
             guard now.timeIntervalSince(lastUpdate) >= minimumUpdateInterval else { return false }
-            return state != last || state.manOverboard != nil
+            return state != last
         }
 
-        /// Content with man-overboard guidance goes stale after `manOverboardStaleAfter`.
-        nonisolated static func staleDate(for state: SessionActivityAttributes.ContentState, now: Date) -> Date? {
-            state.manOverboard == nil ? nil : now.addingTimeInterval(manOverboardStaleAfter)
+        /// Man-overboard guidance goes stale `manOverboardStaleAfter` after the fix it was
+        /// computed from was measured, not after it was sent.
+        nonisolated static func staleDate(for state: SessionActivityAttributes.ContentState) -> Date? {
+            guard state.manOverboardHasGuidance == true, let fixAt = state.manOverboardFixAt else { return nil }
+            return fixAt.addingTimeInterval(manOverboardStaleAfter)
         }
 
         /// The content an ended activity keeps: no man-overboard guidance, which would
@@ -129,29 +130,46 @@
             var final = state
             final.manOverboard = nil
             final.manOverboardHasGuidance = nil
+            final.manOverboardLocationIssue = nil
+            final.manOverboardNote = nil
+            final.manOverboardFixAt = nil
             return final
         }
     }
 
     extension SessionActivityAttributes.ContentState {
-        /// Adds distance and true bearing back to the man-overboard mark, or a waiting
-        /// message without a fresh position, when a mark is set or a press waits for one.
+        @MainActor
         func withManOverboard(
-            isActive: Bool, guidance: ManOverboard.Guidance?, display: LiveDisplay
+            _ manOverboard: ManOverboard, display: LiveDisplay
         ) -> SessionActivityAttributes.ContentState {
-            var state = self
-            guard isActive else {
-                state.manOverboard = nil
-                state.manOverboardHasGuidance = nil
-                return state
-            }
-            if let guidance {
+            withManOverboard(
+                isActive: manOverboard.isActive, guidance: manOverboard.guidance(),
+                fixAt: manOverboard.position?.at, mark: manOverboard.mark,
+                locationIssue: manOverboard.locationIssue, display: display)
+        }
+
+        /// Adds distance and true bearing back to the man-overboard target, a location
+        /// problem, or a waiting message, when a mark is set or a press waits for one,
+        /// with how far to trust the mark and the fix time for the stale date.
+        func withManOverboard(
+            isActive: Bool, guidance: ManOverboard.Guidance?, fixAt: Date?, mark: ManOverboard.Mark?,
+            locationIssue: ManOverboard.LocationIssue?, display: LiveDisplay
+        ) -> SessionActivityAttributes.ContentState {
+            var state = SessionActivityController.finalState(self)
+            guard isActive else { return state }
+            if let guidance, let fixAt {
                 state.manOverboard = "\(display.distance(guidance.distance)) · \(LiveDisplay.course(guidance.bearing))"
                 state.manOverboardHasGuidance = true
+                state.manOverboardFixAt = fixAt
+            } else if let locationIssue {
+                state.manOverboard = ManOverboardNotes.locationIssue(locationIssue)
+                state.manOverboardHasGuidance = false
+                state.manOverboardLocationIssue = true
             } else {
-                state.manOverboard = "Waiting for GPS"
+                state.manOverboard = mark == nil ? "Getting a position to mark" : "Waiting for GPS"
                 state.manOverboardHasGuidance = false
             }
+            state.manOverboardNote = mark.flatMap(ManOverboardNotes.markQuality)
             return state
         }
     }
