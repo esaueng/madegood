@@ -79,6 +79,8 @@ jobs:
           APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
           APP_STORE_CONNECT_KEY_PATH: ${{ runner.temp }}/AuthKey.p8
           WORK_DIR: ${{ runner.temp }}/testflight
+          # Repository variable (Settings > Variables): the API root the app syncs with.
+          MADEGOOD_API_URL: ${{ vars.MADEGOOD_API_URL }}
         run: scripts/testflight
 
       - name: Remove the API key
