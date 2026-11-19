@@ -64,7 +64,7 @@ roadmap.
 | [`web/`](web) | One Cloudflare Worker: React website and Hono API under `/api` |
 | [`fixtures/`](fixtures) | Small anonymized sessions with ground-truth labels |
 | [`scripts/`](scripts) | Track anonymizer and CI helpers |
-| [`docs/`](docs) | Plan, [file formats](docs/formats.md), [self-hosting](docs/self-hosting.md) |
+| [`docs/`](docs) | Plan, [metric definitions](docs/metrics.md), [file formats](docs/formats.md), [self-hosting](docs/self-hosting.md), [App Store drafts](docs/app-store.md) |
 
 ## Getting started
 

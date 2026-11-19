@@ -6,8 +6,30 @@ values are SI internally (m, s, m/s, degrees true) and converted only for displa
 
 Live metrics come from `SessionEngine`, which runs on the watch or phone during a
 session and only uses data it has already seen. Samples with a non-finite time are
-ignored. Post-session analysis (Phase 2) can
-revise some of them using the whole track.
+ignored. Session detail on the iPhone replays the recording through the same engine
+(`SessionReplay`), so live and after-session values match, and adds analyses that need
+the whole track: sailing maneuvers and wind, paddling splits, and strokes from the raw
+recording.
+
+## Where each metric is shown
+
+| Metric | Watch and iPhone, live | iPhone session detail | Stored in track v1 `summary` (and so on the website) |
+|---|---|---|---|
+| Distance, moving time, elapsed time, average speed | yes | yes | yes |
+| Max speed 2 s and 10 s | yes | yes | yes |
+| Heart rate (current, average, max) | yes | yes | average and max |
+| Laps | yes | yes | yes |
+| Windsurf speed categories | yes | yes | yes |
+| Strokes, stroke rate, distance per stroke, sides | yes | yes, from the raw recording | no |
+| Paddling 1 km splits | no | yes (replay) | no |
+| Sailing wind axis, VMG, tacks and gybes | yes | yes | no |
+| Motorboat trip log, engine time, fuel estimate | yes | yes | no (the website shows the distance) |
+
+The website shows what the summary stores, plus the track (map, speed and heart-rate
+charts). Units are converted for display only. In the apps they are set per sport and
+default ("Automatic") to knots and nautical miles for sailing, windsurfing and
+motorboating, and km/h and km for kayak, canoe and SUP. The website uses the account's
+single units setting (nautical by default).
 
 ## GPS cleaning
 
@@ -332,6 +354,20 @@ Pauses do not stop the categories, as for the max speeds; GPS gaps do. `waterkit
 reports the same values, computed over the engine's accepted fixes. Planing time
 and gybe count (PLAN §5) are not computed yet.
 
+## Start countdown and distance alerts
+
+These are cues, not metrics, but they follow fixed rules:
+
+- **Start countdown** (per sport: off, 1, 3 or 5 minutes): recording starts when it
+  reaches zero; the countdown itself is not part of the session. Haptics mark each
+  whole minute and each of the last 10 seconds. **Sync** rounds the time left to the
+  nearest whole minute, for matching a race start signal; with under 30 s left it
+  starts at once.
+- **Distance alert** (per sport: off or every 0.25, 0.5, 1, 2, 5 or 10 distance units):
+  fires each time the session distance passes a whole multiple of the interval. A
+  recalculation that lowers the distance never repeats an alert, and a jump past
+  several multiples alerts once.
+
 ## Heart rate
 
 Current heart rate is the latest reading. Average is the mean of the readings, and max
@@ -353,4 +389,11 @@ bumped whenever a definition on this page changes; 1.1.0 added the windsurf keys
 
 The track's events are the user's events plus the regenerated auto-pause, auto-resume
 and auto-lap events.
+
+## Not computed yet
+
+PLAN §5 lists these; they have no definition here until they ship: heart-rate zones,
+windsurf planing time and gybe count, race start line (pinging the ends, distance and
+time to the line), the motorboat anchor alarm, and stroke-based intervals. Calories
+come from Apple Health's workout builder, not from MadeGood.
 
