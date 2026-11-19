@@ -183,6 +183,88 @@ import Testing
         #expect(try RawSessionReader.read(folder: ok).motion.count >= 2000)
     }
 
+    /// Review of #91, finding 1: a directory or symbolic link named like a stream is never
+    /// copied (a directory could hold an old clock file); the recording is unreadable.
+    @Test func onlyRegularFilesAreTakenAsRecordingFiles() throws {
+        let temp = try TempFolder()
+        for kind in ["directory", "symlink", "metaDirectory"] {
+            let v1 = temp.url.appendingPathComponent("v1-\(kind)")
+            try Self.writeV1(to: v1, lines: 30, members: 1, truncateLast: false)
+            let fm = FileManager.default
+            switch kind {
+            case "directory":
+                let dir = v1.appendingPathComponent("gps.ndjson", isDirectory: true)
+                try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+                try Gzip.compress(RawFormat.line(RawFormat.V1.ClockAnchor(unix: Self.start, uptime: Self.uptime0)))
+                    .write(to: dir.appendingPathComponent("clock.ndjson.gz"))
+            case "symlink":
+                let outside = temp.url.appendingPathComponent("outside-\(kind).ndjson")
+                try RawFormat.line(RawFormat.V1.ClockAnchor(unix: Self.start, uptime: Self.uptime0)).write(to: outside)
+                try fm.createSymbolicLink(at: v1.appendingPathComponent("hr.ndjson"), withDestinationURL: outside)
+            default:
+                try fm.removeItem(at: v1.appendingPathComponent(RawFormat.metaFileName))
+                try fm.createDirectory(
+                    at: v1.appendingPathComponent(RawFormat.metaFileName, isDirectory: true), withIntermediateDirectories: true)
+            }
+            let out = temp.url.appendingPathComponent("out-\(kind)")
+            do {
+                try RawFormatConversion.exportCopy(folder: v1, into: out)
+                Issue.record("\(kind): a non-regular recording file must make the recording unreadable")
+            } catch {
+                #expect(RawFormatConversion.isInvalidRecording(error), "\(kind): \(error)")
+            }
+            #expect(!fm.fileExists(atPath: out.path))
+        }
+    }
+
+    /// Review of #91, finding 4: a stream both plain and gzipped is unreadable, as the reader
+    /// says, instead of being exported as it is.
+    @Test func aStreamBothPlainAndGzippedIsUnreadable() throws {
+        let temp = try TempFolder()
+        let v2 = temp.url.appendingPathComponent("v2")
+        try FileManager.default.createDirectory(at: v2, withIntermediateDirectories: true)
+        try RawFormat.encodeMeta(Self.meta()).write(to: v2.appendingPathComponent(RawFormat.metaFileName))
+        let line = try Self.motionLines(1)
+        try line.write(to: v2.appendingPathComponent("motion.ndjson"))
+        try Gzip.compress(line).write(to: v2.appendingPathComponent("motion.ndjson.gz"))
+        #expect(throws: RawSessionReader.Error.self) { _ = try RawSessionReader.read(folder: v2) }
+        let out = temp.url.appendingPathComponent("out")
+        do {
+            try RawFormatConversion.exportCopy(folder: v2, into: out)
+            Issue.record("exported a folder the reader rejects")
+        } catch {
+            #expect(RawFormatConversion.isInvalidRecording(error))
+            guard case RawSessionReader.Error.bothPlainAndGzipped("motion") = error else {
+                Issue.record("unexpected \(error)")
+                return
+            }
+        }
+        #expect(!FileManager.default.fileExists(atPath: out.path))
+        // A storage failure is not an unreadable recording.
+        #expect(!RawFormatConversion.isInvalidRecording(CocoaError(.fileWriteOutOfSpace)))
+        #expect(!RawFormatConversion.isInvalidRecording(POSIXError(.ENOSPC)))
+    }
+
+    /// Scoped re-check of #91, finding 2: a missing meta.json is an invalid recording, but
+    /// a storage error is not (it must fail an export, not skip the recording).
+    @Test func aMissingMetaIsInvalidAndAStorageErrorIsNot() throws {
+        let temp = try TempFolder()
+        let empty = temp.url.appendingPathComponent("empty")
+        try FileManager.default.createDirectory(at: empty, withIntermediateDirectories: true)
+        do {
+            _ = try RawSessionReader.readMeta(folder: empty)
+            Issue.record("read a folder without meta.json")
+        } catch {
+            #expect(RawFormatConversion.isInvalidRecording(error))
+            guard case RawSessionReader.Error.missingMeta = error else {
+                Issue.record("unexpected \(error)")
+                return
+            }
+        }
+        #expect(!RawFormatConversion.isInvalidRecording(CocoaError(.fileReadNoPermission)))
+        #expect(!RawFormatConversion.isInvalidRecording(CancellationError()))
+    }
+
     @Test func aSampleOnAnAnchorStaysInTheEarlierSegment() throws {
         let temp = try TempFolder()
         let folder = temp.url

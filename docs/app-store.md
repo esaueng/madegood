@@ -16,7 +16,7 @@ get a rejection.
 | 1 | ~~No in-app account deletion.~~ Done: iPhone Settings → Account → Delete Account and the website's Settings page both call `DELETE /api/me` after a confirmation. | Guideline 5.1.1(v). |
 | 2 | ~~Sign in with Apple tokens are not revoked on deletion.~~ Nothing to revoke: the server never holds an Apple refresh or access token. The iPhone sends only the identity token; the website asks Apple for `code id_token` (required by `form_post`) but verifies the identity token and never redeems the code. No Sign in with Apple private key is needed. If a later change redeems the code, it must store the refresh token and call Apple's `/auth/revoke` on deletion. | Apple asks apps to revoke tokens they hold when an account is deleted. |
 | 3 | ~~No privacy policy.~~ Done: the website serves it at `/privacy`, linked from the landing page footer and iPhone Settings → About → Privacy Policy (`MADEGOOD_SITE_URL` in `Config/MadeGood.xcconfig`). Use `<site>/privacy` as the App Store Connect privacy policy URL. | Required in App Store Connect for every app, and for HealthKit apps in particular. |
-| 4 | ~~No privacy manifest.~~ Done: `App/Resources/PrivacyInfo.xcprivacy` and `Watch/Resources/PrivacyInfo.xcprivacy` declare tracking off, the collected types in the label table below, and the required-reason APIs in use: UserDefaults (CA92.1), system boot time via `ProcessInfo.systemUptime` (35F9.1 for on-device timers; 8FFB.1 for the absolute timestamps calculated from it, motion samples and clock anchors in each recording, which leave the device with the recording; since raw recording v2 (#87) no file holds the boot-time reading itself) and file timestamps of the app's own recordings (C617.1). No disk-space or active-keyboard APIs are used; the widget extensions use none of these APIs. | Apps that use required-reason APIs must declare a reason in a privacy manifest. |
+| 4 | ~~No privacy manifest.~~ Done: `App/Resources/PrivacyInfo.xcprivacy` and `Watch/Resources/PrivacyInfo.xcprivacy` declare tracking off, the collected types in the label table below, and the required-reason APIs in use: UserDefaults (CA92.1), system boot time via `ProcessInfo.systemUptime` (35F9.1 for on-device timers; 8FFB.1 for the absolute timestamps calculated from it, motion samples and clock anchors in each recording, which leave the device with the recording; since raw recording v2 (#87) no file holds the boot-time reading itself, and every way a recording leaves the phone sends version 2 only: Share raw recording (#87) and Export All Recordings (#91), which converts an older recording first) and file timestamps of the app's own recordings (C617.1). No disk-space or active-keyboard APIs are used; the widget extensions use none of these APIs. | Apps that use required-reason APIs must declare a reason in a privacy manifest. |
 | 5 | **TestFlight builds have no sync.** `MADEGOOD_API_URL` is empty in `apps/apple/Config/MadeGood.xcconfig`, and CI has no `Local.xcconfig`. | Reviewers would see "Account sync isn't set up in this build." The label answers below assume sync is on; if it ships off, most of the "collected" rows go away. |
 | 6 | ~~Health permission strings.~~ Done: the Health, motion and location strings in `Project.swift` now say what the app does (saves workouts with route and heart rate; motion counts paddle strokes). | Reviewers check that purpose strings describe what the app actually does (5.1.1(i)). |
 | 7 | ~~No full data export.~~ Done (#79): the website's Settings → Export your data starts a background export (`POST /api/me/exports`; status and parts from `GET /api/me/exports/{id}`), and iPhone Settings → Your Data → Export All Recordings zips the recordings on the phone. | Not an App Store requirement; the privacy policy describes it. |
@@ -164,10 +164,13 @@ session.
 - **Files app:** recordings live in the app's Documents folder, visible in Files
   (`UIFileSharingEnabled`).
 - **All recordings (iPhone):** Settings → Your Data → Export All Recordings zips every
-  recording folder on the phone and opens the share sheet. Open item: it zips the folders
-  as stored, so a raw format 1 recording still carries its device-uptime readings (and an
-  interrupted transfer's staging file); a follow-up converts and filters it as Share raw
-  recording does, which item 4's 8FFB.1 declaration relies on. Export files are deleted when
+  recording on the phone, one folder each, exactly as Share raw recording sends it: raw
+  format 2 (an older recording is converted through the same streaming converter and
+  cache) and only the recording's own files, never an interrupted transfer's staging copy
+  or the derived track. So no device-uptime reading leaves the phone, which the 8FFB.1
+  boot-time declaration relies on. A folder that is not a readable recording is left out
+  and counted in a message; a storage error fails the export instead. It then opens the
+  share sheet. Export files are deleted when
   the share sheet finishes, and any left over are deleted at launch.
 - **Account-wide export (website):** Settings → Export all my data starts a background
   job (`POST /api/me/exports`). It freezes the list of sessions and voyages, then builds

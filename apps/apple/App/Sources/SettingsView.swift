@@ -9,6 +9,8 @@ struct SettingsView: View {
     @State private var weather = LocalWeather.shared
     @AppStorage(UserSettings.Key.appearance) private var appearance: Appearance = .system
     @State private var exportingAll = false
+    /// Progress of preparing Export All Recordings, 0 to 1.
+    @State private var exportAllProgress = 0.0
     @State private var exportedAll: SessionDetailView.ShareFile?
     @State private var exportMessage: String?
 
@@ -75,9 +77,15 @@ struct SettingsView: View {
                     Button {
                         exportAll()
                     } label: {
-                        Label(
-                            exportingAll ? "Preparing Export…" : "Export All Recordings",
-                            systemImage: "square.and.arrow.up.on.square")
+                        if exportingAll {
+                            HStack {
+                                Label("Preparing Export…", systemImage: "square.and.arrow.up.on.square")
+                                Spacer()
+                                ProgressView(value: exportAllProgress).frame(width: 60)
+                            }
+                        } else {
+                            Label("Export All Recordings", systemImage: "square.and.arrow.up.on.square")
+                        }
                     }
                     .disabled(exportingAll)
                     .accessibilityIdentifier("settings.exportAll")
@@ -89,7 +97,7 @@ struct SettingsView: View {
                     Text("Your Data")
                 } footer: {
                     Text(
-                        "A ZIP file of every recording on this iPhone: raw sensor files and tracks. Exports contain precise locations and times. To download what is in your MadeGood account, use Settings on the website."
+                        "A ZIP file of every recording on this iPhone, each as Share Raw Recording sends it: the raw sensor files in the current format. Exports contain precise locations and times. To download what is in your MadeGood account, use Settings on the website."
                     )
                 }
 
@@ -127,17 +135,29 @@ struct SettingsView: View {
 extension SettingsView {
     private func exportAll() {
         exportingAll = true
+        exportAllProgress = 0
         exportMessage = nil
         Task {
             defer { exportingAll = false }
             do {
-                if let url = try await ZipExport.zipAllRecordings(root: RecordingStore.root) {
-                    exportedAll = SessionDetailView.ShareFile(url: url)
+                let made = try await ZipExport.zipAllRecordings(root: RecordingStore.root) { fraction in
+                    Task { @MainActor in exportAllProgress = fraction }
+                }
+                if let made {
+                    if made.skipped > 0 {
+                        exportMessage =
+                            made.skipped == 1
+                            ? "1 folder isn’t a readable recording and was left out."
+                            : "\(made.skipped) folders aren’t readable recordings and were left out."
+                    }
+                    exportedAll = SessionDetailView.ShareFile(url: made.zip)
                 } else {
                     exportMessage = "There are no recordings on this iPhone yet."
                 }
             } catch {
-                exportMessage = "Couldn’t export your recordings. Try again."
+                exportMessage =
+                    error is CancellationError
+                    ? nil : "Couldn’t export your recordings. Check that there is free storage, then try again."
             }
         }
     }

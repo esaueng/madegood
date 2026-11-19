@@ -11,6 +11,13 @@ public enum RawSessionReader {
         let fileNumber: UInt64?
     }
 
+    /// Whether `url` is a regular file itself: not a directory, and not a symbolic link
+    /// (which is not followed). Throws if its attributes cannot be read: that is a storage
+    /// problem, not proof that the recording is invalid.
+    static func isRegularFile(_ url: URL) throws -> Bool {
+        try FileManager.default.attributesOfItem(atPath: url.path)[.type] as? FileAttributeType == .typeRegular
+    }
+
     public static func isRecordingFileName(_ name: String) -> Bool {
         name == RawFormat.metaFileName
             || RawFormat.Stream.allCases.contains { name == $0.fileName || name == $0.gzippedFileName }
@@ -36,6 +43,8 @@ public enum RawSessionReader {
         case unsupportedFormat(String)
         case unsupportedVersion(Int)
         case bothPlainAndGzipped(String)
+        /// A recording file name that is not a regular file (a directory or a symbolic link).
+        case notARegularFile(String)
 
         public var description: String {
             switch self {
@@ -46,6 +55,7 @@ public enum RawSessionReader {
                 "Unsupported raw format version \(v); this reader supports \(RawFormat.readableVersions.sorted())"
             case .bothPlainAndGzipped(let stream):
                 "Both \(stream).ndjson and \(stream).ndjson.gz exist; remove one"
+            case .notARegularFile(let name): "\(name) is not a regular file"
             }
         }
     }
@@ -137,7 +147,17 @@ public enum RawSessionReader {
         folder: URL
     ) throws -> (meta: RawFormat.Meta, legacyClock: RawFormat.V1.ClockAnchor?) {
         let url = folder.appendingPathComponent(RawFormat.metaFileName)
-        guard FileManager.default.fileExists(atPath: url.path) else { throw Error.missingMeta(folder) }
+        // Missing is an invalid recording; a meta.json that cannot be looked at (permissions,
+        // storage) is an error of its own, not proof that the recording is invalid.
+        let attributes: [FileAttributeKey: Any]
+        do {
+            attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        } catch let error as CocoaError where error.code == .fileReadNoSuchFile || error.code == .fileNoSuchFile {
+            throw Error.missingMeta(folder)
+        }
+        guard attributes[.type] as? FileAttributeType == .typeRegular else {
+            throw Error.notARegularFile(RawFormat.metaFileName)
+        }
         let data = try Data(contentsOf: url)
 
         struct Header: Decodable {

@@ -88,7 +88,8 @@ function Privacy() {
             Files you choose to share or export (GPX, raw recordings, ZIP files). They contain
             precise positions and times. A raw recording also holds the motion samples and, if
             recorded, heart rate; its times are clock times, and a recording made by an older
-            version of the app is converted to that format when you share it.
+            version of the app is converted to that format when you share or export it, one at a
+            time or all together.
           </li>
         </ul>
       </Section>
