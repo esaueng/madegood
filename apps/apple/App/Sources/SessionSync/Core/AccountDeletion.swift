@@ -22,7 +22,7 @@ enum AccountDeletion {
     ) async throws -> VoyageAccountBinding {
         guard let binding = account.binding else { throw VoyageAccountError.signInRequired }
         try await account.authorized(for: binding) { token in
-            try await api.deleteAccount(bearer: token)
+            try await api.deleteAccount(accountID: binding.accountID, bearer: token)
         }
         var failure: (any Error)?
         do {

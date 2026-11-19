@@ -9,7 +9,9 @@ import { enqueuePostprocess, ensureUserRequeued, publicIsCurrent } from "../lib/
 import { createRouter } from "../lib/router";
 import { SHARED_TRACK_MAX_FIXES, shareTrack } from "../lib/session-privacy";
 import {
+  accountActive,
   deleteOlderTracks,
+  removeIfDetached,
   replaceSessionMetadata,
   storeTrack,
   UPLOAD_REVISION_HEADER,
@@ -798,9 +800,23 @@ sessionRoutes.openapi(putTrackRoute, async (c) => {
   // One object per revision, attached only while the row is still at that revision, so a
   // delayed older upload can never replace the track of a newer one.
   const key = trackKey(userPrefix(userId), id, revision);
-  const stored = await storeTrack(db, c.env.TRACKS, { id, userId, revision, key, bytes });
+  // The object may be in R2 with no row pointing at it after a failure (D1 down after the
+  // put, or the account deleted meanwhile): remove it unless the row is known to hold it.
+  // When even that read fails, the session's or the account's deletion sweep removes it.
+  const stored = await storeTrack(db, c.env.TRACKS, { id, userId, revision, key, bytes }).catch(
+    async (error: unknown): Promise<never> => {
+      await removeIfDetached(db, c.env.TRACKS, { id, userId, key }).catch(() => {});
+      throw error;
+    },
+  );
   const attached = stored.kind === "attached";
   if (!attached || (await isTombstoned(db, userId, id))) {
+    if (!(await accountActive(db, userId))) {
+      // The account is being deleted: its sweep would find this object too, but do not
+      // leave it until then.
+      await c.env.TRACKS.delete(key);
+      return apiError(c, 401, "unauthorized", "The account no longer exists.");
+    }
     // The session was deleted, or moved to a newer revision, while the body was uploading
     // (review of #37). DELETE removes the row before the objects, so either it already
     // deleted this object or it will find none; remove ours so no track outlives its

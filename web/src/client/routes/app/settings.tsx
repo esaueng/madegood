@@ -6,6 +6,7 @@ import { Button, buttonVariants } from "@/components/ui/button";
 import { VISIBILITY } from "@/components/visibility";
 import type { Draft } from "@/components/zone-map";
 import {
+  ApiError,
   addZone,
   deleteZone,
   fetchZones,
@@ -60,7 +61,7 @@ function Settings() {
       <h1 className="text-2xl font-semibold">Settings</h1>
       <Preferences me={me} />
       <Zones />
-      <DeleteAccount onDeleted={() => setDeleted(true)} />
+      <DeleteAccount me={me} onDeleted={() => setDeleted(true)} />
     </div>
   );
 }
@@ -217,10 +218,17 @@ function Zones() {
   );
 }
 
-function DeleteAccount({ onDeleted }: { onDeleted: () => void }) {
+function DeleteAccount({ me, onDeleted }: { me: Me; onDeleted: () => void }) {
   const deleteAccount = useDeleteAccount();
   const [confirming, setConfirming] = useState(false);
-  const remove = useMutation({ mutationFn: deleteAccount, onSuccess: onDeleted });
+  // The account shown when the confirmation opened, never whoever is signed in by the time
+  // the button is pressed (another tab may have switched accounts).
+  const [confirmed, setConfirmed] = useState<Me | null>(null);
+  const remove = useMutation({
+    mutationFn: () => deleteAccount((confirmed ?? me).id),
+    onSuccess: onDeleted,
+  });
+  const mismatch = remove.error instanceof ApiError && remove.error.status === 409;
   return (
     <section className="grid gap-3 border-t pt-8" aria-labelledby="delete-account">
       <h2 id="delete-account" className="text-lg font-semibold">
@@ -234,8 +242,8 @@ function DeleteAccount({ onDeleted }: { onDeleted: () => void }) {
           aria-describedby="delete-account-details"
         >
           <p id="delete-account-confirm" className="flex items-center gap-2 font-medium">
-            <TriangleAlert className="size-4 text-red-600" aria-hidden /> Delete your MadeGood
-            account?
+            <TriangleAlert className="size-4 text-red-600" aria-hidden /> Delete the MadeGood
+            account @{(confirmed ?? me).handle}?
           </p>
           <p id="delete-account-details" className="text-muted-foreground">
             This deletes every session you have uploaded, your privacy zones, your settings and your
@@ -256,6 +264,7 @@ function DeleteAccount({ onDeleted }: { onDeleted: () => void }) {
               onClick={() => {
                 remove.reset();
                 setConfirming(false);
+                setConfirmed(null);
               }}
               autoFocus
             >
@@ -264,7 +273,9 @@ function DeleteAccount({ onDeleted }: { onDeleted: () => void }) {
           </div>
           {remove.isError && (
             <p className="text-red-600" role="alert">
-              Could not delete the account. Try again.
+              {mismatch
+                ? "You are now signed in to a different account. Reload the page and check which account to delete."
+                : "Could not delete the account. Try again."}
             </p>
           )}
         </div>
@@ -275,7 +286,14 @@ function DeleteAccount({ onDeleted }: { onDeleted: () => void }) {
             devices are kept.
           </p>
           <div>
-            <Button variant="outline" className="text-red-600" onClick={() => setConfirming(true)}>
+            <Button
+              variant="outline"
+              className="text-red-600"
+              onClick={() => {
+                setConfirmed(me);
+                setConfirming(true);
+              }}
+            >
               <Trash2 /> Delete account…
             </Button>
           </div>

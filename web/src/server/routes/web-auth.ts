@@ -9,7 +9,7 @@ import {
   rotateRefreshToken,
   signAccessToken,
 } from "../auth/tokens";
-import { cleanDisplayName, findOrCreateUser } from "../auth/users";
+import { AccountDeleting, cleanDisplayName, findOrCreateUser } from "../auth/users";
 import {
   clearSessionCookies,
   refreshCookie,
@@ -136,7 +136,13 @@ webAuth.post("/auth/web/apple/callback", async (c) => {
     throw err;
   }
   const db = drizzle(c.env.DB);
-  const { user } = await findOrCreateUser(db, sub, displayNameFrom(form.user));
+  let user: Awaited<ReturnType<typeof findOrCreateUser>>["user"];
+  try {
+    ({ user } = await findOrCreateUser(db, sub, displayNameFrom(form.user)));
+  } catch (err) {
+    if (err instanceof AccountDeleting) return c.redirect(failed(c.req.url, "deleting"), 303);
+    throw err;
+  }
   setSessionCookies(
     c,
     await issueTokenPair(db, user.id, c.env.JWT_SIGNING_KEY, { bindSession: true }),

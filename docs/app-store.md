@@ -125,12 +125,16 @@ session.
 - An account is optional. Everything works offline without one; Sign in with Apple is
   the only sign-in method, on the iPhone (Settings → Account) and the website.
 - **Deletion:** iPhone Settings → Account → Delete Account, and the website's Settings
-  page → Delete account. Each asks for confirmation, then calls `DELETE /api/me`, which
-  deletes the user's D1 rows (sessions, refresh tokens, privacy zones, voyages, cascading
-  from the user) and every R2 object under their prefix. Afterwards the iPhone signs out,
-  removes the upload queue, frozen tracks, saved tokens and that account's sync consent;
-  the website's session cookies are cleared in the same response. Recordings on the
-  device are kept (they were never only in the account).
+  page → Delete account. Each asks for confirmation, then calls `DELETE /api/me` with the
+  ID of the account shown (the server refuses any other, so a stale confirmation cannot
+  delete whoever is signed in now). The server marks the account deleting and revokes every
+  sign-in at once: it can no longer sign in, read or write. It then removes the D1 rows
+  (sessions, privacy zones, voyages and legs) and every R2 object, retrying on the
+  scheduled sweep until done, and deletes the account record about 20 minutes later
+  (`web/src/server/lib/account-deletion.ts`). The response is 202. Afterwards the iPhone
+  signs out, removes the upload queue, frozen tracks, saved tokens and that account's
+  sync consent; the website's session cookies are cleared in the same response.
+  Recordings on the device are kept (they were never only in the account).
 - **Sign in with Apple:** no Apple tokens are held, so none are revoked (item 2).
 - Confirmation text (iPhone): "Delete your MadeGood account? This deletes every session
   you have uploaded, your privacy zones, your settings and your sign-in from MadeGood's

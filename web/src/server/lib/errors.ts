@@ -30,6 +30,8 @@ export const errorCodes = [
   "revision_mismatch",
   "postprocess_unavailable",
   "track_replaced",
+  "account_mismatch",
+  "account_deleting",
 ] as const;
 export type ErrorCode = (typeof errorCodes)[number];
 

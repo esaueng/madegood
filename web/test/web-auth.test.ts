@@ -2,7 +2,7 @@ import { env, exports } from "cloudflare:workers";
 import { decodeJwt, SignJWT } from "jose";
 import { describe, expect, it } from "vitest";
 import { hashRefreshToken } from "../src/server/auth/tokens";
-import { api, bearer, identityToken, signIn } from "./apple";
+import { api, bearer, deleteMe, identityToken, signIn } from "./apple";
 
 const ORIGIN = "https://madegood.test";
 const WEB_CLIENT = "app.madegood.web";
@@ -405,7 +405,11 @@ describe("DELETE /api/me from the website", () => {
   const remove = (access: string, origin: string | null = ORIGIN) =>
     api(
       "/me",
-      withCookie("mg_at", access, { method: "DELETE", headers: origin ? { origin } : {} }),
+      withCookie("mg_at", access, {
+        method: "DELETE",
+        headers: { "content-type": "application/json", ...(origin ? { origin } : {}) },
+        body: JSON.stringify({ userId: decodeJwt(access).sub }),
+      }),
     );
 
   it("needs a same-origin request, deletes the account and clears the session cookies", async () => {
@@ -415,7 +419,7 @@ describe("DELETE /api/me from the website", () => {
     expect((await api("/me", withCookie("mg_at", access))).status).toBe(200);
 
     const deleted = await remove(access);
-    expect(deleted.status).toBe(204);
+    expect(deleted.status).toBe(202);
     expect(deleted.headers.get("cache-control")).toBe("no-store");
     const cleared = cookies(deleted).values;
     expect(cleared.get("mg_at")).toBe("");
@@ -432,8 +436,8 @@ describe("DELETE /api/me from the website", () => {
 
   it("sets no cookies for an app's bearer request", async () => {
     const app = await signIn();
-    const deleted = await api("/me", { method: "DELETE", headers: bearer(app.accessToken) });
-    expect(deleted.status).toBe(204);
+    const deleted = await deleteMe(app.accessToken, { finish: false });
+    expect(deleted.status).toBe(202);
     expect(deleted.headers.getSetCookie()).toEqual([]);
   });
 });

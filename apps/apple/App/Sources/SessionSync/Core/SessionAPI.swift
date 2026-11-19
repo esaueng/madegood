@@ -83,13 +83,17 @@ final class SessionAPI {
         }
     }
 
-    /// `DELETE /me`: deletes the account and everything uploaded to it. Repeating it with
-    /// the same access token succeeds. Built by hand: the generated client covers only the
-    /// upload operations (Integrations/VoyageRecorder/swift-voyage-generator.yaml).
-    func deleteAccount(bearer: String) async throws {
+    /// `DELETE /me`: deletes the account `accountID` and everything uploaded to it (202: the
+    /// server finishes in the background). The server refuses (409) if the token belongs to
+    /// another account. Repeating it with the same access token succeeds. Built by hand: the
+    /// generated client covers only the upload operations
+    /// (Integrations/VoyageRecorder/swift-voyage-generator.yaml).
+    func deleteAccount(accountID: String, bearer: String) async throws {
         var request = URLRequest(url: baseURL.appending(path: "me"))
         request.httpMethod = "DELETE"
         request.setValue("Bearer " + bearer, forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(["userId": accountID])
         let (data, response) = try await transport.send(request)
         guard (200..<300).contains(response.statusCode) else {
             struct Failure: Decodable { let error: String }

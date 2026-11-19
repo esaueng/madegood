@@ -280,7 +280,13 @@ to `scripts/testflight` as a build setting.
   default visibility), hashed refresh tokens, session metadata and summaries, data
   derived from tracks (bounds, fix times, wind; see
   [Upload post-processing](#upload-post-processing)), and privacy zones. R2 holds each session's gzipped track v1 under the user's prefix.
-- `DELETE /api/me` deletes the user's rows and every R2 object under their prefix.
+- `DELETE /api/me` (with the account's ID in the body) marks the account deleting and
+  revokes its sign-ins at once, then deletes the user's rows, live voyage shares and every
+  R2 object under their prefix (202). Anything that fails is retried by the scheduled
+  sweep (the `triggers.crons` entry in `wrangler.jsonc`), which also deletes the account
+  record once 20 minutes have passed. Without the cron trigger the data is still removed by
+  the request, but the account record stays marked until a sweep runs, and that Apple ID
+  cannot sign in again until then.
 - Workers observability is on in `wrangler.jsonc` (`observability.enabled`), so
   Cloudflare keeps request logs for your account; turn it off there if you do not want
   them.

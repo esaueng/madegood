@@ -3,7 +3,13 @@ import { drizzle } from "drizzle-orm/d1";
 import type { AppEnv } from "../app";
 import { InvalidIdentityToken, parseAudiences, verifyAppleIdentityToken } from "../auth/apple";
 import { issueTokenPair, rotateRefreshToken, signAccessToken } from "../auth/tokens";
-import { cleanDisplayName, findOrCreateUser, toUserBody, UserBody } from "../auth/users";
+import {
+  AccountDeleting,
+  cleanDisplayName,
+  findOrCreateUser,
+  toUserBody,
+  UserBody,
+} from "../auth/users";
 import { apiError, errorResponse } from "../lib/errors";
 import { createRouter } from "../lib/router";
 
@@ -51,6 +57,7 @@ const appleRoute = createRoute({
     },
     400: errorResponse("The request body is invalid."),
     401: errorResponse("The identity token is invalid, expired or for another app."),
+    409: errorResponse("The account is being deleted (`account_deleting`)."),
   },
 });
 
@@ -98,7 +105,20 @@ export const auth = createRouter<AppEnv>()
       throw err;
     }
     const db = drizzle(c.env.DB);
-    const { user } = await findOrCreateUser(db, sub, cleanDisplayName(displayName));
+    let user: Awaited<ReturnType<typeof findOrCreateUser>>["user"];
+    try {
+      ({ user } = await findOrCreateUser(db, sub, cleanDisplayName(displayName)));
+    } catch (err) {
+      if (err instanceof AccountDeleting) {
+        return apiError(
+          c,
+          409,
+          "account_deleting",
+          "This account is being deleted. Try again in an hour to start a new one.",
+        );
+      }
+      throw err;
+    }
     const tokens = await issueTokenPair(db, user.id, c.env.JWT_SIGNING_KEY);
     return c.json({ ...tokens, user: toUserBody(user) }, 200);
   })

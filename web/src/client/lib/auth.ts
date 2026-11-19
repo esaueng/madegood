@@ -20,8 +20,8 @@ export function useSignOut() {
 /** Deletes the account, then forgets everything cached for it, as a sign-out does. */
 export function useDeleteAccount() {
   const queryClient = useQueryClient();
-  return async () => {
-    await deleteAccount();
+  return async (userId: string) => {
+    await deleteAccount(userId);
     queryClient.clear();
     queryClient.setQueryData(meQueryKey, null);
   };

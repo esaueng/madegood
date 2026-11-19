@@ -109,7 +109,11 @@ async function loadZones(
       .select({ lat: privacyZones.lat, lon: privacyZones.lon, radiusM: privacyZones.radiusM })
       .from(privacyZones)
       .where(eq(privacyZones.userId, userId)),
-    db.select({ version: users.zonesVersion }).from(users).where(eq(users.id, userId)),
+    // A deleting account (lib/account-deletion.ts) gets no more processing or wind requests.
+    db
+      .select({ version: users.zonesVersion })
+      .from(users)
+      .where(and(eq(users.id, userId), isNull(users.deletedAt))),
   ]);
   const version = owner[0]?.version;
   return version === undefined ? null : { zones, version };
@@ -319,7 +323,7 @@ export async function staleSessions(
   return db
     .select({ id: sessions.id, revision: sessions.uploadRevision, etag: sessions.trackEtag })
     .from(sessions)
-    .innerJoin(users, eq(users.id, sessions.userId))
+    .innerJoin(users, and(eq(users.id, sessions.userId), isNull(users.deletedAt)))
     .where(
       and(
         eq(sessions.userId, userId),
@@ -442,7 +446,7 @@ export async function ensureUserRequeued(
   const [user] = await db
     .select({ version: users.zonesVersion, queued: users.zonesQueuedVersion })
     .from(users)
-    .where(eq(users.id, userId));
+    .where(and(eq(users.id, userId), isNull(users.deletedAt)));
   if (!user || user.queued >= user.version) return false;
   await enqueuePostprocess(env, ctx, [{ v: 1, kind: "user", userId }]);
   // Only forward: a later zone change keeps the marker behind its own version.
@@ -464,7 +468,7 @@ export async function sweepPendingZoneChanges(
   const pending = await drizzle(env.DB)
     .select({ id: users.id })
     .from(users)
-    .where(lt(users.zonesQueuedVersion, users.zonesVersion))
+    .where(and(lt(users.zonesQueuedVersion, users.zonesVersion), isNull(users.deletedAt)))
     .limit(SWEEP_USERS);
   let queued = 0;
   for (const { id } of pending) {

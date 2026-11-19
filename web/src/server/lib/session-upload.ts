@@ -1,6 +1,6 @@
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import type { drizzle } from "drizzle-orm/d1";
-import { type Session, sessions } from "../db/schema";
+import { type Session, sessions, users } from "../db/schema";
 import { CLEARED_DERIVED } from "./postprocess";
 import { userPrefix } from "./storage";
 import { TRACK_CONTENT_TYPE } from "./track";
@@ -147,6 +147,8 @@ export async function storeTrack(
     eq(sessions.userId, userId),
     isNull(sessions.deletedAt),
     eq(sessions.uploadRevision, revision),
+    // Never attach to an account that is being deleted (lib/account-deletion.ts).
+    sql`EXISTS (SELECT 1 FROM ${users} WHERE ${users.id} = ${userId} AND ${users.deletedAt} IS NULL)`,
   );
   const [attached] = await db
     .update(sessions)
@@ -180,4 +182,33 @@ export async function storeTrack(
       );
   }
   throw new Error("The stored track kept changing while it was attached.");
+}
+
+/** Whether the account exists and is not being deleted (lib/account-deletion.ts). */
+export async function accountActive(db: Db, userId: string): Promise<boolean> {
+  const [row] = await db
+    .select({ id: users.id })
+    .from(users)
+    .where(and(eq(users.id, userId), isNull(users.deletedAt)));
+  return row !== undefined;
+}
+
+/**
+ * Deletes a just-written track object unless the session row of a live account names it:
+ * the cleanup after a failed upload (a D1 error after the put, or the account deleted
+ * meanwhile), so no object is left that nothing points to.
+ */
+export async function removeIfDetached(
+  db: Db,
+  bucket: R2Bucket,
+  { id, userId, key }: { id: string; userId: string; key: string },
+): Promise<boolean> {
+  const [row] = await db
+    .select({ id: sessions.id })
+    .from(sessions)
+    .innerJoin(users, and(eq(users.id, sessions.userId), isNull(users.deletedAt)))
+    .where(and(eq(sessions.id, id), eq(sessions.userId, userId), eq(sessions.trackKey, key)));
+  if (row) return false;
+  await bucket.delete(key);
+  return true;
 }

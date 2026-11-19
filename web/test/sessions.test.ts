@@ -1,8 +1,8 @@
 import { env } from "cloudflare:workers";
 import { drizzle } from "drizzle-orm/d1";
 import { describe, expect, it } from "vitest";
-import { replaceSessionMetadata } from "../src/server/lib/session-upload";
-import { api, bearer, type SignIn, signIn } from "./apple";
+import { removeIfDetached, replaceSessionMetadata } from "../src/server/lib/session-upload";
+import { api, bearer, deleteMe, type SignIn, signIn } from "./apple";
 
 // Synthetic data only (AGENTS.md): positions near 0,0 and dates in 2000.
 const START = "2000-01-01T10:00:00.000Z";
@@ -604,14 +604,58 @@ describe("DELETE /api/sessions/:id", () => {
     expect((await upload.response).status).toBe(404);
     expect(await env.TRACKS.head(trackKey(owner.user.id, id))).toBeNull();
   });
+
+  // Review of #78, finding 3: an upload that lands while the account is being deleted (before
+  // the job has removed its rows) never attaches, and its object is removed at once.
+  it("removes a track that lands while the account is being deleted", async () => {
+    const owner = await signIn();
+    const id = crypto.randomUUID();
+    expect((await putSession(owner.accessToken, id)).status).toBe(201);
+    const upload = pausedUpload(owner.accessToken, id, await gzip(trackJson(id)));
+    await upload.reading;
+    expect((await deleteMe(owner.accessToken, { finish: false })).status).toBe(202);
+    upload.finish();
+    expect((await upload.response).status).toBe(401);
+    expect(await env.TRACKS.head(trackKey(owner.user.id, id))).toBeNull();
+  });
+
+  it("cleans up an object no live row names after a failed upload", async () => {
+    const owner = await signIn();
+    const db = drizzle(env.DB);
+    const id = crypto.randomUUID();
+    expect((await putSession(owner.accessToken, id)).status).toBe(201);
+    const orphan = trackKey(owner.user.id, id);
+    await env.TRACKS.put(orphan, "bytes");
+    // No row names it (the attach never happened): removed.
+    expect(await removeIfDetached(db, env.TRACKS, { id, userId: owner.user.id, key: orphan })).toBe(
+      true,
+    );
+    expect(await env.TRACKS.head(orphan)).toBeNull();
+
+    // The row names it: kept.
+    await env.TRACKS.put(orphan, "bytes");
+    await env.DB.prepare("update sessions set track_key = ? where id = ?").bind(orphan, id).run();
+    expect(await removeIfDetached(db, env.TRACKS, { id, userId: owner.user.id, key: orphan })).toBe(
+      false,
+    );
+    expect(await env.TRACKS.head(orphan)).not.toBeNull();
+
+    // The account is being deleted: removed even though the row still names it.
+    expect((await deleteMe(owner.accessToken, { finish: false })).status).toBe(202);
+    await env.TRACKS.put(orphan, "bytes");
+    await env.DB.prepare("update sessions set track_key = ? where id = ?").bind(orphan, id).run();
+    expect(await removeIfDetached(db, env.TRACKS, { id, userId: owner.user.id, key: orphan })).toBe(
+      true,
+    );
+  });
 });
 
 describe("account deletion", () => {
   it("removes the user's uploaded session tracks", async () => {
     const owner = await signIn();
     const ids = [await sessionWithTrack(owner), await sessionWithTrack(owner, "public")];
-    const response = await api("/me", { method: "DELETE", headers: bearer(owner.accessToken) });
-    expect(response.status).toBe(204);
+    const response = await deleteMe(owner.accessToken);
+    expect(response.status).toBe(202);
     for (const id of ids) expect(await env.TRACKS.head(trackKey(owner.user.id, id))).toBeNull();
     expect((await getSession(null, ids[1] as string)).status).toBe(404);
   });
@@ -625,12 +669,57 @@ describe("account deletion", () => {
     const upload = pausedUpload(owner.accessToken, id, await gzip(trackJson(id)));
     await upload.reading;
 
-    const response = await api("/me", { method: "DELETE", headers: bearer(owner.accessToken) });
-    expect(response.status).toBe(204);
+    const response = await deleteMe(owner.accessToken);
+    expect(response.status).toBe(202);
     upload.finish();
 
-    expect((await upload.response).status).toBe(404);
+    // The account is gone (review of #78): the late upload is refused and leaves nothing.
+    expect((await upload.response).status).toBe(401);
     expect(await env.TRACKS.head(trackKey(owner.user.id, id))).toBeNull();
+  });
+
+  // Review of #78, finding 3: an upload that lands while the account is being deleted (before
+  // the job has removed its rows) never attaches, and its object is removed at once.
+  it("removes a track that lands while the account is being deleted", async () => {
+    const owner = await signIn();
+    const id = crypto.randomUUID();
+    expect((await putSession(owner.accessToken, id)).status).toBe(201);
+    const upload = pausedUpload(owner.accessToken, id, await gzip(trackJson(id)));
+    await upload.reading;
+    expect((await deleteMe(owner.accessToken, { finish: false })).status).toBe(202);
+    upload.finish();
+    expect((await upload.response).status).toBe(401);
+    expect(await env.TRACKS.head(trackKey(owner.user.id, id))).toBeNull();
+  });
+
+  it("cleans up an object no live row names after a failed upload", async () => {
+    const owner = await signIn();
+    const db = drizzle(env.DB);
+    const id = crypto.randomUUID();
+    expect((await putSession(owner.accessToken, id)).status).toBe(201);
+    const orphan = trackKey(owner.user.id, id);
+    await env.TRACKS.put(orphan, "bytes");
+    // No row names it (the attach never happened): removed.
+    expect(await removeIfDetached(db, env.TRACKS, { id, userId: owner.user.id, key: orphan })).toBe(
+      true,
+    );
+    expect(await env.TRACKS.head(orphan)).toBeNull();
+
+    // The row names it: kept.
+    await env.TRACKS.put(orphan, "bytes");
+    await env.DB.prepare("update sessions set track_key = ? where id = ?").bind(orphan, id).run();
+    expect(await removeIfDetached(db, env.TRACKS, { id, userId: owner.user.id, key: orphan })).toBe(
+      false,
+    );
+    expect(await env.TRACKS.head(orphan)).not.toBeNull();
+
+    // The account is being deleted: removed even though the row still names it.
+    expect((await deleteMe(owner.accessToken, { finish: false })).status).toBe(202);
+    await env.TRACKS.put(orphan, "bytes");
+    await env.DB.prepare("update sessions set track_key = ? where id = ?").bind(orphan, id).run();
+    expect(await removeIfDetached(db, env.TRACKS, { id, userId: owner.user.id, key: orphan })).toBe(
+      true,
+    );
   });
 });
 
@@ -781,9 +870,7 @@ describe("deleted sessions stay deleted", () => {
         .bind(owner.user.id)
         .first<{ n: number }>();
     expect((await count())?.n).toBe(1);
-    expect(
-      (await api("/me", { method: "DELETE", headers: bearer(owner.accessToken) })).status,
-    ).toBe(204);
+    expect((await deleteMe(owner.accessToken)).status).toBe(202);
     expect((await count())?.n).toBe(0);
   });
 });

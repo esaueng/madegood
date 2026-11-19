@@ -90,10 +90,14 @@ function* handleCandidates(displayName: string | null) {
   yield `sailor_${randomDigits(12)}`;
 }
 
+/** The Apple account's MadeGood account is being deleted; it cannot sign in until it is gone. */
+export class AccountDeleting extends Error {}
+
 /**
  * Finds the user for an Apple `sub`, creating one with a generated handle on first sign-in.
  * Apple sends the name only on the first authorization, so a provided display name also
- * fills in an existing account that has none.
+ * fills in an existing account that has none. Throws AccountDeleting for an account that
+ * is being deleted (lib/account-deletion.ts).
  */
 export async function findOrCreateUser(
   db: Db,
@@ -101,6 +105,7 @@ export async function findOrCreateUser(
   displayName: string | null,
 ): Promise<{ user: User; created: boolean }> {
   const [existing] = await db.select().from(users).where(eq(users.appleSub, appleSub));
+  if (existing?.deletedAt != null) throw new AccountDeleting();
   if (existing) {
     if (existing.displayName === null && displayName !== null) {
       const [updated] = await db
@@ -124,6 +129,7 @@ export async function findOrCreateUser(
       if (!isUniqueViolation(err)) throw err;
       // A concurrent first sign-in for the same Apple account won the race.
       const [raced] = await db.select().from(users).where(eq(users.appleSub, appleSub));
+      if (raced?.deletedAt != null) throw new AccountDeleting();
       if (raced) return { user: raced, created: false };
       // Otherwise the handle was taken; try the next candidate.
     }

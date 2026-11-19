@@ -25,6 +25,10 @@ struct AccountDeletionTests {
         #expect(request.httpMethod == "DELETE")
         #expect(request.url?.path == "/api/me")
         #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer access-1")
+        // The account the user confirmed, so the server can refuse any other (review of #78).
+        let body = try #require(request.httpBody)
+        #expect(try JSONDecoder().decode([String: String].self, from: body) == ["userId": "synthetic-account"])
+        #expect(request.value(forHTTPHeaderField: "Content-Type") == "application/json")
         // Signed out: no binding, no saved tokens.
         #expect(rig.account.binding == nil)
         #expect(rig.store.credentials == nil)
@@ -68,7 +72,7 @@ struct AccountDeletionTests {
         let rig = try DeletionRig()
         defer { rig.cleanUp() }
         _ = try await rig.signIn()
-        rig.transport.deleteStatuses = [401, 204]
+        rig.transport.deleteStatuses = [401, 202]
 
         try await AccountDeletion.delete(account: rig.account, api: rig.api, ledger: rig.ledger)
 
@@ -90,6 +94,18 @@ struct AccountDeletionTests {
             try await AccountDeletion.delete(account: rig.account, api: rig.api, ledger: rig.ledger)
         }
         #expect(rig.transport.requests.filter { $0.httpMethod == "DELETE" }.count == 1)
+    }
+
+    @Test func treatsAMismatchAsAFailureAndKeepsTheSignIn() async throws {
+        let rig = try DeletionRig()
+        defer { rig.cleanUp() }
+        let binding = try await rig.signIn()
+        rig.transport.deleteStatuses = [409]
+
+        await #expect(throws: VoyageAPIError.http(status: 409, code: "unavailable", retryAfter: nil)) {
+            try await AccountDeletion.delete(account: rig.account, api: rig.api, ledger: rig.ledger)
+        }
+        #expect(rig.account.binding == binding)
     }
 
     @Test func refusesWithoutASignIn() async throws {
@@ -205,8 +221,8 @@ private final class DeletionTransport: SessionSyncTransport {
         }
         if path == "/api/me", request.httpMethod == "DELETE" {
             if let deleteError { throw deleteError }
-            let status = deleteStatuses.isEmpty ? 204 : deleteStatuses.removeFirst()
-            let body = status == 204 ? Data() : Data(#"{"error":"\#(status == 401 ? "unauthorized" : "unavailable")"}"#.utf8)
+            let status = deleteStatuses.isEmpty ? 202 : deleteStatuses.removeFirst()
+            let body = (200..<300).contains(status) ? Data() : Data(#"{"error":"\#(status == 401 ? "unauthorized" : "unavailable")"}"#.utf8)
             return (body, response(request, status))
         }
         return (Data(), response(request, 404))

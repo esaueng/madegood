@@ -86,7 +86,11 @@ final class SessionSync {
         wifiOnly = preferences.bool(forKey: Self.wifiOnlyKey)
     }
 
-    private var isActive: Bool { isEnabled && account.binding != nil }
+    /// True from the start of Delete Account until it fails or the sign-out completes: no
+    /// scan, drain or retry may start (review of #78).
+    @ObservationIgnored private(set) var deletingAccount = false
+
+    private var isActive: Bool { isEnabled && account.binding != nil && !deletingAccount }
     private var policy: SessionNetworkPolicy { SessionNetworkPolicy(allowsCellular: !wifiOnly) }
 
     /// The session's place in the queue, or nil when sync is off or it is not queued.
@@ -164,15 +168,24 @@ final class SessionSync {
     /// saved tokens and this account's sync consent are removed. Recordings stay on the
     /// device. On failure the sign-in is kept (unless its token could not be refreshed).
     func deleteAccount() async throws {
-        // No upload may start while the account is going away; a failure restarts the work.
+        // Sync is off for the whole request: nothing may be uploaded to an account that is
+        // going away. `deletingAccount` keeps the cancelled worker's own restart (its defer
+        // calls kick) and any retry or scan from starting a drain, and background track
+        // uploads are cancelled before DELETE is sent. A failure turns sync back on.
+        deletingAccount = true
         stopWork()
+        await worker?.value
+        await scan?.value
+        await transport.reconcileUploads { _, _ in false }
         do {
             try await AccountDeletion.delete(account: account, api: api, ledger: ledger)
         } catch {
+            deletingAccount = false
             await accountDidChange()
             throw error
         }
         await accountDidChange()
+        deletingAccount = false
     }
 
     private func settingsDidChange() async {
@@ -211,7 +224,7 @@ final class SessionSync {
     /// Queues or re-snapshots finished recordings this account may receive, forgets deleted
     /// ones, then uploads. Call it whenever the library or a trim changes.
     func recordingsChanged() {
-        guard account.binding != nil, launched else { return }
+        guard account.binding != nil, launched, !deletingAccount else { return }
         guard scan == nil else {
             rescan = true
             return

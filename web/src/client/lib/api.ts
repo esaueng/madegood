@@ -190,11 +190,13 @@ export async function signOut(): Promise<void> {
 }
 
 /**
- * Deletes the account and everything uploaded to it (DELETE /api/me). The server clears the
- * session cookies in the same response. Sessions on the user's devices are not touched.
+ * Deletes the account shown to the user, and everything uploaded to it (DELETE /api/me). The
+ * server clears the session cookies in the same response. Sessions on the user's devices are not touched.
  */
-export async function deleteAccount(): Promise<void> {
-  const response = await apiFetch("/me", { method: "DELETE" });
+export async function deleteAccount(userId: string): Promise<void> {
+  // The server refuses (409) unless `userId` is the signed-in account, so a confirmation
+  // left open while another account signed in can never delete that one.
+  const response = await apiFetch("/me", jsonInit("DELETE", { userId }));
   if (!response.ok) throw await failure(response);
 }
 

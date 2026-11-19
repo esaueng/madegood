@@ -18,6 +18,7 @@ const MESSAGES: Record<string, string> = {
   expired: "The sign-in took too long or was started in another tab. Try again.",
   invalid: "Apple's response could not be verified. Try again.",
   unavailable: "Web sign-in is not set up on this server yet.",
+  deleting: "This account is being deleted. Try again in an hour to start a new one.",
 };
 
 function SignIn() {
