@@ -35,7 +35,7 @@ Legend: ✅ done · 🟡 partly done · ⬜ not started
 | 1. Session engine: GPS cleaning, auto-pause, laps | ✅ | #23 |
 | 2. Watch session UI (start, metrics, map, controls, summary) | ✅ | #25, #27, #39, #42 |
 | 3. iPhone mirrored live view, standalone sessions, Live Activity | ✅ | #26, #30, #45, #52 |
-| 4. Storage and watch → phone handoff | ✅ | #6, #31 (track files on disk; no SwiftData) |
+| 4. Storage and watch → phone handoff | ✅ | #6, #31 (track files on disk; SwiftData dropped, #74) |
 | 5. HealthKit save (workout, route, HR) | ✅ | #28 |
 | 6. iPhone history and session detail | ✅ | #26, #49, #50, #51 |
 | 7. GPX export, units settings | ✅ | #24, #39 |
@@ -49,9 +49,8 @@ Also merged: watch complication (#32), appearance setting (#43), sport icons and
 - ⬜ **Exit criterion:** 10 real sessions on TestFlight with no crashes or data loss,
   and a 3-hour watch session at ≤ 20 %/h battery. **Unverified.**
 - ⬜ Set `MADEGOOD_API_URL` for TestFlight builds (empty in `MadeGood.xcconfig`, so
-  TestFlight builds have no sync; see docs/self-hosting.md).
-- ⬜ PLAN §2 lists SwiftData; storage is track files plus JSON. Either update PLAN or
-  open an issue for it.
+  TestFlight builds get it from the `MADEGOOD_API_URL` repository variable, #73).
+- ✅ Storage decided: track files are the store, no SwiftData (#74; closes #18).
 
 ## Phase 2: Sport intelligence
 
@@ -91,7 +90,6 @@ Also merged: watch complication (#32), appearance setting (#43), sport icons and
 | 4. Upload endpoints, R2, queue consumer (wind, bbox) | 🟡 | uploads: #37. No queue consumer (TODO in `routes/sessions.ts`) |
 | 5. Web dashboard, session page, profile, settings | 🟡 | dashboard, session page, settings: #63, #64. No `/u/:handle` profile |
 | 6. Visibility, privacy zones, Open Graph | ✅ | #64 |
-| 7. Strava export (optional) | ⬜ | needs Strava API approval (PLAN §10) |
 
 Also merged: settings sync between devices (#62).
 
@@ -104,7 +102,6 @@ Also merged: settings sync between devices (#62).
   `wind_json`, then an Open Graph map thumbnail.
 - ⬜ Public profile `/u/:handle` and `GET /api/users/:handle` (public sessions only).
 - ⬜ Rate limits on auth and upload (PLAN §7, Workers rate limiting binding).
-- ⬜ Strava export, after API approval.
 - ⬜ **Exit criterion:** sign in on both sides, a watch session on the web within a
   minute, shared link previews, privacy zones checked. **Unverified** on production.
 
