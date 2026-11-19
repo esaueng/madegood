@@ -98,10 +98,10 @@ jobs:
     name: WaterKit tests (macOS)
     needs: changes
     if: needs.changes.outputs.waterkit == 'true' && contains(fromJSON('["push", "workflow_dispatch"]'), github.event_name)
-    runs-on: macos-26
+    runs-on: xcode-27
     timeout-minutes: 20
     env:
-      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -113,10 +113,10 @@ jobs:
     name: iOS + watchOS build (simulator)
     needs: changes
     if: needs.changes.outputs.apple == 'true'
-    runs-on: macos-26
+    runs-on: xcode-27
     timeout-minutes: 30
     env:
-      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
       TUIST_DISABLE_ANALYTICS: "1"
       MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}
     defaults:
@@ -196,10 +196,10 @@ jobs:
     name: iOS + watchOS UI tests
     needs: changes
     if: needs.changes.outputs.apple == 'true' && contains(fromJSON('["push", "workflow_dispatch"]'), github.event_name)
-    runs-on: macos-26
+    runs-on: xcode-27
     timeout-minutes: 90
     env:
-      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
       TUIST_DISABLE_ANALYTICS: "1"
       MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}
     defaults:

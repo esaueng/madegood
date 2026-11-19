@@ -10,6 +10,7 @@ import {
   runAccountDeletion,
   sweepAccountDeletions,
 } from "../src/server/lib/account-deletion";
+import { createExportJob, firstMessage, runExportStep } from "../src/server/lib/export-job";
 import { processMessage } from "../src/server/lib/postprocess";
 import {
   CLAIM_LEASE_MS,
@@ -673,5 +674,30 @@ describe("last review of #78", () => {
     });
     await discardUpload(db(), env.TRACKS, attached, named.user.id);
     expect(await env.TRACKS.head(attached)).not.toBeNull();
+  });
+});
+
+describe("account deletion with account exports (#79)", () => {
+  it("removes the account's export jobs and their files, and a locked account cannot start one", async () => {
+    const owner = await signIn();
+    await sessionWithKey(owner.user.id, `${userPrefix(owner.user.id)}sessions/<id>/track.v1.gz`);
+    const storage = { DB: env.DB, TRACKS: env.TRACKS };
+    const created = await createExportJob(storage, owner.user.id);
+    if (created.kind !== "created") throw new Error(created.kind);
+    let next: Awaited<ReturnType<typeof runExportStep>> = firstMessage(created.job);
+    while (next) next = await runExportStep(storage, next);
+    const prefix = `${userPrefix(owner.user.id)}exports/`;
+    expect((await env.TRACKS.list({ prefix })).objects.length).toBeGreaterThan(1);
+
+    expect(await requestAccountDeletion(env.DB, owner.user.id)).toBe(true);
+    expect((await createExportJob(storage, owner.user.id)).kind).toBe("account_gone");
+    // The first pass (still inside the grace period) already removes the jobs and files.
+    expect(await runAccountDeletion(env, owner.user.id)).toBe("pending");
+    expect(await one("select id from export_jobs where user_id = ?", owner.user.id)).toBeNull();
+    expect((await env.TRACKS.list({ prefix })).objects).toHaveLength(0);
+    expect(
+      await runAccountDeletion(env, owner.user.id, Date.now() + DELETION_GRACE_MS + 1000),
+    ).toBe("done");
+    expect(await one("select id from users where id = ?", owner.user.id)).toBeNull();
   });
 });

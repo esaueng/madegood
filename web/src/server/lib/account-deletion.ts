@@ -88,6 +88,9 @@ export async function runAccountDeletion(
     d1.prepare("DELETE FROM privacy_zones WHERE user_id = ?").bind(userId),
     d1.prepare("DELETE FROM voyages WHERE user_id = ?").bind(userId),
     d1.prepare("DELETE FROM refresh_tokens WHERE user_id = ?").bind(userId),
+    // Export jobs (lib/export-job.ts): their files are under the prefix swept below, and a
+    // step still running finds its row gone and deletes what it wrote.
+    d1.prepare("DELETE FROM export_jobs WHERE user_id = ?").bind(userId),
   ]);
   const collect = async () => {
     // Every recorded key of the user, in or out of the prefix, once no upload can still be

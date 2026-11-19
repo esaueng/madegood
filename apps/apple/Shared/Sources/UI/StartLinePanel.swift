@@ -84,7 +84,7 @@ struct StartLinePanel: View {
         if let bias = reading.bias {
             Text("Favoured: \(LiveDisplay.bias(bias))")
                 .font(compact ? .caption2 : .footnote.weight(.semibold))
-                .foregroundStyle(compact ? Theme.brightTeal : Color.accentColor)
+                .foregroundStyle(compact ? Theme.brightPetrol : Color.accentColor)
                 .accessibilityLabel(
                     bias.favoured == nil
                         ? "Line square to the wind"
@@ -127,7 +127,7 @@ struct StartLinePanel: View {
             .frame(maxWidth: .infinity, minHeight: compact ? 32 : 44)
         }
         .buttonStyle(.glass)
-        .tint(isSet ? Theme.brightTeal : nil)
+        .tint(isSet ? Theme.brightPetrol : nil)
         .disabled(startLine.pending != nil)
         .accessibilityLabel(isPending ? "Pinging \(name.lowercased()) end" : "Ping \(name.lowercased()) end")
         .accessibilityValue(isSet ? "Set" : "Not set")

@@ -6,6 +6,10 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "madegood",
   "main": "./src/server/index.ts",
+  // Production serves only its custom domain (CANONICAL_ORIGIN); the workers.dev address is off.
+  // Preview versions keep their *-madegood.<subdomain>.workers.dev URLs.
+  "workers_dev": false,
+  "preview_urls": true,
   "compatibility_date": "2026-10-01",
   "compatibility_flags": ["nodejs_compat"],
   "observability": { "enabled": true },
@@ -25,10 +29,13 @@
   // Production web sign-in uses the Services ID app.madegood.web (return URL
   // https://<production host>/api/auth/web/apple/callback). Previews stay off: their
   // per-PR hosts aren't registered return URLs.
+  // CANONICAL_ORIGIN: the one public address. Pages (and the SPA, via
+  // VITE_CANONICAL_ORIGIN at build time) on any other host move there; /api answers on all.
   "vars": {
     "APP_VERSION": "0.1.0",
     "APPLE_AUDIENCES": "app.madegood",
-    "APPLE_WEB_CLIENT_ID": "app.madegood.web"
+    "APPLE_WEB_CLIENT_ID": "app.madegood.web",
+    "CANONICAL_ORIGIN": "https://madegood.app"
   },
   "d1_databases": [
     {
@@ -47,7 +54,11 @@
   // that fails max_retries times lands in the dead-letter queue, which has no consumer:
   // inspect or replay it from the dashboard.
   "queues": {
-    "producers": [{ "binding": "POSTPROCESS", "queue": "madegood-postprocess" }],
+    "producers": [
+      { "binding": "POSTPROCESS", "queue": "madegood-postprocess" },
+      // Account exports (src/server/lib/export-job.ts): one ZIP part per message.
+      { "binding": "EXPORTS", "queue": "madegood-exports" }
+    ],
     "consumers": [
       {
         "queue": "madegood-postprocess",
@@ -55,19 +66,30 @@
         "max_batch_timeout": 5,
         "max_retries": 5,
         "dead_letter_queue": "madegood-postprocess-dlq"
+      },
+      {
+        // One part per invocation keeps each step inside a Worker's subrequest and CPU
+        // limits. No dead-letter queue: the scheduled sweep resumes or fails a stuck job.
+        "queue": "madegood-exports",
+        "max_batch_size": 1,
+        "max_batch_timeout": 1,
+        "max_retries": 3
       }
     ]
   },
-  // Sweep for privacy zone changes whose reprocessing could not be queued (postprocess.ts).
+  // Sweep for privacy zone changes whose reprocessing could not be queued (postprocess.ts),
+  // and for account exports to expire, resume or fail (export-job.ts).
   "triggers": { "crons": ["*/30 * * * *"] },
   "env": {
     // Per-PR previews use their own database and bucket, never production data.
     "preview": {
+      "workers_dev": true,
       "name": "madegood-preview",
       "vars": {
         "APP_VERSION": "0.1.0-preview",
         "APPLE_AUDIENCES": "app.madegood",
-        "APPLE_WEB_CLIENT_ID": ""
+        "APPLE_WEB_CLIENT_ID": "",
+        "CANONICAL_ORIGIN": ""
       },
       "d1_databases": [
         {

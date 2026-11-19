@@ -52,6 +52,7 @@ pnpm exec wrangler d1 create madegood
 pnpm exec wrangler r2 bucket create madegood-tracks
 pnpm exec wrangler queues create madegood-postprocess
 pnpm exec wrangler queues create madegood-postprocess-dlq
+pnpm exec wrangler queues create madegood-exports
 ```
 
 Put the printed `database_id` into `web/wrangler.jsonc` **in your deployment copy
@@ -129,6 +130,14 @@ fork:
   environment has no Durable Object bindings.
 - Each push to `main` that touches `web/` builds, creates the post-processing queues
   if they are missing, applies migrations, then deploys production.
+
+**One public address.** Set `CANONICAL_ORIGIN` in `web/wrangler.jsonc` (production `vars`)
+and `VITE_CANONICAL_ORIGIN` in the production build step of `.github/workflows/deploy.yml` to
+your custom domain (for example `https://madegood.example`). Pages on any other host, such as
+the `workers.dev` address, move there; `/api` answers on every host. With a custom domain you can
+also turn the production `workers.dev` address off (`"workers_dev": false` in `wrangler.jsonc`,
+as this repository does) — then point the deploy workflow's health check at your domain. Register that domain and `https://<domain>/api/auth/web/apple/callback` on the
+Sign in with Apple Services ID, and point `MADEGOOD_API_URL` at `https://<domain>/api`.
 
 Set in the repository (Settings → Secrets and variables → Actions):
 
@@ -232,6 +241,42 @@ shared. Each request to
 No account, session ID, track, title or API key is sent. Open-Meteo's free API is for
 non-commercial use; a commercial deployment needs its own Open-Meteo plan. Wind is a
 model value for the area, shown as such, and not for navigation.
+
+## Account export
+
+Settings → Export all my data on the website runs a background job
+(`src/server/lib/export-job.ts`):
+
+- `POST /api/me/exports` first inserts the job in one conditional statement (the account
+  active, no export running, fewer than three started in the last day), then freezes a
+  snapshot (every session's ID, upload revision, track
+  key and ETag; every voyage and leg) as JSON in R2 under the user's prefix
+  (`users/<id>/exports/<export>/snapshot.json`) and records the job in D1 (`export_jobs`).
+  Concurrent requests cannot get past either limit. A failure after the snapshot is
+  written deletes it again.
+- Each message on `madegood-exports` (batch size 1) claims its step in D1 with an
+  attempt token (a claim is protected for 10 minutes), builds one ZIP part into an R2
+  multipart upload under a key that includes the token, and commits it by compare-and-swap;
+  an attempt that lost its claim deletes only its own objects, and the job's cursor moves
+  only from a committed part's listing. Documents come first (sessions in files of 250,
+  looked up by the frozen IDs and written one compact JSON line per session, the stored
+  summary embedded as is), then tracks by their frozen key and ETag. A part stops at 500 MiB, 400 items or
+  700 storage calls, then queues the next step. A track replaced since the snapshot is
+  exported at its current version (noted in `manifest.json`); one that is gone, and a
+  session document over 256 KiB, is listed in `errors.json`. The job reports how many
+  items were left out (`omitted`), and the README names them at the top.
+- A failure after a part commits never deletes that part. A job whose snapshot could not
+  be deleted after a failed start is kept as failed until the sweep deletes its objects.
+- The last step writes part 1 (README, account, privacy zones, manifest, errors) and marks
+  the job ready for 7 days.
+- The cron sweep deletes expired parts, re-sends the step of a job untouched for 30
+  minutes (a lost message), and fails a job still unfinished after 12 hours. Rows of
+  expired and failed jobs go after 30 days.
+- Without the `EXPORTS` binding (previews), steps run after the response with `waitUntil`
+  for up to 20 s, and the sweep continues the rest, so large exports are slow there.
+- Account deletion removes the export objects with the rest of the user's prefix, and the
+  job rows in its first pass (the account is locked by then, so no new job starts); a step for an account that is gone or being deleted stops and
+  deletes what it wrote.
 
 ## Apple setup
 

@@ -35,7 +35,7 @@ function SignIn() {
         </p>
       )}
       <a
-        href={signInUrl(next ?? "/app")}
+        href={signInUrl(next ?? "/sessions")}
         className={cn(
           buttonVariants({ size: "lg" }),
           "mt-6 bg-black text-white hover:bg-black/85 dark:bg-white dark:text-black dark:hover:bg-white/85",

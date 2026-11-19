@@ -33,6 +33,10 @@ export const errorCodes = [
   "account_mismatch",
   "account_deleting",
   "upload_expired",
+  "export_in_progress",
+  "export_too_large",
+  "export_not_ready",
+  "rate_limited",
 ] as const;
 export type ErrorCode = (typeof errorCodes)[number];
 

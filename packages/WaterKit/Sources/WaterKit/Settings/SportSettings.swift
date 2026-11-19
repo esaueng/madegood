@@ -303,6 +303,32 @@ public enum SportList {
             .map(\.element)
     }
 
+    /// Visible sports in the user's own order (set by dragging on the start screen).
+    /// Sports missing from `custom` (added in a later build) follow in their usual order.
+    public static func ordered(custom: [Sport], hidden: Set<Sport>) -> [Sport] {
+        let visible = Sport.allCases.filter { !hidden.contains($0) }
+        let shown = visible.isEmpty ? Sport.allCases : visible
+        let known = complete(custom)
+        return known.filter(shown.contains)
+    }
+
+    /// The full custom order after the visible sports were rearranged into `visible`.
+    /// Hidden sports keep their slots, so showing one again puts it back where it was.
+    public static func reordered(custom: [Sport], visible: [Sport]) -> [Sport] {
+        var order = complete(custom)
+        let slots = order.indices.filter { visible.contains(order[$0]) }
+        guard slots.count == visible.count else { return order }
+        for (slot, sport) in zip(slots, visible) { order[slot] = sport }
+        return order
+    }
+
+    /// `custom` without duplicates, then every sport it lacks in the usual order.
+    private static func complete(_ custom: [Sport]) -> [Sport] {
+        var seen = Set<Sport>()
+        let unique = custom.filter { seen.insert($0).inserted }
+        return unique + Sport.allCases.filter { !seen.contains($0) }
+    }
+
     /// Whether `sport` may be hidden: at least one sport must stay visible.
     public static func canHide(_ sport: Sport, hidden: Set<Sport>) -> Bool {
         hidden.contains(sport) || Sport.allCases.contains { $0 != sport && !hidden.contains($0) }

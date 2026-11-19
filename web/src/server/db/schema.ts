@@ -277,3 +277,37 @@ export const pendingR2Deletes = sqliteTable(
   },
   (table) => [index("pending_r2_deletes_user").on(table.userId, table.createdAt)],
 );
+
+/**
+ * Account export jobs (lib/export-job.ts). The frozen snapshot and the built ZIP parts live
+ * in R2 under the user's prefix (`exports/<id>/`), so deleting the account removes them.
+ * `cursor` is the next item of the snapshot's plan to write; `nextPart` the part number it
+ * goes into (part 1, the manifest, is written last).
+ */
+export const exportJobs = sqliteTable(
+  "export_jobs",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    status: text("status", { enum: ["queued", "building", "ready", "failed", "expired"] })
+      .notNull()
+      .default("queued"),
+    cursor: integer("cursor").notNull().default(0),
+    totalItems: integer("total_items").notNull().default(0),
+    nextPart: integer("next_part").notNull().default(2),
+    /** JSON: [{ part, bytes, key, listing }] for every committed part. */
+    partsJson: text("parts_json").notNull().default("[]"),
+    /** The step attempt that holds the claim on (cursor, nextPart), and since when. */
+    attempt: text("attempt"),
+    attemptAt: timestamp("attempt_at"),
+    error: text("error"),
+    createdAt: timestamp("created_at").notNull(),
+    updatedAt: timestamp("updated_at").notNull(),
+    expiresAt: timestamp("expires_at"),
+  },
+  (table) => [index("export_jobs_user_created").on(table.userId, table.createdAt)],
+);
+
+export type ExportJob = typeof exportJobs.$inferSelect;

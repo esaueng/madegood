@@ -164,3 +164,46 @@ extension GPSFix {
         return d > 180 ? d - 360 : d
     }
 }
+
+final class LocalWeatherRequestTests: XCTestCase {
+    /// Only the position rounded to 0.1° (about 10 km) and the variables leave the phone.
+    func testCurrentRequestSendsRoundedPositionOnly() throws {
+        let request = OpenMeteo.currentRequest(latitude: 10.04, longitude: -30.06)
+        let url = try XCTUnwrap(request.url)
+        XCTAssertEqual(url.host, "api.open-meteo.com")
+        let items = try XCTUnwrap(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems)
+        let query = Dictionary(uniqueKeysWithValues: items.map { ($0.name, $0.value ?? "") })
+        XCTAssertEqual(query["latitude"], "10.0")
+        XCTAssertEqual(query["longitude"], "-30.1")
+        XCTAssertEqual(query["current"], WeatherNow.currentVariables)
+        XCTAssertEqual(query["hourly"], WeatherNow.hourlyVariables)
+        XCTAssertEqual(query["wind_speed_unit"], "ms")
+        XCTAssertEqual(Set(query.keys), [
+            "latitude", "longitude", "current", "hourly", "forecast_hours", "wind_speed_unit", "timeformat",
+            "timezone",
+        ])
+        XCTAssertFalse(request.httpShouldHandleCookies)
+    }
+
+    func testWeatherTextUsesWholeNumbersAndCompass() {
+        let weather = WeatherNow(time: 0, temperature: 20, code: 1, windSpeed: 6.5, windGust: 9.5, windFrom: 225)
+        let text = WeatherText(weather, speedUnit: .knots)
+        XCTAssertEqual(text.headline, "Good sailing breeze")
+        XCTAssertEqual(text.wind, "13 kn SW · gusts 18")
+        XCTAssertEqual(WeatherText.compass(350), "N")
+        XCTAssertEqual(WeatherText.compass(-90), "W")
+        XCTAssertEqual(WeatherText.when(1_000, now: 0), "soon")
+    }
+
+    /// Regression: a cached answer's warning is worded against the clock, not the fetch.
+    func testWarningTimeFollowsTheClock() {
+        let thunderAt = 1_800_003_600.0
+        let weather = WeatherNow(
+            time: 1_800_000_000, temperature: 20, code: 1, windSpeed: 5, windFrom: 225,
+            hours: [.init(time: thunderAt + 3_600, code: 95)])
+        let fresh = WeatherText(weather, speedUnit: .knots, now: Date(timeIntervalSince1970: weather.time))
+        XCTAssertTrue(fresh.warning?.hasPrefix("Thunder likely by ") == true, fresh.warning ?? "nil")
+        let later = WeatherText(weather, speedUnit: .knots, now: Date(timeIntervalSince1970: thunderAt - 600))
+        XCTAssertEqual(later.warning, "Thunder likely soon")
+    }
+}

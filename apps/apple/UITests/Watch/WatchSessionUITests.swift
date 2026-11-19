@@ -128,7 +128,7 @@ final class WatchSessionUITests: XCTestCase {
         app.terminate()
         XCTAssertTrue(app.wait(for: .notRunning, timeout: 20))
         sleep(3)
-        let relaunched = launchDemoApp()
+        let relaunched = launchDemoApp(resetSettings: false)
         XCTAssertTrue(relaunched.buttons["mob.clear"].waitForExistence(timeout: 15))
         relaunched.buttons["mob.clear"].tap()
         XCTAssertTrue(relaunched.buttons["sport.kayak"].waitForExistence(timeout: 10))
