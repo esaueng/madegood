@@ -18,11 +18,25 @@ extension XCTestCase {
     /// `launch()` does not terminate it and the test ends up driving a process without its
     /// arguments (no demo mode, the real voyage library). Terminate any running copy first.
     func launchFresh(_ app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
-        if app.state != .notRunning {
-            app.terminate()
-            XCTAssertTrue(app.wait(for: .notRunning, timeout: 10), "App still running", file: file, line: line)
-        }
+        if app.state != .notRunning { terminateAndSettle(app, file: file, line: line) }
         app.launch()
+    }
+
+    /// Terminates `app` and makes sure it stays stopped: if the system starts it again
+    /// within two seconds (see `launchFresh`), terminates that copy too.
+    func terminateAndSettle(_ app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
+        for _ in 0..<3 {
+            if app.state != .notRunning {
+                app.terminate()
+                XCTAssertTrue(app.wait(for: .notRunning, timeout: 10), "App still running", file: file, line: line)
+            }
+            let restarted = XCTNSPredicateExpectation(
+                predicate: NSPredicate(
+                    format: "state != %@", NSNumber(value: XCUIApplication.State.notRunning.rawValue)),
+                object: app)
+            if XCTWaiter().wait(for: [restarted], timeout: 2) != .completed { return }
+        }
+        XCTFail("The system kept starting the app", file: file, line: line)
     }
 
     /// An independent synthetic library for each test, preserved across that test's relaunches.

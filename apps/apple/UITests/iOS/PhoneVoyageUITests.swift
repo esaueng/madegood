@@ -33,11 +33,16 @@ final class PhoneVoyageUITests: XCTestCase {
         let countBeforeRestart = try XCTUnwrap((savedCount.value as? String).flatMap(Int.init))
         XCTAssertGreaterThan(countBeforeRestart, 0)
 
-        // Stop the simulated fixes first: with a leg recording, a location update after
-        // the terminate makes Core Location relaunch the app in the background, without
-        // this test's environment. The leg must come back from the explicit launch.
+        // Stop the leg's location updates and sessions (the leg stays active) and the
+        // simulated fixes before terminating: otherwise Core Location relaunches the app in
+        // the background, without this test's environment. The leg must come back from the
+        // explicit launch.
+        let stopUpdates = app.buttons["voyage.test.stopUpdates"]
+        scrollTo(stopUpdates, in: app)
+        stopUpdates.tap()
+        XCTAssertTrue(app.buttons["Resume Leg"].waitForExistence(timeout: 10))
         XCUIDevice.shared.location = nil
-        app.terminate()
+        terminateAndSettle(app)
         launchFresh(app)
         openVoyages(in: app)
         let activeLeg = element("voyage.activeLeg", in: app)
