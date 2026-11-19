@@ -222,8 +222,11 @@ track v1:
   great circle, or any path monotonic in latitude and in longitude the short way round
   (such as a straight line on a Mercator map, or linear interpolation in degrees). Readers
   must take the short way round across ±180°.
-- Shared copies are built only for tracks up to 16 MiB inflated; above that, others get
-  422 `track_too_large` and only the owner can download the track.
+- Fixes beyond Web Mercator's latitude limit (±85.0511°) are left out, with a gap, since
+  maps clamp them to their edge and would draw a line the check never covered. Readers
+  must draw shared lines without simplification (MapLibre: `tolerance: 0`).
+- Shared copies are built only for tracks up to 8 MiB inflated and 500,000 fixes; above
+  that, others get 422 `track_too_large` and only the owner can download the track.
 - `hr` is empty. Events are limited to `start`, `stop`, `pause`, `resume`, `lap`, `tack`
   and `gybe`, with no `data` except a numeric `durationS` on maneuvers.
 - `summary` holds only the numbers the API shares with other viewers.

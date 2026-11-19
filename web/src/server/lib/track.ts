@@ -23,11 +23,12 @@ export const TRACK_SPORTS = [
 
 /**
  * Largest inflated track the server parses to build a shared (privacy-filtered) copy:
- * 16 MiB, about 70 hours at 1 Hz. Parsing holds the bytes and the parsed document at once,
- * so a 64 MiB track would not fit in a Worker's 128 MiB. The owner still downloads any
- * stored track; others get 422 `track_too_large` above this.
+ * 8 MiB, about 45 hours at 1 Hz (about 50 bytes a fix). Parsing materializes the whole
+ * document, then the copy and its JSON are built beside it, so the cap keeps all of that
+ * well inside a Worker's 128 MiB. session-privacy.ts also caps the fix count. The owner
+ * still downloads any stored track; others get 422 `track_too_large` above either cap.
  */
-export const SHARED_TRACK_MAX_INFLATED_BYTES = 16 * 1024 * 1024;
+export const SHARED_TRACK_MAX_INFLATED_BYTES = 8 * 1024 * 1024;
 
 export class TrackTooLarge extends Error {}
 

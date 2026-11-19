@@ -1,3 +1,4 @@
+import { TrackTooLarge } from "./track";
 import { distanceM, ZONE_MARGIN_M } from "./voyage-sharing";
 
 // What others see of a session's track (docs/PLAN.md §7: "privacy zones cut out on the
@@ -28,7 +29,14 @@ const finite = (value: unknown): value is number =>
 const record = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-type Fix = { t: number; lat: number; lon: number; spd: unknown; crs: unknown; hacc: unknown };
+/**
+ * Web Mercator's latitude limit (atan(sinh(π))), where maps clamp positions. Shared
+ * copies leave out fixes beyond it.
+ */
+export const MERCATOR_MAX_LAT = 85.0511287798066;
+
+/** Most GPS fixes a shared copy is built from: about 139 hours at 1 Hz. */
+export const SHARED_TRACK_MAX_FIXES = 500_000;
 
 export const insideZone = (fix: { lat: number; lon: number }, zones: readonly Zone[]) =>
   zones.some((zone) => distanceM(zone, fix) <= zone.radiusM + ZONE_MARGIN_M);
@@ -79,7 +87,7 @@ export const arcClearsZones = (
  * The track v1 document others may see: fixes inside a zone removed, a `privacyGap` event
  * wherever the line must break, no heart rate, allowlisted events without free-form data,
  * no optional GPS columns, and the shared summary. Returns null when `track` is not a
- * track v1 document.
+ * track v1 document; throws TrackTooLarge above SHARED_TRACK_MAX_FIXES.
  */
 export function shareTrack(
   track: unknown,
@@ -98,18 +106,29 @@ export function shareTrack(
     unknown[],
   ];
 
+  // Bounded before allocating anything per fix (re-check of #64).
+  if (t.length > SHARED_TRACK_MAX_FIXES) throw new TrackTooLarge();
+
   // Fixes without a usable time or position are dropped. That is safe: whether a line may
-  // join the visible fixes on either side is decided from those two fixes alone.
-  const fixes: Fix[] = [];
+  // join the visible fixes on either side is decided from those two fixes alone. So are
+  // fixes beyond Web Mercator's latitude limit: a map clamps them to its edge, where the
+  // line it draws is not the one the crossing check bounds; a gap marks where they were.
+  // Columns are read in place; the only per-fix allocation is one index array.
+  const valid = new Uint32Array(t.length);
+  let count = 0;
+  const beyondMap = new Set<number>();
   for (let i = 0; i < t.length; i++) {
     const [ti, la, lo] = [t[i], lat[i], lon[i]];
     if (!finite(ti) || !finite(la) || !finite(lo) || Math.abs(la) > 90 || Math.abs(lo) > 180) {
       continue;
     }
-    fixes.push({ t: ti, lat: la, lon: lo, spd: spd[i], crs: crs[i], hacc: hacc[i] });
+    if (Math.abs(la) > MERCATOR_MAX_LAT) beyondMap.add(i);
+    valid[count++] = i;
   }
   // Stable sort by time, so lines and gaps follow time order (docs/formats.md).
-  fixes.sort((a, b) => a.t - b.t);
+  const order = Array.from(valid.subarray(0, count)).sort(
+    (a, b) => (t[a] as number) - (t[b] as number) || a - b,
+  );
 
   const out = {
     t: [] as number[],
@@ -122,23 +141,26 @@ export function shareTrack(
   // Gaps are marked by the index of the first fix after them in the shared columns, never
   // by time alone: fixes on both sides of a zone can share a timestamp.
   const gaps: { t: number; index: number }[] = [];
-  let previous: Fix | null = null;
+  let previous = -1;
   let hiddenSincePrevious = false;
-  for (const fix of fixes) {
-    if (insideZone(fix, zones)) {
+  for (const i of order) {
+    const fix = { lat: lat[i] as number, lon: lon[i] as number };
+    if (beyondMap.has(i) || insideZone(fix, zones)) {
       hiddenSincePrevious = true;
       continue;
     }
-    if (previous && (hiddenSincePrevious || !arcClearsZones(previous, fix, zones))) {
-      gaps.push({ t: fix.t, index: out.t.length });
+    const before =
+      previous < 0 ? null : { lat: lat[previous] as number, lon: lon[previous] as number };
+    if (before && (hiddenSincePrevious || !arcClearsZones(before, fix, zones))) {
+      gaps.push({ t: t[i] as number, index: out.t.length });
     }
-    out.t.push(fix.t);
+    out.t.push(t[i] as number);
     out.lat.push(fix.lat);
     out.lon.push(fix.lon);
-    out.spd.push(finite(fix.spd) ? fix.spd : null);
-    out.crs.push(finite(fix.crs) ? fix.crs : null);
-    out.hacc.push(finite(fix.hacc) ? fix.hacc : null);
-    previous = fix;
+    out.spd.push(finite(spd[i]) ? spd[i] : null);
+    out.crs.push(finite(crs[i]) ? crs[i] : null);
+    out.hacc.push(finite(hacc[i]) ? hacc[i] : null);
+    previous = i;
     hiddenSincePrevious = false;
   }
 

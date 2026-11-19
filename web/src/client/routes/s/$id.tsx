@@ -253,7 +253,7 @@ function Replay({ source, isOwner, units }: { source: Track; isOwner: boolean; u
       <Suspense
         fallback={<div className="h-72 animate-pulse rounded-xl border bg-muted sm:h-[28rem]" />}
       >
-        <TrackMap track={track} maxSpeed={maxSpeed} cursor={cursor} />
+        <TrackMap track={track} maxSpeed={maxSpeed} cursor={cursor} isOwner={isOwner} />
       </Suspense>
       <SpeedLegend maxSpeed={maxSpeed} units={units} />
       <div className="flex flex-wrap items-center gap-3 rounded-xl border bg-card p-3">

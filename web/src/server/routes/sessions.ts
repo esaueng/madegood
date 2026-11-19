@@ -6,7 +6,7 @@ import { optionalAuth, requireAuth } from "../auth/middleware";
 import { privacyZones, type Session, sessions, users } from "../db/schema";
 import { apiError, errorResponse } from "../lib/errors";
 import { createRouter } from "../lib/router";
-import { shareTrack } from "../lib/session-privacy";
+import { SHARED_TRACK_MAX_FIXES, shareTrack } from "../lib/session-privacy";
 import { deletePrefix, userPrefix } from "../lib/storage";
 import {
   checkTrack,
@@ -414,8 +414,9 @@ const getTrackRoute = createRoute({
     401: errorResponse("An access token was sent but is invalid."),
     404: errorResponse("No such session or track, or the caller may not see it."),
     422: errorResponse(
-      `The track inflates to more than ${SHARED_TRACK_MAX_INFLATED_BYTES} bytes, too large to ` +
-        "filter for a viewer other than the owner (`track_too_large`).",
+      `The track inflates to more than ${SHARED_TRACK_MAX_INFLATED_BYTES} bytes or has more ` +
+        `than ${SHARED_TRACK_MAX_FIXES} fixes, too large to filter for a viewer other than ` +
+        "the owner (`track_too_large`).",
     ),
   },
 });
@@ -633,7 +634,7 @@ sessionRoutes.openapi(getTrackRoute, async (c) => {
           c,
           422,
           "track_too_large",
-          `Tracks over ${SHARED_TRACK_MAX_INFLATED_BYTES} bytes inflated are shown to their owner only.`,
+          "This track is too large to filter for anyone but its owner.",
         );
       }
       shared = null;

@@ -2134,7 +2134,7 @@
             }
           },
           "422": {
-            "description": "The track inflates to more than 16777216 bytes, too large to filter for a viewer other than the owner (`track_too_large`).",
+            "description": "The track inflates to more than 8388608 bytes or has more than 500000 fixes, too large to filter for a viewer other than the owner (`track_too_large`).",
             "content": {
               "application/json": {
                 "schema": {

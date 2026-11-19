@@ -1,13 +1,16 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
+import { trackSourceOptions } from "../src/client/components/session/colors";
 import { parseTrack, positionAt, speedLines } from "../src/client/lib/track";
 import {
   arcClearsZones,
   drawnLengthBoundM,
+  MERCATOR_MAX_LAT,
   PRIVACY_GAP_EVENT,
+  SHARED_TRACK_MAX_FIXES,
   shareTrack,
 } from "../src/server/lib/session-privacy";
-import { SHARED_TRACK_MAX_INFLATED_BYTES } from "../src/server/lib/track";
+import { SHARED_TRACK_MAX_INFLATED_BYTES, TrackTooLarge } from "../src/server/lib/track";
 import { MAX_ZONES } from "../src/server/routes/privacy-zones";
 import { injectPreview, sessionPreviewPage } from "../src/server/routes/session-preview";
 import { api, bearer, type SignIn, signIn } from "./apple";
@@ -276,6 +279,55 @@ describe("review of #64", () => {
     const statuses = responses.map((r) => r.status);
     expect(statuses.filter((s) => s === 201)).toHaveLength(MAX_ZONES);
     expect(statuses.filter((s) => s === 409)).toHaveLength(5);
+  });
+});
+
+describe("scoped re-check of #64", () => {
+  const gpsTrack = (t: number[], lat: number[], lon: number[]) => ({
+    v: 1,
+    gps: { t, lat, lon, spd: t.map(() => 1), crs: t.map(() => 0), hacc: t.map(() => 4) },
+    events: [],
+  });
+
+  // Finding 1: MapLibre must not simplify a shared line into a shortcut through a zone.
+  it("turns off line simplification for everyone but the owner", () => {
+    expect(trackSourceOptions(false)).toEqual({ tolerance: 0 });
+    expect(trackSourceOptions(true)).toEqual({});
+  });
+
+  // Finding 2: maps clamp latitudes beyond Web Mercator's limit.
+  it("leaves out fixes beyond the Mercator limit, where the map would draw elsewhere", () => {
+    const zone = { lat: MERCATOR_MAX_LAT, lon: 10, radiusM: 1000 };
+    const polar = shareTrack(gpsTrack([0, 1], [89, 89], [9, 11]), [zone], null) ?? {};
+    expect((polar.gps as { t: number[] }).t).toEqual([]);
+
+    const mixed = shareTrack(gpsTrack([0, 1, 2], [80, 89, 80], [0, 0, 0.001]), [], null) ?? {};
+    expect((mixed.gps as { t: number[] }).t).toEqual([0, 2]);
+    expect(mixed.events).toEqual([{ t: 2, type: PRIVACY_GAP_EVENT, data: { index: 1 } }]);
+  });
+
+  // Finding 3: a fix-count cap before any per-fix work.
+  it("refuses to build a shared copy from more than the fix cap", () => {
+    const n = SHARED_TRACK_MAX_FIXES + 1;
+    const zeros = new Array<number>(n).fill(0);
+    expect(() => shareTrack(gpsTrack(zeros, zeros, zeros), [], null)).toThrow(TrackTooLarge);
+    const ok = shareTrack(gpsTrack([0, 1], [0, 0], [0, 0.001]), [], null) ?? {};
+    expect((ok.gps as { t: number[] }).t).toEqual([0, 1]);
+  });
+
+  it("answers 422 track_too_large for a small file with too many fixes", async () => {
+    const owner = await signIn();
+    const t = new Array<number>(SHARED_TRACK_MAX_FIXES + 1).fill(0);
+    const id = await publicSession(owner, (sessionId) => ({
+      ...lineTrack(sessionId),
+      gps: { t, lat: [], lon: [], spd: [], crs: [], hacc: [] },
+    }));
+    const response = await api(`/sessions/${id}/track`);
+    expect(response.status).toBe(422);
+    expect(await response.json()).toMatchObject({ error: "track_too_large" });
+    expect(
+      (await api(`/sessions/${id}/track`, { headers: bearer(owner.accessToken) })).status,
+    ).toBe(200);
   });
 });
 
