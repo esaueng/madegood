@@ -9,7 +9,7 @@ import {
   rotateRefreshToken,
   signAccessToken,
 } from "../auth/tokens";
-import { cleanDisplayName, findOrCreateUser } from "../auth/users";
+import { AccountDeleting, cleanDisplayName } from "../auth/users";
 import {
   clearSessionCookies,
   refreshCookie,
@@ -18,6 +18,7 @@ import {
   setSessionCookies,
   WEB_AUTH_PATH,
 } from "../auth/web-cookies";
+import { signInAppleSubject } from "../lib/account-deletion";
 import { apiError } from "../lib/errors";
 
 // Sign in with Apple for the website, kept out of the OpenAPI document: these are browser
@@ -89,6 +90,9 @@ webAuth.get("/auth/web/apple", (c) => {
   url.search = new URLSearchParams({
     client_id: clientId,
     redirect_uri: callbackUrl(c.req.url),
+    // Apple's form_post needs `code` in the response type. Only the identity token is used:
+    // the code is never redeemed, so no Apple refresh token is held and account deletion
+    // has nothing to revoke (routes/me.ts).
     response_type: "code id_token",
     response_mode: "form_post",
     scope: "name",
@@ -133,11 +137,15 @@ webAuth.post("/auth/web/apple/callback", async (c) => {
     throw err;
   }
   const db = drizzle(c.env.DB);
-  const { user } = await findOrCreateUser(db, sub, displayNameFrom(form.user));
-  setSessionCookies(
-    c,
-    await issueTokenPair(db, user.id, c.env.JWT_SIGNING_KEY, { bindSession: true }),
-  );
+  try {
+    const { tokens } = await signInAppleSubject(c.env, sub, displayNameFrom(form.user), (user) =>
+      issueTokenPair(db, user.id, c.env.JWT_SIGNING_KEY, { bindSession: true }),
+    );
+    setSessionCookies(c, tokens);
+  } catch (err) {
+    if (err instanceof AccountDeleting) return c.redirect(failed(c.req.url, "deleting"), 303);
+    throw err;
+  }
   const next = safeNext(typeof pending.next === "string" ? pending.next : null);
   return c.redirect(`${new URL(c.req.url).origin}${next}`, 303);
 });

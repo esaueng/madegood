@@ -46,6 +46,13 @@
                     """
                 return (Data(body.utf8), response(request, 200))
             }
+            if request.httpMethod == "DELETE", request.url?.path == "/api/me", isAuthorized(request),
+                let body = request.httpBody,
+                (try JSONSerialization.jsonObject(with: body) as? [String: String])?["userId"] == "synthetic-account"
+            {
+                sessions = [:]
+                return (Data(), response(request, 202))
+            }
             guard request.httpMethod == "PUT", isAuthorized(request), let body = request.httpBody,
                 let fields = try JSONSerialization.jsonObject(with: body) as? [String: Any],
                 let sport = fields["sport"] as? String, let startedAt = fields["startedAt"] as? String,

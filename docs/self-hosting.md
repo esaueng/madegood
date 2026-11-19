@@ -275,7 +275,7 @@ Settings → Export all my data on the website runs a background job
 - Without the `EXPORTS` binding (previews), steps run after the response with `waitUntil`
   for up to 20 s, and the sweep continues the rest, so large exports are slow there.
 - Account deletion removes the export objects with the rest of the user's prefix, and the
-  job rows with the user; a step for an account that is gone or being deleted stops and
+  job rows in its first pass (the account is locked by then, so no new job starts); a step for an account that is gone or being deleted stops and
   deletes what it wrote.
 
 ## Apple setup
@@ -328,7 +328,36 @@ to `scripts/testflight` as a build setting.
   default visibility), hashed refresh tokens, session metadata and summaries, data
   derived from tracks (bounds, fix times, wind; see
   [Upload post-processing](#upload-post-processing)), and privacy zones. R2 holds each session's gzipped track v1 under the user's prefix.
-- `DELETE /api/me` deletes the user's rows and every R2 object under their prefix.
+- `DELETE /api/me` (with the account's ID in the body) marks the account deleting and
+  revokes its sign-ins at once, then deletes the user's rows, live voyage shares and every
+  R2 object under their prefix (202). Anything that fails is retried by the scheduled
+  sweep (the `triggers.crons` entry in `wrangler.jsonc`), which also deletes the account
+  record once 20 minutes have passed. A deletion that keeps failing backs off (1 minute,
+  doubling, at most 6 hours) so others still run; after 8 failed passes each failure is
+  logged as `{"event":"account_deletion_failing",…}` (search Workers observability for it).
+  Without the cron trigger (previews) the data is still removed by the request, and the
+  account record goes the next time that Apple ID signs in after the 20 minutes; until
+  then the Apple ID stays reserved. The record also waits until every upload record of the
+  account is older than 15 minutes, so a late upload's object is collected first.
+- Every write (sessions, tracks, privacy zones, voyages, live sharing, post-processing,
+  refresh tokens) requires the account to be active in the same SQL statement, so nothing
+  authorized before a deletion lands after it.
+- Track objects: every upload attempt writes its own key
+  (`sessions/<id>/track.v1.r<revision>.<attempt>.gz`). Keys no row names any more go into
+  `pending_r2_deletes` in the same D1 batch as the change that detaches them, and an
+  upload records its key before writing it (and unrecords it when it attaches). Every
+  deletion first claims the record with a conditional update and deletes the object only
+  if it won; an upload attaches only while its record is unclaimed (else it answers 503
+  `upload_expired` and the app uploads again), so no cleanup can delete an attached object.
+  A claim is never released: if R2 reports a failed delete (it may have deleted anyway),
+  the record stays claimed and a collector retries once the 10-minute claim lapses. An
+  upload that did not attach deletes its own object before answering; if that fails, its
+  key is recorded again (the ledger does not depend on the account row). Detached
+  tracks are deleted at once; recorded uploads that never attached are collected after 15
+  minutes by later uploads of the user and by the cron trigger. Fixed-key tracks from
+  before per-upload keys (`track.v1.gz`, `track.v1.r<revision>.gz`) that a failed cleanup
+  left behind are found by listing the session's prefix on its next upload. Account deletion collects
+  all of the user's recorded keys, inside or outside their prefix.
 - Workers observability is on in `wrangler.jsonc` (`observability.enabled`), so
   Cloudflare keeps request logs for your account; turn it off there if you do not want
   them.

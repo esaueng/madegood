@@ -1,6 +1,8 @@
+import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
 import type { Context } from "hono";
 import { createMiddleware } from "hono/factory";
+import { users } from "../db/schema";
 import { apiError } from "../lib/errors";
 import { isFamilyLive, verifyAccessClaims } from "./tokens";
 import { accessCookie, sameOrigin } from "./web-cookies";
@@ -49,11 +51,33 @@ const crossSite = (c: Context) =>
   apiError(c, 403, "forbidden", "Cookie-authenticated changes must come from this site.");
 
 /** Requires a bearer token or the website's session cookie, and sets `userId`. */
+export const requireToken = createMiddleware<AuthEnv>(async (c, next) => {
+  const found = await credential(c);
+  if (found.kind === "forbidden") return crossSite(c);
+  if (found.kind !== "user") {
+    return apiError(c, 401, "unauthorized", "A valid access token is required.");
+  }
+  c.set("userId", found.userId);
+  await next();
+});
+
+/**
+ * `requireToken`, and an account that exists and is not being deleted: one indexed D1 read.
+ * App access tokens outlive their sign-in by up to 15 minutes, so without this a deleted
+ * account could still read or write (lib/account-deletion.ts).
+ */
 export const requireAuth = createMiddleware<AuthEnv>(async (c, next) => {
   const found = await credential(c);
   if (found.kind === "forbidden") return crossSite(c);
   if (found.kind !== "user") {
     return apiError(c, 401, "unauthorized", "A valid access token is required.");
+  }
+  const [account] = await drizzle(c.env.DB)
+    .select({ deletedAt: users.deletedAt })
+    .from(users)
+    .where(eq(users.id, found.userId));
+  if (!account || account.deletedAt !== null) {
+    return apiError(c, 401, "unauthorized", "The account no longer exists.");
   }
   c.set("userId", found.userId);
   await next();

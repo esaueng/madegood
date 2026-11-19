@@ -125,7 +125,10 @@ function zonesChanged(db: D1Database, userId: string, zoneId: string) {
   const exists = "EXISTS (SELECT 1 FROM privacy_zones WHERE id = ? AND user_id = ?)";
   return [
     db
-      .prepare(`UPDATE users SET zones_version = zones_version + 1 WHERE id = ? AND ${exists}`)
+      .prepare(
+        `UPDATE users SET zones_version = zones_version + 1
+         WHERE id = ? AND deleted_at IS NULL AND ${exists}`,
+      )
       .bind(userId, zoneId, userId),
     db
       .prepare(
@@ -170,8 +173,9 @@ export const privacyZoneRoutes = createRouter<AuthEnv>()
         `INSERT INTO privacy_zones (id, user_id, lat, lon, radius_m)
          SELECT ?, ?, ?, ?, ?
          WHERE (SELECT count(*) FROM privacy_zones WHERE user_id = ?) < ?
+           AND EXISTS (SELECT 1 FROM users WHERE id = ? AND deleted_at IS NULL)
          RETURNING id, user_id AS userId, lat, lon, radius_m AS radiusM`,
-      ).bind(id, userId, body.lat, body.lon, body.radiusM, userId, MAX_ZONES),
+      ).bind(id, userId, body.lat, body.lon, body.radiusM, userId, MAX_ZONES, userId),
       ...zonesChanged(c.env.DB, userId, id),
     ]);
     const zone = inserted?.results[0];

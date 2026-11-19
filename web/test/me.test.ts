@@ -1,7 +1,14 @@
 import { env } from "cloudflare:workers";
 import { SignJWT } from "jose";
-import { describe, expect, it } from "vitest";
-import { api, bearer, signIn } from "./apple";
+import { describe, expect, it, vi } from "vitest";
+import {
+  DELETION_GRACE_MS,
+  requestAccountDeletion,
+  runAccountDeletion,
+  sweepAccountDeletions,
+} from "../src/server/lib/account-deletion";
+import { processMessage } from "../src/server/lib/postprocess";
+import { api, bearer, deleteMe, identityToken, postJson, signIn } from "./apple";
 
 const patchMe = (token: string, body: unknown) =>
   api("/me", {
@@ -133,6 +140,17 @@ describe("PATCH /api/me", () => {
 });
 
 describe("DELETE /api/me", () => {
+  const userRow = (id: string) =>
+    env.DB.prepare("select id, deleted_at as deletedAt from users where id = ?")
+      .bind(id)
+      .first<{ id: string; deletedAt: number | null }>();
+  const count = async (table: string, id: string) =>
+    (
+      await env.DB.prepare(`select count(*) as n from ${table} where user_id = ?`)
+        .bind(id)
+        .first<{ n: number }>()
+    )?.n;
+
   it("deletes the user's rows and R2 objects, and is idempotent", async () => {
     const session = await signIn();
     const other = await signIn();
@@ -151,17 +169,13 @@ describe("DELETE /api/me", () => {
     await env.TRACKS.put("legacy/track.gz", "track");
     await env.TRACKS.put(`users/${other.user.id}/sessions/0.gz`, "track");
 
-    const response = await api("/me", { method: "DELETE", headers: bearer(session.accessToken) });
-    expect(response.status).toBe(204);
+    const response = await deleteMe(session.accessToken);
+    expect(response.status).toBe(202);
 
     for (const table of ["sessions", "refresh_tokens", "privacy_zones"]) {
-      const row = await env.DB.prepare(`select count(*) as n from ${table} where user_id = ?`)
-        .bind(id)
-        .first<{ n: number }>();
-      expect(row?.n, table).toBe(0);
+      expect(await count(table, id), table).toBe(0);
     }
-    const user = await env.DB.prepare("select id from users where id = ?").bind(id).first();
-    expect(user).toBeNull();
+    expect(await userRow(id)).toBeNull();
     expect((await env.TRACKS.list({ prefix: `users/${id}/` })).objects).toHaveLength(0);
     expect(await env.TRACKS.head("legacy/track.gz")).toBeNull();
     // Nobody else's data is touched.
@@ -169,8 +183,7 @@ describe("DELETE /api/me", () => {
     expect((await api("/me", { headers: bearer(other.accessToken) })).status).toBe(200);
 
     // Repeating the delete succeeds; the account is gone for everything else.
-    const again = await api("/me", { method: "DELETE", headers: bearer(session.accessToken) });
-    expect(again.status).toBe(204);
+    expect((await deleteMe(session.accessToken)).status).toBe(202);
     expect((await api("/me", { headers: bearer(session.accessToken) })).status).toBe(401);
     const refresh = await api("/auth/refresh", {
       method: "POST",
@@ -184,8 +197,112 @@ describe("DELETE /api/me", () => {
     const session = await signIn();
     const prefix = `users/${session.user.id}/`;
     await Promise.all(Array.from({ length: 1005 }, (_, i) => env.TRACKS.put(`${prefix}${i}`, "x")));
-    const response = await api("/me", { method: "DELETE", headers: bearer(session.accessToken) });
-    expect(response.status).toBe(204);
+    expect((await deleteMe(session.accessToken)).status).toBe(202);
     expect((await env.TRACKS.list({ prefix })).objects).toHaveLength(0);
+  }, 30_000);
+
+  // Review of #78, finding 1: a stale confirmation must not delete another account.
+  it("refuses to delete any account but the one named in the request", async () => {
+    const signedIn = await signIn();
+    const shown = await signIn();
+    const wrong = await deleteMe(signedIn.accessToken, { userId: shown.user.id, finish: false });
+    expect(wrong.status).toBe(409);
+    expect(await wrong.json()).toMatchObject({ error: "account_mismatch" });
+    expect((await userRow(signedIn.user.id))?.deletedAt).toBeNull();
+    expect((await userRow(shown.user.id))?.deletedAt).toBeNull();
+    const noBody = await api("/me", { method: "DELETE", headers: bearer(signedIn.accessToken) });
+    expect(noBody.status).toBe(400);
+    expect((await api("/me", { headers: bearer(signedIn.accessToken) })).status).toBe(200);
+  });
+
+  // Review of #78, finding 2: deletion is a durable job.
+  it("locks the account at once, then completes after the grace period", async () => {
+    const sub = `001234.${crypto.randomUUID().replaceAll("-", "")}.0001`;
+    const session = await signIn({ identityToken: await identityToken({ sub }) });
+    const id = session.user.id;
+    await env.TRACKS.put(`users/${id}/sessions/x/track.v1.gz`, "track");
+    const requestedAt = Date.now();
+    expect((await deleteMe(session.accessToken, { finish: false })).status).toBe(202);
+
+    // Locked: no sign-in, no reads of the account, no writes, no refresh.
+    expect((await userRow(id))?.deletedAt).toEqual(expect.any(Number));
+    const again = await postJson("/auth/apple", { identityToken: await identityToken({ sub }) });
+    expect(again.status).toBe(409);
+    expect(await again.json()).toMatchObject({ error: "account_deleting" });
+    expect((await api("/me", { headers: bearer(session.accessToken) })).status).toBe(401);
+    expect((await patchMe(session.accessToken, { units: "metric" })).status).toBe(401);
+    const put = await api(`/sessions/${crypto.randomUUID()}`, {
+      method: "PUT",
+      headers: { ...bearer(session.accessToken), "content-type": "application/json" },
+      body: JSON.stringify({ sport: "sup", startedAt: "2000-01-01T10:00:00.000Z" }),
+    });
+    expect(put.status).toBe(401);
+    expect(await count("refresh_tokens", id)).toBe(0);
+
+    // Within the grace period the data goes but the account record stays (still locked).
+    expect(await runAccountDeletion(env, id, requestedAt + 1000)).toBe("pending");
+    expect((await env.TRACKS.list({ prefix: `users/${id}/` })).objects).toHaveLength(0);
+    expect(await userRow(id)).not.toBeNull();
+    expect(await runAccountDeletion(env, id, requestedAt + DELETION_GRACE_MS + 1000)).toBe("done");
+    expect(await userRow(id)).toBeNull();
+    // Gone: the same Apple account may start a new, empty account.
+    const fresh = await signIn({ identityToken: await identityToken({ sub }) });
+    expect(fresh.user.id).not.toBe(id);
+  });
+
+  it("survives a storage failure mid-sweep and completes on the next run", async () => {
+    const session = await signIn();
+    const id = session.user.id;
+    for (let i = 0; i < 3; i++) await env.TRACKS.put(`users/${id}/sessions/${i}.gz`, "track");
+    await env.DB.prepare(
+      "insert into privacy_zones (id, user_id, lat, lon, radius_m) values (?, ?, 0, 0, 200)",
+    )
+      .bind(crypto.randomUUID(), id)
+      .run();
+    // Marked directly, so no pass has run yet.
+    expect(await requestAccountDeletion(env.DB, id)).toBe(true);
+    const later = Date.now() + DELETION_GRACE_MS + 1000;
+
+    const failing = vi
+      .spyOn(env.TRACKS, "delete")
+      .mockRejectedValueOnce(new Error("R2 unavailable"));
+    await expect(runAccountDeletion(env, id, later)).rejects.toThrow("R2 unavailable");
+    failing.mockRestore();
+    // Nothing was lost: the account is still marked and its objects are still there for the
+    // next pass (rows go first, their keys recorded in the same batch; lib/r2-garbage.ts).
+    expect((await userRow(id))?.deletedAt).toEqual(expect.any(Number));
+    expect((await env.TRACKS.list({ prefix: `users/${id}/` })).objects).toHaveLength(3);
+
+    // The scheduled sweep picks it up and finishes.
+    const swept = await sweepAccountDeletions(env, later, 1000);
+    expect(swept.failed).toBe(0);
+    expect(await userRow(id)).toBeNull();
+    expect(await count("privacy_zones", id)).toBe(0);
+    expect((await env.TRACKS.list({ prefix: `users/${id}/` })).objects).toHaveLength(0);
+  });
+
+  it("drops queued post-processing for a deleting account without fetching wind", async () => {
+    const session = await signIn();
+    const sessionId = crypto.randomUUID();
+    const key = `users/${session.user.id}/sessions/${sessionId}/track.v1.gz`;
+    const object = await env.TRACKS.put(key, "track");
+    if (!object) throw new Error("put failed");
+    await env.DB.prepare(
+      "insert into sessions (id, user_id, sport, started_at, track_key, track_etag, visibility) values (?, ?, 'sup', 1, ?, ?, 'public')",
+    )
+      .bind(sessionId, session.user.id, key, object.etag)
+      .run();
+    expect((await deleteMe(session.accessToken, { finish: false })).status).toBe(202);
+    const fetchSpy = vi.fn(async () => new Response("{}"));
+    const outcome = await processMessage(
+      env,
+      { v: 1, sessionId, userId: session.user.id, revision: 0, etag: object.etag },
+      { fetch: fetchSpy as unknown as typeof fetch },
+    );
+    expect(outcome).toBe("skipped_stale");
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(await processMessage(env, { v: 1, kind: "user", userId: session.user.id })).not.toBe(
+      "processed",
+    );
   });
 });

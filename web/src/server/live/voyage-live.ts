@@ -83,13 +83,14 @@ export class VoyageLive extends DurableObject<Env> {
     this.sql.exec("INSERT OR REPLACE INTO live_settings VALUES (1, ?)", JSON.stringify(settings));
   }
 
+  /** The owner's access; an account being deleted has none (lib/account-deletion.ts). */
   private async readAccess({ userId, voyageId }: VoyageKey): Promise<Access> {
     const { results } = await this.env.DB.prepare(
       `SELECT v.id AS id, p.lat, p.lon, p.radius_m AS radiusM
        FROM users u
        LEFT JOIN voyages v ON v.user_id = u.id AND v.id = ? AND v.ended_at IS NULL
        LEFT JOIN privacy_zones p ON p.user_id = v.user_id
-       WHERE u.id = ?`,
+       WHERE u.id = ? AND u.deleted_at IS NULL`,
     )
       .bind(voyageId, userId)
       .all<{ id: string | null; lat: number; lon: number; radiusM: number | null }>();
@@ -114,11 +115,14 @@ export class VoyageLive extends DurableObject<Env> {
   }
 
   private async register({ userId, voyageId }: VoyageKey) {
-    // This statement orders registration against DELETE /me in D1. DO writes
-    // resume after this await and must still pass the local purge fence.
+    // This statement orders registration against DELETE /me in D1: it requires the account
+    // to be active, so no position is stored for an account being deleted. DO writes resume
+    // after this await and must still pass the local purge fence; the deletion job purges
+    // every registered object again on each pass, the last one included.
     const row = await this.env.DB.prepare(
       `INSERT INTO voyage_live_registry (user_id, voyage_id)
        SELECT user_id, id FROM voyages WHERE user_id = ? AND id = ? AND ended_at IS NULL
+         AND EXISTS (SELECT 1 FROM users WHERE users.id = voyages.user_id AND users.deleted_at IS NULL)
        ON CONFLICT(user_id, voyage_id) DO UPDATE SET voyage_id = excluded.voyage_id
        RETURNING voyage_id`,
     )
