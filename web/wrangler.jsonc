@@ -16,11 +16,20 @@
     // tags injected into the SPA shell (src/server/routes/session-preview.ts).
     "run_worker_first": ["/api/*", "/v/*", "/s/*"]
   },
-  // APPLE_AUDIENCES: comma-separated Sign in with Apple audiences (the iOS bundle ID; the
-  // web Services ID joins later). APPLE_WEB_CLIENT_ID: the Services ID for Sign in with Apple
-  // on the website; empty turns web sign-in off. Secrets such as JWT_SIGNING_KEY are not
+  // APPLE_AUDIENCES: comma-separated Sign in with Apple audiences for the app's
+  // POST /api/auth/apple (the iOS bundle ID only — never add the web Services ID here, or
+  // web identity tokens would be accepted without the web flow's state and nonce checks).
+  // APPLE_WEB_CLIENT_ID: the Services ID for Sign in with Apple on the website; empty turns
+  // web sign-in off. Secrets such as JWT_SIGNING_KEY are not
   // listed here.
-  "vars": { "APP_VERSION": "0.1.0", "APPLE_AUDIENCES": "app.madegood", "APPLE_WEB_CLIENT_ID": "" },
+  // Production web sign-in uses the Services ID app.madegood.web (return URL
+  // https://<production host>/api/auth/web/apple/callback). Previews stay off: their
+  // per-PR hosts aren't registered return URLs.
+  "vars": {
+    "APP_VERSION": "0.1.0",
+    "APPLE_AUDIENCES": "app.madegood",
+    "APPLE_WEB_CLIENT_ID": "app.madegood.web"
+  },
   "d1_databases": [
     {
       "binding": "DB",
