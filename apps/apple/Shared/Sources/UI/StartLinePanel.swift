@@ -156,7 +156,7 @@ struct OCSBanner: View {
     private var detail: String {
         switch warning.check {
         case .over(let distance): "Over by \(display.lineDistance(distance)) at the start"
-        case .possiblyOver(let distance): "\(display.lineDistance(distance)) behind, within GPS error"
+        case .possiblyOver(let distance): "Within \(display.lineDistance(distance)) of the line, inside GPS error"
         case .unknown: "No GPS fix at the start"
         case .clear: ""
         }
@@ -186,5 +186,33 @@ struct OCSBanner: View {
         )
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("ocs.banner")
+    }
+}
+
+/// A start line ping that failed at the gun or just before it, when the countdown screen
+/// that would have shown it is gone.
+struct PingFailedBanner: View {
+    let end: StartLineEnd
+    var compact = false
+    let dismiss: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "location.slash")
+            Text("\(end == .pin ? "Pin" : "Boat") ping failed: no GPS")
+                .font((compact ? Font.footnote : .subheadline).weight(.semibold))
+            Spacer(minLength: 0)
+            Button(action: dismiss) {
+                Image(systemName: "xmark")
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Dismiss")
+            .accessibilityIdentifier("pingFailed.dismiss")
+        }
+        .foregroundStyle(.white)
+        .padding(compact ? 8 : 12)
+        .background(Color.gray, in: .rect(cornerRadius: compact ? 12 : 16))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("pingFailed.banner")
     }
 }

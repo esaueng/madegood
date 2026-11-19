@@ -58,6 +58,27 @@ final class WatchStartLineUITests: XCTestCase {
         endWatchSession(app)
     }
 
+    /// A ping that fails just before the gun is reported on the session pages.
+    func testPingFailureNearTheGunShowsOnTheSessionPages() {
+        let app = launchDemoApp(extraArguments: [
+            "-settings.countdown.sailing", "1", "-demoCountdownSeconds", "18", "-demoNoPingFix",
+        ])
+        let sailing = app.buttons["sport.sailing"]
+        XCTAssertTrue(sailing.waitForExistence(timeout: 15))
+        sailing.tap()
+        XCTAssertTrue(element("countdown.time", in: app).waitForExistence(timeout: 10))
+        goToPage(2, app)
+        let pin = app.buttons["startLine.ping.pin"]
+        XCTAssertTrue(pin.waitForExistence(timeout: 5))
+        pin.tap()
+        let banner = element("pingFailed.banner", in: app)
+        XCTAssertTrue(banner.waitForExistence(timeout: 40))
+        attachScreenshot("4 ping failed at start")
+        app.buttons["pingFailed.dismiss"].tap()
+        XCTAssertTrue(banner.waitForNonExistence(timeout: 5))
+        endWatchSession(app)
+    }
+
     private func pingBothEnds(_ app: XCUIApplication) {
         for end in ["pin", "boat"] {
             let button = app.buttons["startLine.ping.\(end)"]

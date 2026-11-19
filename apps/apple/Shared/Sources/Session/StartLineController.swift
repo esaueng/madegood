@@ -40,6 +40,9 @@ final class StartLineController {
     private var updates: Task<Void, Never>?
     private var serviceSession: CLServiceSession?
     private var warningTimer: Task<Void, Never>?
+    private var failureTimer: Task<Void, Never>?
+    /// The countdown's clock: unix time from uptime, anchored at the countdown's start.
+    private var clock: CountdownClock?
     /// Tells a ping's timer from a later ping's.
     private var pingID = UUID()
     /// Countdown time left, s, for the demo feed.
@@ -65,31 +68,39 @@ final class StartLineController {
         #endif
     }
 
-    /// Unix time: the clock of the fixes and pings.
+    /// Unix time from the device clock.
     static var wallClock: Double { Date().timeIntervalSince1970 }
+    static var uptime: Double { ProcessInfo.processInfo.systemUptime }
+
+    /// Now on the countdown's clock (the device clock outside a countdown).
+    private var now: Double { clock?.unix(atUptime: Self.uptime) ?? Self.wallClock }
 
     var pending: StartLineEnd? { state.pending?.end }
     var lastPingFailed: StartLineEnd? { state.lastPingFailed }
     var warning: OCSWarning? { state.warning }
+    /// A ping that failed at the gun or just before it, for the session screens.
+    var failedAtStart: StartLineEnd? { state.failedAtStart }
 
     /// Both ends are pinged but make no line (the same spot twice, or kilometres apart).
     var hasUnusableEnds: Bool { state.pin != nil && state.boat != nil && state.line == nil }
 
     /// The pings to record with a session starting now.
-    var pingsToRecord: [StartLinePing] { state.pingsToRecord(now: Self.wallClock) }
+    var pingsToRecord: [StartLinePing] { state.pingsToRecord(now: now) }
 
     func ping(_ end: StartLineEnd) -> StartLinePing? { state.ping(end) }
 
     // MARK: Countdown
 
     /// A sailing countdown began: expire an old line, and start location updates (or the
-    /// demo feed); the first position decides whether a saved line is reused.
+    /// demo feed); the first fresh, accurate position decides whether a saved line is reused.
     func countdownBegan(remaining: @escaping () -> Double) {
         self.remaining = remaining
-        let before = (state.pin, state.boat)
-        state.countdownBegan(now: Self.wallClock)
-        if (state.pin, state.boat) != before { save() }
+        clock = CountdownClock(unix: Self.wallClock, uptime: Self.uptime)
+        let before = (state.stored(.pin), state.stored(.boat))
+        state.countdownBegan(now: now)
+        if (state.stored(.pin), state.stored(.boat)) != before { save() }
         warningTimer?.cancel()
+        failureTimer?.cancel()
         prestartWind = PrestartWind()
         wind = nil
         recentFixes = []
@@ -97,26 +108,30 @@ final class StartLineController {
         startUpdates()
     }
 
-    /// The countdown ended. At the gun (`atGun`), a pending ping is finished with the fixes
-    /// it has and the start is checked; otherwise a pending ping is finished the same way.
-    func countdownEnded(atGun: Bool) {
-        if atGun {
+    /// The countdown ended. At the gun (`gunDeadline`: the countdown's deadline, uptime s),
+    /// a pending ping is finished with the fixes it has and the start is checked at the
+    /// deadline itself, however late this call runs; otherwise a pending ping is finished
+    /// the same way.
+    func countdownEnded(gunDeadline: Double?) {
+        if let gunDeadline {
             let hadPending = state.pending != nil
-            let check = state.gun(
-                at: Self.wallClock, latest: latest, shownAt: ProcessInfo.processInfo.systemUptime)
-            if hadPending { pingFinished() }
+            let gunTime = clock?.unix(atUptime: gunDeadline) ?? Self.wallClock
+            let check = state.gun(at: gunTime, fixes: recentFixes, shownAt: Self.uptime)
+            if hadPending { pingFinished(silently: state.failedAtStart != nil) }
             switch check {
             case .over, .possiblyOver: Haptics.play(.overTheLine)
             case .unknown: Haptics.play(.failure)
             case .clear, nil: break
             }
             scheduleWarningTimeout()
+            scheduleFailureTimeout()
         } else if state.pending != nil {
             state.finishPing()
             pingFinished()
         }
         stopUpdates()
         remaining = nil
+        clock = nil
     }
 
     func dismissWarning() {
@@ -128,6 +143,23 @@ final class StartLineController {
     func recorded(_ fix: GPSFix) {
         latest = fix
         state.recorded(fix)
+    }
+
+    func dismissFailedAtStart() {
+        state.dismissFailedAtStart()
+        failureTimer?.cancel()
+    }
+
+    /// The ping-failure note on the session screens is brief.
+    private func scheduleFailureTimeout() {
+        failureTimer?.cancel()
+        guard state.failedAtStart != nil else { return }
+        Haptics.play(.failure)
+        failureTimer = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(10))
+            guard !Task.isCancelled else { return }
+            self?.state.dismissFailedAtStart()
+        }
     }
 
     /// Clears the warning after `StartLineState.warningShownFor`, with or without GPS.
@@ -147,10 +179,11 @@ final class StartLineController {
     /// Pings `end` at the current position, averaged over the fixes around the press.
     func startPing(_ end: StartLineEnd) {
         guard state.pending == nil else { return }
-        let pressedAt = Self.wallClock
+        let pressedAt = now
         var fixes = DemoFeed.isEnabled ? [] : recentFixes
         #if DEBUG
-            if DemoFeed.isEnabled {
+            // `-demoNoPingFix`: demo pings find no fix and fail.
+            if DemoFeed.isEnabled, !ProcessInfo.processInfo.arguments.contains(DemoFeed.noPingFixArgument) {
                 // The demo pings fixed ends, through the same averaging.
                 let point = DemoFeed.startLineEnd(end)
                 fixes = [-1.0, 0, 1].map {
@@ -176,10 +209,10 @@ final class StartLineController {
         save()
     }
 
-    private func pingFinished() {
+    private func pingFinished(silently: Bool = false) {
         pingID = UUID()
         if state.lastPingFailed != nil {
-            Haptics.play(.failure)
+            if !silently { Haptics.play(.failure) }
         } else {
             save()
             Haptics.play(.sync)
@@ -187,7 +220,8 @@ final class StartLineController {
     }
 
     private func save() {
-        let stored = Stored(pin: state.pin, boat: state.boat)
+        // Every stored end, including ones ignored at this venue: they are kept, not deleted.
+        let stored = Stored(pin: state.stored(.pin), boat: state.stored(.boat))
         if let data = try? JSONEncoder().encode(stored) {
             UserDefaults.standard.set(data, forKey: Self.storageKey)
         }
@@ -196,7 +230,7 @@ final class StartLineController {
     // MARK: Reading
 
     func reading(remaining: Double) -> Reading {
-        let now = Self.wallClock
+        let now = self.now
         guard let line = state.usableLine(now: now) else { return Reading() }
         var reading = Reading(line: line)
         if let fix = latest, now - fix.t <= Self.freshFor,
@@ -213,11 +247,18 @@ final class StartLineController {
 
     // MARK: Positions
 
-    private func update(_ fix: GPSFix) {
+    /// A fix from this object's updates, with its own (device clock) timestamp: put on
+    /// the countdown's clock by its age on arrival, so a clock change cannot make it fresh.
+    private func update(_ raw: GPSFix) {
+        var fix = raw
+        if let clock {
+            fix.t = clock.fixTime(raw.t, receivedUptime: Self.uptime, receivedWall: Self.wallClock)
+        }
         latest = fix
         recentFixes.append(fix)
-        recentFixes.removeAll { fix.t - $0.t > StartLinePingAverager.lookBack + 1 }
-        if state.add(fix, toPing: !DemoFeed.isEnabled) { save() }
+        // Enough for a ping's look-back and the gun's check, even if the gun runs late.
+        recentFixes.removeAll { fix.t - $0.t > 10 }
+        state.add(fix, now: now, toPing: !DemoFeed.isEnabled)
         prestartWind.add(fix)
         #if DEBUG
             if DemoFeed.isEnabled {

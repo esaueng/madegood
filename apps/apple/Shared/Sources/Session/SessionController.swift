@@ -131,7 +131,7 @@ final class SessionController {
     func cancelCountdown() {
         ticker?.cancel()
         ticker = nil
-        if countdown?.sport == .sailing { StartLineController.shared.countdownEnded(atGun: false) }
+        if countdown?.sport == .sailing { StartLineController.shared.countdownEnded(gunDeadline: nil) }
         countdown = nil
         recorder.cancelPrepared()
     }
@@ -205,7 +205,10 @@ final class SessionController {
         #endif
         ticker?.cancel()
         ticker = nil
-        if countdown.sport == .sailing { StartLineController.shared.countdownEnded(atGun: atGun) }
+        if countdown.sport == .sailing {
+            // The gun is the countdown's deadline (moved by a sync), not when this runs.
+            StartLineController.shared.countdownEnded(gunDeadline: atGun ? countdown.timer.endsAt : nil)
+        }
         self.countdown = nil
         Haptics.play(.recordingStarted)
         startRecording(countdown.sport)

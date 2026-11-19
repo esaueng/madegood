@@ -98,6 +98,8 @@ enum DemoFeed {
 
     /// With `-demoOCS`, the demo boat is over the start line at the gun.
     static let ocsArgument = "-demoOCS"
+    /// With `-demoNoPingFix`, start line pings find no fix and fail.
+    static let noPingFixArgument = "-demoNoPingFix"
 
     /// The demo start line: 200 m long, pin → boat 84° (6° off square to the demo wind, so
     /// the boat end is favoured), centred 30 m south of the origin. The recorded route

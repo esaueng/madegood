@@ -50,6 +50,26 @@ final class PhoneStartLineUITests: XCTestCase {
         endSession(app)
     }
 
+    /// A ping that fails just before the gun is reported on the recording screen, where
+    /// the countdown panel that showed it is gone.
+    @MainActor
+    func testPingFailureNearTheGunShowsOnTheRecordingScreen() {
+        let app = launchDemoApp(extraArguments: [
+            "-settings.countdown.sailing", "1", "-demoCountdownSeconds", "10", "-demoNoPingFix",
+        ])
+        startSailing(app)
+        let pin = app.buttons["startLine.ping.pin"]
+        XCTAssertTrue(pin.waitForExistence(timeout: 5))
+        pin.tap()
+        let banner = element("pingFailed.banner", in: app)
+        XCTAssertTrue(banner.waitForExistence(timeout: 30))
+        XCTAssertTrue(app.buttons["control.pause"].exists)
+        attachScreenshot("4 ping failed at start")
+        app.buttons["pingFailed.dismiss"].tap()
+        XCTAssertTrue(banner.waitForNonExistence(timeout: 5))
+        endSession(app)
+    }
+
     private func startSailing(_ app: XCUIApplication) {
         let start = app.buttons["sport.sailing"]
         XCTAssertTrue(start.waitForExistence(timeout: 15))

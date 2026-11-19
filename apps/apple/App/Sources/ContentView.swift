@@ -513,6 +513,9 @@ private struct LiveView: View {
                 if recorder != nil, let warning = startLine.warning {
                     OCSBanner(warning: warning, display: display) { startLine.dismissWarning() }
                 }
+                if recorder != nil, let failed = startLine.failedAtStart {
+                    PingFailedBanner(end: failed) { startLine.dismissFailedAtStart() }
+                }
                 if let recorder, let startedAt {
                     if first == .map {
                         LiveTrackMap(points: recorder.trackPoints)

@@ -46,6 +46,8 @@ public struct StartLinePingAverager: Sendable {
     public static let lookAhead = 2.0
     /// Fixes less accurate than this are left out, m.
     public static let maximumAccuracy = 15.0
+    /// A ping needs at least this many usable fixes.
+    public static let minimumFixes = 2
     /// A fix without an accuracy counts as this, m (it still needs a weight).
     static let assumedAccuracy = 10.0
     /// Doppler speed above this is not believed for the projection, m/s (about 58 kn).
@@ -103,17 +105,18 @@ public struct StartLinePingAverager: Sendable {
             return nil
         }
         let dt = time - fix.t
-        guard let speed = fix.speed, let course = fix.course, speed.isFinite, course.isFinite, speed >= 0,
-            speed <= maximumProjectionSpeed, dt != 0
+        // Below `StartLine.minimumSpeed` the course is noise: the fix stays where it is.
+        guard let speed = fix.speed, let course = fix.course, speed.isFinite, course.isFinite,
+            speed >= StartLine.minimumSpeed, speed <= maximumProjectionSpeed, dt != 0
         else { return (fix.latitude, fix.longitude) }
         let moved = Geo.destination(
             lat: fix.latitude, lon: fix.longitude, bearing: dt > 0 ? course : course + 180, distance: speed * abs(dt))
         return (moved.lat, moved.lon)
     }
 
-    /// The averaged ping, or nil without a usable fix.
+    /// The averaged ping, or nil with fewer than `minimumFixes` usable fixes.
     public var ping: StartLinePing? {
-        guard fixes > 0, weight > 0 else { return nil }
+        guard fixes >= Self.minimumFixes, weight > 0 else { return nil }
         guard let mean = SphereVector(x: sum.x, y: sum.y, z: sum.z).normalized else { return nil }
         return StartLinePing(
             end: end, latitude: mean.latitude, longitude: mean.longitude, time: pressedAt, fixes: fixes,
