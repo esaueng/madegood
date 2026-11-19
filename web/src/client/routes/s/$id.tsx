@@ -32,6 +32,7 @@ import {
   positionAt,
   speedScaleMax,
   type Track,
+  TrackTooLargeError,
   trackForViewer,
 } from "@/lib/track";
 
@@ -58,9 +59,15 @@ function SessionPage() {
   const track = useQuery({
     queryKey: ["session", id, "track"],
     queryFn: () => fetchTrack(apiFetch, id),
+    retry: (count, error) => !(error instanceof TrackTooLargeError) && count < 2,
     enabled: session.data?.hasTrack === true,
     staleTime: Number.POSITIVE_INFINITY,
   });
+
+  useEffect(() => {
+    if (session.data) document.title = `${sessionTitle(session.data)} · MadeGood`;
+    else if (session.isError) document.title = "MadeGood";
+  }, [session.data, session.isError]);
 
   if (session.isPending) return <p className="py-16 text-muted-foreground">Loading…</p>;
   if (session.isError) {
@@ -99,7 +106,11 @@ function SessionPage() {
           <Replay source={track.data} isOwner={s.isOwner} units={units} />
         ) : (
           <p className="rounded-xl border border-dashed p-6 text-center text-muted-foreground">
-            {track.isError ? "The track could not be loaded." : "The track is not available."}
+            {track.error instanceof TrackTooLargeError
+              ? "This track is too long to show to anyone but its owner."
+              : track.isError
+                ? "The track could not be loaded."
+                : "The track is not available."}
           </p>
         )
       ) : (
@@ -242,7 +253,7 @@ function Replay({ source, isOwner, units }: { source: Track; isOwner: boolean; u
       <Suspense
         fallback={<div className="h-72 animate-pulse rounded-xl border bg-muted sm:h-[28rem]" />}
       >
-        <TrackMap track={track} maxSpeed={maxSpeed} cursor={cursor} />
+        <TrackMap track={track} maxSpeed={maxSpeed} cursor={cursor} isOwner={isOwner} />
       </Suspense>
       <SpeedLegend maxSpeed={maxSpeed} units={units} />
       <div className="flex flex-wrap items-center gap-3 rounded-xl border bg-card p-3">

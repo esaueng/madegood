@@ -444,10 +444,11 @@ describe("visibility", () => {
     }
   });
 
-  it("withholds tracks from others while the owner has a privacy zone", async () => {
+  it("gives others a privacy-trimmed copy of the track, and the owner the file as uploaded", async () => {
     const owner = await signIn();
     const other = await signIn();
     const id = await sessionWithTrack(owner, "public");
+    // The test track's fixes are about 25 m from 0,0.
     await env.DB.prepare(
       "insert into privacy_zones (id, user_id, lat, lon, radius_m) values (?, ?, 0, 0, 200)",
     )
@@ -457,10 +458,13 @@ describe("visibility", () => {
     for (const token of [other.accessToken, null]) {
       expect((await getSession(token, id)).status).toBe(200);
       const track = await getTrack(token, id);
-      expect(track.status).toBe(403);
-      expect(await track.json()).toMatchObject({ error: "forbidden" });
+      expect(track.status).toBe(200);
+      const shared = JSON.parse(await gunzip(await track.arrayBuffer()));
+      expect(shared.gps.t).toEqual([]);
+      expect(shared.gps.lat).toEqual([]);
     }
-    expect((await getTrack(owner.accessToken, id)).status).toBe(200);
+    const mine = await getTrack(owner.accessToken, id);
+    expect(JSON.parse(await gunzip(await mine.arrayBuffer()))).toEqual(JSON.parse(trackJson(id)));
   });
 
   it("returns 404 for a session without a track", async () => {

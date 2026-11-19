@@ -3,7 +3,7 @@ import type { StyleSpecification } from "maplibre-gl";
 import { useMemo, useState } from "react";
 import MapGL, { Layer, Marker, NavigationControl, Source } from "react-map-gl/maplibre";
 import { bounds, type Fix, SPEED_BINS, speedLines, type Track } from "@/lib/track";
-import { SPEED_COLORS } from "./colors";
+import { SPEED_COLORS, trackSourceOptions } from "./colors";
 
 // OpenStreetMap raster tiles with the OpenSeaMap seamark overlay as an option (PLAN §2:
 // Protomaps in R2 replaces the base tiles later). Neither is an official chart, so the
@@ -13,7 +13,7 @@ const OSM_ATTRIBUTION =
 const SEAMARK_ATTRIBUTION =
   'Seamarks © <a href="https://www.openseamap.org" target="_blank" rel="noreferrer">OpenSeaMap</a> contributors';
 
-const mapStyle = (seamarks: boolean): StyleSpecification => ({
+export const mapStyle = (seamarks: boolean): StyleSpecification => ({
   version: 8,
   sources: {
     osm: {
@@ -52,10 +52,12 @@ export default function TrackMap({
   track,
   maxSpeed,
   cursor,
+  isOwner,
 }: {
   track: Track;
   maxSpeed: number;
   cursor: Fix | null;
+  isOwner: boolean;
 }) {
   const [seamarks, setSeamarks] = useState(false);
   const style = useMemo(() => mapStyle(seamarks), [seamarks]);
@@ -76,7 +78,7 @@ export default function TrackMap({
         touchPitch={false}
       >
         <NavigationControl position="top-right" showCompass={false} />
-        <Source id="track" type="geojson" data={lines}>
+        <Source id="track" type="geojson" data={lines} {...trackSourceOptions(isOwner)}>
           <Layer
             id="track-casing"
             type="line"

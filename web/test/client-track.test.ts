@@ -60,6 +60,13 @@ describe("segmentsOf", () => {
       [3, 6],
       [6, 7],
     ]);
+    // A fix marked breakBefore (a privacy gap) starts a segment, even one second apart.
+    const marked = fixes.map((f, i) => (i === 1 ? { ...f, breakBefore: true } : f));
+    expect(segmentsOf(marked, [])).toEqual([
+      [0, 1],
+      [1, 3],
+      [3, 7],
+    ]);
   });
 });
 

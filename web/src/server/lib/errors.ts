@@ -22,6 +22,8 @@ export const errorCodes = [
   "unsupported_media_type",
   "payload_too_large",
   "invalid_track",
+  "track_too_large",
+  "zone_limit",
   "internal",
 ] as const;
 export type ErrorCode = (typeof errorCodes)[number];
