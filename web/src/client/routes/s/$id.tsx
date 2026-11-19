@@ -61,6 +61,11 @@ function SessionPage() {
     staleTime: Number.POSITIVE_INFINITY,
   });
 
+  useEffect(() => {
+    if (session.data) document.title = `${sessionTitle(session.data)} · MadeGood`;
+    else if (session.isError) document.title = "MadeGood";
+  }, [session.data, session.isError]);
+
   if (session.isPending) return <p className="py-16 text-muted-foreground">Loading…</p>;
   if (session.isError) {
     const missing = session.error instanceof ApiError && session.error.status === 404;

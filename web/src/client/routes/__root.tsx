@@ -6,6 +6,7 @@ import {
   useNavigate,
   useRouterState,
 } from "@tanstack/react-router";
+import { useEffect } from "react";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { signInUrl } from "@/lib/api";
 import { useMe, useSignOut } from "@/lib/auth";
@@ -63,6 +64,12 @@ function Account() {
 }
 
 function RootLayout() {
+  const pathname = useRouterState({ select: (s) => s.location.pathname });
+  // The Worker puts a session's title into /s/:id (Open Graph); the session page keeps it
+  // current, and every other page goes back to the site name.
+  useEffect(() => {
+    if (!pathname.startsWith("/s/")) document.title = "MadeGood";
+  }, [pathname]);
   return (
     <div className="min-h-dvh bg-background text-foreground">
       <header className="mx-auto flex max-w-5xl items-center justify-between gap-3 px-4 py-4">
