@@ -32,10 +32,7 @@ final class VoyageRecorder {
         do {
             var root = URL.applicationSupportDirectory.appending(path: "Voyages", directoryHint: .isDirectory)
             #if DEBUG
-                if let id = ProcessInfo.processInfo.environment["MADEGOOD_TEST_VOYAGES"].flatMap(UUID.init(uuidString:))
-                {
-                    root = URL.temporaryDirectory.appending(path: id.uuidString, directoryHint: .isDirectory)
-                }
+                if let testRoot = Self.testLibraryRoot() { root = testRoot }
             #endif
             let library = try VoyageStore(root: root)
             var attributes = URLResourceValues()
@@ -81,6 +78,91 @@ final class VoyageRecorder {
     }
 
     private static var now: TimeInterval { Date.now.timeIntervalSince1970 }
+
+    #if DEBUG
+        /// UI tests (Debug, simulator only): the test's own voyage library, named by
+        /// `MADEGOOD_TEST_VOYAGES`. The name is also written to a marker file in the
+        /// backup-excluded test directory, so a relaunch of the app by the system within
+        /// `testLibraryLifetime` (Core Location can relaunch it during a leg, without the
+        /// test's environment) opens the same library. `-resetSettings` and expiry forget it.
+        static func testLibraryRoot(now: Date = .now) -> URL? {
+            #if targetEnvironment(simulator)
+                forgetTestLibraryIfRequested()
+                let fileManager = FileManager.default
+                if let id = ProcessInfo.processInfo.environment["MADEGOOD_TEST_VOYAGES"]
+                    .flatMap(UUID.init(uuidString:))
+                {
+                    rememberTestLibrary(id, at: now)
+                    return testLibrary(id)
+                }
+                guard let text = try? String(contentsOf: testLibraryMarker, encoding: .utf8) else { return nil }
+                let parts = text.split(separator: "\n")
+                guard parts.count == 2, let id = UUID(uuidString: String(parts[0])),
+                    let written = Double(parts[1]),
+                    (0...testLibraryLifetime).contains(now.timeIntervalSince1970 - written)
+                else {
+                    try? fileManager.removeItem(at: testLibraryMarker)
+                    return nil
+                }
+                return testLibrary(id)
+            #else
+                return nil
+            #endif
+        }
+
+        /// Writes the marker naming the test library, in the backup-excluded test directory.
+        static func rememberTestLibrary(_ id: UUID, at date: Date) {
+            do {
+                var directory = testLibrariesDirectory
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                var attributes = URLResourceValues()
+                attributes.isExcludedFromBackup = true
+                try directory.setResourceValues(attributes)
+                let marker = "\(id.uuidString)\n\(date.timeIntervalSince1970)"
+                try marker.write(to: testLibraryMarker, atomically: true, encoding: .utf8)
+            } catch {
+                print("VoyageRecorder: couldn't remember the test library: \(error)")
+            }
+        }
+
+        /// How long a system relaunch still opens the last UI test's library.
+        static let testLibraryLifetime: TimeInterval = 15 * 60
+
+        /// Forgets the remembered test library when launched with `-resetSettings`. Runs on
+        /// every launch path, including the off-water demo's.
+        static func forgetTestLibraryIfRequested() {
+            guard ProcessInfo.processInfo.arguments.contains("-resetSettings") else { return }
+            try? FileManager.default.removeItem(at: testLibraryMarker)
+        }
+
+        /// Whether this launch is a UI test's, which shows the test-only controls.
+        static var isUITestLaunch: Bool {
+            #if targetEnvironment(simulator)
+                ProcessInfo.processInfo.environment["MADEGOOD_TEST_VOYAGES"] != nil
+            #else
+                false
+            #endif
+        }
+
+        /// UI tests: stops the location updates and sessions of the active leg without
+        /// ending it, so the test can terminate the app without Core Location relaunching
+        /// it in the background. The leg resumes on the next launch, like after any exit.
+        func stopUpdatesForTest() {
+            stopUpdates()
+        }
+
+        private static var testLibrariesDirectory: URL {
+            URL.applicationSupportDirectory.appending(path: "TestVoyages", directoryHint: .isDirectory)
+        }
+
+        private static var testLibraryMarker: URL {
+            testLibrariesDirectory.appending(path: "current-library", directoryHint: .notDirectory)
+        }
+
+        private static func testLibrary(_ id: UUID) -> URL {
+            testLibrariesDirectory.appending(path: id.uuidString, directoryHint: .isDirectory)
+        }
+    #endif
 
     private func perform<Result>(_ operation: () throws -> Result?) -> Result? {
         do {

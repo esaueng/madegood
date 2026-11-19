@@ -86,7 +86,10 @@ final class PhoneSportCardsUITests: XCTestCase {
         let visible = app.switches["sportSettings.visible"]
         scrollTo(visible, in: app)
         visible.switches.firstMatch.tap()
-        XCTAssertEqual(visible.value as? String, "0")
+        // The switch's value follows the stored setting; a slow simulator can report the old
+        // value just after the tap.
+        let hidden = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "0"), object: visible)
+        XCTAssertEqual(XCTWaiter().wait(for: [hidden], timeout: 10), .completed, "Canoe never became hidden")
         app.navigationBars.buttons.firstMatch.tap()
         XCTAssertTrue(app.staticTexts["Hidden"].waitForExistence(timeout: 10))
         attachScreenshot("settings with hidden sport")

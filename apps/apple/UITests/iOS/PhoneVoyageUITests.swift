@@ -4,12 +4,15 @@ import XCTest
 final class PhoneVoyageUITests: XCTestCase {
     @MainActor func testRelaunchRestartsTheActiveLegAndShowsTheGap() throws {
         continueAfterFailure = false
-        defer { XCUIDevice.shared.location = nil }
+        // A teardown block, not `defer`: it also runs after a failed assertion stops the
+        // test, so a recording leg never keeps receiving fixes into the next test.
+        addTeardownBlock { @MainActor in XCUIDevice.shared.location = nil }
 
         let name = "Synthetic passage \(UUID().uuidString.prefix(8))"
         let app = XCUIApplication()
         app.launchEnvironment["MADEGOOD_TEST_VOYAGES"] = UUID().uuidString
-        app.launch()
+        resetLocationPermission(app)
+        launchFresh(app)
         openVoyages(in: app)
         app.buttons["New Voyage"].tap()
         let form = app.alerts["New Voyage"]
@@ -22,9 +25,7 @@ final class PhoneVoyageUITests: XCTestCase {
         let start = app.buttons["Start Leg"]
         XCTAssertTrue(start.waitForExistence(timeout: 10))
         start.tap()
-        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
-        let allowLocation = springboard.buttons["Allow While Using App"]
-        if allowLocation.waitForExistence(timeout: 5) { allowLocation.tap() }
+        allowLocationWhileUsing()
         simulatePosition(longitude: -30)
         let lastFix = element("voyage.lastSavedPosition", in: app)
         XCTAssertTrue(lastFix.waitForExistence(timeout: 20))
@@ -32,8 +33,17 @@ final class PhoneVoyageUITests: XCTestCase {
         let countBeforeRestart = try XCTUnwrap((savedCount.value as? String).flatMap(Int.init))
         XCTAssertGreaterThan(countBeforeRestart, 0)
 
-        app.terminate()
-        app.launch()
+        // Stop the leg's location updates and sessions (the leg stays active) and the
+        // simulated fixes before terminating: otherwise Core Location relaunches the app in
+        // the background, without this test's environment. The leg must come back from the
+        // explicit launch.
+        let stopUpdates = app.buttons["voyage.test.stopUpdates"]
+        scrollTo(stopUpdates, in: app)
+        stopUpdates.tap()
+        XCTAssertTrue(app.buttons["Resume Leg"].waitForExistence(timeout: 10))
+        XCUIDevice.shared.location = nil
+        terminateAndSettle(app)
+        launchFresh(app)
         openVoyages(in: app)
         let activeLeg = element("voyage.activeLeg", in: app)
         XCTAssertTrue(activeLeg.waitForExistence(timeout: 10))

@@ -8,8 +8,35 @@ extension XCTestCase {
     func launchDemoApp(extraArguments: [String] = [], resetSettings: Bool = true) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["-demoSession"] + (resetSettings ? ["-resetSettings"] : []) + extraArguments
-        app.launch()
+        launchFresh(app)
         return app
+    }
+
+    /// Launches `app` in a new process with this test's arguments and environment. The
+    /// system can start the app on its own: after a voyage test terminates it during a leg,
+    /// Core Location relaunches it in the background. XCUITest did not launch that copy, so
+    /// `launch()` does not terminate it and the test ends up driving a process without its
+    /// arguments (no demo mode, the real voyage library). Terminate any running copy first.
+    func launchFresh(_ app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
+        if app.state != .notRunning { terminateAndSettle(app, file: file, line: line) }
+        app.launch()
+    }
+
+    /// Terminates `app` and makes sure it stays stopped: if the system starts it again
+    /// within two seconds (see `launchFresh`), terminates that copy too.
+    func terminateAndSettle(_ app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
+        for _ in 0..<3 {
+            if app.state != .notRunning {
+                app.terminate()
+                XCTAssertTrue(app.wait(for: .notRunning, timeout: 10), "App still running", file: file, line: line)
+            }
+            let restarted = XCTNSPredicateExpectation(
+                predicate: NSPredicate(
+                    format: "state != %@", NSNumber(value: XCUIApplication.State.notRunning.rawValue)),
+                object: app)
+            if XCTWaiter().wait(for: [restarted], timeout: 2) != .completed { return }
+        }
+        XCTFail("The system kept starting the app", file: file, line: line)
     }
 
     /// An independent synthetic library for each test, preserved across that test's relaunches.
@@ -41,15 +68,41 @@ extension XCTestCase {
 
     /// Swipes up until the element can be tapped.
     func scrollTo(_ element: XCUIElement, in app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
-        for _ in 0..<8 where !(element.exists && element.isHittable) {
+        // An element can exist before it has a usable frame (a lazy row still off screen, or
+        // a slow simulator mid-layout); asking for hittability then fails the test, so
+        // scroll until its frame is inside the window first.
+        func reachable() -> Bool {
+            guard element.exists, !element.frame.isEmpty,
+                app.windows.firstMatch.frame.intersects(element.frame)
+            else { return false }
+            return element.isHittable
+        }
+        for _ in 0..<8 where !reachable() {
             // A slow drag, like a finger: the watch ignores XCUITest's quick swipes.
             let window = app.windows.firstMatch
             let low = window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.8))
             let high = window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.35))
             low.press(forDuration: 0.05, thenDragTo: high, withVelocity: .slow, thenHoldForDuration: 0.1)
         }
-        XCTAssertTrue(element.isHittable, "\(element) never became hittable", file: file, line: line)
+        XCTAssertTrue(reachable(), "\(element) never became hittable", file: file, line: line)
     }
+
+    #if os(iOS)
+        /// Clears the app's location permission so a test that records positions starts from
+        /// "not determined" and answers the prompt itself. Earlier tests can leave it denied:
+        /// a live session's map asks for location, and when a test does not answer, XCTest's
+        /// default interruption handler taps "Don't Allow". Call before `launch()`.
+        func resetLocationPermission(_ app: XCUIApplication) {
+            app.resetAuthorizationStatus(for: .location)
+        }
+
+        /// Answers the location prompt that a reset permission guarantees.
+        func allowLocationWhileUsing(file: StaticString = #filePath, line: UInt = #line) {
+            let allow = XCUIApplication(bundleIdentifier: "com.apple.springboard").buttons["Allow While Using App"]
+            XCTAssertTrue(allow.waitForExistence(timeout: 10), "No location prompt", file: file, line: line)
+            allow.tap()
+        }
+    #endif
 
     /// Waits until the element's label equals `label`.
     func waitForLabel(_ element: XCUIElement, _ label: String, timeout: TimeInterval = 15) {
