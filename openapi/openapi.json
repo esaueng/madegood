@@ -139,7 +139,8 @@
               "internal",
               "session_deleted",
               "stale_revision",
-              "revision_mismatch"
+              "revision_mismatch",
+              "export_too_large"
             ]
           },
           "message": {
@@ -1459,6 +1460,54 @@
           },
           "401": {
             "description": "Missing or invalid access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/me/export": {
+      "get": {
+        "operationId": "exportAccount",
+        "summary": "Download all of the signed-in user's data",
+        "description": "A ZIP archive, streamed: `account.json`, `sessions.json`, `privacy-zones.json`, `voyages.json`, a README and every track file as uploaded (owner versions, not the shared projection). Refused with 413 above 20000 track files or 1073741824 bytes of tracks.",
+        "tags": [
+          "account"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The archive.",
+            "content": {
+              "application/zip": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid access token, or the account no longer exists.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The account holds too much to export in one archive (`export_too_large`).",
             "content": {
               "application/json": {
                 "schema": {

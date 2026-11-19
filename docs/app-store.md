@@ -19,7 +19,7 @@ get a rejection.
 | 4 | **No privacy manifest** (`PrivacyInfo.xcprivacy`). The app uses `UserDefaults` (settings and sync state) and file APIs. | Apps that use required-reason APIs must declare a reason in a privacy manifest. |
 | 5 | **TestFlight builds have no sync.** `MADEGOOD_API_URL` is empty in `apps/apple/Config/MadeGood.xcconfig`, and CI has no `Local.xcconfig`. | Reviewers would see "Account sync isn't set up in this build." The label answers below assume sync is on; if it ships off, most of the "collected" rows go away. |
 | 6 | **Health permission strings.** `NSHealthUpdateUsageDescription` says the app "runs a workout session" but not that it saves workouts, routes and heart rate to Health. `NSMotionUsageDescription` mentions detecting maneuvers, which use GPS, not motion. | Reviewers check that purpose strings describe what the app actually does (5.1.1(i)). Suggested wording is in [HealthKit](#healthkit). |
-| 7 | **No full data export.** PLAN §7 lists `GET /api/me/export`; it does not exist yet. Per-session export does (below). | Not an App Store requirement, but the privacy policy should not promise it until it ships. |
+| 7 | ~~No full data export.~~ Done: `GET /api/me/export` (website Settings → Export all my data) and iPhone Settings → Your Data → Export All Recordings. | Not an App Store requirement; the privacy policy can now describe it. |
 
 ## Privacy nutrition label
 
@@ -143,7 +143,13 @@ session.
 - **Apple Health:** saved workouts and routes are exportable through Health.
 - **Files app:** recordings live in the app's Documents folder, visible in Files
   (`UIFileSharingEnabled`).
-- **Account-wide export:** not built (item 7).
+- **All recordings (iPhone):** Settings → Your Data → Export All Recordings zips every
+  recording folder on the phone and opens the share sheet.
+- **Account-wide export (website):** Settings → Export all my data downloads a ZIP from
+  `GET /api/me/export`: `account.json` (profile, settings, Apple user identifier),
+  `sessions.json`, `privacy-zones.json`, `voyages.json` and every track file as uploaded.
+  The Worker streams it from D1 and R2 without buffering the tracks, and refuses (413)
+  accounts with more than 20,000 track files or 1 GiB of tracks.
 
 ## Review notes (draft)
 

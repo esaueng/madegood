@@ -169,6 +169,23 @@ export async function signOut(): Promise<void> {
   await fetch("/api/auth/web/signout", { method: "POST", credentials: "same-origin" });
 }
 
+export const EXPORT_URL = "/api/me/export";
+
+/**
+ * Checks that an export can start (signed in, cookies fresh, not over the size limit) with
+ * a HEAD request, so the browser's own download of EXPORT_URL then streams to disk.
+ */
+export async function checkExport(): Promise<void> {
+  const response = await apiFetch("/me/export", { method: "HEAD" });
+  if (!response.ok) {
+    throw new ApiError(
+      response.status,
+      response.status === 413 ? "export_too_large" : undefined,
+      `Export failed: ${response.status}`,
+    );
+  }
+}
+
 /** Full-page navigation to Apple's sign-in, returning to `next` afterwards. */
 export const signInUrl = (next: string) => `/api/auth/web/apple?next=${encodeURIComponent(next)}`;
 

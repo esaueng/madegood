@@ -1,13 +1,16 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
-import { LocateFixed, Trash2 } from "lucide-react";
+import { Download, LocateFixed, Trash2 } from "lucide-react";
 import { lazy, Suspense, useState } from "react";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { VISIBILITY } from "@/components/visibility";
 import type { Draft } from "@/components/zone-map";
 import {
+  ApiError,
   addZone,
+  checkExport,
   deleteZone,
+  EXPORT_URL,
   fetchZones,
   type Me,
   signInUrl,
@@ -48,6 +51,7 @@ function Settings() {
       <h1 className="text-2xl font-semibold">Settings</h1>
       <Preferences me={me} />
       <Zones />
+      <ExportData />
     </div>
   );
 }
@@ -199,6 +203,38 @@ function Zones() {
         </ul>
       ) : (
         zones.isSuccess && <p className="text-sm text-muted-foreground">No privacy zones yet.</p>
+      )}
+    </section>
+  );
+}
+
+function ExportData() {
+  const prepare = useMutation({
+    mutationFn: checkExport,
+    // The browser downloads the archive itself, streaming it to disk.
+    onSuccess: () => window.location.assign(EXPORT_URL),
+  });
+  const tooLarge = prepare.error instanceof ApiError && prepare.error.status === 413;
+  return (
+    <section className="grid gap-3" aria-labelledby="export-data">
+      <h2 id="export-data" className="text-lg font-semibold">
+        Export your data
+      </h2>
+      <p className="max-w-prose text-sm text-muted-foreground">
+        Download a ZIP file with your profile, settings, privacy zones, every session's details and
+        every track file as you uploaded it. Track files contain precise locations and times.
+      </p>
+      <div>
+        <Button variant="outline" disabled={prepare.isPending} onClick={() => prepare.mutate()}>
+          <Download /> {prepare.isPending ? "Preparing…" : "Export all my data"}
+        </Button>
+      </div>
+      {prepare.isError && (
+        <p className="text-sm text-red-600" role="alert">
+          {tooLarge
+            ? "Your account holds too much to export at once. Download sessions one at a time from the iPhone app instead."
+            : "Could not start the export. Try again."}
+        </p>
       )}
     </section>
   );

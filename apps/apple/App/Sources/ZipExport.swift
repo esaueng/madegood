@@ -9,9 +9,9 @@ enum ZipExport {
 
     /// Returns a zip in the temporary directory named after the folder. The coordinator's
     /// own archive is deleted when the accessor returns, so it is copied out inside it.
-    static func zip(folder: URL) throws -> URL {
+    static func zip(folder: URL, name: String? = nil) throws -> URL {
         let destination = FileManager.default.temporaryDirectory
-            .appendingPathComponent("madegood-\(folder.lastPathComponent).zip")
+            .appendingPathComponent(name ?? "madegood-\(folder.lastPathComponent).zip")
         var coordinatorError: NSError?
         var copyError: (any Error)?
         var copied = false
@@ -31,5 +31,18 @@ enum ZipExport {
         if let copyError { throw copyError }
         guard copied else { throw Failure.noArchive }
         return destination
+    }
+
+    /// Settings → Export All Recordings: every recording folder on this iPhone (raw sensor
+    /// files and the analyzed track) in one zip, laid out as in the Files app. Nil when there
+    /// are no recordings. Runs the archiver off the main actor; a large library takes a while.
+    static func zipAllRecordings(root: URL) async throws -> URL? {
+        try await Task.detached(priority: .userInitiated) {
+            let folders = (try? FileManager.default.contentsOfDirectory(
+                at: root, includingPropertiesForKeys: [.isDirectoryKey], options: .skipsHiddenFiles)) ?? []
+            guard folders.contains(where: { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true })
+            else { return nil }
+            return try zip(folder: root, name: "madegood-recordings.zip")
+        }.value
     }
 }

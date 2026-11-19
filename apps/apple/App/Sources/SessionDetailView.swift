@@ -640,7 +640,8 @@ enum ChartSeries {
     }
 }
 
-private struct ShareSheet: UIViewControllerRepresentable {
+/// The system share sheet for one file (AirDrop, Files, Mail).
+struct ShareSheet: UIViewControllerRepresentable {
     let url: URL
 
     func makeUIViewController(context: Context) -> UIActivityViewController {
