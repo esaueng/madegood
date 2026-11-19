@@ -130,6 +130,13 @@ fork:
 - Each push to `main` that touches `web/` builds, creates the post-processing queues
   if they are missing, applies migrations, then deploys production.
 
+**One public address.** Set `CANONICAL_ORIGIN` in `web/wrangler.jsonc` (production `vars`)
+and `VITE_CANONICAL_ORIGIN` in the production build step of `.github/workflows/deploy.yml` to
+your custom domain (for example `https://madegood.example`). Pages on any other host, such as
+the `workers.dev` address, move there. `/api` keeps answering on every host so older app builds
+keep syncing. Register that domain and `https://<domain>/api/auth/web/apple/callback` on the
+Sign in with Apple Services ID, and point `MADEGOOD_API_URL` at `https://<domain>/api`.
+
 Set in the repository (Settings → Secrets and variables → Actions):
 
 | Name | Kind | Value |

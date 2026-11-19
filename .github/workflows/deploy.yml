@@ -168,6 +168,9 @@ jobs:
       # docs/self-hosting.md), because they apply before the new code is live.
       - name: Build
         working-directory: web
+        env:
+          # The production site's one public address (also CANONICAL_ORIGIN in wrangler.jsonc).
+          VITE_CANONICAL_ORIGIN: https://madegood.app
         run: pnpm build
       # wrangler deploy fails when a queue in wrangler.jsonc does not exist yet. Before the
       # migrations, so a token without Queues permission fails before any schema change.
