@@ -53,10 +53,25 @@ export const refreshTokens = sqliteTable(
     expiresAt: timestamp("expires_at").notNull(),
     createdAt: timestamp("created_at").notNull().default(sql`(unixepoch('subsec') * 1000)`),
     revokedAt: timestamp("revoked_at"),
+    /**
+     * The sign-in this token descends from: the first token's ID, shared by every
+     * successor. Signing out ends the whole family. Null only on rows from before 0004,
+     * which that migration backfills with the row's own ID.
+     */
+    familyId: text("family_id"),
+    /**
+     * Which client the sign-in belongs to: `app` (the iPhone, JSON refresh) or `web` (the
+     * website, cookie refresh). Each refresh endpoint accepts only its own kind, so a web
+     * refresh token never yields an app token without `sid`. Every successor keeps it.
+     */
+    client: text("client", { enum: ["app", "web"] })
+      .notNull()
+      .default("app"),
   },
   (table) => [
     uniqueIndex("refresh_tokens_hash_unique").on(table.tokenHash),
     index("refresh_tokens_user").on(table.userId),
+    index("refresh_tokens_family").on(table.familyId),
   ],
 );
 
@@ -95,6 +110,12 @@ export const sessions = sqliteTable(
     summaryJson: text("summary_json"),
     analyzerVersion: text("analyzer_version"),
     trackKey: text("track_key"),
+    /**
+     * The device's upload revision for the metadata and track (increasing per session).
+     * A PUT with a lower revision is rejected, so a delayed older upload can never
+     * replace newer data, for example a track the user has since trimmed.
+     */
+    uploadRevision: integer("upload_revision").notNull().default(0),
     windJson: text("wind_json"),
     createdAt: timestamp("created_at").notNull().default(sql`(unixepoch('subsec') * 1000)`),
     updatedAt: timestamp("updated_at").notNull().default(sql`(unixepoch('subsec') * 1000)`),
@@ -104,6 +125,22 @@ export const sessions = sqliteTable(
     index("sessions_user_started").on(table.userId, table.startedAt),
     index("sessions_public_started").on(table.visibility, table.startedAt),
   ],
+);
+
+/**
+ * Session IDs an account deleted. A later PUT for one returns 410, so a device that still
+ * has the recording can never bring a deleted session back. Removed with the account.
+ */
+export const sessionTombstones = sqliteTable(
+  "session_tombstones",
+  {
+    id: text("id").notNull(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    deletedAt: timestamp("deleted_at").notNull().default(sql`(unixepoch('subsec') * 1000)`),
+  },
+  (table) => [primaryKey({ columns: [table.userId, table.id] })],
 );
 
 /** Areas around a user's home or launch spots, cut from tracks that others can see. */

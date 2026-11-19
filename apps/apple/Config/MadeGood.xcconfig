@@ -10,6 +10,10 @@ CODE_SIGN_STYLE = Automatic
 MARKETING_VERSION = 0.1.0
 CURRENT_PROJECT_VERSION = 1
 
+// Session sync's API root, for example https:/$()/example.com/api (xcconfig reads `//` as
+// a comment). Empty: the app has no account sync. Set it in Local.xcconfig.
+MADEGOOD_API_URL =
+
 // SWIFT_VERSION (6.0) is set in Project.swift; see the comment there.
 SWIFT_STRICT_CONCURRENCY = complete
 SWIFT_TREAT_WARNINGS_AS_ERRORS = NO

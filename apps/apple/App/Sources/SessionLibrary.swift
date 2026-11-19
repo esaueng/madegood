@@ -32,6 +32,8 @@ final class SessionLibrary {
     }
 
     private(set) var items: [Item] = []
+    /// Posted on the main actor after a trim is saved or removed.
+    static let didChangeTrim = Notification.Name("SessionLibrary.didChangeTrim")
     enum SavedTrim: Hashable, Sendable {
         case original
         case trimmed(SessionTrim)
@@ -142,6 +144,7 @@ final class SessionLibrary {
         updated.savedTrim = trim.map(SavedTrim.trimmed) ?? .original
         cache[source.entry.folder] = (updated, summary)
         reload()
+        NotificationCenter.default.post(name: Self.didChangeTrim, object: nil)
         return updated
     }
 

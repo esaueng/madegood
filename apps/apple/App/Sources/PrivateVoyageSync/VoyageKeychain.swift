@@ -6,12 +6,14 @@ struct VoyageKeychain: VoyageCredentialStore {
     struct Failure: Error { let status: OSStatus }
 
     let service: String
+    /// Session sync keeps its MadeGood sign-in under its own account name.
+    var account = "private-voyage-credentials"
 
     private var query: [String: Any] {
         [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
-            kSecAttrAccount as String: "private-voyage-credentials",
+            kSecAttrAccount as String: account,
             kSecAttrSynchronizable as String: false,
         ]
     }

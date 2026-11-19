@@ -485,6 +485,7 @@ struct SessionDetailView: View {
                 }
                 LabeledContent("Device", value: analysis.session.meta.device.model)
                 LabeledContent("GPS fixes", value: "\(selectedTrack.gps.count) (\(metrics.rejectedFixes) rejected)")
+                SessionSyncDetailRow(sessionID: analysis.session.meta.sessionId)
                 Button("Delete session", role: .destructive) { confirmDelete = true }
             }
         }

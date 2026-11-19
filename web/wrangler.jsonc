@@ -10,13 +10,17 @@
   "compatibility_flags": ["nodejs_compat"],
   "observability": { "enabled": true },
   "assets": {
+    "binding": "ASSETS",
     "not_found_handling": "single-page-application",
-    // API routes always reach the Worker, never the SPA fallback.
-    "run_worker_first": ["/api/*", "/v/*"]
+    // API routes always reach the Worker, never the SPA fallback. /s/* gets Open Graph
+    // tags injected into the SPA shell (src/server/routes/session-preview.ts).
+    "run_worker_first": ["/api/*", "/v/*", "/s/*"]
   },
   // APPLE_AUDIENCES: comma-separated Sign in with Apple audiences (the iOS bundle ID; the
-  // web Services ID joins later). Secrets such as JWT_SIGNING_KEY are not listed here.
-  "vars": { "APP_VERSION": "0.1.0", "APPLE_AUDIENCES": "app.madegood" },
+  // web Services ID joins later). APPLE_WEB_CLIENT_ID: the Services ID for Sign in with Apple
+  // on the website; empty turns web sign-in off. Secrets such as JWT_SIGNING_KEY are not
+  // listed here.
+  "vars": { "APP_VERSION": "0.1.0", "APPLE_AUDIENCES": "app.madegood", "APPLE_WEB_CLIENT_ID": "" },
   "d1_databases": [
     {
       "binding": "DB",
@@ -34,7 +38,11 @@
     // Per-PR previews use their own database and bucket, never production data.
     "preview": {
       "name": "madegood-preview",
-      "vars": { "APP_VERSION": "0.1.0-preview", "APPLE_AUDIENCES": "app.madegood" },
+      "vars": {
+        "APP_VERSION": "0.1.0-preview",
+        "APPLE_AUDIENCES": "app.madegood",
+        "APPLE_WEB_CLIENT_ID": ""
+      },
       "d1_databases": [
         {
           "binding": "DB",

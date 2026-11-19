@@ -4,9 +4,12 @@ import { apiError } from "./lib/errors";
 import { auth } from "./routes/auth";
 import { health } from "./routes/health";
 import { me } from "./routes/me";
+import { privacyZoneRoutes } from "./routes/privacy-zones";
+import { sessionPreviewPage } from "./routes/session-preview";
 import { sessionRoutes } from "./routes/sessions";
 import { voyageLiveRoutes, voyageViewerPage } from "./routes/voyage-live";
 import { voyageRoutes } from "./routes/voyages";
+import { webAuth } from "./routes/web-auth";
 
 export type AppEnv = { Bindings: Env };
 
@@ -16,9 +19,12 @@ export function createApp() {
   api.route("/", health);
   api.route("/", auth);
   api.route("/", me);
+  api.route("/", privacyZoneRoutes);
   api.route("/", sessionRoutes);
   api.route("/", voyageLiveRoutes);
   api.route("/", voyageRoutes);
+  // Plain Hono routes: browser redirects and cookies, left out of the OpenAPI document.
+  api.route("/", webAuth);
 
   api.openAPIRegistry.registerComponent("securitySchemes", "bearerAuth", {
     type: "http",
@@ -34,10 +40,13 @@ export function createApp() {
     servers: [{ url: "/api" }],
   });
 
-  const app = new OpenAPIHono<AppEnv>().route("/api", api).route("/", voyageViewerPage);
+  const app = new OpenAPIHono<AppEnv>()
+    .route("/api", api)
+    .route("/", voyageViewerPage)
+    .route("/", sessionPreviewPage);
 
   // Hono only consults the root app's handlers, so these live here, not on `api`.
-  // The Worker handles /api/* and /v/* (wrangler.jsonc `run_worker_first`); everything else
+  // The Worker handles /api/*, /v/* and /s/* (wrangler.jsonc `run_worker_first`); everything else
   // is served as static assets with the SPA fallback.
   app.notFound((c) => c.json({ error: "not_found" }, 404));
   app.onError((err, c) => {

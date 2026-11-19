@@ -32,12 +32,16 @@ type IdentityTokenOptions = {
   iss?: string;
   expiresAt?: number;
   key?: CryptoKey;
+  nonce?: string;
 };
 
 /** Signs an identity token shaped like Apple's. Times are epoch seconds. */
 export function identityToken(options: IdentityTokenOptions = {}) {
   const now = Math.floor(Date.now() / 1000);
-  return new SignJWT({ email_verified: true })
+  return new SignJWT({
+    email_verified: true,
+    ...(options.nonce === undefined ? {} : { nonce: options.nonce }),
+  })
     .setProtectedHeader({ alg: "RS256", kid: KID })
     .setIssuer(options.iss ?? "https://appleid.apple.com")
     .setAudience(options.aud ?? AUDIENCE)
