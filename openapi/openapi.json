@@ -1408,7 +1408,7 @@
       },
       "delete": {
         "summary": "Delete the signed-in user's account and all their data",
-        "description": "Deletes the user's track files and every database row that belongs to them. Repeating the request with the same access token succeeds.",
+        "description": "Deletes the user's track files and every database row that belongs to them. Repeating the request with the same access token succeeds. A website request (session cookie) also gets its session cookies cleared. The server holds no Sign in with Apple tokens (it never redeems an authorization code), so there is nothing to revoke with Apple.",
         "tags": [
           "account"
         ],

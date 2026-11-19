@@ -169,6 +169,15 @@ export async function signOut(): Promise<void> {
   await fetch("/api/auth/web/signout", { method: "POST", credentials: "same-origin" });
 }
 
+/**
+ * Deletes the account and everything uploaded to it (DELETE /api/me). The server clears the
+ * session cookies in the same response. Sessions on the user's devices are not touched.
+ */
+export async function deleteAccount(): Promise<void> {
+  const response = await apiFetch("/me", { method: "DELETE" });
+  if (!response.ok) throw await failure(response);
+}
+
 /** Full-page navigation to Apple's sign-in, returning to `next` afterwards. */
 export const signInUrl = (next: string) => `/api/auth/web/apple?next=${encodeURIComponent(next)}`;
 

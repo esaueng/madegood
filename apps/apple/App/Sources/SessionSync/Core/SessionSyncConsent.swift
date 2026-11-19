@@ -116,6 +116,19 @@ struct SessionSyncConsent: Codable, Equatable, Sendable {
         adopted[binding.accountID]?.subtract(ids)
     }
 
+    /// The account was deleted on the server: forgets every consent decision for it (its
+    /// sign-in windows, adopted and deleted sessions) and turns sync off. Recordings made
+    /// while it was signed in then count as earlier sessions for any later account, which
+    /// uploads them only by explicit choice.
+    mutating func forget(accountID: String) {
+        windows.removeAll { $0.accountID == accountID }
+        adopted[accountID] = nil
+        deletedFromCloud[accountID] = nil
+        if let enabledSignIn, !windows.contains(where: { $0.signInID == enabledSignIn }) {
+            self.enabledSignIn = nil
+        }
+    }
+
     private mutating func close(at date: Date) {
         for index in windows.indices where windows[index].end == nil {
             windows[index].end = max(date, windows[index].start)

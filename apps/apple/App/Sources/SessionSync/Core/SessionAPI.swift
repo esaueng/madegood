@@ -83,6 +83,24 @@ final class SessionAPI {
         }
     }
 
+    /// `DELETE /me`: deletes the account and everything uploaded to it. Repeating it with
+    /// the same access token succeeds. Built by hand: the generated client covers only the
+    /// upload operations (Integrations/VoyageRecorder/swift-voyage-generator.yaml).
+    func deleteAccount(bearer: String) async throws {
+        var request = URLRequest(url: baseURL.appending(path: "me"))
+        request.httpMethod = "DELETE"
+        request.setValue("Bearer " + bearer, forHTTPHeaderField: "Authorization")
+        let (data, response) = try await transport.send(request)
+        guard (200..<300).contains(response.statusCode) else {
+            struct Failure: Decodable { let error: String }
+            throw VoyageAPIError.http(
+                status: response.statusCode,
+                code: (try? JSONDecoder().decode(Failure.self, from: data))?.error,
+                retryAfter: response.value(forHTTPHeaderField: "Retry-After").flatMap(TimeInterval.init)
+            )
+        }
+    }
+
     private func perform<Result>(
         bearer: String, policy: SessionNetworkPolicy, upload: GeneratedSessionTransport.FileUpload? = nil,
         _ operation: (Client) async throws -> Result

@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
-import { LocateFixed, Trash2 } from "lucide-react";
+import { LocateFixed, Trash2, TriangleAlert } from "lucide-react";
 import { lazy, Suspense, useState } from "react";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { VISIBILITY } from "@/components/visibility";
@@ -15,7 +15,7 @@ import {
   updateMe,
   type Visibility,
 } from "@/lib/api";
-import { meQueryKey, useMe } from "@/lib/auth";
+import { meQueryKey, useDeleteAccount, useMe } from "@/lib/auth";
 
 const ZoneMap = lazy(() => import("@/components/zone-map"));
 
@@ -31,6 +31,18 @@ const UNIT_LABELS: Record<Units, string> = {
 
 function Settings() {
   const { data: me, isPending } = useMe();
+  const [deleted, setDeleted] = useState(false);
+  if (deleted) {
+    return (
+      <section className="mx-auto max-w-sm py-16 text-center" role="status">
+        <h1 className="text-2xl font-semibold">Account deleted</h1>
+        <p className="mt-2 text-muted-foreground">
+          Your MadeGood account and everything you uploaded to it are gone. Sessions on your iPhone
+          and Apple Watch are still there.
+        </p>
+      </section>
+    );
+  }
   if (isPending) return <p className="py-16 text-muted-foreground">Loading…</p>;
   if (!me) {
     return (
@@ -48,6 +60,7 @@ function Settings() {
       <h1 className="text-2xl font-semibold">Settings</h1>
       <Preferences me={me} />
       <Zones />
+      <DeleteAccount onDeleted={() => setDeleted(true)} />
     </div>
   );
 }
@@ -199,6 +212,74 @@ function Zones() {
         </ul>
       ) : (
         zones.isSuccess && <p className="text-sm text-muted-foreground">No privacy zones yet.</p>
+      )}
+    </section>
+  );
+}
+
+function DeleteAccount({ onDeleted }: { onDeleted: () => void }) {
+  const deleteAccount = useDeleteAccount();
+  const [confirming, setConfirming] = useState(false);
+  const remove = useMutation({ mutationFn: deleteAccount, onSuccess: onDeleted });
+  return (
+    <section className="grid gap-3 border-t pt-8" aria-labelledby="delete-account">
+      <h2 id="delete-account" className="text-lg font-semibold">
+        Delete account
+      </h2>
+      {confirming ? (
+        <div
+          className="grid max-w-prose gap-3 rounded-xl border border-red-600/40 bg-red-600/5 p-4 text-sm"
+          role="alertdialog"
+          aria-labelledby="delete-account-confirm"
+          aria-describedby="delete-account-details"
+        >
+          <p id="delete-account-confirm" className="flex items-center gap-2 font-medium">
+            <TriangleAlert className="size-4 text-red-600" aria-hidden /> Delete your MadeGood
+            account?
+          </p>
+          <p id="delete-account-details" className="text-muted-foreground">
+            This deletes every session you have uploaded, your privacy zones, your settings and your
+            sign-in from MadeGood's servers. Sessions recorded on your iPhone and Apple Watch stay
+            on those devices, and workouts in Apple Health are not affected. This can't be undone.
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              className="bg-red-600 text-white hover:bg-red-600/90"
+              disabled={remove.isPending}
+              onClick={() => remove.mutate()}
+            >
+              {remove.isPending ? "Deleting…" : "Delete my account"}
+            </Button>
+            <Button
+              variant="outline"
+              disabled={remove.isPending}
+              onClick={() => {
+                remove.reset();
+                setConfirming(false);
+              }}
+              autoFocus
+            >
+              Cancel
+            </Button>
+          </div>
+          {remove.isError && (
+            <p className="text-red-600" role="alert">
+              Could not delete the account. Try again.
+            </p>
+          )}
+        </div>
+      ) : (
+        <>
+          <p className="max-w-prose text-sm text-muted-foreground">
+            Permanently delete your account and everything uploaded to it. Recordings on your
+            devices are kept.
+          </p>
+          <div>
+            <Button variant="outline" className="text-red-600" onClick={() => setConfirming(true)}>
+              <Trash2 /> Delete account…
+            </Button>
+          </div>
+        </>
       )}
     </section>
   );

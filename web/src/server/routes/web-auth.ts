@@ -89,6 +89,9 @@ webAuth.get("/auth/web/apple", (c) => {
   url.search = new URLSearchParams({
     client_id: clientId,
     redirect_uri: callbackUrl(c.req.url),
+    // Apple's form_post needs `code` in the response type. Only the identity token is used:
+    // the code is never redeemed, so no Apple refresh token is held and account deletion
+    // has nothing to revoke (routes/me.ts).
     response_type: "code id_token",
     response_mode: "form_post",
     scope: "name",

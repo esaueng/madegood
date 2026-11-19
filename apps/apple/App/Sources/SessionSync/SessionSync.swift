@@ -50,6 +50,7 @@ final class SessionSync {
     }
 
     private let transport: any SessionSyncTransport
+    private let api: SessionAPI
     private let preferences: UserDefaults
     private let network: NetworkState
     @ObservationIgnored private var launched = false
@@ -74,9 +75,10 @@ final class SessionSync {
         ledger.guardCredentials(guarded, now: { .now }, isSignedIn: { [weak account] in account?.binding != nil })
         self.account = account
         self.ledger = ledger
+        let api = SessionAPI(baseURL: apiRoot, transport: transport)
+        self.api = api
         outbox = SessionOutbox(
-            root: root, account: account, api: SessionAPI(baseURL: apiRoot, transport: transport),
-            networkAvailable: { network.canUpload(under: $0) })
+            root: root, account: account, api: api, networkAvailable: { network.canUpload(under: $0) })
         self.network = network
         self.transport = transport
         self.preferences = preferences
@@ -151,6 +153,21 @@ final class SessionSync {
     func signOut() async throws {
         do {
             try account.signOut()
+        } catch {
+            await accountDidChange()
+            throw error
+        }
+        await accountDidChange()
+    }
+
+    /// Deletes the account on the server, then signs out: the upload queue, frozen tracks,
+    /// saved tokens and this account's sync consent are removed. Recordings stay on the
+    /// device. On failure the sign-in is kept (unless its token could not be refreshed).
+    func deleteAccount() async throws {
+        // No upload may start while the account is going away; a failure restarts the work.
+        stopWork()
+        do {
+            try await AccountDeletion.delete(account: account, api: api, ledger: ledger)
         } catch {
             await accountDidChange()
             throw error

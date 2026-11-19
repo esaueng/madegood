@@ -13,8 +13,8 @@ get a rejection.
 
 | # | Item | Why it matters |
 |---|---|---|
-| 1 | **No in-app account deletion.** The API has `DELETE /api/me`, but neither the iPhone app (Settings → Account offers only Sign Out) nor the website calls it. | Guideline 5.1.1(v): an app that lets people create an account must let them start deleting it in the app. |
-| 2 | **Sign in with Apple tokens are not revoked on deletion.** The Worker verifies identity tokens but never calls Apple's token revocation endpoint. | Apple asks apps using Sign in with Apple to revoke tokens when an account is deleted. Revoking needs a Sign in with Apple private key held as a Worker secret. |
+| 1 | ~~No in-app account deletion.~~ Done: iPhone Settings → Account → Delete Account and the website's Settings page both call `DELETE /api/me` after a confirmation. | Guideline 5.1.1(v). |
+| 2 | ~~Sign in with Apple tokens are not revoked on deletion.~~ Nothing to revoke: the server never holds an Apple refresh or access token. The iPhone sends only the identity token; the website asks Apple for `code id_token` (required by `form_post`) but verifies the identity token and never redeems the code. No Sign in with Apple private key is needed. If a later change redeems the code, it must store the refresh token and call Apple's `/auth/revoke` on deletion. | Apple asks apps to revoke tokens they hold when an account is deleted. |
 | 3 | **No privacy policy.** There is no privacy policy page or URL. | Required in App Store Connect for every app, and for HealthKit apps in particular. The website could serve one at `/privacy`. |
 | 4 | **No privacy manifest** (`PrivacyInfo.xcprivacy`). The app uses `UserDefaults` (settings and sync state) and file APIs. | Apps that use required-reason APIs must declare a reason in a privacy manifest. |
 | 5 | **TestFlight builds have no sync.** `MADEGOOD_API_URL` is empty in `apps/apple/Config/MadeGood.xcconfig`, and CI has no `Local.xcconfig`. | Reviewers would see "Account sync isn't set up in this build." The label answers below assume sync is on; if it ships off, most of the "collected" rows go away. |
@@ -124,16 +124,18 @@ session.
 
 - An account is optional. Everything works offline without one; Sign in with Apple is
   the only sign-in method, on the iPhone (Settings → Account) and the website.
-- **Deletion today:** `DELETE /api/me` deletes the user's D1 rows (sessions, refresh
-  tokens, privacy zones, cascading from the user) and every R2 object under their
-  prefix. Sessions on the device are kept (they were never only in the account).
-- **Needed** (item 1): a "Delete Account" button in iPhone Settings → Account, and on the
-  website's settings page, each with a confirmation that says what is deleted; sign out
-  afterwards. Item 2 adds Apple token revocation.
-- Draft text for the confirmation: "Delete your MadeGood account? This deletes every
-  session you have uploaded, your privacy zones and your sign-in from MadeGood's
-  servers. Sessions on this iPhone and workouts in Apple Health are not affected. This
-  can't be undone."
+- **Deletion:** iPhone Settings → Account → Delete Account, and the website's Settings
+  page → Delete account. Each asks for confirmation, then calls `DELETE /api/me`, which
+  deletes the user's D1 rows (sessions, refresh tokens, privacy zones, voyages, cascading
+  from the user) and every R2 object under their prefix. Afterwards the iPhone signs out,
+  removes the upload queue, frozen tracks, saved tokens and that account's sync consent;
+  the website's session cookies are cleared in the same response. Recordings on the
+  device are kept (they were never only in the account).
+- **Sign in with Apple:** no Apple tokens are held, so none are revoked (item 2).
+- Confirmation text (iPhone): "Delete your MadeGood account? This deletes every session
+  you have uploaded, your privacy zones, your settings and your sign-in from MadeGood's
+  servers. Recordings on this iPhone and your Apple Watch stay on your devices, and
+  workouts in Apple Health are not affected. This can't be undone."
 
 ## Export
 

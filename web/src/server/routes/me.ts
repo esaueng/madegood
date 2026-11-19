@@ -10,6 +10,7 @@ import {
   toUserBody,
   UserBody,
 } from "../auth/users";
+import { clearSessionCookies } from "../auth/web-cookies";
 import { sessions, users } from "../db/schema";
 import { apiError, errorResponse } from "../lib/errors";
 import { createRouter } from "../lib/router";
@@ -81,7 +82,9 @@ const deleteRoute = createRoute({
   summary: "Delete the signed-in user's account and all their data",
   description:
     "Deletes the user's track files and every database row that belongs to them. Repeating the " +
-    "request with the same access token succeeds.",
+    "request with the same access token succeeds. A website request (session cookie) also gets " +
+    "its session cookies cleared. The server holds no Sign in with Apple tokens (it never " +
+    "redeems an authorization code), so there is nothing to revoke with Apple.",
   tags: ["account"],
   security,
   responses: {
@@ -162,6 +165,12 @@ me.openapi(patchRoute, async (c) => {
 me.openapi(deleteRoute, async (c) => {
   const userId = c.var.userId;
   const db = drizzle(c.env.DB);
+  // Sign in with Apple: the server never holds an Apple refresh or access token. The apps
+  // send only the identity token, and the website asks for `code id_token` but verifies the
+  // identity token alone and never exchanges the code (routes/web-auth.ts). With no token
+  // stored there is nothing to send to Apple's /auth/revoke, and no Sign in with Apple
+  // private key is needed (docs/app-store.md). Revisit this if the code is ever redeemed.
+  //
   // Track keys outside the user prefix, in case any were ever written elsewhere; read
   // them before the rows that point at them are gone.
   const tracks = await db
@@ -185,6 +194,10 @@ me.openapi(deleteRoute, async (c) => {
   for (const result of cleanup) {
     if (result.status === "rejected") throw result.reason;
   }
+  // The website's refresh rows are gone with the user; clear its cookies too, so the
+  // browser stops presenting them. Apps (bearer tokens) get no cookies.
+  if (c.req.header("Authorization") === undefined) clearSessionCookies(c);
+  c.header("Cache-Control", "no-store");
   return c.body(null, 204);
 });
 

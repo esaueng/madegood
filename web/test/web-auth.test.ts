@@ -400,3 +400,40 @@ describe("GET /api/me/stats", () => {
     expect((await api("/me/stats")).status).toBe(401);
   });
 });
+
+describe("DELETE /api/me from the website", () => {
+  const remove = (access: string, origin: string | null = ORIGIN) =>
+    api(
+      "/me",
+      withCookie("mg_at", access, { method: "DELETE", headers: origin ? { origin } : {} }),
+    );
+
+  it("needs a same-origin request, deletes the account and clears the session cookies", async () => {
+    const { access, refresh } = await webSignIn();
+    expect((await remove(access, null)).status).toBe(403);
+    expect((await remove(access, "https://evil.example")).status).toBe(403);
+    expect((await api("/me", withCookie("mg_at", access))).status).toBe(200);
+
+    const deleted = await remove(access);
+    expect(deleted.status).toBe(204);
+    expect(deleted.headers.get("cache-control")).toBe("no-store");
+    const cleared = cookies(deleted).values;
+    expect(cleared.get("mg_at")).toBe("");
+    expect(cleared.get("mg_rt")).toBe("");
+    expect(cleared.get("mg_web")).toBe("");
+    // The sign-in went with the account: neither cookie works again.
+    expect((await api("/me", withCookie("mg_at", access))).status).toBe(401);
+    const refreshed = await api(
+      "/auth/web/refresh",
+      withCookie("mg_rt", refresh, { method: "POST", headers: { origin: ORIGIN } }),
+    );
+    expect(refreshed.status).toBe(401);
+  });
+
+  it("sets no cookies for an app's bearer request", async () => {
+    const app = await signIn();
+    const deleted = await api("/me", { method: "DELETE", headers: bearer(app.accessToken) });
+    expect(deleted.status).toBe(204);
+    expect(deleted.headers.getSetCookie()).toEqual([]);
+  });
+});
