@@ -79,6 +79,9 @@ jobs:
           APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
           APP_STORE_CONNECT_KEY_PATH: ${{ runner.temp }}/AuthKey.p8
           WORK_DIR: ${{ runner.temp }}/testflight
+          # Repository secret, not a variable: secrets are masked in the log, and the URL
+          # names the deployer's Workers subdomain. The API root the app syncs with.
+          MADEGOOD_API_URL: ${{ secrets.MADEGOOD_API_URL }}
         run: scripts/testflight
 
       - name: Remove the API key
@@ -93,10 +96,14 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
           APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          MADEGOOD_API_URL: ${{ secrets.MADEGOOD_API_URL }}
         run: |
           shopt -s nullglob
+          # The API URL's host names the deployer's Workers subdomain; redact it in any form.
+          api_host="${MADEGOOD_API_URL#*://}"
+          api_host="${api_host%%/*}"
           for log in "$RUNNER_TEMP"/testflight/*.log; do
-            for value in "$APPLE_TEAM_ID" "$APP_STORE_CONNECT_KEY_ID" "$APP_STORE_CONNECT_ISSUER_ID"; do
+            for value in "$APPLE_TEAM_ID" "$APP_STORE_CONNECT_KEY_ID" "$APP_STORE_CONNECT_ISSUER_ID" "$MADEGOOD_API_URL" "$api_host"; do
               [ -n "$value" ] || continue
               VALUE="$value" perl -pi -e 's/\Q$ENV{VALUE}\E/[redacted]/g' "$log"
             done
