@@ -1,5 +1,6 @@
-import { exports } from "cloudflare:workers";
+import { env, exports } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
+import { hashRefreshToken } from "../src/server/auth/tokens";
 import { api, bearer, identityToken, signIn } from "./apple";
 
 const ORIGIN = "https://madegood.test";
@@ -89,8 +90,11 @@ describe("web sign-in with Apple", () => {
     const raw = cookies(response).raw.join("\n");
     expect(raw).toMatch(/mg_at=[^;]+;.*Path=\/api;.*HttpOnly/);
     expect(raw).toMatch(/mg_rt=[^;]+;.*Path=\/api\/auth\/web;.*HttpOnly.*SameSite=Strict/);
-    expect(raw).toMatch(/mg_web=1;.*Path=\//);
-    expect(raw).not.toMatch(/mg_web=1;[^\n]*HttpOnly/);
+    // The hint holds the access cookie's expiry, 15 minutes out, and scripts can read it.
+    const hint = Number(cookies(response).values.get("mg_web"));
+    expect(Math.abs(hint - (Date.now() / 1000 + 900))).toBeLessThan(5);
+    expect(raw).toMatch(/mg_web=\d+;.*Path=\//);
+    expect(raw).not.toMatch(/mg_web=\d+;[^\n]*HttpOnly/);
     expect(access).not.toBe("");
     expect(refresh).not.toBe("");
 
@@ -201,6 +205,12 @@ describe("POST /api/auth/web/refresh and /signout", () => {
     expect(next.get("mg_rt")).not.toBe(refresh);
     expect((await api("/me", withCookie("mg_at", next.get("mg_at") ?? ""))).status).toBe(200);
 
+    // Past the 30 s grace window for replays, reuse is theft.
+    await env.DB.prepare(
+      "update refresh_tokens set revoked_at = revoked_at - 31000 where token_hash = ?",
+    )
+      .bind(await hashRefreshToken(refresh))
+      .run();
     const reused = await post("/auth/web/refresh", refresh);
     expect(reused.status).toBe(401);
     expect(cookies(reused).values.get("mg_rt")).toBe("");
@@ -224,6 +234,51 @@ describe("POST /api/auth/web/refresh and /signout", () => {
       headers: { origin: ORIGIN },
     });
     expect(response.status).toBe(401);
+  });
+});
+
+describe("sign-out racing a refresh (review of #63)", () => {
+  const post = (path: string, refresh: string) =>
+    api(path, withCookie("mg_rt", refresh, { method: "POST", headers: { origin: ORIGIN } }));
+
+  it("ends the successor and its access cookie when the refresh lands first", async () => {
+    const sub = "001234.webrace.0001";
+    const { refresh: old } = await webSignIn(sub);
+    const phone = await signIn({ identityToken: await identityToken({ sub }) });
+
+    // The refresh rotates first; its response would restore these cookies.
+    const rotated = cookies(await post("/auth/web/refresh", old)).values;
+    // Sign-out still carries the old cookie.
+    expect((await post("/auth/web/signout", old)).status).toBe(204);
+
+    expect((await api("/me", withCookie("mg_at", rotated.get("mg_at") ?? ""))).status).toBe(401);
+    const late = await post("/auth/web/refresh", rotated.get("mg_rt") ?? "");
+    expect(late.status).toBe(401);
+    // The phone is a different sign-in and stays signed in.
+    expect((await api("/me", { headers: bearer(phone.accessToken) })).status).toBe(200);
+    const phoneRefresh = await api("/auth/refresh", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ refreshToken: phone.refreshToken }),
+    });
+    expect(phoneRefresh.status).toBe(200);
+  });
+
+  it("refuses a refresh that lands after sign-out", async () => {
+    const { refresh: old, access } = await webSignIn();
+    expect((await post("/auth/web/signout", old)).status).toBe(204);
+    expect((await post("/auth/web/refresh", old)).status).toBe(401);
+    expect((await api("/me", withCookie("mg_at", access))).status).toBe(401);
+  });
+
+  it("lets two tabs refresh with the same cookie", async () => {
+    const { refresh: old } = await webSignIn();
+    const [a, b] = [await post("/auth/web/refresh", old), await post("/auth/web/refresh", old)];
+    expect([a.status, b.status]).toEqual([204, 204]);
+    for (const response of [a, b]) {
+      const access = cookies(response).values.get("mg_at") ?? "";
+      expect((await api("/me", withCookie("mg_at", access))).status).toBe(200);
+    }
   });
 });
 

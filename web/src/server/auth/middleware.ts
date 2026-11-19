@@ -1,7 +1,8 @@
+import { drizzle } from "drizzle-orm/d1";
 import type { Context } from "hono";
 import { createMiddleware } from "hono/factory";
 import { apiError } from "../lib/errors";
-import { verifyAccessToken } from "./tokens";
+import { isFamilyLive, verifyAccessClaims, verifyAccessToken } from "./tokens";
 import { accessCookie, sameOrigin } from "./web-cookies";
 
 export type AuthEnv = { Bindings: Env; Variables: { userId: string } };
@@ -33,10 +34,13 @@ async function credential(c: Context<any>): Promise<Credential> {
   const cookie = accessCookie(c);
   if (cookie === null) return { kind: "none" };
   if (!sameOrigin(c)) return { kind: "forbidden" };
-  const userId = await verifyAccessToken(cookie, c.env.JWT_SIGNING_KEY);
-  return userId
-    ? { kind: "user", userId }
-    : { kind: "invalid", message: "The session cookie is invalid or expired." };
+  // Website tokens name their sign-in (`sid`); one that was signed out is dead at once,
+  // not 15 minutes later. One indexed D1 read per cookie-authenticated request.
+  const claims = await verifyAccessClaims(cookie, c.env.JWT_SIGNING_KEY);
+  if (claims?.sessionId && (await isFamilyLive(drizzle(c.env.DB), claims.sessionId))) {
+    return { kind: "user", userId: claims.userId };
+  }
+  return { kind: "invalid", message: "The session cookie is invalid or expired." };
 }
 
 const crossSite = (c: Context) =>

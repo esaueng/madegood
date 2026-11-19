@@ -347,3 +347,7 @@ Both formats contain precise locations and times. Before a recording goes into
 `fixtures/` or an issue, run `scripts/anonymize-track` on it. It moves positions to
 a fake origin, keeping distances and bearings; shifts every timestamp to a fixed
 date; and replaces the session ID. See `fixtures/README.md`.
+
+The website's maps load tiles from OpenStreetMap (and OpenSeaMap when seamarks are on),
+so those tile servers see the area being viewed and the viewer's IP address, as with any
+tile map; the iPhone's maps do the same with Apple Maps.

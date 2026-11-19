@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { sessionHint } from "../src/client/lib/session-cookie";
 import {
   type Fix,
   fixIndexAt,
@@ -8,6 +9,7 @@ import {
   speedLines,
   speedScaleMax,
   thin,
+  trackForViewer,
 } from "../src/client/lib/track";
 
 // The session page's track helpers (src/client/lib/track.ts). Synthetic positions near 0,0.
@@ -117,5 +119,31 @@ describe("thin", () => {
     );
     expect(out.length).toBeLessThanOrEqual(11);
     expect(out.at(-1)).toBe(999);
+  });
+});
+
+describe("trackForViewer", () => {
+  it("keeps heart rate for the owner only", () => {
+    const track = parseTrack({
+      v: 1,
+      gps: { t: [0], lat: [0], lon: [0] },
+      hr: { t: [0], bpm: [90] },
+    });
+    expect(trackForViewer(track, true).hr).toHaveLength(1);
+    expect(trackForViewer(track, false).hr).toEqual([]);
+    expect(trackForViewer(track, false).fixes).toBe(track.fixes);
+  });
+});
+
+describe("sessionHint", () => {
+  const now = 1_000_000_000_000; // ms
+  it("refreshes before the access cookie lapses, and not for visitors who never signed in", () => {
+    expect(sessionHint("", now)).toBe("none");
+    expect(sessionHint("other=1", now)).toBe("none");
+    expect(sessionHint(`a=b; mg_web=${now / 1000 + 600}`, now)).toBe("fresh");
+    // Within 30 s of expiry, or past it (the access cookie is gone): refresh first.
+    expect(sessionHint(`mg_web=${now / 1000 + 20}`, now)).toBe("stale");
+    expect(sessionHint(`mg_web=${now / 1000 - 600}; x=y`, now)).toBe("stale");
+    expect(sessionHint("mg_web=1", now)).toBe("stale");
   });
 });

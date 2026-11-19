@@ -247,3 +247,7 @@ export async function fetchTrack(
   ).text();
   return parseTrack(JSON.parse(text));
 }
+
+/** What the page shows: heart rate is the owner's alone (the API also withholds it). */
+export const trackForViewer = (track: Track, isOwner: boolean): Track =>
+  isOwner ? track : { ...track, hr: [] };

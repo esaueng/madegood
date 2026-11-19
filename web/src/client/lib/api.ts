@@ -1,3 +1,5 @@
+import { sessionHint } from "./session-cookie";
+
 // The website talks to the same API as the apps. It authenticates with HttpOnly cookies
 // set by /api/auth/web/*, which page scripts never see; on a 401 it rotates them once
 // through /api/auth/web/refresh and retries.
@@ -59,24 +61,50 @@ export class ApiError extends Error {
 
 let refreshing: Promise<boolean> | null = null;
 
-/** Rotates the session cookies; concurrent callers share one request. */
-function refreshSession(): Promise<boolean> {
-  refreshing ??= fetch("/api/auth/web/refresh", { method: "POST", credentials: "same-origin" })
-    .then((response) => response.ok)
-    .catch(() => false)
-    .finally(() => {
-      refreshing = null;
-    });
+const hint = () => sessionHint(document.cookie, Date.now());
+
+async function postRefresh(): Promise<boolean> {
+  const response = await fetch("/api/auth/web/refresh", {
+    method: "POST",
+    credentials: "same-origin",
+  });
+  return response.ok;
+}
+
+/**
+ * Rotates the session cookies. Calls in this tab share one request; across tabs a Web
+ * Lock serializes them, and a tab that waited skips its own refresh when another tab
+ * already renewed the cookies (`force` skips that check after a 401). The server also
+ * tolerates a refresh token replayed within 30 s, for browsers without Web Locks.
+ */
+function refreshSession(force = false): Promise<boolean> {
+  refreshing ??= (async () => {
+    const run = async () => (!force && hint() === "fresh" ? true : postRefresh());
+    try {
+      return navigator.locks ? await navigator.locks.request("madegood-refresh", run) : await run();
+    } catch {
+      return false;
+    }
+  })().finally(() => {
+    refreshing = null;
+  });
   return refreshing;
 }
 
-/** fetch() for /api paths: same-origin cookies, one refresh-and-retry on 401. */
+/**
+ * fetch() for /api paths with the session cookies. It waits for a refresh in flight,
+ * refreshes first when the access cookie is about to lapse (so a signed-in request never
+ * goes out anonymous and gets a 404 for a private session), and refreshes and retries
+ * once on 401.
+ */
 export async function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  if (refreshing) await refreshing;
+  if (hint() === "stale") await refreshSession();
   const request = () => fetch(`/api${path}`, { ...init, credentials: "same-origin" });
   const response = await request();
-  if (response.status !== 401 || !hasWebSession()) return response;
+  if (response.status !== 401 || hint() === "none") return response;
   // A failed refresh clears the cookies, so the retry is anonymous: public pages still load.
-  await refreshSession();
+  await refreshSession(true);
   return request();
 }
 
@@ -108,8 +136,8 @@ export async function fetchHealth(): Promise<Health> {
   return response.json();
 }
 
-/** Whether this browser has a web session (the server's script-readable `mg_web` hint). */
-export const hasWebSession = () => /(?:^|;\s*)mg_web=1(?:;|$)/.test(document.cookie);
+/** Whether this browser expects a web session (the server's script-readable `mg_web` hint). */
+export const hasWebSession = () => hint() !== "none";
 
 /** The signed-in user, or null when signed out. */
 export async function fetchMe(): Promise<Me | null> {
@@ -135,6 +163,9 @@ export const updateSession = (
 ) => apiJson<Session>(`/sessions/${encodeURIComponent(id)}`, jsonInit("PATCH", changes));
 
 export async function signOut(): Promise<void> {
+  // Let a refresh in flight land first, so it cannot restore the cookies afterwards. The
+  // server ends the whole sign-in either way (finding 1 of the #63 review).
+  if (refreshing) await refreshing.catch(() => false);
   await fetch("/api/auth/web/signout", { method: "POST", credentials: "same-origin" });
 }
 
