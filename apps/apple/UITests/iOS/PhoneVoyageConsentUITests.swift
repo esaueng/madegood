@@ -10,6 +10,7 @@ final class PhoneVoyageConsentUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["-demoPrivateVoyageSync"]
         app.launchEnvironment["MADEGOOD_TEST_VOYAGES"] = UUID().uuidString
+        resetLocationPermission(app)
         app.launch()
         openVoyages(in: app)
         app.buttons["New Voyage"].tap()
@@ -23,9 +24,7 @@ final class PhoneVoyageConsentUITests: XCTestCase {
         let start = app.buttons["Start Leg"]
         XCTAssertTrue(start.waitForExistence(timeout: 10))
         start.tap()
-        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
-        let allowLocation = springboard.buttons["Allow While Using App"]
-        if allowLocation.waitForExistence(timeout: 5) { allowLocation.tap() }
+        allowLocationWhileUsing()
         simulatePosition(longitude: -30)
         let lastFix = element("voyage.lastSavedPosition", in: app)
         XCTAssertTrue(lastFix.waitForExistence(timeout: 20))

@@ -51,6 +51,23 @@ extension XCTestCase {
         XCTAssertTrue(element.isHittable, "\(element) never became hittable", file: file, line: line)
     }
 
+    #if os(iOS)
+        /// Clears the app's location permission so a test that records positions starts from
+        /// "not determined" and answers the prompt itself. Earlier tests can leave it denied:
+        /// a live session's map asks for location, and when a test does not answer, XCTest's
+        /// default interruption handler taps "Don't Allow". Call before `launch()`.
+        func resetLocationPermission(_ app: XCUIApplication) {
+            app.resetAuthorizationStatus(for: .location)
+        }
+
+        /// Answers the location prompt that a reset permission guarantees.
+        func allowLocationWhileUsing(file: StaticString = #filePath, line: UInt = #line) {
+            let allow = XCUIApplication(bundleIdentifier: "com.apple.springboard").buttons["Allow While Using App"]
+            XCTAssertTrue(allow.waitForExistence(timeout: 10), "No location prompt", file: file, line: line)
+            allow.tap()
+        }
+    #endif
+
     /// Waits until the element's label equals `label`.
     func waitForLabel(_ element: XCUIElement, _ label: String, timeout: TimeInterval = 15) {
         let predicate = NSPredicate(format: "label == %@", label)
