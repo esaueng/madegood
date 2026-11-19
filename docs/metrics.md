@@ -179,7 +179,8 @@ else the track's own estimate (below). Without either, it asks for a direction. 
 user's direction is used only in the open detail view.
 
 With a direction, replay looks for a sustained course change across the wind axis with
-a Doppler speed dip. An upwind crossing is a tack and a downwind crossing is a gybe.
+a Doppler speed dip. An upwind crossing is a tack and a downwind crossing is a gybe;
+with only the wind's axis known (below) they are listed as "Tack or gybe".
 Each retained span is analyzed independently. Pauses, GPS gaps and unreliable course
 or speed interrupt the evidence within a span. A reported course uncertainty greater
 than 20° also interrupts the evidence.
@@ -214,13 +215,20 @@ direction is the time-weighted circular mean of courses within ±17.5°, and the
 the direction midway between the two legs.
 
 The legs fix the wind's axis, not its side: two legs 90° apart are as consistent with
-beating as with gybing downwind. A prior picks the side: the Open-Meteo direction when
-the user has fetched it, otherwise the legs are assumed to be upwind, which is
-labelled. A prior more than 45° from both candidates halves the confidence.
+beating as with gybing downwind. A prior picks the side, the Open-Meteo direction when
+the user has fetched it, but only when it lies within 60° of one end of the axis (and
+so at least 120° from the other). A forecast further from both, across the axis, is
+inconclusive and decides nothing. Without a side (no prior, or an inconclusive one)
+the estimate is reported as an axis, and the analysis uses one end of it (as if the
+legs were upwind) only to find axis crossings: the apps then never say upwind or
+downwind, tack or gybe, or starboard or port, and show one maneuver count, |VMG| along
+the axis and the angle to the axis. A direction the user enters is taken as resolved.
 
-**Confidence** is the share of sailing time on the two legs, scaled by
-min(1, shorter leg's time ÷ 120 s). It is a heuristic for whether to show the estimate,
-not a probability.
+**Axis confidence** is the share of sailing time on the two legs, scaled by
+min(1, shorter leg's time ÷ 120 s). It rates the axis only, not the side, and is a
+heuristic for whether to show the estimate, not a probability. **Axis uncertainty**
+(±) is the mean circular standard deviation of the courses within ±17.5° of each leg,
+at least 2.5°.
 
 **Accuracy.** No labelled real sailing recordings exist yet. `SailingWindTests` checks
 the PLAN §5 targets (wind within ±10°, ≥ 95 % of maneuvers found, < 5 % false
@@ -238,6 +246,8 @@ Doppler speed × cos(TWA): positive upwind, negative downwind.
 | Downwind VMG | Time-weighted mean of −VMG while \|TWA\| > 100°, m/s |
 | Pointing | Time-weighted mean \|TWA\| while upwind, degrees |
 | Starboard / port tack | Time and Doppler distance (mean speed of each interval × its time) with TWA > 0 / < 0 |
+| VMG along the axis | Time-weighted mean \|VMG\| while not reaching, m/s: the same whichever side the wind is on |
+| Angle to the axis | Time-weighted mean of min(\|TWA\|, 180° − \|TWA\|) while not reaching, degrees |
 
 These use the intervals between consecutive fixes in a run, with each interval's mean
 speed and its first fix's course, at most 5 s long and at 1.0 m/s or faster. Intervals
@@ -245,26 +255,32 @@ that touch a maneuver's approach-to-departure range are left out. Reaching (80�
 counts toward the tack totals but neither VMG.
 
 **Live.** The watch and iPhone run the same rules over the engine's accepted fixes so
-far (raw course, as after the session), refreshed every 10 s: the wind estimate
-(without a prior, so it assumes upwind legs), and tacks and gybes against it. It
+far (raw course, as after the session). Every 10 s they re-estimate the wind (without
+a prior, so only its axis is known) and look for maneuvers in the observations since a
+minute before the previous scan, keeping those already found; every observation is
+rescanned only when the estimate has moved more than 10° since, and once more when the
+session stops, so a turn completed after the last refresh still counts. The estimate
 appears once both legs have their time, which on a beat is shortly after the first
-tack. Live VMG uses the current speed (3 s mean) and the smoothed course. If the
-estimate is 180° off, tacks and gybes swap, so the live page shows their total.
-Manual pauses, GPS anchors and unreliable course break the runs.
+tack. The live page shows the axis (both ends, and a line rather than an arrow), |VMG|
+from the current speed (3 s mean) and smoothed course, the angle to the axis, and the
+total of tacks and gybes. Manual pauses, GPS anchors and unreliable course break the
+runs. After the session the analysis is one pass over the selection.
 
-`waterkit-replay` prints the estimate, tack and gybe counts and VMG for sailing
-recordings.
+`waterkit-replay` prints the wind axis, the maneuver count and VMG along the axis for
+sailing recordings (it has no prior).
 
 ### Open-Meteo
 
 Session detail on the iPhone can fetch Open-Meteo's modelled 10 m wind for a sailing
-session, only when the user taps "Compare with Open-Meteo". The watch never calls the
-network. The result is shown beside the estimate, used as its prior, and kept on the
-phone for that session.
+session, only when the user taps "Compare with Open-Meteo"; the button says beforehand
+that it sends the approximate area (~50 km) and dates. The watch never calls the
+network. The result is shown beside the estimate and used as its prior. It is kept on
+the phone keyed by the request (rounded position, dates, the session's hours and the
+variables), so a selection trimmed to another area or day asks again.
 
 Sent to Open-Meteo, with no API key, cookies or identifiers: the mean position of the
-session's fixes rounded to 0.1° (about 11 km), the session's UTC start and end dates
-(whole days), and the requested variables. Sessions that ended more than 7 days ago
+selection's fixes rounded to 0.5° (about 50 km; the models' grids are coarse anyway),
+its UTC start and end dates (whole days), and the requested variables. Sessions that ended more than 7 days ago
 use the historical archive API, newer ones the forecast API. The direction is the
 speed-weighted circular mean of the hourly values from the hour before the start to
 the hour after the end; the speed is their mean. Offline or on any error, the detail

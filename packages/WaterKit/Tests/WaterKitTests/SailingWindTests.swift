@@ -17,7 +17,7 @@ import Testing
         #expect(abs(GPSFilter.signedDifference(from: wind, to: estimate.fromDegrees)) <= 10)
         #expect(!estimate.resolvedByPrior)
         #expect(abs(estimate.legAngle - 90) <= 10)
-        #expect(estimate.confidence > 0.6)
+        #expect(estimate.axisConfidence > 0.6)
 
         let analysis = selection.sailingAnalysis()
         #expect(analysis.windSource == .estimate)
@@ -47,7 +47,7 @@ import Testing
         let resolved = try #require(selection.estimatedWind(prior: 50))
         #expect(abs(GPSFilter.signedDifference(from: 20, to: resolved.fromDegrees)) <= 10)
         #expect(resolved.resolvedByPrior)
-        #expect(abs(resolved.confidence - unresolved.confidence) < 1e-9)
+        #expect(abs(resolved.axisConfidence - unresolved.axisConfidence) < 1e-9)
 
         let analysis = selection.sailingAnalysis(windPrior: 50)
         expectMatches(analysis.maneuvers, labels: course.labels)
@@ -58,11 +58,49 @@ import Testing
         #expect(abs(downwind - 5 * cos(40 * Double.pi / 180)) < 0.2)
     }
 
-    @Test func aPriorThatAgreesWithNeitherDirectionHalvesTheConfidence() throws {
+    /// Review regression: candidates 000°/180° with a forecast of 089° picked 000° and
+    /// 091° picked 180°, both "resolved". A cross-axis forecast now decides nothing.
+    @Test func aCrossAxisPriorLeavesTheSideUnresolved() throws {
         let selection = try SessionSelection(session: SyntheticCourse.beat(windFrom: 0, legs: [90, 90, 90]).session())
         let plain = try #require(selection.estimatedWind())
-        let sideways = try #require(selection.estimatedWind(prior: 90))
-        #expect(abs(sideways.confidence - plain.confidence / 2) < 1e-9)
+        #expect(plain.side == .unresolved)
+        for prior in [89.0, 91, 270, 61 + plain.fromDegrees] {
+            let sideways = try #require(selection.estimatedWind(prior: prior))
+            #expect(sideways.side == .priorInconclusive(GPSFilter.normalize(prior)), "prior \(prior)")
+            #expect(sideways.fromDegrees == plain.fromDegrees)
+            #expect(sideways.axisConfidence == plain.axisConfidence)
+            #expect(!selection.sailingAnalysis(windPrior: prior).windResolved)
+        }
+        // Within 60° of a candidate, the forecast chooses it.
+        #expect(try #require(selection.estimatedWind(prior: 59 + plain.fromDegrees)).side == .resolvedByPrior)
+        let flipped = try #require(selection.estimatedWind(prior: 200))
+        #expect(flipped.side == .resolvedByPrior)
+        #expect(abs(GPSFilter.signedDifference(from: 180, to: flipped.fromDegrees)) <= 10)
+    }
+
+    /// Review regression: two steady legs gave ~100 % confidence while the side was
+    /// unknown. The confidence rates the axis; the side is reported separately, and an
+    /// unresolved analysis has side-independent VMG and angle.
+    @Test func unresolvedDownwindSessionOnlyKnowsTheAxis() throws {
+        // True wind 020°, gybing at 140°: courses 160° and 240°, estimate 200° without a prior.
+        let course = SyntheticCourse.beat(windFrom: 20, legs: [80, 70, 90, 75], halfAngle: 140)
+        let selection = try SessionSelection(session: course.session())
+        let analysis = selection.sailingAnalysis()
+        let estimate = try #require(analysis.estimate)
+        #expect(estimate.side == .unresolved)
+        #expect(!analysis.windResolved)
+        #expect(estimate.axisConfidence > 0.9)
+        #expect(estimate.axisUncertainty >= CourseHistogram.binWidth / 2)
+        #expect(estimate.axisUncertainty < 6)
+        #expect(analysis.maneuvers.count == course.labels.count)
+        // |VMG| and the angle to the axis do not depend on the side.
+        let resolved = selection.sailingAnalysis(windPrior: 20)
+        #expect(resolved.windResolved)
+        let axisVMG = try #require(analysis.axisVMG)
+        #expect(abs(axisVMG - (resolved.axisVMG ?? 0)) < 1e-9)
+        #expect(abs(axisVMG - 5 * cos(40 * Double.pi / 180)) < 0.2)
+        #expect(abs((analysis.axisAngle ?? 0) - 40) < 3)
+        #expect(selection.sailingAnalysis(windFromDegreesTrue: 20).windResolved)
     }
 
     @Test func noEstimateWithoutTwoLegs() throws {
@@ -97,17 +135,18 @@ import Testing
         let estimate = histogram.windEstimate()
         #expect(estimate.map { abs(GPSFilter.signedDifference(from: 0, to: $0.fromDegrees)) < 0.001 } == true)
         #expect(estimate?.legCourses.map { $0.rounded() } == [45, 315])
-        #expect(estimate.map { abs($0.confidence - 100.0 / 120) < 1e-9 } == true)
+        #expect(estimate.map { abs($0.axisConfidence - 100.0 / 120) < 1e-9 } == true)
     }
 
     @Test func replayStatsReportTheSameWindAndManeuvers() throws {
         let course = SyntheticCourse.beat(windFrom: 30, legs: [70, 85, 60, 95])
         let stats = SessionStats(session: course.session())
         let sailing = try #require(stats.sailing)
-        #expect(sailing.tacks == 3)
-        #expect(sailing.gybes == 0)
-        #expect(abs(GPSFilter.signedDifference(from: 30, to: sailing.windFrom ?? 210)) <= 10)
-        #expect(stats.textReport().contains("Sailing   3 tacks, 0 gybes, wind from "))
+        #expect(sailing.maneuvers == 3)
+        #expect(abs(GPSFilter.signedDifference(from: 30, to: sailing.windAxis ?? 210)) <= 10)
+        // Without a prior the report names the axis only.
+        #expect(stats.textReport().contains("Sailing   3 tacks or gybes, wind axis "))
+        #expect(stats.textReport().contains("side unknown"))
         #expect(SessionStats(session: course.session(sport: .kayak)).sailing == nil)
     }
 
@@ -137,6 +176,8 @@ import Testing
 
         #expect(abs((analysis.upwindVMG ?? 0) - 5 * cos(Double.pi / 4)) < 0.001)
         #expect(abs((analysis.pointingAngle ?? 0) - 45) < 0.001)
+        #expect(abs((analysis.axisVMG ?? 0) - 5 * cos(Double.pi / 4)) < 0.001)
+        #expect(abs((analysis.axisAngle ?? 0) - 45) < 0.001)
         #expect(analysis.downwindVMG == nil)
         // The first leg (course 315°) has the wind on starboard. Intervals that touch the
         // turn's approach-to-departure range count toward neither tack.
@@ -214,6 +255,55 @@ import Testing
         }
         #expect(engine.snapshot.sailing?.wind != nil)
         #expect(engine.snapshot.sailing?.maneuverCount == 0)
+    }
+
+    /// Review regression: a tack whose departure leg settled after the last periodic
+    /// refresh was missing from the count at the end of the session.
+    @Test func stopRunsAFinalRefresh() throws {
+        // Refreshes run every 10 s from t = 0. The second tack ends at 191 s; its departure
+        // leg needs fixes to 195 s, after the refresh at 190 s, and the session stops at 199 s.
+        let course = SyntheticCourse.beat(windFrom: 0, legs: [90, 90, 8], noise: 0)
+        let lastTack = try #require(course.labels.last)
+        var engine = SessionEngine(sport: .sailing)
+        engine.ingest(.event(SessionEvent(t: 0, type: .start)))
+        for fix in course.fixes { engine.ingest(.gps(fix)) }
+        let end = try #require(course.fixes.last).t
+        #expect(end == 199)
+        #expect(lastTack.t == 189)
+        let before = try #require(engine.snapshot.sailing).maneuverCount
+        engine.ingest(.event(SessionEvent(t: end + 0.5, type: .stop)))
+        let after = try #require(engine.snapshot.sailing).maneuverCount
+        let post = try SessionSelection(session: course.session()).sailingAnalysis().maneuvers.count
+        #expect(post == 2)
+        #expect(after == post)
+        #expect(before < after)
+    }
+
+    /// Review regression: refreshes rescanned the whole history every 10 s (quadratic,
+    /// ~41 M visits for 8 h). Live is now incremental and replay a single pass.
+    @Test func eightHourSessionStaysFastAndAgrees() throws {
+        // 8 h at 1 Hz: tacks every ~2 minutes.
+        let pattern: [Double] = [110, 125, 115, 130]
+        let legs: [Double] = (0..<60).flatMap { _ in pattern }
+        let course = SyntheticCourse.beat(windFrom: 75, legs: legs)
+        #expect(course.duration > 8 * 3600)
+        let clock = ContinuousClock()
+        var engine = SessionEngine(sport: .sailing)
+        let live = clock.measure {
+            engine.ingest(.event(SessionEvent(t: 0, type: .start)))
+            for fix in course.fixes { engine.ingest(.gps(fix)) }
+            engine.ingest(.event(SessionEvent(t: course.duration + 1, type: .stop)))
+        }
+        var analysis: SailingAnalysis?
+        let post = try clock.measure {
+            analysis = try SessionSelection(session: course.session()).sailingAnalysis()
+        }
+        // Generous for debug builds on CI; the quadratic version took far longer.
+        #expect(live < .seconds(10), "live \(live)")
+        #expect(post < .seconds(10), "post \(post)")
+        let count = try #require(engine.snapshot.sailing).maneuverCount
+        #expect(count == analysis?.maneuvers.count)
+        #expect(count == course.labels.count)
     }
 
     // MARK: Helpers

@@ -716,7 +716,7 @@ private struct LiveView: View {
                     .foregroundStyle(.secondary)
                 Spacer()
                 if let wind = sailing.windFrom {
-                    WindArrow(windFrom: wind, course: course, size: 52)
+                    WindArrow(windFrom: wind, course: course, resolved: sailing.resolved, size: 52)
                 }
             }
             let column = GridItem(.flexible(), alignment: .leading)
@@ -731,7 +731,9 @@ private struct LiveView: View {
             Text(
                 sailing.windFrom == nil
                     ? "Wind appears after a tack, once both tacks have some time."
-                    : "Wind estimated from your tacks. Not for navigation."
+                    : sailing.resolved
+                        ? "Wind estimated from your tacks. Not for navigation."
+                        : "Wind axis from your legs; which side the wind is on is not known yet. Not for navigation."
             )
             .font(.caption)
             .foregroundStyle(.secondary)
@@ -745,15 +747,11 @@ private struct LiveView: View {
 
     private func sailingMetrics(_ sailing: SailingReadings, course: Double?, display: LiveDisplay) -> [LiveMetric] {
         [
-            LiveMetric(id: "metric.vmg", title: LiveDisplay.vmgCaption(sailing.vmg), text: display.vmg(sailing.vmg)),
+            LiveMetric(id: "metric.vmg", title: sailing.vmgTitle, text: display.vmg(sailing.vmg)),
             LiveMetric(id: "metric.heading", title: "Heading", text: LiveDisplay.course(course)),
-            LiveMetric(
-                id: "metric.wind", title: "Wind from (est.)",
-                text: sailing.windFrom.map { LiveDisplay.windFrom($0) } ?? "–"),
-            LiveMetric(id: "metric.windAngle", title: "Wind angle", text: LiveDisplay.windAngle(sailing.trueWindAngle)),
-            LiveMetric(id: "metric.tacks", title: "Tacks", text: "\(sailing.tacks)"),
-            LiveMetric(id: "metric.gybes", title: "Gybes", text: "\(sailing.gybes)"),
-        ]
+            LiveMetric(id: "metric.wind", title: "\(sailing.windTitle) (est.)", text: sailing.windText),
+            LiveMetric(id: "metric.windAngle", title: sailing.angleTitle, text: sailing.angleText),
+        ] + sailing.maneuverRows.map { LiveMetric(id: "metric.\($0.id)", title: $0.title, text: "\($0.count)") }
     }
 
     private func metricRow(_ metric: LiveMetric) -> some View {

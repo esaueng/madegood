@@ -624,13 +624,13 @@ private struct SailingPage: View {
                         .font(.footnote.weight(.semibold))
                         .foregroundStyle(Theme.brightTeal)
                         .accessibilityIdentifier("page.sailing")
-                    Text(LiveDisplay.vmgCaption(sailing?.vmg))
+                    Text(sailing?.vmgTitle ?? "VMG")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
                 if let wind = sailing?.windFrom {
-                    WindArrow(windFrom: wind, course: metrics?.course, size: 40)
+                    WindArrow(windFrom: wind, course: metrics?.course, resolved: sailing?.resolved ?? false, size: 40)
                         .opacity(isLuminanceReduced ? 0.6 : 1)
                 }
             }
@@ -638,16 +638,16 @@ private struct SailingPage: View {
                 .font(.system(size: 36, weight: .semibold, design: .rounded).monospacedDigit())
                 .minimumScaleFactor(0.6)
                 .lineLimit(1)
-                .accessibilityLabel(LiveDisplay.vmgCaption(sailing?.vmg))
+                .accessibilityLabel(sailing?.vmgTitle ?? "VMG")
                 .accessibilityValue(sailing?.vmg == nil ? "Unavailable" : display.vmg(sailing?.vmg))
                 .accessibilityIdentifier("metric.vmg")
             Field(label: "Heading", value: LiveDisplay.course(metrics?.course))
-            Field(
-                label: "Wind",
-                value: sailing?.windFrom.map { "\(LiveDisplay.windFrom($0)) est." } ?? "–")
-            Field(label: "Tacks/gybes", value: "\(sailing?.maneuverCount ?? 0)")
-            if !isLuminanceReduced, sailing?.trueWindAngle != nil {
-                Field(label: "Wind angle", value: LiveDisplay.windAngle(sailing?.trueWindAngle))
+            Field(label: sailing?.windTitle ?? "Wind axis", value: sailing?.windText ?? "–")
+            ForEach(sailing?.maneuverRows ?? [("maneuvers", "Tacks/gybes", 0)], id: \.id) { row in
+                Field(label: row.title, value: "\(row.count)")
+            }
+            if !isLuminanceReduced, let sailing, sailing.trueWindAngle != nil {
+                Field(label: sailing.angleTitle, value: sailing.angleText)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -855,11 +855,13 @@ private struct SummaryView: View {
                         Field(label: row.title, value: display.speed(row.value))
                     }
                 }
-                if let sailing = metrics.sailing {
-                    Field(label: "Tacks", value: "\(sailing.tacks)")
-                    Field(label: "Gybes", value: "\(sailing.gybes)")
-                    if let wind = sailing.wind {
-                        Field(label: "Wind", value: "\(LiveDisplay.windFrom(wind.fromDegrees)) est.")
+                if let live = metrics.sailing {
+                    let sailing = SailingReadings(live)
+                    ForEach(sailing.maneuverRows, id: \.id) { row in
+                        Field(label: row.title, value: "\(row.count)")
+                    }
+                    if sailing.windFrom != nil {
+                        Field(label: sailing.windTitle, value: sailing.windText)
                     }
                 }
                 if !metrics.laps.isEmpty {

@@ -3,28 +3,52 @@ import Foundation
 /// A true-wind direction estimated from the boat's own track (docs/PLAN.md §5, "Wind
 /// direction"; docs/metrics.md, "Sailing wind and VMG").
 public struct WindEstimate: Sendable, Hashable {
-    /// Direction the wind blows from, degrees true in [0, 360).
+    /// Which of the two opposite directions the legs allow is the wind's.
+    public enum Side: Sendable, Hashable {
+        /// No prior: the legs are assumed to be upwind, so `fromDegrees` can be 180° off
+        /// (on a session spent gybing downwind). Only the axis is known.
+        case unresolved
+        /// A prior within `WindEstimate.priorAgreement` of one direction chose it.
+        case resolvedByPrior
+        /// A prior was given but lay too far from both directions to choose (the
+        /// forecast's direction, degrees true). Treated like `unresolved`.
+        case priorInconclusive(Double)
+    }
+
+    /// A prior chooses a direction only when it is within this many degrees of it, so
+    /// it is at least 120° from the other one.
+    public static let priorAgreement = 60.0
+
+    /// Direction the wind blows from, degrees true in [0, 360). Only its axis is known
+    /// unless `side` is `.resolvedByPrior`.
     public var fromDegrees: Double
     /// 0...1: how much of the sailing time sits on the two legs, scaled down while
-    /// either leg is still short. A heuristic for "show it or not", not a probability.
-    public var confidence: Double
+    /// either leg is still short. It rates the axis, not which side the wind is on. A
+    /// heuristic for "show it or not", not a probability.
+    public var axisConfidence: Double
+    /// Mean circular standard deviation of the courses on the two legs, degrees (at least
+    /// half a bin): how widely the legs, and so the axis, scatter.
+    public var axisUncertainty: Double
     /// The courses of the two legs either side of the wind, degrees true.
     public var legCourses: [Double]
     /// The angle between the two legs, degrees (the tacking or gybing angle).
     public var legAngle: Double
-    /// True when a prior (a forecast or the user) chose between the two directions the
-    /// legs allow. Without one the legs are assumed to be upwind, so the estimate can be
-    /// 180° off on a session spent gybing downwind.
-    public var resolvedByPrior: Bool
+    public var side: Side
+
+    /// True when a prior chose the side; otherwise only the axis is known, and tacks,
+    /// gybes, upwind and downwind must not be told apart.
+    public var resolvedByPrior: Bool { side == .resolvedByPrior }
 
     public init(
-        fromDegrees: Double, confidence: Double, legCourses: [Double], legAngle: Double, resolvedByPrior: Bool
+        fromDegrees: Double, axisConfidence: Double, axisUncertainty: Double, legCourses: [Double],
+        legAngle: Double, side: Side
     ) {
         self.fromDegrees = fromDegrees
-        self.confidence = confidence
+        self.axisConfidence = axisConfidence
+        self.axisUncertainty = axisUncertainty
         self.legCourses = legCourses
         self.legAngle = legAngle
-        self.resolvedByPrior = resolvedByPrior
+        self.side = side
     }
 }
 
@@ -72,8 +96,9 @@ public struct CourseHistogram: Sendable, Hashable {
     }
 
     /// The wind estimate: the two most-sailed courses 70–110° apart, and the direction
-    /// midway between them. A prior (degrees true, from a forecast or the user) picks
-    /// which of the two opposite directions it is; without one the legs count as upwind.
+    /// midway between them. A prior (degrees true, from a forecast) picks which of the
+    /// two opposite directions it is when it lies within `WindEstimate.priorAgreement` of
+    /// one; otherwise the legs are assumed upwind and the side is left unresolved.
     /// Nil until both legs have enough time.
     public func windEstimate(prior: Double? = nil) -> WindEstimate? {
         let n = Self.binCount
@@ -103,20 +128,40 @@ public struct CourseHistogram: Sendable, Hashable {
 
         let share = totalTime > 0 ? min(1, best.score / totalTime) : 0
         let shorterLeg = min(masses[best.a], masses[best.b])
-        var confidence = share * min(1, shorterLeg / Self.fullConfidenceLegTime)
+        let confidence = share * min(1, shorterLeg / Self.fullConfidenceLegTime)
         var direction = bisector
-        var resolved = false
+        var side = WindEstimate.Side.unresolved
         if let prior, prior.isFinite {
             let toBisector = abs(GPSFilter.signedDifference(from: prior, to: bisector))
             let toOpposite = abs(GPSFilter.signedDifference(from: prior, to: opposite))
-            direction = toBisector <= toOpposite ? bisector : opposite
-            resolved = true
-            // A prior that agrees with neither direction is weak support for the axis.
-            if min(toBisector, toOpposite) > 45 { confidence *= 0.5 }
+            if toBisector <= WindEstimate.priorAgreement {
+                side = .resolvedByPrior
+            } else if toOpposite <= WindEstimate.priorAgreement {
+                direction = opposite
+                side = .resolvedByPrior
+            } else {
+                side = .priorInconclusive(GPSFilter.normalize(prior))
+            }
         }
+        let spread = (spread(best.a) + spread(best.b)) / 2
         return WindEstimate(
-            fromDegrees: direction, confidence: confidence, legCourses: [first, second].sorted(),
-            legAngle: abs(separation), resolvedByPrior: resolved)
+            fromDegrees: direction, axisConfidence: confidence, axisUncertainty: max(Self.binWidth / 2, spread),
+            legCourses: [first, second].sorted(), legAngle: abs(separation), side: side)
+    }
+
+    /// Time-weighted circular standard deviation of courses around a bin, degrees.
+    private func spread(_ bin: Int) -> Double {
+        let n = Self.binCount
+        var (s, c, w) = (0.0, 0.0, 0.0)
+        for offset in -Self.refineHalfWidth...Self.refineHalfWidth {
+            let index = ((bin + offset) % n + n) % n
+            s += sines[index]
+            c += cosines[index]
+            w += weights[index]
+        }
+        guard w > 0 else { return 0 }
+        let resultant = min(1, (s * s + c * c).squareRoot() / w)
+        return (-2 * log(max(resultant, 1e-12))).squareRoot() * 180 / .pi
     }
 
     /// Time-weighted circular mean course around a bin, degrees true.
@@ -188,6 +233,16 @@ public struct SailingAnalysis: Sendable {
     /// Time and distance with the wind over the starboard / port side, outside maneuvers.
     public var starboard: SailingTackTotals
     public var port: SailingTackTotals
+    /// Side-independent figures, for when only the wind's axis is known: mean |VMG| and
+    /// mean angle to the axis (0–90°) while not reaching. Nil without such time.
+    public var axisVMG: Double?
+    public var axisAngle: Double?
+
+    /// Whether the wind's side is known: the user entered it, or a forecast chose it.
+    /// When false, upwind/downwind, tack/gybe and starboard/port must not be shown.
+    public var windResolved: Bool {
+        windSource == .user || (windSource == .estimate && estimate?.resolvedByPrior == true)
+    }
 
     public var tackCount: Int { maneuvers.count { $0.event.type == .tack } }
     public var gybeCount: Int { maneuvers.count { $0.event.type == .gybe } }
@@ -207,12 +262,14 @@ extension SessionSelection {
         let source: SailingAnalysis.WindSource = validUser != nil ? .user : (estimate != nil ? .estimate : .none)
         var analysis = SailingAnalysis(
             windFrom: wind, windSource: source, estimate: estimate, maneuvers: [], upwindVMG: nil, downwindVMG: nil,
-            pointingAngle: nil, starboard: SailingTackTotals(), port: SailingTackTotals())
+            pointingAngle: nil, starboard: SailingTackTotals(), port: SailingTackTotals(), axisVMG: nil,
+            axisAngle: nil)
         guard track.sport == .sailing, let wind else { return analysis }
         analysis.maneuvers = SailingManeuverDetector.detect(in: runs, windFrom: wind)
 
         var upwind = (time: 0.0, vmg: 0.0, angle: 0.0)
         var downwind = (time: 0.0, vmg: 0.0)
+        var axis = (vmg: 0.0, angle: 0.0)
         var maneuverRanges = analysis.maneuvers.map(\.range).makeIterator()
         var maneuverRange = maneuverRanges.next()
         for run in runs {
@@ -232,6 +289,10 @@ extension SessionSelection {
                     analysis.port.time += dt
                     analysis.port.distance += speed * dt
                 }
+                if abs(angle) < SailingVMG.upwindLimit || abs(angle) > 180 - SailingVMG.upwindLimit {
+                    axis.vmg += abs(vmg) * dt
+                    axis.angle += min(abs(angle), 180 - abs(angle)) * dt
+                }
                 if abs(angle) < SailingVMG.upwindLimit {
                     upwind.time += dt
                     upwind.vmg += vmg * dt
@@ -247,6 +308,10 @@ extension SessionSelection {
             analysis.pointingAngle = upwind.angle / upwind.time
         }
         if downwind.time > 0 { analysis.downwindVMG = downwind.vmg / downwind.time }
+        if upwind.time + downwind.time > 0 {
+            analysis.axisVMG = axis.vmg / (upwind.time + downwind.time)
+            analysis.axisAngle = axis.angle / (upwind.time + downwind.time)
+        }
         return analysis
     }
 
@@ -270,8 +335,9 @@ extension SessionSelection {
 public struct LiveSailing: Sendable, Hashable {
     /// The track's wind estimate so far; nil until both legs have enough time.
     public var wind: WindEstimate?
-    /// Tacks and gybes so far, against the current estimate. A tack and a gybe swap if
-    /// the estimate is 180° off, so the total is the reliable live figure.
+    /// Tacks and gybes so far, against the current estimate. Live the estimate has no
+    /// prior, so a tack and a gybe can swap: show `maneuverCount` unless the wind's side
+    /// is resolved.
     public var tacks: Int
     public var gybes: Int
     /// Current VMG and true wind angle from the current speed and smoothed course; nil
@@ -294,17 +360,31 @@ public struct LiveSailing: Sendable, Hashable {
 
 /// The causal side of the sailing analysis, fed by the session engine with accepted fixes.
 /// It applies the post-session rules to what it has seen so far, so the counts converge on
-/// session detail's. The estimate and maneuvers are refreshed every `refreshInterval`.
+/// session detail's. Every `refreshInterval` it re-estimates the wind and scans only the
+/// recent observations (a window reaching `rescanMargin` before the last scan), keeping
+/// the maneuvers already found. All observations are rescanned only when the estimate
+/// has moved more than `rescanWindChange` since the maneuvers were found, and at the end.
 struct SailingTracker: Sendable {
     static let refreshInterval = 10.0
+    /// Longer than a turn (20 s) plus both legs (5 s each) and the median's reach, s.
+    static let rescanMargin = 60.0
+    static let rescanWindChange = 10.0
 
-    private var runs: [[SailingObservation]] = []
-    private var run: [SailingObservation] = []
+    private var observations: [SailingObservation] = []
+    /// The run each observation belongs to; a change starts a new run.
+    private var runIDs: [Int] = []
+    private var runID = 0
+    private var runOpen = false
     private var histogram = CourseHistogram()
     private var lastRefresh = -Double.infinity
+    private var lastScan = -Double.infinity
+    /// The wind the stored maneuvers were found against, degrees true.
+    private var scanWind: Double?
+    private var maneuvers: [SailingManeuver] = []
     private(set) var wind: WindEstimate?
-    private(set) var tacks = 0
-    private(set) var gybes = 0
+
+    var tacks: Int { maneuvers.count { $0.event.type == .tack } }
+    var gybes: Int { maneuvers.count - tacks }
 
     /// One accepted fix. `course` is the receiver's raw course, as post-session.
     mutating func ingest(t: Double, speed: Double?, course: Double?, courseAccuracy: Double?) {
@@ -315,30 +395,73 @@ struct SailingTracker: Sendable {
             breakRun()
             return
         }
-        if let last = run.last {
+        if runOpen, let last = observations.last {
             guard t > last.t else { return }
             if last.speed >= CourseHistogram.minimumSailingSpeed {
                 histogram.add(course: last.course, seconds: min(t - last.t, CourseHistogram.maximumFixWeight))
             }
         }
-        run.append(SailingObservation(t: t, speed: speed, course: course))
-        if t - lastRefresh >= Self.refreshInterval { refresh(at: t) }
+        if !runOpen {
+            runID += 1
+            runOpen = true
+        }
+        observations.append(SailingObservation(t: t, speed: speed, course: course))
+        runIDs.append(runID)
+        if t - lastRefresh >= Self.refreshInterval { refresh(at: t, full: false) }
     }
 
     /// A pause, GPS anchor or unreliable course: evidence on either side is not joined.
     mutating func breakRun() {
-        guard !run.isEmpty else { return }
-        runs.append(run)
-        run.removeAll(keepingCapacity: true)
+        runOpen = false
     }
 
-    private mutating func refresh(at t: Double) {
+    /// The session ended: a last full refresh, so a turn completed since the last periodic
+    /// one is counted.
+    mutating func finish(at t: Double) {
+        breakRun()
+        refresh(at: t, full: true)
+    }
+
+    private mutating func refresh(at t: Double, full: Bool) {
         lastRefresh = t
         wind = histogram.windEstimate()
-        guard let wind else { return }
-        let maneuvers = SailingManeuverDetector.detect(
-            in: run.isEmpty ? runs : runs + [run], windFrom: wind.fromDegrees)
-        tacks = maneuvers.count { $0.event.type == .tack }
-        gybes = maneuvers.count - tacks
+        guard let direction = wind?.fromDegrees else { return }
+        let moved = scanWind.map { abs(GPSFilter.signedDifference(from: $0, to: direction)) } ?? .infinity
+        if full || moved > Self.rescanWindChange {
+            maneuvers = SailingManeuverDetector.detect(in: runs(from: 0), windFrom: direction)
+            scanWind = direction
+        } else if let scanWind {
+            let windowStart = lastScan - Self.rescanMargin
+            let first = firstIndex(atOrAfter: windowStart)
+            let found = SailingManeuverDetector.detect(in: runs(from: first), windFrom: scanWind)
+            for maneuver in found
+            where maneuvers.last.map({ $0.range.upperBound <= maneuver.range.lowerBound }) ?? true {
+                maneuvers.append(maneuver)
+            }
+        }
+        lastScan = t
+    }
+
+    /// Observations from `start` on, split into runs.
+    private func runs(from start: Int) -> [[SailingObservation]] {
+        var result: [[SailingObservation]] = []
+        var index = start
+        while index < observations.count {
+            let id = runIDs[index]
+            var end = index
+            while end < observations.count, runIDs[end] == id { end += 1 }
+            result.append(Array(observations[index..<end]))
+            index = end
+        }
+        return result
+    }
+
+    private func firstIndex(atOrAfter t: Double) -> Int {
+        var (low, high) = (0, observations.count)
+        while low < high {
+            let mid = (low + high) / 2
+            if observations[mid].t < t { low = mid + 1 } else { high = mid }
+        }
+        return low
     }
 }

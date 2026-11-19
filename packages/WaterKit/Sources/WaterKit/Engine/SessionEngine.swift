@@ -450,6 +450,7 @@ public struct SessionEngine: LiveAnalyzer {
         case .lap:
             closeLap(at: event.t, isAuto: false)
         case .stop:
+            sailingTracker?.finish(at: event.t)
             finished = true
         default:
             break

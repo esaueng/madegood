@@ -18,11 +18,13 @@ final class WatchSailingUITests: XCTestCase {
         goToPage(3, app)
         XCTAssertTrue(element("page.sailing", in: app).waitForExistence(timeout: 10))
         attachScreenshot("1 sailing before an estimate")
-        let wind = app.staticTexts["field.Wind"]
-        waitFor(wind, label: "(00[0-5]|35[5-9])° est\\.", timeout: 120)
+        // Only the axis is known live: both ends, and one maneuver count.
+        let wind = app.staticTexts["field.Wind axis"]
+        waitFor(wind, label: "(00[0-5]|35[5-9])°/(17[5-9]|18[0-5])°", timeout: 120)
         let maneuvers = app.staticTexts["field.Tacks/gybes"]
         waitFor(maneuvers, label: "[1-9][0-9]*", timeout: 30)
-        XCTAssertTrue(app.staticTexts["metric.vmg"].label.hasPrefix("VMG"))
+        XCTAssertEqual(app.staticTexts["metric.vmg"].label, "VMG")
+        XCTAssertFalse(app.staticTexts["field.Tacks"].exists)
         attachScreenshot("2 sailing with wind")
 
         goToPage(4, app)
@@ -36,7 +38,7 @@ final class WatchSailingUITests: XCTestCase {
         confirm.tap()
         let done = app.buttons["summary.done"]
         XCTAssertTrue(done.waitForExistence(timeout: 20))
-        let tacks = app.staticTexts["field.Tacks"]
+        let tacks = app.staticTexts["field.Tacks/gybes"]
         scrollTo(tacks, in: app)
         XCTAssertNotEqual(tacks.label, "0")
         attachScreenshot("3 summary")
