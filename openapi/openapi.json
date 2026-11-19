@@ -228,6 +228,74 @@
         },
         "additionalProperties": false
       },
+      "MeStats": {
+        "type": "object",
+        "properties": {
+          "sessions": {
+            "type": "integer"
+          },
+          "distanceM": {
+            "type": "number",
+            "description": "Sum of known distances, m."
+          },
+          "movingS": {
+            "type": "number",
+            "description": "Sum of known moving times, s."
+          },
+          "durationS": {
+            "type": "number",
+            "description": "Sum of known elapsed times, s."
+          },
+          "bySport": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "sessions": {
+                  "type": "integer"
+                },
+                "distanceM": {
+                  "type": "number",
+                  "description": "Sum of known distances, m."
+                },
+                "movingS": {
+                  "type": "number",
+                  "description": "Sum of known moving times, s."
+                },
+                "durationS": {
+                  "type": "number",
+                  "description": "Sum of known elapsed times, s."
+                },
+                "sport": {
+                  "type": "string",
+                  "enum": [
+                    "sailing",
+                    "windsurfing",
+                    "motorboating",
+                    "kayak",
+                    "canoe",
+                    "sup"
+                  ]
+                }
+              },
+              "required": [
+                "sessions",
+                "distanceM",
+                "movingS",
+                "durationS",
+                "sport"
+              ]
+            }
+          }
+        },
+        "required": [
+          "sessions",
+          "distanceM",
+          "movingS",
+          "durationS",
+          "bySport"
+        ]
+      },
       "SessionList": {
         "type": "object",
         "properties": {
@@ -1294,6 +1362,42 @@
         }
       }
     },
+    "/me/stats": {
+      "get": {
+        "summary": "Totals over the signed-in user's sessions",
+        "description": "Counts and sums over every session the user has, overall and per sport.",
+        "tags": [
+          "account"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The totals.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MeStats"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/sessions": {
       "get": {
         "summary": "The signed-in user's sessions, newest first",
@@ -1744,7 +1848,7 @@
       },
       "get": {
         "summary": "Download a session's track file",
-        "description": "The gzipped track v1 file as `application/gzip`. Visibility works as for the session. Privacy zones are not cut out yet, so while the owner has any privacy zone, only the owner can download the track; others get 403.",
+        "description": "The gzipped track v1 file as `application/gzip`. Visibility works as for the session. The owner gets the file as uploaded; others get a shared copy without heart rate, marks or free-form event data. Privacy zones are not cut out yet, so while the owner has any privacy zone, only the owner can download the track; others get 403.",
         "tags": [
           "sessions"
         ],

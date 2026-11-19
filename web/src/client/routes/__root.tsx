@@ -1,21 +1,71 @@
 import type { QueryClient } from "@tanstack/react-query";
-import { createRootRouteWithContext, Link, Outlet } from "@tanstack/react-router";
+import {
+  createRootRouteWithContext,
+  Link,
+  Outlet,
+  useNavigate,
+  useRouterState,
+} from "@tanstack/react-router";
+import { Button, buttonVariants } from "@/components/ui/button";
+import { signInUrl } from "@/lib/api";
+import { useMe, useSignOut } from "@/lib/auth";
 
 export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()({
   component: RootLayout,
   notFoundComponent: NotFound,
 });
 
+function Account() {
+  const { data: me, isPending } = useMe();
+  const signOut = useSignOut();
+  const navigate = useNavigate();
+  const location = useRouterState({ select: (s) => s.location.href });
+  if (isPending) return null;
+  if (!me) {
+    return (
+      <a
+        href={signInUrl(location === "/" || location.startsWith("/signin") ? "/app" : location)}
+        className={buttonVariants({ size: "sm", variant: "outline" })}
+      >
+        Sign in
+      </a>
+    );
+  }
+  return (
+    <div className="flex items-center gap-1 sm:gap-2">
+      <Link
+        to="/app"
+        className="rounded-md px-2 py-1 text-sm hover:bg-accent"
+        activeProps={{ className: "font-semibold" }}
+        activeOptions={{ exact: true }}
+      >
+        Dashboard
+      </Link>
+      <Button
+        size="sm"
+        variant="ghost"
+        onClick={async () => {
+          await signOut();
+          await navigate({ to: "/" });
+        }}
+      >
+        Sign out
+      </Button>
+    </div>
+  );
+}
+
 function RootLayout() {
   return (
     <div className="min-h-dvh bg-background text-foreground">
-      <header className="mx-auto flex max-w-5xl items-center gap-3 px-4 py-4">
+      <header className="mx-auto flex max-w-5xl items-center justify-between gap-3 px-4 py-4">
         <Link to="/" className="flex items-center gap-2 font-semibold">
           <img src="/favicon.svg" alt="" className="size-7 rounded-md" />
           MadeGood
         </Link>
+        <Account />
       </header>
-      <main className="mx-auto max-w-5xl px-4">
+      <main className="mx-auto max-w-5xl px-4 pb-16">
         <Outlet />
       </main>
     </div>

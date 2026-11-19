@@ -6,12 +6,14 @@ import { optionalAuth, requireAuth } from "../auth/middleware";
 import { privacyZones, type Session, sessions, users } from "../db/schema";
 import { apiError, errorResponse } from "../lib/errors";
 import { createRouter } from "../lib/router";
+import { shareTrack } from "../lib/session-privacy";
 import { deletePrefix, userPrefix } from "../lib/storage";
 import {
   checkTrack,
   readBody,
   TRACK_CONTENT_TYPE,
   TRACK_MAX_BYTES,
+  TRACK_MAX_INFLATED_BYTES,
   TRACK_SPORTS,
   trackKey,
 } from "../lib/track";
@@ -178,6 +180,13 @@ const SHARED_SUMMARY_NUMBERS = [
   "averageSpeed",
   "maxSpeed2s",
   "maxSpeed10s",
+  // Windsurf speed categories: speeds only, no positions.
+  "best5x10s",
+  "best100m",
+  "best500m",
+  "bestNauticalMile",
+  "best1h",
+  "alpha500",
 ] as const;
 const SHARED_LAP_NUMBERS = ["start", "end", "distance", "movingTime"] as const;
 const MAX_SHARED_LAPS = 1000;
@@ -386,8 +395,9 @@ const getTrackRoute = createRoute({
   summary: "Download a session's track file",
   description:
     `The gzipped track v1 file as \`${TRACK_CONTENT_TYPE}\`. Visibility works as for the ` +
-    "session. Privacy zones are not cut out yet, so while the owner has any privacy zone, " +
-    "only the owner can download the track; others get 403.",
+    "session. The owner gets the file as uploaded; others get a shared copy without heart " +
+    "rate, marks or free-form event data. Privacy zones are not cut out yet, so while the " +
+    "owner has any privacy zone, only the owner can download the track; others get 403.",
   tags: ["sessions"],
   security: optionalSecurity,
   middleware: [optionalAuth] as const,
@@ -611,6 +621,39 @@ sessionRoutes.openapi(getTrackRoute, async (c) => {
 
   const object = session.trackKey ? await c.env.TRACKS.get(session.trackKey) : null;
   if (!object) return apiError(c, 404, "not_found", "This session has no track.");
+
+  if (session.userId !== viewerId) {
+    // Others get a shared copy: no heart rate, no marks or free-form event data, and the
+    // shared summary (lib/session-privacy.ts). Zones are handled above for now.
+    const inflated = await readBody(
+      object.body.pipeThrough(new DecompressionStream("gzip")),
+      TRACK_MAX_INFLATED_BYTES,
+    ).catch(() => null);
+    let shared: Record<string, unknown> | null = null;
+    try {
+      shared = inflated
+        ? shareTrack(
+            JSON.parse(new TextDecoder().decode(inflated)),
+            [],
+            viewSummary(session, viewerId),
+          )
+        : null;
+    } catch {
+      shared = null;
+    }
+    if (!shared) return apiError(c, 404, "not_found", "This session's track is not available.");
+    const gzipped = await new Response(
+      new Blob([JSON.stringify(shared)]).stream().pipeThrough(new CompressionStream("gzip")),
+    ).arrayBuffer();
+    return new Response(gzipped, {
+      headers: {
+        "content-type": TRACK_CONTENT_TYPE,
+        "content-length": String(gzipped.byteLength),
+        "cache-control": "private, no-cache",
+      },
+    });
+  }
+
   return new Response(object.body, {
     headers: {
       "content-type": TRACK_CONTENT_TYPE,
