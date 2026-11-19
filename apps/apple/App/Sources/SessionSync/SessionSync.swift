@@ -6,7 +6,8 @@ import WaterKit
 
 /// Uploads finished sessions to the signed-in MadeGood account (docs/PLAN.md §4.1): the
 /// durable `SessionOutbox`, a background URLSession for the track files, and the Settings
-/// switches. Nothing is uploaded until the user has signed in and turned sync on.
+/// switches. Nothing is uploaded until the user has signed in and turned sync on for that
+/// sign-in, and only recordings that account consented to (`SessionSyncConsent`).
 /// Uploaded sessions take the account's default visibility, which starts private.
 @MainActor @Observable
 final class SessionSync {
@@ -19,11 +20,17 @@ final class SessionSync {
     private(set) var queueUnavailable = false
     /// Finished sessions still being prepared (analyzed and frozen) for the queue.
     private(set) var preparing = false
+    /// Finished recordings made while nobody was signed in, not chosen for this account.
+    private(set) var earlierSessions: [UUID] = []
+    private(set) var consent: SessionSyncConsent
 
+    /// "Sync sessions": on only for the sign-in that turned it on.
     var isEnabled: Bool {
-        didSet {
-            guard isEnabled != oldValue else { return }
-            preferences.set(isEnabled, forKey: Self.enabledKey)
+        get { consent.isEnabled(for: account.binding) }
+        set {
+            guard let binding = account.binding, newValue != isEnabled else { return }
+            consent.setEnabled(newValue, for: binding)
+            saveConsent()
             Task { await settingsDidChange() }
         }
     }
@@ -39,29 +46,40 @@ final class SessionSync {
 
     private let transport: any SessionSyncTransport
     private let preferences: UserDefaults
+    private let network: NetworkState
+    @ObservationIgnored private var launched = false
+    @ObservationIgnored private var reconciled: Task<Void, Never>?
     @ObservationIgnored private var worker: Task<Void, Never>?
     @ObservationIgnored private var wake: Task<Void, Never>?
     @ObservationIgnored private var scan: Task<Void, Never>?
     @ObservationIgnored private var rescan = false
     @ObservationIgnored private var pathMonitor: NWPathMonitor?
 
-    static let enabledKey = "sessionSync.enabled"
+    static let consentKey = "sessionSync.consent"
     static let wifiOnlyKey = "sessionSync.wifiOnly"
 
     init(
         apiRoot: URL, root: URL, transport: any SessionSyncTransport, store: any VoyageCredentialStore,
         preferences: UserDefaults = .standard, isDemo: Bool = false
     ) {
+        let network = NetworkState()
         account = VoyageAccount(store: store, api: VoyageAPI(baseURL: apiRoot, transport: transport))
-        outbox = SessionOutbox(root: root, account: account, api: SessionAPI(baseURL: apiRoot, transport: transport))
+        outbox = SessionOutbox(
+            root: root, account: account, api: SessionAPI(baseURL: apiRoot, transport: transport),
+            networkAvailable: { network.canUpload(under: $0) })
+        self.network = network
         self.transport = transport
         self.preferences = preferences
         self.isDemo = isDemo
-        isEnabled = preferences.bool(forKey: Self.enabledKey)
+        consent =
+            preferences.data(forKey: Self.consentKey).flatMap {
+                try? JSONDecoder().decode(SessionSyncConsent.self, from: $0)
+            } ?? SessionSyncConsent()
         wifiOnly = preferences.bool(forKey: Self.wifiOnlyKey)
     }
 
     private var isActive: Bool { isEnabled && account.binding != nil }
+    private var policy: SessionNetworkPolicy { SessionNetworkPolicy(allowsCellular: !wifiOnly) }
 
     /// The session's place in the queue, or nil when sync is off or it is not queued.
     func status(for sessionID: UUID) -> SessionSyncStatus? {
@@ -71,25 +89,47 @@ final class SessionSync {
 
     // MARK: Lifecycle
 
-    func start() {
-        guard pathMonitor == nil else { return }
+    /// Call at every launch, including a background relaunch for finished uploads, before
+    /// anything else: creates the background session with its delegate, then cancels every
+    /// upload the current settings no longer allow (sync turned off, a sign-out or Wi-Fi
+    /// only saved just before the process ended).
+    func launch() {
+        guard !launched else { return }
+        launched = true
+        transport.activate { [weak self] description, status in
+            self?.outbox.recordBackgroundCompletion(taskDescription: description, statusCode: status)
+        }
         let monitor = NWPathMonitor()
         monitor.pathUpdateHandler = { [weak self] path in
-            guard path.status == .satisfied else { return }
-            Task { @MainActor in self?.connectionRestored() }
+            let satisfied = path.status == .satisfied
+            let expensive = path.isExpensive
+            Task { @MainActor in self?.pathChanged(satisfied: satisfied, expensive: expensive) }
         }
         monitor.start(queue: .main)
         pathMonitor = monitor
+        reconciled = Task { await reconcileUploads() }
     }
 
     func accountDidChange() async {
+        launch()
+        await reconciled?.value
         let binding = account.binding
-        if binding == nil { stopWork() }
+        if let binding {
+            consent.signedIn(binding, at: .now)
+        } else {
+            consent.signedOut(at: .now)
+            stopWork()
+        }
+        saveConsent()
         // Uploads started by an earlier sign-in must not finish under this one.
-        await transport.cancelStaleUploads { account.binding?.signInID }
+        await reconcileUploads()
         guard !Task.isCancelled, account.binding == binding else { return }
+        // A sign-out drops that sign-in's queue and frozen tracks.
         outbox.removeOtherSignIns(keeping: binding)
-        guard let binding else { return }
+        guard let binding else {
+            earlierSessions = []
+            return
+        }
         do {
             try outbox.restore(for: binding)
             queueUnavailable = false
@@ -112,10 +152,21 @@ final class SessionSync {
 
     private func settingsDidChange() async {
         stopWork()
-        // Cancelling every upload task interrupts the drain; the journal keeps its place.
-        await transport.cancelStaleUploads { nil }
-        guard isActive else { return }
+        // The drain is interrupted; the journal keeps its place.
+        await reconcileUploads()
+        guard account.binding != nil else { return }
         recordingsChanged()
+    }
+
+    private func reconcileUploads() async {
+        let binding = account.binding
+        let enabled = isActive
+        let policy = policy
+        await transport.reconcileUploads { description, request in
+            SessionOutbox.shouldKeepUpload(
+                taskDescription: description, allowsCellular: request?.allowsCellularAccess ?? true,
+                binding: binding, syncEnabled: enabled, policy: policy)
+        }
     }
 
     /// Cancels the scan, drain and retry timer. A cancelled drain or scan restarts itself
@@ -129,10 +180,10 @@ final class SessionSync {
 
     // MARK: Queue
 
-    /// Queues finished recordings that are not queued yet and forgets deleted ones, then
-    /// uploads. Call it whenever the library changes.
+    /// Queues or re-snapshots finished recordings this account may receive, forgets deleted
+    /// ones, then uploads. Call it whenever the library or a trim changes.
     func recordingsChanged() {
-        guard isActive, let binding = account.binding else { return }
+        guard account.binding != nil, launched else { return }
         guard scan == nil else {
             rescan = true
             return
@@ -146,10 +197,21 @@ final class SessionSync {
                 rescan = false
                 if again { recordingsChanged() }
             }
-            await enqueueFinishedRecordings(for: binding)
+            await reconciled?.value
+            guard let binding = account.binding else { return }
+            await updateQueue(for: binding)
             guard !Task.isCancelled else { return }
             kick()
         }
+    }
+
+    /// The user chose to upload the earlier sessions to the signed-in account.
+    func uploadEarlierSessions() {
+        guard let binding = account.binding, !earlierSessions.isEmpty else { return }
+        consent.adopt(earlierSessions, for: binding)
+        saveConsent()
+        earlierSessions = []
+        recordingsChanged()
     }
 
     func retry(_ sessionID: UUID? = nil) {
@@ -163,14 +225,16 @@ final class SessionSync {
     }
 
     func kick() {
-        guard isActive, worker == nil, let binding = account.binding else { return }
+        guard isActive, launched, worker == nil, let binding = account.binding else { return }
         wake?.cancel()
-        let policy = SessionNetworkPolicy(allowsCellular: !wifiOnly)
+        let policy = policy
         worker = Task {
             defer {
                 worker = nil
                 if Task.isCancelled || account.binding != binding { kick() }
             }
+            await reconciled?.value
+            guard !Task.isCancelled else { return }
             do {
                 let retryAt = try await outbox.drain(for: binding, policy: policy)
                 guard !Task.isCancelled, account.binding == binding else { return }
@@ -189,13 +253,15 @@ final class SessionSync {
         }
     }
 
-    private func connectionRestored() {
-        guard isActive, let binding = account.binding else { return }
+    private func pathChanged(satisfied: Bool, expensive: Bool) {
+        network.update(satisfied: satisfied, expensive: expensive)
+        guard network.canUpload(under: policy), isActive, let binding = account.binding else { return }
         try? outbox.connectionRestored(for: binding)
         kick()
     }
 
     func reconnect(completion: @escaping () -> Void) {
+        launch()
         guard let transport = transport as? VoyageURLSession else {
             completion()
             return
@@ -204,27 +270,66 @@ final class SessionSync {
         Task { await accountDidChange() }
     }
 
-    /// Freezes each finished recording's analyzed track (trimmed, if the user trimmed it)
-    /// into the queue. Analysis runs off the main actor.
-    private func enqueueFinishedRecordings(for binding: VoyageAccountBinding) async {
+    private func saveConsent() {
+        if let data = try? JSONEncoder().encode(consent) { preferences.set(data, forKey: Self.consentKey) }
+    }
+
+    /// Freezes each consented, finished recording's analyzed track (trimmed, if the user
+    /// trimmed it) into the queue, and re-freezes one whose trim or analysis inputs
+    /// changed. Analysis runs off the main actor.
+    private func updateQueue(for binding: VoyageAccountBinding) async {
         let entries = RecordingStore.list()
-        let present = Set(entries.compactMap { $0.meta?.sessionId })
+        var earlier: [UUID] = []
+        var allowed: Set<UUID> = []
+        var held: Set<UUID> = []
+        for entry in entries {
+            guard let meta = entry.meta, meta.endedAt != nil else { continue }
+            switch consent.eligibility(
+                sessionID: meta.sessionId, startedAt: Date(timeIntervalSince1970: meta.startedAt), for: binding)
+            {
+            case .automatic: allowed.insert(meta.sessionId)
+            case .earlier: earlier.append(meta.sessionId)
+            case .otherAccount: break
+            }
+        }
+        earlierSessions = earlier
         do {
-            try outbox.forget(outbox.queuedIDs.subtracting(present), for: binding)
+            // Deleted recordings, and any the account may not receive, leave the queue.
+            try forgetAndCancel(outbox.queuedIDs.subtracting(allowed), for: binding)
         } catch {
             queueUnavailable = true
             return
         }
+        guard isEnabled else { return }
+
         for entry in entries {
             guard !Task.isCancelled, account.binding == binding else { return }
-            guard let meta = entry.meta, meta.endedAt != nil, !outbox.queuedIDs.contains(meta.sessionId) else {
+            guard let id = entry.meta?.sessionId, allowed.contains(id) else { continue }
+            let folder = entry.folder
+            guard
+                let source = await Task.detached(priority: .utility, operation: { SessionLibrary.source(for: folder) })
+                    .value
+            else { continue }
+            // A trim that cannot be read holds the session: uploading the original could
+            // share the part the user removed.
+            if source.savedTrim == .unreadable {
+                held.insert(id)
                 continue
             }
-            let folder = entry.folder
-            let prepared = await Task.detached(priority: .utility) { Self.prepare(folder: folder) }.value
-            guard let prepared, !Task.isCancelled, account.binding == binding else { continue }
+            let revision = Self.revision(of: source)
+            guard outbox.needsSnapshot(id, revision: revision) else { continue }
+            let prepared = await Task.detached(priority: .utility) { Self.prepare(source) }.value
+            // The trim or recording may have changed while it was analyzed; the next scan
+            // picks that up.
+            guard let prepared, !Task.isCancelled, account.binding == binding,
+                SessionLibrary.source(for: folder).map(Self.revision(of:)) == revision
+            else { continue }
             do {
-                try outbox.enqueue(prepared.snapshot, for: binding) { prepared.gzip }
+                let replacedActive = try outbox.enqueue(prepared.snapshot, revision: revision, for: binding) {
+                    prepared.gzip
+                }
+                // The upload in flight carries the old snapshot: stop it; the drain restarts.
+                if replacedActive { worker?.cancel() }
             } catch is VoyageAccountError {
                 return
             } catch {
@@ -233,6 +338,12 @@ final class SessionSync {
                 continue
             }
         }
+        try? forgetAndCancel(held, for: binding)
+    }
+
+    private func forgetAndCancel(_ ids: Set<UUID>, for binding: VoyageAccountBinding) throws {
+        guard !ids.isEmpty else { return }
+        if try outbox.forget(ids, for: binding) { worker?.cancel() }
     }
 
     private struct Prepared: Sendable {
@@ -240,11 +351,24 @@ final class SessionSync {
         let gzip: Data
     }
 
-    private nonisolated static func prepare(folder: URL) -> Prepared? {
-        // A trim that cannot be read waits: uploading the original could share the part
-        // the user removed.
-        guard let source = SessionLibrary.source(for: folder), let loaded = source.analyze(),
-            !loaded.trimUnavailable, let endedAt = loaded.session.meta.endedAt
+    /// The trim and everything else the uploaded snapshot is computed from.
+    private nonisolated static func revision(of source: SessionLibrary.Source) -> SessionUploadRevision {
+        let trim: String
+        switch source.savedTrim {
+        case .original: trim = "original"
+        case .unreadable: trim = "unreadable"
+        case .trimmed(let value):
+            trim = value.retainedRanges.map { "\($0.lowerBound)-\($0.upperBound)" }.joined(separator: ",")
+        }
+        let analysis = [
+            String(describing: source.entry.revision), "autoPause=\(source.autoPause)",
+            "analyzer=\(SessionReplay.analyzerVersion)",
+        ].joined(separator: "|")
+        return SessionUploadRevision(trim: trim, analysis: analysis)
+    }
+
+    private nonisolated static func prepare(_ source: SessionLibrary.Source) -> Prepared? {
+        guard let loaded = source.analyze(), !loaded.trimUnavailable, let endedAt = loaded.session.meta.endedAt
         else { return nil }
         let selection = loaded.selection
         let track = selection.replay.analyzedTrack(from: selection.track)
@@ -253,6 +377,23 @@ final class SessionSync {
             ? Date(timeIntervalSince1970: endedAt) : track.startedAt.addingTimeInterval(selection.duration)
         guard let gzip = try? TrackCodec.encode(track) else { return nil }
         return Prepared(snapshot: SessionUploadSnapshot(track: track, endedAt: end), gzip: gzip)
+    }
+}
+
+/// The latest network path, for telling "offline" apart from a server that can't be
+/// reached on a working network.
+@MainActor
+private final class NetworkState {
+    private var satisfied = true
+    private var expensive = false
+
+    func update(satisfied: Bool, expensive: Bool) {
+        self.satisfied = satisfied
+        self.expensive = expensive
+    }
+
+    func canUpload(under policy: SessionNetworkPolicy) -> Bool {
+        satisfied && (policy.allowsCellular || !expensive)
     }
 }
 

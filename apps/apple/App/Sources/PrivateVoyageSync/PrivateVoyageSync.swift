@@ -130,6 +130,17 @@ final class PrivateVoyageSync {
 }
 
 final class VoyageSyncAppDelegate: VoyageLaunchDelegate {
+    override func application(
+        _ application: UIApplication,
+        didFinishLaunchingWithOptions options: [UIApplication.LaunchOptionsKey: Any]? = nil
+    ) -> Bool {
+        let result = super.application(application, didFinishLaunchingWithOptions: options)
+        // Session sync's background session and delegate exist from launch, and uploads the
+        // settings no longer allow are cancelled before anything else runs.
+        if DemoOffWater.storage == nil { SessionSync.shared?.launch() }
+        return result
+    }
+
     func application(
         _ application: UIApplication, handleEventsForBackgroundURLSession identifier: String,
         completionHandler: @escaping () -> Void

@@ -37,6 +37,10 @@ struct ContentView: View {
         }
         // New, finished and deleted recordings reach the upload queue.
         .onChange(of: library.items.map(\.entry)) { sessionSync?.recordingsChanged() }
+        // A new trim re-freezes a queued session, or re-uploads a synced one.
+        .onReceive(NotificationCenter.default.publisher(for: SessionLibrary.didChangeTrim)) { _ in
+            sessionSync?.recordingsChanged()
+        }
         #if DEBUG
             .onChange(of: controller.recorder.isRecording) { _, isRecording in
                 if isRecording { WatchWorkoutMirror.shared.seedDemoIfRequested() }

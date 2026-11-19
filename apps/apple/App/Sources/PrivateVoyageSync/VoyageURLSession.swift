@@ -26,6 +26,21 @@ final class VoyageURLSession: NSObject, SessionSyncTransport, URLSessionTaskDele
     private var inspectingTasks = false
     private var completedDuringInspection: [Int: Result<HTTPURLResponse, Error>] = [:]
     private var backgroundCompletion: (() -> Void)?
+    /// Events finished before `reconnect` stored the system's completion handler.
+    private var finishedEventsEarly = false
+    private var onCompletion: (@MainActor (String, Int?) -> Void)?
+
+    func activate(onCompletion: @escaping @MainActor (String, Int?) -> Void) {
+        self.onCompletion = onCompletion
+        _ = background
+    }
+
+    func reconcileUploads(keep: (String?, URLRequest?) -> Bool) async {
+        let tasks = await background.allTasks
+        for task in tasks where !keep(task.taskDescription, task.originalRequest) {
+            task.cancel()
+        }
+    }
 
     func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
         let (data, response) = try await foreground.data(for: request)
@@ -71,6 +86,11 @@ final class VoyageURLSession: NSObject, SessionSyncTransport, URLSessionTaskDele
     }
 
     func reconnect(completion: @escaping () -> Void) {
+        if finishedEventsEarly {
+            finishedEventsEarly = false
+            completion()
+            return
+        }
         backgroundCompletion = completion
         _ = background
     }
@@ -84,6 +104,10 @@ final class VoyageURLSession: NSObject, SessionSyncTransport, URLSessionTaskDele
                 if let error { throw error }
                 guard let http = task.response as? HTTPURLResponse else { throw VoyageAPIError.invalidResponse }
                 return http
+            }
+            // Journal the outcome even when nothing is waiting (a background relaunch).
+            if let description = task.taskDescription {
+                onCompletion?(description, error == nil ? (task.response as? HTTPURLResponse)?.statusCode : nil)
             }
             if let waiter = waiters.removeValue(forKey: task.taskIdentifier) {
                 waiter.resume(with: result)
@@ -102,9 +126,12 @@ final class VoyageURLSession: NSObject, SessionSyncTransport, URLSessionTaskDele
 
     nonisolated func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
         MainActor.assumeIsolated {
-            let completion = backgroundCompletion
+            guard let completion = backgroundCompletion else {
+                finishedEventsEarly = true
+                return
+            }
             backgroundCompletion = nil
-            completion?()
+            completion()
         }
     }
 }

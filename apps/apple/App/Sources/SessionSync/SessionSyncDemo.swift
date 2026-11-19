@@ -83,6 +83,8 @@
         }
 
         func cancelStaleUploads(currentSignIn: () -> UUID?) async {}
+        func activate(onCompletion: @escaping @MainActor (String, Int?) -> Void) {}
+        func reconcileUploads(keep: (String?, URLRequest?) -> Bool) async {}
 
         private func isAuthorized(_ request: URLRequest) -> Bool {
             request.value(forHTTPHeaderField: "Authorization") == "Bearer synthetic-access"

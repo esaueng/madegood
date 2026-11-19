@@ -102,7 +102,7 @@ struct SessionSyncSection: View {
             Text("Account")
         } footer: {
             Text(
-                "When sync is on, sessions you finish on your watch or this iPhone upload to your MadeGood account. They are private unless you share them. Recordings stay on this iPhone."
+                "When sync is on, sessions recorded while you are signed in upload to your MadeGood account. They are private unless you share them. Signing out turns sync off. Recordings stay on this iPhone."
             )
         }
         .disabled(busy)
@@ -120,6 +120,16 @@ struct SessionSyncSection: View {
                 Toggle("Upload on Wi-Fi only", isOn: $sync.wifiOnly)
                     .accessibilityIdentifier("sessionSync.wifiOnly")
                 summary(sync)
+                if !sync.earlierSessions.isEmpty {
+                    let count = sync.earlierSessions.count
+                    Button("Upload \(count) Earlier \(count == 1 ? "Session" : "Sessions")") {
+                        sync.uploadEarlierSessions()
+                    }
+                    .accessibilityIdentifier("sessionSync.uploadEarlier")
+                    Text("Recorded on this iPhone before you signed in. They upload only if you choose to.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
             }
             Button("Sign Out", role: .destructive) {
                 perform(failure: "Couldn’t clear the saved sign-in. Try again.") { try await sync.signOut() }

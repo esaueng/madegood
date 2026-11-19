@@ -9,6 +9,11 @@ import OpenAPIRuntime
 @MainActor
 protocol SessionSyncTransport: VoyageTransport {
     func upload(_ request: URLRequest, file: URL, taskDescription: String) async throws -> HTTPURLResponse
+    /// Creates the background session now (at launch) and reports every finished
+    /// background upload, including ones no caller is waiting for.
+    func activate(onCompletion: @escaping @MainActor (_ taskDescription: String, _ statusCode: Int?) -> Void)
+    /// Cancels every background upload for which `keep` returns false.
+    func reconcileUploads(keep: (_ taskDescription: String?, _ request: URLRequest?) -> Bool) async
 }
 
 /// Which networks an upload may use: the Settings "Wi-Fi only" switch.

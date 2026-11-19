@@ -42,10 +42,7 @@ struct MadeGoodApp: App {
                         .environment(voyageSync)
                         .environment(sessionSync)
                         .task(id: voyageSync?.account.binding) { await voyageSync?.accountDidChange() }
-                        .task(id: sessionSync?.account.binding) {
-                            sessionSync?.start()
-                            await sessionSync?.accountDidChange()
-                        }
+                        .task(id: sessionSync?.account.binding) { await sessionSync?.accountDidChange() }
                         .onChange(of: scenePhase) { _, phase in
                             if phase == .active {
                                 voyageSync?.kick()

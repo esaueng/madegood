@@ -22,6 +22,14 @@ final class PhoneSessionSyncUITests: XCTestCase {
         XCTAssertEqual(enable.value as? String, "0")
         enable.switches.firstMatch.tap()
         XCTAssertTrue(app.switches["sessionSync.wifiOnly"].waitForExistence(timeout: 5))
+
+        // The synthetic sessions predate the sign-in: they wait for an explicit choice.
+        let earlier = app.buttons["sessionSync.uploadEarlier"]
+        XCTAssertTrue(earlier.waitForExistence(timeout: 15))
+        XCTAssertEqual(earlier.label, "Upload 3 Earlier Sessions")
+        waitForLabel(element("sessionSync.syncedCount", in: app), "Synced, 0")
+        scrollTo(earlier, in: app)
+        earlier.tap()
         waitForLabel(element("sessionSync.syncedCount", in: app), "Synced, 2", timeout: 30)
         XCTAssertTrue(element("sessionSync.problemCount", in: app).waitForExistence(timeout: 10))
         attachScreenshot("Settings account sync")
@@ -50,5 +58,15 @@ final class PhoneSessionSyncUITests: XCTestCase {
         waitForLabel(status, "Synced", timeout: 30)
         XCTAssertFalse(retry.exists)
         attachScreenshot("Session detail synced")
+
+        // Signing out turns sync off; signing in again needs the switch again.
+        app.tabBars.buttons["Settings"].tap()
+        let signOut = app.buttons["sessionSync.signOut"]
+        scrollTo(signOut, in: app)
+        signOut.tap()
+        scrollTo(signIn, in: app)
+        signIn.tap()
+        scrollTo(enable, in: app)
+        XCTAssertEqual(enable.value as? String, "0")
     }
 }

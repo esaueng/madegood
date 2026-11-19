@@ -28,6 +28,16 @@ enum SessionSyncStatus: Equatable, Sendable {
     case failed(SessionSyncFailure)
 }
 
+/// What a queued snapshot was made from. `trim` covers the part of the recording that is
+/// shared; `analysis` covers everything else that shapes the upload (raw files, settings,
+/// analyzer). Both are opaque fingerprints from the app.
+struct SessionUploadRevision: Codable, Equatable, Sendable {
+    var trim: String
+    var analysis: String
+
+    static let unversioned = SessionUploadRevision(trim: "", analysis: "")
+}
+
 enum SessionOutboxError: Error, Equatable {
     case invalidTrack
     case invalidJournal
@@ -53,7 +63,11 @@ final class SessionOutbox {
     }
 
     private struct Entry: Codable {
-        let snapshot: SessionUploadSnapshot
+        var snapshot: SessionUploadSnapshot
+        var revision: SessionUploadRevision
+        /// Changes whenever the snapshot is replaced, so a request for an older snapshot
+        /// can never acknowledge the new one.
+        var generation = UUID()
         var metadataSent = false
         var trackSent = false
         var attempts = 0
@@ -67,15 +81,23 @@ final class SessionOutbox {
     private let account: VoyageAccount
     private let api: SessionAPI
     private let now: () -> Date
+    private let networkAvailable: @MainActor (SessionNetworkPolicy) -> Bool
     private var journal: Journal?
-    private var active: (id: UUID, step: SessionSyncStep)?
+    private var active: (id: UUID, generation: UUID, step: SessionSyncStep)?
     @ObservationIgnored private var draining = false
 
-    init(root: URL, account: VoyageAccount, api: SessionAPI, now: @escaping () -> Date = { .now }) {
+    /// `networkAvailable` reports whether the current network path can carry an upload
+    /// under the policy (NWPathMonitor in the app). Connection errors count as offline only
+    /// when it says no; otherwise they use up attempts like any transient failure.
+    init(
+        root: URL, account: VoyageAccount, api: SessionAPI, now: @escaping () -> Date = { .now },
+        networkAvailable: @escaping @MainActor (SessionNetworkPolicy) -> Bool = { _ in true }
+    ) {
         self.root = root
         self.account = account
         self.api = api
         self.now = now
+        self.networkAvailable = networkAvailable
     }
 
     // MARK: Queue
@@ -86,38 +108,66 @@ final class SessionOutbox {
         return Set(journal.entries.map(\.id))
     }
 
-    /// Queues a finished session. `gzipTrack` is its track v1 file; the outbox keeps its
-    /// own copy. Queuing a session that is already queued does nothing.
-    func enqueue(_ snapshot: SessionUploadSnapshot, for binding: VoyageAccountBinding, gzipTrack: () throws -> Data)
-        throws
-    {
+    /// Whether `revision` needs a new snapshot: the session is not queued; or it is not
+    /// synced and anything changed; or it is synced and its trim changed (the track PUT
+    /// replaces the stored file, so trimmed-off data is removed from the account). Other
+    /// changes after a session synced are not uploaded again.
+    func needsSnapshot(_ id: UUID, revision: SessionUploadRevision) -> Bool {
+        guard let journal, journal.binding == account.binding,
+            let entry = journal.entries.first(where: { $0.id == id })
+        else { return true }
+        if entry.revision == revision { return false }
+        return !entry.trackSent || entry.revision.trim != revision.trim
+    }
+
+    /// Queues a finished session, or replaces its snapshot when `needsSnapshot` says so.
+    /// `gzipTrack` is its track v1 file; the outbox keeps its own copy. A replaced session
+    /// starts over with metadata, then the track. Returns true when the replaced session
+    /// was being uploaded, so the caller can cancel that request.
+    @discardableResult
+    func enqueue(
+        _ snapshot: SessionUploadSnapshot, revision: SessionUploadRevision = .unversioned,
+        for binding: VoyageAccountBinding, gzipTrack: () throws -> Data
+    ) throws -> Bool {
         var journal = try load(for: binding)
-        guard !journal.entries.contains(where: { $0.id == snapshot.sessionID }) else { return }
+        let index = journal.entries.firstIndex { $0.id == snapshot.sessionID }
+        if index != nil, !needsSnapshot(snapshot.sessionID, revision: revision) { return false }
         let track = try gzipTrack()
-        var entry = Entry(snapshot: snapshot)
+        var entry = Entry(snapshot: snapshot, revision: revision)
+        let file = trackURL(snapshot.sessionID, for: binding)
         if track.count > Self.maxTrackBytes {
             // Queue it as failed, so History says why it never reaches the account.
             entry.failure = .tooLarge
+            try? FileManager.default.removeItem(at: file)
         } else {
             guard Gzip.isGzipped(track), let decoded = try? TrackCodec.decode(track),
                 decoded.sessionId == snapshot.sessionID
             else { throw SessionOutboxError.invalidTrack }
             try createPrivateDirectory(for: binding)
-            try track.write(to: trackURL(snapshot.sessionID, for: binding), options: Self.privateWriteOptions)
+            try track.write(to: file, options: Self.privateWriteOptions)
         }
-        journal.entries.append(entry)
+        let wasActive = active?.id == snapshot.sessionID
+        if let index {
+            journal.entries[index] = entry
+        } else {
+            journal.entries.append(entry)
+        }
         try save(journal)
+        return wasActive
     }
 
     /// Drops sessions that are not synced yet (their recording was deleted on the phone).
     /// Synced ones stay, so they are not uploaded again.
-    func forget(_ ids: Set<UUID>, for binding: VoyageAccountBinding) throws {
+    @discardableResult
+    func forget(_ ids: Set<UUID>, for binding: VoyageAccountBinding) throws -> Bool {
         var journal = try load(for: binding)
         let removed = journal.entries.filter { ids.contains($0.id) && !$0.trackSent }
-        guard !removed.isEmpty else { return }
+        guard !removed.isEmpty else { return false }
+        let wasActive = active.map { active in removed.contains { $0.id == active.id } } ?? false
         journal.entries.removeAll { entry in removed.contains { $0.id == entry.id } }
         try save(journal)
         for entry in removed { try? FileManager.default.removeItem(at: trackURL(entry.id, for: binding)) }
+        return wasActive
     }
 
     func restore(for binding: VoyageAccountBinding) throws {
@@ -180,7 +230,7 @@ final class SessionOutbox {
                 return journal.entries.filter { !$0.trackSent && $0.failure == nil }.compactMap(\.retryAt).min()
             }
             let step: SessionSyncStep = entry.metadataSent ? .track : .metadata
-            active = (entry.id, step)
+            active = (entry.id, entry.generation, step)
             var outcome: Result<Void, Error> = .success(())
             do {
                 try await account.authorized(for: binding) { bearer in
@@ -190,7 +240,8 @@ final class SessionOutbox {
                     case .track:
                         try await api.putTrack(
                             file: trackURL(entry.id, for: binding), sessionID: entry.id,
-                            taskDescription: Self.taskDescription(binding: binding, sessionID: entry.id),
+                            taskDescription: Self.taskDescription(
+                                binding: binding, sessionID: entry.id, generation: entry.generation),
                             bearer: bearer, policy: policy)
                     }
                 }
@@ -203,8 +254,13 @@ final class SessionOutbox {
             }
             // Re-read: another session may have been queued during the request.
             var updated = try load(for: binding)
-            guard let index = updated.entries.firstIndex(where: { $0.id == entry.id }) else {
-                // Forgotten while uploading (the recording was deleted).
+            guard
+                let index = updated.entries.firstIndex(where: {
+                    $0.id == entry.id && $0.generation == entry.generation
+                })
+            else {
+                // Forgotten (the recording was deleted) or replaced (re-trimmed) while
+                // uploading: this request's result belongs to the old snapshot.
                 active = nil
                 continue
             }
@@ -219,7 +275,7 @@ final class SessionOutbox {
                 updated.entries[index].offline = false
                 updated.entries[index].failure = nil
             case .failure(let error):
-                record(error, step: step, in: &updated.entries[index])
+                record(error, step: step, policy: policy, in: &updated.entries[index])
             }
             try save(updated)
             if updated.entries[index].trackSent {
@@ -230,10 +286,53 @@ final class SessionOutbox {
         return nil
     }
 
-    /// The background upload's task description: the sign-in first, so a sign-out can
-    /// cancel exactly that sign-in's uploads (`VoyageTransport.cancelStaleUploads`).
-    static func taskDescription(binding: VoyageAccountBinding, sessionID: UUID) -> String {
-        binding.signInID.uuidString.lowercased() + "/session/" + sessionID.uuidString.lowercased()
+    /// The background upload's task description: `<sign-in>/session/<id>/<generation>`.
+    /// The sign-in comes first, so a sign-out can cancel exactly that sign-in's uploads.
+    static func taskDescription(binding: VoyageAccountBinding, sessionID: UUID, generation: UUID) -> String {
+        [binding.signInID.uuidString, "session", sessionID.uuidString, generation.uuidString]
+            .joined(separator: "/").lowercased()
+    }
+
+    private static func parse(taskDescription: String) -> (signIn: UUID, session: UUID, generation: UUID)? {
+        let parts = taskDescription.split(separator: "/").map(String.init)
+        guard parts.count == 4, parts[1] == "session", let signIn = UUID(uuidString: parts[0]),
+            let session = UUID(uuidString: parts[2]), let generation = UUID(uuidString: parts[3])
+        else { return nil }
+        return (signIn, session, generation)
+    }
+
+    /// A background track upload finished, possibly while no drain was waiting for it (the
+    /// app was relaunched in the background). A success is journalled directly, so the
+    /// track is not sent again; anything else is left for the drain to retry.
+    func recordBackgroundCompletion(taskDescription: String, statusCode: Int?) {
+        guard let statusCode, (200..<300).contains(statusCode),
+            let parsed = Self.parse(taskDescription: taskDescription), let binding = account.binding,
+            binding.signInID == parsed.signIn, var journal = try? load(for: binding),
+            let index = journal.entries.firstIndex(where: {
+                $0.id == parsed.session && $0.generation == parsed.generation
+            }),
+            journal.entries[index].metadataSent, !journal.entries[index].trackSent
+        else { return }
+        journal.entries[index].trackSent = true
+        journal.entries[index].attempts = 0
+        journal.entries[index].retryAt = nil
+        journal.entries[index].offline = false
+        journal.entries[index].failure = nil
+        guard (try? save(journal)) != nil else { return }
+        try? FileManager.default.removeItem(at: trackURL(parsed.session, for: binding))
+    }
+
+    /// Whether a background upload task may keep running under the current settings: it
+    /// belongs to the signed-in sign-in, sync is on, and it was started under the current
+    /// network policy. Everything else is cancelled at launch and on every change.
+    static func shouldKeepUpload(
+        taskDescription: String?, allowsCellular: Bool, binding: VoyageAccountBinding?, syncEnabled: Bool,
+        policy: SessionNetworkPolicy
+    ) -> Bool {
+        guard syncEnabled, let binding, let taskDescription, let parsed = parse(taskDescription: taskDescription),
+            parsed.signIn == binding.signInID
+        else { return false }
+        return allowsCellular == policy.allowsCellular
     }
 
     private func isDue(_ entry: Entry) -> Bool {
@@ -243,7 +342,7 @@ final class SessionOutbox {
 
     private func status(of entry: Entry) -> SessionSyncStatus {
         if entry.trackSent { return .synced }
-        if let active, active.id == entry.id { return .uploading(active.step) }
+        if let active, active.id == entry.id, active.generation == entry.generation { return .uploading(active.step) }
         if let failure = entry.failure { return .failed(failure) }
         if let retryAt = entry.retryAt { return .retrying(at: retryAt, offline: entry.offline) }
         return .pending
@@ -251,12 +350,16 @@ final class SessionOutbox {
 
     /// The state machine for a failed step: permanent HTTP errors stop the session,
     /// transient ones back off exponentially up to `maxAttempts`, and offline waits.
-    private func record(_ error: Error, step: SessionSyncStep, in entry: inout Entry) {
+    private func record(
+        _ error: Error, step: SessionSyncStep, policy: SessionNetworkPolicy, in entry: inout Entry
+    ) {
         let urlError = error as? URLError
         let status = (error as? VoyageAPIError)?.status
         entry.offline = false
 
-        if let urlError, Self.offlineCodes.contains(urlError.code) {
+        // DNS and refused connections also happen with a working network (a server or
+        // configuration problem); only a path that can't carry the upload means offline.
+        if let urlError, Self.connectionCodes.contains(urlError.code), !networkAvailable(policy) {
             entry.offline = true
             entry.retryAt = now().addingTimeInterval(Self.offlineRetryDelay)
             return
@@ -294,7 +397,7 @@ final class SessionOutbox {
         entry.retryAt = now().addingTimeInterval(delay)
     }
 
-    private static let offlineCodes: Set<URLError.Code> = [
+    private static let connectionCodes: Set<URLError.Code> = [
         .notConnectedToInternet, .networkConnectionLost, .dataNotAllowed, .internationalRoamingOff,
         .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed,
     ]
