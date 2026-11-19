@@ -172,6 +172,8 @@ public struct EventType: RawRepresentable, Sendable, Hashable, Codable, Expressi
     public static let mob: EventType = "mob"
     public static let tack: EventType = "tack"
     public static let gybe: EventType = "gybe"
+    /// A start line end pinged during a race countdown (`StartLinePing.eventData`).
+    public static let linePing: EventType = "linePing"
 }
 
 /// One sample from any stream, for code that processes streams in time order.
