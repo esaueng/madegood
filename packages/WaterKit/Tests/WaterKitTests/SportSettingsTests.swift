@@ -144,6 +144,29 @@ import Testing
         #expect(visible == [.kayak, .sailing, .windsurfing, .motorboating])
     }
 
+    @Test func customOrderOverridesRecentUse() {
+        let custom: [Sport] = [.sup, .kayak, .sailing]
+        // Sports missing from the stored order follow in the usual order; duplicates drop.
+        #expect(
+            SportList.ordered(custom: custom + [.kayak], hidden: [])
+                == [.sup, .kayak, .sailing, .windsurfing, .motorboating, .canoe])
+        #expect(SportList.ordered(custom: custom, hidden: [.kayak]) == [.sup, .sailing, .windsurfing, .motorboating, .canoe])
+        #expect(SportList.ordered(custom: [], hidden: Set(Sport.allCases)) == Sport.allCases)
+    }
+
+    @Test func reorderKeepsHiddenSportsInTheirSlots() {
+        // Kayak is hidden while the user drags Canoe to the top of the visible list.
+        let start: [Sport] = [.sailing, .kayak, .windsurfing, .motorboating, .canoe, .sup]
+        let visible = SportList.ordered(custom: start, hidden: [.kayak])
+        #expect(visible == [.sailing, .windsurfing, .motorboating, .canoe, .sup])
+        let moved: [Sport] = [.canoe, .sailing, .windsurfing, .motorboating, .sup]
+        let order = SportList.reordered(custom: start, visible: moved)
+        #expect(order == [.canoe, .kayak, .sailing, .windsurfing, .motorboating, .sup])
+        #expect(SportList.ordered(custom: order, hidden: []) == order)
+        // A list that doesn't match the visible sports changes nothing.
+        #expect(SportList.reordered(custom: start, visible: [.sup]) == start)
+    }
+
     @Test func oneSportStaysVisible() {
         let allButSailing = Set(Sport.allCases.filter { $0 != .sailing })
         #expect(!SportList.canHide(.sailing, hidden: allButSailing))

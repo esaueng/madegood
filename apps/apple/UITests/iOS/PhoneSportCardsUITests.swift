@@ -109,3 +109,71 @@ final class PhoneSportCardsUITests: XCTestCase {
         XCTAssertTrue(picker.waitForExistence(timeout: 10))
     }
 }
+
+/// Dragging the start screen's sports into the user's own order.
+final class PhoneSportOrderUITests: XCTestCase {
+    override func setUp() {
+        continueAfterFailure = false
+    }
+
+    /// Touch and hold a card, drag it below another: the new order shows, survives a
+    /// relaunch, and Settings can put it back to most recent first.
+    func testDragReordersSportsAndSticks() {
+        var app = launchDemoApp()
+        let canoe = app.buttons["sport.canoe"]
+        let sailing = app.buttons["sport.sailing"]
+        XCTAssertTrue(canoe.waitForExistence(timeout: 15))
+        XCTAssertTrue(sailing.waitForExistence(timeout: 5))
+        let canoeWasBelow = canoe.frame.minY > sailing.frame.minY
+        let (moving, target) = canoeWasBelow ? (canoe, sailing) : (sailing, canoe)
+        moving.press(forDuration: 1.0, thenDragTo: target)
+        let moved = XCTNSPredicateExpectation(
+            predicate: NSPredicate { _, _ in (canoe.frame.minY > sailing.frame.minY) != canoeWasBelow }, object: nil)
+        XCTAssertEqual(XCTWaiter().wait(for: [moved], timeout: 5), .completed, "The drag didn't reorder the cards")
+        attachScreenshot("reordered")
+
+        // The order is kept across launches.
+        app = launchDemoApp(resetSettings: false)
+        XCTAssertTrue(canoe.waitForExistence(timeout: 15))
+        XCTAssertNotEqual(app.buttons["sport.canoe"].frame.minY > app.buttons["sport.sailing"].frame.minY, canoeWasBelow)
+
+        // Settings puts it back to most recent first.
+        app.tabBars.buttons["Settings"].tap()
+        let recent = app.buttons["settings.recentOrder"]
+        XCTAssertTrue(recent.waitForExistence(timeout: 10))
+        recent.tap()
+        XCTAssertTrue(recent.waitForNonExistence(timeout: 5))
+        app.tabBars.buttons["Record"].tap()
+        XCTAssertTrue(app.buttons["sport.canoe"].waitForExistence(timeout: 10))
+        XCTAssertEqual(app.buttons["sport.canoe"].frame.minY > app.buttons["sport.sailing"].frame.minY, canoeWasBelow)
+    }
+}
+
+/// The start screen's local conditions card, from canned conditions (no network).
+final class PhoneWeatherUITests: XCTestCase {
+    override func setUp() {
+        continueAfterFailure = false
+    }
+
+    func testConditionsCardShowsMoodWarningAndRatings() {
+        let app = launchDemoApp(extraArguments: ["-demoWeather", "stormComing"])
+        let card = app.descendants(matching: .any)["weather.card"]
+        XCTAssertTrue(card.waitForExistence(timeout: 15))
+        XCTAssertTrue(card.label.contains("Storm on the way"), card.label)
+        XCTAssertTrue(card.label.contains("Thunder likely"), card.label)
+        XCTAssertTrue(card.label.contains("Sailing: Stay ashore"), card.label)
+        attachScreenshot("storm coming")
+    }
+
+    /// Without a choice the card offers to turn on; Not now hides it for good.
+    func testOfferCanBeDeclined() {
+        let app = launchDemoApp()
+        let notNow = app.buttons["weather.notNow"]
+        XCTAssertTrue(notNow.waitForExistence(timeout: 15))
+        XCTAssertTrue(app.buttons["weather.enable"].exists)
+        attachScreenshot("weather offer")
+        notNow.tap()
+        XCTAssertTrue(notNow.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["sport.sailing"].exists)
+    }
+}

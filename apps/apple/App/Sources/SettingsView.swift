@@ -6,6 +6,7 @@ import WaterKit
 struct SettingsView: View {
     @Environment(PrivateVoyageSync.self) private var voyageSync: PrivateVoyageSync?
     @State private var store = SettingsStore.shared
+    @State private var weather = LocalWeather.shared
     @AppStorage(UserSettings.Key.appearance) private var appearance: Appearance = .system
 
     var body: some View {
@@ -18,10 +19,32 @@ struct SettingsView: View {
                         }
                         .accessibilityIdentifier("settings.sport.\(sport.rawValue)")
                     }
+                    if store.startOrder != nil {
+                        Button("Order Start Screen by Recent Use", systemImage: "clock.arrow.circlepath") {
+                            store.useRecentStartOrder()
+                        }
+                        .accessibilityIdentifier("settings.recentOrder")
+                    }
                 } header: {
                     Text("Sports")
                 } footer: {
-                    Text("Units, first screen, alerts, countdown and Health for each sport. Changes reach your watch.")
+                    Text(
+                        "Units, first screen, alerts, countdown and Health for each sport. Changes reach your watch. "
+                            + "Touch and hold a sport on the start screen to drag it into your own order.")
+                }
+
+                Section {
+                    Toggle(
+                        "Local Conditions",
+                        isOn: Binding(get: { weather.isEnabled }, set: { weather.setEnabled($0) })
+                    )
+                    .accessibilityIdentifier("settings.localWeather")
+                } header: {
+                    Text("Weather")
+                } footer: {
+                    Text(
+                        "Wind and weather where you are, rated for your sports, on the start screen. Your position "
+                            + "is rounded to about 10 km and sent to Open-Meteo. A guide only, not a marine forecast.")
                 }
 
                 Section {
