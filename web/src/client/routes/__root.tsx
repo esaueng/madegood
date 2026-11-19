@@ -24,7 +24,7 @@ function Account() {
   if (!me) {
     return (
       <a
-        href={signInUrl(location === "/" ? "/app" : location)}
+        href={signInUrl(location === "/" || location.startsWith("/signin") ? "/app" : location)}
         className={buttonVariants({ size: "sm", variant: "outline" })}
       >
         Sign in
