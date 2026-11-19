@@ -1,5 +1,5 @@
 import { env, exports } from "cloudflare:workers";
-import { SignJWT } from "jose";
+import { decodeJwt, SignJWT } from "jose";
 import { describe, expect, it } from "vitest";
 import { hashRefreshToken } from "../src/server/auth/tokens";
 import { api, bearer, identityToken, signIn } from "./apple";
@@ -284,6 +284,44 @@ describe("sign-out racing a refresh (review of #63)", () => {
       const access = cookies(response).values.get("mg_at") ?? "";
       expect((await api("/me", withCookie("mg_at", access))).status).toBe(200);
     }
+  });
+});
+
+describe("refresh tokens per client (extra review of #63)", () => {
+  const appRefresh = (refreshToken: string) =>
+    api("/auth/refresh", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ refreshToken }),
+    });
+  const webRefresh = (refresh: string) =>
+    api(
+      "/auth/web/refresh",
+      withCookie("mg_rt", refresh, { method: "POST", headers: { origin: ORIGIN } }),
+    );
+
+  it("never turns a website refresh cookie into an app token", async () => {
+    const { refresh } = await webSignIn();
+    const stolen = await appRefresh(refresh);
+    expect(stolen.status).toBe(401);
+    expect(await stolen.json()).toMatchObject({ error: "invalid_refresh_token" });
+    // Refused without consuming it or revoking anything: the website still refreshes.
+    const rotated = await webRefresh(refresh);
+    expect(rotated.status).toBe(204);
+    const next = cookies(rotated).values;
+    // Website refreshes only mint website tokens, naming the sign-in.
+    const claims = decodeJwt(next.get("mg_at") ?? "");
+    expect(claims.aud).toBe("madegood-web");
+    expect(typeof claims.sid).toBe("string");
+    // The successor is a website token too.
+    expect((await appRefresh(next.get("mg_rt") ?? "")).status).toBe(401);
+    expect((await webRefresh(next.get("mg_rt") ?? "")).status).toBe(204);
+  });
+
+  it("never accepts an app refresh token as the website cookie", async () => {
+    const app = await signIn();
+    expect((await webRefresh(app.refreshToken)).status).toBe(401);
+    expect((await appRefresh(app.refreshToken)).status).toBe(200);
   });
 });
 

@@ -59,6 +59,14 @@ export const refreshTokens = sqliteTable(
      * which that migration backfills with the row's own ID.
      */
     familyId: text("family_id"),
+    /**
+     * Which client the sign-in belongs to: `app` (the iPhone, JSON refresh) or `web` (the
+     * website, cookie refresh). Each refresh endpoint accepts only its own kind, so a web
+     * refresh token never yields an app token without `sid`. Every successor keeps it.
+     */
+    client: text("client", { enum: ["app", "web"] })
+      .notNull()
+      .default("app"),
   },
   (table) => [
     uniqueIndex("refresh_tokens_hash_unique").on(table.tokenHash),

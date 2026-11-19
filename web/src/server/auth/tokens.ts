@@ -139,13 +139,21 @@ export async function successorOf(token: string, secret: string | undefined): Pr
  * Creates a random 256-bit refresh token that starts a new family (a sign-in); only its
  * SHA-256 hash is stored. The family ID is the first token's ID.
  */
-export async function issueRefreshToken(db: Db, userId: string, now = Date.now()) {
+export type RefreshClient = "app" | "web";
+
+export async function issueRefreshToken(
+  db: Db,
+  userId: string,
+  client: RefreshClient = "app",
+  now = Date.now(),
+) {
   const token = newToken();
   const id = crypto.randomUUID();
   await db.insert(refreshTokens).values({
     id,
     userId,
     familyId: id,
+    client,
     tokenHash: await hashRefreshToken(token),
     expiresAt: now + REFRESH_TOKEN_TTL_MS,
     createdAt: now,
@@ -163,7 +171,11 @@ export async function issueTokenPair(
   secret: string | undefined,
   options: { bindSession?: boolean } = {},
 ) {
-  const { token: refreshToken, familyId } = await issueRefreshToken(db, userId);
+  const { token: refreshToken, familyId } = await issueRefreshToken(
+    db,
+    userId,
+    options.bindSession ? "web" : "app",
+  );
   const accessToken = await signAccessToken(
     userId,
     secret,
@@ -185,8 +197,14 @@ const inFamily = (familyId: string) =>
     and(isNull(refreshTokens.familyId), eq(refreshTokens.id, familyId)),
   );
 
-/** Test hooks that run between a refresh's read and its writes, to force interleavings. */
-export type RotateHooks = { afterRead?: () => Promise<void> };
+/**
+ * Test hooks that pause a refresh at its race windows, to force interleavings: after it
+ * reads the token, and in the reuse path just before the conditional revocation.
+ */
+export type RotateHooks = {
+  afterRead?: () => Promise<void>;
+  beforeRevoke?: () => Promise<void>;
+};
 
 /**
  * Exchanges a refresh token for its successor. Each token works once. Presenting a token
@@ -199,12 +217,16 @@ export async function rotateRefreshToken(
   db: Db,
   token: string,
   secret: string | undefined,
-  options: { now?: number; hooks?: RotateHooks } = {},
+  options: { client: RefreshClient; now?: number; hooks?: RotateHooks },
 ): Promise<RotateResult> {
   const now = options.now ?? Date.now();
   const hash = await hashRefreshToken(token);
   const [row] = await db.select().from(refreshTokens).where(eq(refreshTokens.tokenHash, hash));
   if (!row) return { ok: false, reason: "invalid" };
+  // Each endpoint accepts only its own client's tokens: the app endpoint never turns a
+  // website refresh cookie into an app token without `sid` (extra review of #63). A
+  // mismatch changes nothing and is not reuse.
+  if (row.client !== options.client) return { ok: false, reason: "invalid" };
   if (row.familyId === null) {
     // Lazily repair rows an older Worker wrote without a family.
     await db
@@ -223,7 +245,7 @@ export async function rotateRefreshToken(
     }
     // Another request changed the token after we read it: the same rules as a replay.
   }
-  return replay(db, row.id, row.userId, familyId, successor, now);
+  return replay(db, row.id, row.userId, familyId, successor, now, options.hooks);
 }
 
 /**
@@ -238,6 +260,7 @@ async function replay(
   familyId: string,
   successor: string,
   now: number,
+  hooks?: RotateHooks,
 ): Promise<RotateResult> {
   const [current] = await db.select().from(refreshTokens).where(eq(refreshTokens.id, id));
   if (!current) return { ok: false, reason: "invalid" };
@@ -254,14 +277,23 @@ async function replay(
       return { ok: true, userId, refreshToken: successor, familyId };
     }
   }
-  // Sign-out deletes the whole family in one statement. If it ran meanwhile, this is not
-  // theft: fail this refresh and leave the user's other sign-ins alone.
-  const [still] = await db
-    .select({ id: refreshTokens.id })
-    .from(refreshTokens)
-    .where(eq(refreshTokens.id, id));
-  if (!still) return { ok: false, reason: "invalid" };
-  await revokeAllRefreshTokens(db, userId, now);
+  await hooks?.beforeRevoke?.();
+  // Reuse revokes every token of the user, but only while this token still exists: sign-out
+  // deletes its whole family in one statement, and a refresh that raced it is not theft.
+  // The condition sits inside the revoking statement, and the batch (one transaction)
+  // reports whether the row was there, so nothing can run between check and revoke.
+  const d1 = db.$client;
+  const [, existed] = await d1.batch([
+    d1
+      .prepare(
+        `UPDATE refresh_tokens SET revoked_at = ?
+         WHERE user_id = ? AND revoked_at IS NULL
+           AND EXISTS (SELECT 1 FROM refresh_tokens WHERE id = ?)`,
+      )
+      .bind(now, userId, id),
+    d1.prepare("SELECT 1 AS present FROM refresh_tokens WHERE id = ?").bind(id),
+  ]);
+  if (!existed?.results.length) return { ok: false, reason: "invalid" };
   return { ok: false, reason: "reused" };
 }
 
@@ -305,7 +337,7 @@ export async function endRefreshFamily(db: Db, token: string) {
  */
 export async function consumeRefreshToken(
   db: Db,
-  row: { id: string; userId: string; familyId?: string | null },
+  row: { id: string; userId: string; familyId?: string | null; client?: RefreshClient },
   successor: string,
   now = Date.now(),
 ): Promise<boolean> {
@@ -318,8 +350,9 @@ export async function consumeRefreshToken(
       .bind(now, row.id),
     d1
       .prepare(
-        `INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at, created_at, family_id)
-         SELECT ?, ?, ?, ?, ?, ? WHERE changes() = 1`,
+        `INSERT INTO refresh_tokens
+           (id, user_id, token_hash, expires_at, created_at, family_id, client)
+         SELECT ?, ?, ?, ?, ?, ?, ? WHERE changes() = 1`,
       )
       .bind(
         crypto.randomUUID(),
@@ -328,6 +361,7 @@ export async function consumeRefreshToken(
         now + REFRESH_TOKEN_TTL_MS,
         now,
         row.familyId ?? row.id,
+        row.client ?? "app",
       ),
   ]);
   return revoked?.meta.changes === 1;
