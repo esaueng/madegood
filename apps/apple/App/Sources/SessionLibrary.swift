@@ -153,6 +153,8 @@ final class SessionLibrary {
             (try? RawSessionReader.readMeta(folder: item.entry.folder))?.sessionId
             ?? UUID(uuidString: item.entry.folder.lastPathComponent)
         try RecordingStore.delete(item.entry)
+        // Its prepared copies for sharing go with it.
+        ZipExport.removePrepared(for: item.entry.folder)
         defer {
             cache[item.entry.folder] = nil
             reload()

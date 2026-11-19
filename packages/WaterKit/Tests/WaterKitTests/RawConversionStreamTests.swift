@@ -146,6 +146,43 @@ import Testing
         #expect(out.split(separator: 0x0A).count == 360_000)
     }
 
+    /// Scoped re-check of #87, finding 4: only a truncated or damaged last member is read up
+    /// to where it ends; any other inflate error fails the conversion and leaves nothing.
+    @Test func anInflateErrorFailsTheConversionAndRemovesItsOutput() throws {
+        let temp = try TempFolder()
+        let v1 = temp.url.appendingPathComponent("v1")
+        try Self.writeV1(to: v1, lines: 3000, members: 3, truncateLast: false)
+        let limit = 10_000  // far below the motion stream's inflated size
+
+        // Into a new folder: it is removed.
+        let fresh = temp.url.appendingPathComponent("fresh")
+        #expect(throws: Gzip.Error.self) {
+            try RawFormatConversion.exportCopy(folder: v1, into: fresh, inflateLimit: limit) { _ in }
+        }
+        #expect(!FileManager.default.fileExists(atPath: fresh.path))
+
+        // Into an existing folder: what it wrote goes, what was there stays.
+        let existing = temp.url.appendingPathComponent("existing")
+        try FileManager.default.createDirectory(at: existing, withIntermediateDirectories: true)
+        try Data("keep".utf8).write(to: existing.appendingPathComponent("other.txt"))
+        #expect(throws: Gzip.Error.self) {
+            try RawFormatConversion.exportCopy(folder: v1, into: existing, inflateLimit: limit) { _ in }
+        }
+        #expect(try FileManager.default.contentsOfDirectory(atPath: existing.path) == ["other.txt"])
+
+        // A motion stream that is not gzip at all fails too, instead of converting to nothing.
+        try Data("not gzip at all".utf8).write(to: v1.appendingPathComponent("motion.ndjson.gz"))
+        let notGzip = temp.url.appendingPathComponent("notGzip")
+        #expect(throws: Gzip.Error.self) { try RawFormatConversion.exportCopy(folder: v1, into: notGzip) }
+        #expect(!FileManager.default.fileExists(atPath: notGzip.path))
+
+        // Within the limit the same recording converts.
+        try Self.writeV1(to: v1, lines: 3000, members: 3, truncateLast: true)
+        let ok = temp.url.appendingPathComponent("ok")
+        try RawFormatConversion.exportCopy(folder: v1, into: ok)
+        #expect(try RawSessionReader.read(folder: ok).motion.count >= 2000)
+    }
+
     @Test func aSampleOnAnAnchorStaysInTheEarlierSegment() throws {
         let temp = try TempFolder()
         let folder = temp.url

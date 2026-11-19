@@ -176,11 +176,14 @@ ahead of the monotonic clock 60 s in).
 ### Raw recording v1
 
 Recordings made before version 2. Readers convert them on reading, and the iPhone converts
-one before sharing it (`RawFormatConversion`, streamed and cached), so a shared raw
-recording is always version 2 and holds only the recording's own files. The watch sends a
-version 2 recording only to an iPhone app that says it reads version 2 (`rawVersions` in
-its WatchConnectivity application context), and an iPhone never acknowledges a recording
-whose version it cannot read, so the watch keeps its copy. Version 1 differs only in its clocks:
+one before sharing it (`RawFormatConversion`, streamed and cached per target version and
+revision), so a shared raw recording is always version 2 and holds only the recording's own
+files. A conversion that hits anything but a truncated or damaged last gzip member (a read
+error, a stream that is not gzip, the inflate limit) fails and leaves nothing behind. The
+watch sends a recording only when its `meta.json` names a version the iPhone app says it
+reads (`rawVersions` in its WatchConnectivity application context); one whose version it
+cannot read stays on the watch too. An iPhone never acknowledges a recording whose version
+it cannot read, so the watch keeps its copy. Version 1 differs only in its clocks:
 
 - `meta.json` has `"version": 1` and `"clock": {"unix": …, "uptime": …}`, the wall clock and
   the device uptime (seconds since boot) read together at the start.

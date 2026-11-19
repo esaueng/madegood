@@ -11,8 +11,9 @@ import Foundation
 /// Every wall-clock stream is copied byte for byte, so event order and every value stay as
 /// recorded. Motion and clock lines are converted as a stream, line by line through gzip in
 /// and out, so a long recording is never held in memory; lines that do not parse are left
-/// out, as the reader would skip them, and a truncated last gzip member is read up to where
-/// it ends.
+/// out, as the reader would skip them, and a truncated (or damaged) last gzip member is read
+/// up to where it ends. Any other failure (a read error, a stream that is not gzip, output
+/// over the inflate limit) fails the conversion and removes what it wrote.
 public enum RawFormatConversion {
     /// Bytes read per chunk while converting.
     static let chunkSize = 1 << 20
@@ -35,9 +36,38 @@ public enum RawFormatConversion {
     public static func exportCopy(
         folder: URL, into destination: URL, progress: @escaping (Double) -> Void = { _ in }
     ) throws {
+        try exportCopy(folder: folder, into: destination, inflateLimit: Gzip.defaultOutputLimit, progress: progress)
+    }
+
+    /// `exportCopy` with the inflate limit (tests use a small one). On failure every file it
+    /// wrote is removed (and `destination`, if it created it), so nothing partial is left.
+    static func exportCopy(
+        folder: URL, into destination: URL, inflateLimit: Int, progress: @escaping (Double) -> Void
+    ) throws {
         let (_, legacy) = try RawSessionReader.readMetaAndLegacyClock(folder: folder)
         let fm = FileManager.default
+        let created = !fm.fileExists(atPath: destination.path)
         try fm.createDirectory(at: destination, withIntermediateDirectories: true)
+        var written: [URL] = []
+        do {
+            try copyFiles(
+                folder: folder, into: destination, legacy: legacy, inflateLimit: inflateLimit, written: &written,
+                progress: progress)
+        } catch {
+            if created {
+                try? fm.removeItem(at: destination)
+            } else {
+                for url in written { try? fm.removeItem(at: url) }
+            }
+            throw error
+        }
+    }
+
+    private static func copyFiles(
+        folder: URL, into destination: URL, legacy: RawFormat.V1.ClockAnchor?, inflateLimit: Int,
+        written: inout [URL], progress: @escaping (Double) -> Void
+    ) throws {
+        let fm = FileManager.default
         let names = try fm.contentsOfDirectory(atPath: folder.path)
             .filter(RawSessionReader.isRecordingFileName).sorted()
         let sizes = names.map { name in
@@ -52,6 +82,7 @@ public enum RawFormatConversion {
             let source = folder.appendingPathComponent(name)
             let target = destination.appendingPathComponent(name)
             if fm.fileExists(atPath: target.path) { try fm.removeItem(at: target) }
+            written.append(target)
             let report: (Int64) -> Void = { read in progress(Double(done + read) / Double(total)) }
             let stream = RawFormat.Stream.allCases.first { name == $0.fileName || name == $0.gzippedFileName }
             if let legacy, name == RawFormat.metaFileName {
@@ -66,16 +97,19 @@ public enum RawFormatConversion {
                 ).write(to: target)
             } else if let legacy, stream == .motion {
                 let toMono = { (uptime: Double) in legacy.unix + (uptime - legacy.uptime) }
-                try convertLines(from: source, to: target, gzip: name.hasSuffix(".gz"), progress: report) {
-                    (line: RawFormat.MotionLine) in
+                try convertLines(
+                    from: source, to: target, gzip: name.hasSuffix(".gz"), limit: inflateLimit, progress: report
+                ) { (line: RawFormat.MotionLine) in
                     var converted = line
                     converted.ts = toMono(line.ts)
                     return converted
                 }
             } else if let legacy, stream == .clock {
                 let toMono = { (uptime: Double) in legacy.unix + (uptime - legacy.uptime) }
-                try convertLines(from: source, to: target, gzip: name.hasSuffix(".gz"), progress: report) {
-                    (line: RawFormat.V1.ClockAnchor) in RawFormat.ClockAnchor(unix: line.unix, mono: toMono(line.uptime))
+                try convertLines(
+                    from: source, to: target, gzip: name.hasSuffix(".gz"), limit: inflateLimit, progress: report
+                ) { (line: RawFormat.V1.ClockAnchor) in
+                    RawFormat.ClockAnchor(unix: line.unix, mono: toMono(line.uptime))
                 }
             } else {
                 try fm.copyItem(at: source, to: target)
@@ -86,10 +120,26 @@ public enum RawFormatConversion {
     }
 
     /// Streams `source` line by line through `transform` into `target`, each optionally
-    /// gzipped, reading `chunkSize` bytes at a time. Damaged lines are skipped.
+    /// gzipped, reading `chunkSize` bytes at a time. Damaged lines are skipped, and a
+    /// truncated or damaged last gzip member ends the input; every other error is thrown
+    /// (and `target` removed).
     static func convertLines<In: Decodable, Out: Encodable>(
-        from source: URL, to target: URL, gzip: Bool, chunk: Int = chunkSize,
+        from source: URL, to target: URL, gzip: Bool, chunk: Int = chunkSize, limit: Int = Gzip.defaultOutputLimit,
         progress: @escaping (Int64) -> Void = { _ in }, transform: (In) -> Out
+    ) throws {
+        do {
+            try streamLines(
+                from: source, to: target, gzip: gzip, chunk: chunk, limit: limit, progress: progress,
+                transform: transform)
+        } catch {
+            try? FileManager.default.removeItem(at: target)
+            throw error
+        }
+    }
+
+    private static func streamLines<In: Decodable, Out: Encodable>(
+        from source: URL, to target: URL, gzip: Bool, chunk: Int, limit: Int,
+        progress: @escaping (Int64) -> Void, transform: (In) -> Out
     ) throws {
         let input = try FileHandle(forReadingFrom: source)
         defer { try? input.close() }
@@ -138,18 +188,17 @@ public enum RawFormatConversion {
             let raw = try next()
             if let raw, !raw.isEmpty {
                 var first: Data? = raw
-                // A damaged or truncated stream yields what was readable, as the reader does;
-                // a failure to write is still an error.
-                do {
-                    _ = try Gzip.inflateStream(
+                // A truncated or damaged last member returns false after everything readable,
+                // as the reader does. Anything thrown (not gzip, over the limit, a read or
+                // write error) fails the conversion.
+                _ = try Gzip.inflateStream(
                     reading: {
                         if let pending = first {
                             first = nil
                             return pending
                         }
                         return try next()
-                    }, emit: { try lines($0, final: false) })
-                } catch is Gzip.Error {}
+                    }, emit: { try lines($0, final: false) }, limit: limit)
             }
             try lines(Data(), final: true)
         } else {

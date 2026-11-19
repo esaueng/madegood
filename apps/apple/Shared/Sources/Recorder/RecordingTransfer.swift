@@ -46,22 +46,38 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
         (context[Key.rawVersions] as? [Int]).map(Set.init) ?? [1]
     }
 
-    /// Whether a recording of `version` may go to a phone that reads `phone`. A recording
-    /// without a readable version (an interrupted one) goes as before.
+    /// Whether a recording of `version` may go to a phone that reads `phone`. Fails closed:
+    /// a recording whose version could not be read stays on the watch (a phone build that
+    /// predates the check would acknowledge it, and the watch would delete it).
     static func mayDeliver(version: Int?, toPhoneReading phone: Set<Int>) -> Bool {
-        version.map { phone.contains($0) } ?? true
+        guard let version else { return false }
+        return phone.contains(version)
     }
 
-    /// Whether the phone may acknowledge this `meta.json`: only a version it reads. Until
-    /// then the watch keeps the recording.
-    static func acknowledgesMeta(_ data: Data) -> Bool {
+    /// Whether the recording in `folder` may go to a phone that reads `phone`: its
+    /// `meta.json` names a raw format version the phone advertises.
+    static func mayDeliver(folder: URL, toPhoneReading phone: Set<Int>) -> Bool {
+        let data = try? Data(contentsOf: folder.appendingPathComponent(RawFormat.metaFileName))
+        return mayDeliver(version: data.flatMap(metaVersion), toPhoneReading: phone)
+    }
+
+    /// The raw format version a `meta.json` declares, read from its header alone so a
+    /// version this build cannot decode is still known; nil if it is not a raw recording's.
+    static func metaVersion(_ data: Data) -> Int? {
         struct Header: Decodable {
             var format: String?
             var version: Int?
         }
         guard let header = try? JSONDecoder().decode(Header.self, from: data),
-            header.format == RawFormat.formatName, let version = header.version
-        else { return false }
+            header.format == RawFormat.formatName
+        else { return nil }
+        return header.version
+    }
+
+    /// Whether the phone may acknowledge this `meta.json`: only a version it reads. Until
+    /// then the watch keeps the recording.
+    static func acknowledgesMeta(_ data: Data) -> Bool {
+        guard let version = metaVersion(data) else { return false }
         return RawFormat.readableVersions.contains(version)
     }
 
@@ -116,12 +132,12 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
             }
         }
 
-        /// Whether the paired phone's app reads this recording's raw format version. If not,
-        /// the recording stays on the watch until the phone app is updated.
+        /// Whether the paired phone's app reads this recording's raw format version. If not
+        /// (or the version cannot be read), the recording stays on the watch, which asks for
+        /// the phone app to be updated.
         func phoneReads(folder: URL) -> Bool {
-            let version = (try? RawSessionReader.readMeta(folder: folder))?.version
             let phone = Self.phoneRawVersions(fromContext: WCSession.default.receivedApplicationContext)
-            return Self.mayDeliver(version: version, toPhoneReading: phone)
+            return Self.mayDeliver(folder: folder, toPhoneReading: phone)
         }
 
         /// Sends every finished recording still on the watch, including ones interrupted

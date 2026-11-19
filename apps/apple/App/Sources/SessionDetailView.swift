@@ -18,6 +18,8 @@ struct SessionDetailView: View {
     @State private var share: ShareFile?
     /// Progress of preparing the raw recording for sharing (nil when not preparing).
     @State private var rawExportProgress: Double?
+    /// Why the last attempt to prepare the raw recording failed, shown on its row.
+    @State private var rawExportError: String?
     @State private var confirmDelete = false
     /// Bumped when a file arrives from the watch, to reload a recording still arriving.
     @State private var reloads = 0
@@ -481,6 +483,12 @@ struct SessionDetailView: View {
                 }
                 .disabled(rawExportProgress != nil)
                 .accessibilityIdentifier("export.raw")
+                if let rawExportError {
+                    Text(rawExportError)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                        .accessibilityIdentifier("export.raw.error")
+                }
             } footer: {
                 Text(
                     "Exports contain precise locations and times. Anonymize raw recordings before posting them publicly."
@@ -601,6 +609,7 @@ struct SessionDetailView: View {
     private func exportZip() {
         isPlaying = false
         rawExportProgress = 0
+        rawExportError = nil
         let folder = item.entry.folder
         Task {
             defer { rawExportProgress = nil }
@@ -612,7 +621,7 @@ struct SessionDetailView: View {
                 }
                 share = ShareFile(url: url)
             } catch {
-                operationError = "Couldn't prepare the raw recording."
+                rawExportError = "Couldn't prepare the raw recording. Part of it could not be read; try again."
             }
         }
     }
