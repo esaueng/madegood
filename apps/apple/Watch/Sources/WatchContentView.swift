@@ -168,9 +168,9 @@ private struct SportCard: View {
             Button(action: start) {
                 HStack(spacing: 8) {
                     SportIcon(sport: sport, size: 24)
-                        .foregroundStyle(Theme.cream)
+                        .foregroundStyle(Theme.pearl)
                         .frame(width: 32, height: 32)
-                        .background(Theme.brightTeal.opacity(isLuminanceReduced ? 0.4 : 1), in: .circle)
+                        .background(Theme.brightPetrol.opacity(isLuminanceReduced ? 0.4 : 1), in: .circle)
                     VStack(alignment: .leading, spacing: 1) {
                         title
                         subtitle
@@ -194,13 +194,13 @@ private struct SportCard: View {
                     .contentShape(.rect)
             }
             .buttonStyle(.plain)
-            .foregroundStyle(Theme.cream.opacity(0.9))
+            .foregroundStyle(Theme.pearl.opacity(0.9))
             .padding(.trailing, 2)
             .accessibilityLabel("\(sport.displayName) settings")
             .accessibilityIdentifier("sportSettings.open.\(sport.rawValue)")
         }
         .background(
-            Theme.teal.opacity(isLuminanceReduced ? 0.25 : 0.55),
+            Theme.petrol.opacity(isLuminanceReduced ? 0.25 : 0.55),
             in: .rect(cornerRadius: 22, style: .continuous)
         )
         .preference(key: TitleScaleKey.self, value: fittingScale)
@@ -312,11 +312,11 @@ private struct CountdownTimerPage: View {
             let isFinal = seconds <= 10
             VStack(spacing: 6) {
                 ZStack {
-                    Circle().stroke(Theme.brightTeal.opacity(0.25), lineWidth: 8)
+                    Circle().stroke(Theme.brightPetrol.opacity(0.25), lineWidth: 8)
                     Circle()
                         .trim(from: 0, to: min(1, max(0, fraction)))
                         .stroke(
-                            isFinal ? Theme.coral : Theme.brightTeal, style: StrokeStyle(lineWidth: 8, lineCap: .round)
+                            isFinal ? Theme.coral : Theme.brightPetrol, style: StrokeStyle(lineWidth: 8, lineCap: .round)
                         )
                         .rotationEffect(.degrees(-90))
                     VStack(spacing: 0) {
@@ -348,7 +348,7 @@ private struct CountdownTimerPage: View {
                         } label: {
                             Text("Sync").font(.footnote.weight(.semibold))
                         }
-                        .tint(Theme.brightTeal)
+                        .tint(Theme.brightPetrol)
                         .accessibilityHint("Rounds to the nearest minute")
                         .accessibilityIdentifier("countdown.sync")
                     }
@@ -527,7 +527,7 @@ private struct MetricsPage: View {
                         Text(label).foregroundStyle(.yellow)
                             .accessibilityIdentifier("pauseBadge")
                     } else if let lap = LiveDisplay.lapLabel(metrics) {
-                        Text(lap).foregroundStyle(Theme.brightTeal)
+                        Text(lap).foregroundStyle(Theme.brightPetrol)
                             .accessibilityIdentifier("metric.lap")
                     }
                     Spacer()
@@ -634,7 +634,7 @@ private struct SpeedPage: View {
         VStack(alignment: .leading, spacing: 4) {
             Text("Speed bests")
                 .font(.footnote.weight(.semibold))
-                .foregroundStyle(Theme.brightTeal)
+                .foregroundStyle(Theme.brightPetrol)
                 .accessibilityIdentifier("page.speed")
             ForEach(0..<(rows.count + 1) / 2, id: \.self) { line in
                 HStack(alignment: .top, spacing: 8) {
@@ -678,7 +678,7 @@ private struct SailingPage: View {
                 VStack(alignment: .leading, spacing: 0) {
                     Text("Sailing")
                         .font(.footnote.weight(.semibold))
-                        .foregroundStyle(Theme.brightTeal)
+                        .foregroundStyle(Theme.brightPetrol)
                         .accessibilityIdentifier("page.sailing")
                     Text(sailing?.vmgTitle ?? "VMG")
                         .font(.footnote)
@@ -904,7 +904,7 @@ private struct SummaryView: View {
                 if let categories = metrics.speedCategories {
                     Text("Speed bests")
                         .font(.footnote.weight(.semibold))
-                        .foregroundStyle(Theme.brightTeal)
+                        .foregroundStyle(Theme.brightPetrol)
                         .padding(.top, 4)
                     // The 2 s and 10 s bests are the max speeds above.
                     ForEach(SpeedCategoryReadings(categories).rows.dropFirst(2)) { row in
