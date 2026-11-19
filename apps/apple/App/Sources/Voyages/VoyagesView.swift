@@ -147,6 +147,12 @@ private struct VoyageDetailView: View {
                 Button("Resume Leg", systemImage: "play.fill", action: recorder.resumeLeg)
             }
             Button("End Leg", role: .destructive, action: recorder.endLeg)
+            #if DEBUG
+                if VoyageRecorder.isUITestLaunch {
+                    Button("Stop Location Updates (UI test)", action: recorder.stopUpdatesForTest)
+                        .accessibilityIdentifier("voyage.test.stopUpdates")
+                }
+            #endif
         }
         if let gap = recorder.latestGap {
             Section("Latest Capture Gap") {

@@ -179,6 +179,12 @@ private struct StartView: View {
         .listStyle(.insetGrouped)
         .scrollContentBackground(.hidden)
         .listSectionSpacing(12)
+        // The cards and Recent are about one screen tall: when they fit, don't let the
+        // list rubber-band; when they don't, it scrolls just the overflow.
+        .scrollBounceBehavior(.basedOnSize)
+        // The (empty) bar already clears the status bar; drop the grouped list's extra top
+        // margin so the header sits just under the bar.
+        .contentMargins(.top, 0, for: .scrollContent)
         .background { StartBackground() }
         .overlay(alignment: .bottom) {
             if let hidden = hiddenSport {
@@ -194,8 +200,11 @@ private struct StartView: View {
             if !Task.isCancelled { hiddenSport = nil }
         }
         // The header row stands in for the title; the title stays for the Back button.
+        // The bar stays (empty) so rows soften under the status bar as they scroll
+        // instead of running into the clock and the Dynamic Island.
         .navigationTitle(AppInfo.name)
-        .toolbarVisibility(.hidden, for: .navigationBar)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar(removing: .title)
         .navigationDestination(for: SessionLibrary.Item.self) { item in
             SessionDetailView(item: item, library: library)
         }
