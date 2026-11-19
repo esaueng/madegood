@@ -21,8 +21,18 @@ export const Route = createFileRoute("/")({
 const GITHUB_URL = "https://github.com/esaueng/madegood";
 
 // Set this to the public TestFlight or App Store link once there is one. Until then the
-// download section says "coming soon" and links nowhere.
+// page shows the release status as text and links nowhere.
 const DOWNLOAD_URL: string | null = null;
+
+// The shared button focus ring (ring/50) is too faint on this page's surfaces; the
+// landing page's calls to action use a foreground-colored ring with an offset instead
+// (well over 3:1 against the background in both themes).
+const ctaFocus =
+  "focus-visible:ring-2 focus-visible:ring-foreground focus-visible:ring-offset-2 focus-visible:ring-offset-background";
+const cta = ({ variant }: { variant?: "default" | "outline" } = {}) =>
+  cn(buttonVariants({ variant, size: "lg" }), ctaFocus);
+const linkFocus =
+  "rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground";
 
 const sports = [
   { name: "Sailing", metrics: "Tacks and gybes, wind estimate, VMG, start countdown" },
@@ -54,12 +64,12 @@ const features = [
   {
     icon: Lock,
     title: "Private by default",
-    body: "No account needed: everything works offline on your devices. Sync is optional, sessions stay private until you share them, and privacy zones hide places you choose, like home, from shared tracks.",
+    body: "No account needed: you can record and review sessions on your devices without a connection. Sync is optional, sessions stay private until you share them, and privacy zones hide places you choose, like home, from shared tracks.",
   },
   {
     icon: MapIcon,
     title: "Replay and share",
-    body: "Sign in on the web to browse, replay, and share your sessions. Shared links show a preview. Export any session as GPX.",
+    body: "Sign in on the web to browse, replay, and share your sessions. Shared links show a preview. On the iPhone, export any session as GPX.",
   },
   {
     icon: Code,
@@ -118,7 +128,7 @@ function Home() {
         </p>
         <div className="mt-8 flex flex-wrap gap-3">
           <DownloadButton />
-          <a href={GITHUB_URL} className={buttonVariants({ variant: "outline", size: "lg" })}>
+          <a href={GITHUB_URL} className={cta({ variant: "outline" })}>
             <Code aria-hidden />
             View on GitHub
           </a>
@@ -203,7 +213,7 @@ function Home() {
         </p>
         <div className="mt-6 flex flex-wrap gap-3">
           <DownloadButton />
-          <a href={GITHUB_URL} className={buttonVariants({ variant: "outline", size: "lg" })}>
+          <a href={GITHUB_URL} className={cta({ variant: "outline" })}>
             <ExternalLink aria-hidden />
             Source on GitHub
           </a>
@@ -222,18 +232,19 @@ function Home() {
 function DownloadButton() {
   if (DOWNLOAD_URL) {
     return (
-      <a href={DOWNLOAD_URL} className={buttonVariants({ size: "lg" })}>
+      <a href={DOWNLOAD_URL} className={cta()}>
         <Download aria-hidden />
         Join the beta
       </a>
     );
   }
-  // A real (disabled) button rather than a link, so nothing suggests a download exists yet.
+  // Plain status text, not a disabled control: nothing suggests a download exists yet, and
+  // the text keeps full contrast.
   return (
-    <button type="button" disabled className={buttonVariants({ size: "lg" })}>
-      <Download aria-hidden />
-      Coming soon to the App Store
-    </button>
+    <p className="inline-flex h-10 items-center gap-2 rounded-md border border-dashed px-4 text-sm font-medium text-foreground">
+      <Download className="size-4" aria-hidden />
+      Coming soon to TestFlight and the App Store
+    </p>
   );
 }
 
@@ -277,11 +288,14 @@ function Footer() {
     <footer className="flex flex-col gap-2 border-t py-6 text-xs text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
       <p>
         Open source under the{" "}
-        <a href={`${GITHUB_URL}/blob/main/LICENSE`} className="underline underline-offset-2">
+        <a
+          href={`${GITHUB_URL}/blob/main/LICENSE`}
+          className={cn("underline underline-offset-2", linkFocus)}
+        >
           Apache License 2.0
         </a>
         .{" "}
-        <a href={GITHUB_URL} className="underline underline-offset-2">
+        <a href={GITHUB_URL} className={cn("underline underline-offset-2", linkFocus)}>
           GitHub
         </a>
       </p>
