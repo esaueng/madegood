@@ -5,7 +5,7 @@ import type { Context } from "hono";
 import { type AuthEnv, requireAuth } from "../auth/middleware";
 import { type PrivacyZone, privacyZones, users } from "../db/schema";
 import { apiError, errorResponse } from "../lib/errors";
-import { enqueuePostprocess } from "../lib/postprocess";
+import { ensureUserRequeued } from "../lib/postprocess";
 import { createRouter } from "../lib/router";
 
 const security = [{ bearerAuth: [] }];
@@ -108,8 +108,8 @@ const deleteZoneRoute = createRoute({
   responses: {
     204: { description: "The caller has no zone with this ID any more." },
     503: errorResponse(
-      "The zone is removed, but the sessions could not be queued for reprocessing " +
-        "(`postprocess_unavailable`). Repeat the request.",
+      "The zone is removed, but the sessions could not be queued for reprocessing yet " +
+        "(`postprocess_unavailable`); the server retries on its own.",
     ),
     400: errorResponse("The ID is not a UUID."),
     401: errorResponse("Missing or invalid access token."),
@@ -117,33 +117,26 @@ const deleteZoneRoute = createRoute({
 });
 
 /**
- * Statements that go in the same batch as a zone change: bump the owner's zones version
- * (public derived data is served only at the version it was computed with) and clear the
- * public data. With `insertedId`, only if that zone was inserted.
+ * Statements for the batch of a zone change, run only while `zoneId` exists (before a
+ * delete, after an insert): bump the owner's zones version, so public derived data cut
+ * with other zones stops being served, and clear that data, wind included.
  */
-function zonesChanged(db: D1Database, userId: string, insertedId?: string) {
-  const guard = insertedId ? " AND EXISTS (SELECT 1 FROM privacy_zones WHERE id = ?)" : "";
-  const bind = (...values: unknown[]) => (insertedId ? [...values, insertedId] : values);
+function zonesChanged(db: D1Database, userId: string, zoneId: string) {
+  const exists = "EXISTS (SELECT 1 FROM privacy_zones WHERE id = ? AND user_id = ?)";
   return [
     db
-      .prepare(`UPDATE users SET zones_version = zones_version + 1 WHERE id = ?${guard}`)
-      .bind(...bind(userId)),
+      .prepare(`UPDATE users SET zones_version = zones_version + 1 WHERE id = ? AND ${exists}`)
+      .bind(userId, zoneId, userId),
     db
       .prepare(
         `UPDATE sessions SET public_min_lat = NULL, public_min_lon = NULL,
            public_max_lat = NULL, public_max_lon = NULL, public_track_started_at = NULL,
-           public_track_ended_at = NULL, public_zones_version = NULL
-         WHERE user_id = ?${guard}`,
+           public_track_ended_at = NULL, public_zones_version = NULL, wind_json = NULL
+         WHERE user_id = ? AND ${exists}`,
       )
-      .bind(...bind(userId)),
+      .bind(userId, zoneId, userId),
   ];
 }
-
-const requeueAfterZoneChange = (
-  env: Env,
-  ctx: Pick<ExecutionContext, "waitUntil">,
-  userId: string,
-) => enqueuePostprocess(env, ctx, [{ v: 1, kind: "user", userId }]);
 
 const unavailable = (c: Context) =>
   apiError(
@@ -186,13 +179,16 @@ export const privacyZoneRoutes = createRouter<AuthEnv>()
       return apiError(c, 409, "zone_limit", `At most ${MAX_ZONES} privacy zones.`);
     }
     try {
-      await requeueAfterZoneChange(c.env, c.executionCtx, userId);
+      await ensureUserRequeued(c.env, c.executionCtx, userId);
     } catch (error) {
-      // Undo, so the client's retry does not add the zone twice.
+      // Undo, so the client's retry does not add the zone twice. The undo is itself a zone
+      // change (data cut with this zone must not outlive it); its reprocessing stays
+      // marked pending (users.zones_queued_version) for the next upload, zone change or
+      // scheduled sweep, so nothing stays hidden for good.
       console.error("Could not queue reprocessing after adding a zone.", error);
       await c.env.DB.batch([
+        ...zonesChanged(c.env.DB, userId, id),
         c.env.DB.prepare("DELETE FROM privacy_zones WHERE id = ? AND user_id = ?").bind(id, userId),
-        ...zonesChanged(c.env.DB, userId),
       ]);
       return unavailable(c);
     }
@@ -201,17 +197,19 @@ export const privacyZoneRoutes = createRouter<AuthEnv>()
   .openapi(deleteZoneRoute, async (c) => {
     const { id } = c.req.valid("param");
     const userId = c.var.userId;
-    // Always bumps and requeues, even when the zone is already gone, so retrying a DELETE
-    // whose requeue failed still reprocesses. Fewer zones only shrink what is hidden.
+    const zoneId = id.toLowerCase();
+    // Invalidates only when the zone exists: deleting an unknown zone changes nothing.
     await c.env.DB.batch([
+      ...zonesChanged(c.env.DB, userId, zoneId),
       c.env.DB.prepare("DELETE FROM privacy_zones WHERE id = ? AND user_id = ?").bind(
-        id.toLowerCase(),
+        zoneId,
         userId,
       ),
-      ...zonesChanged(c.env.DB, userId),
     ]);
+    // Queues any zone change not yet queued (this one, or an earlier failed one). A failure
+    // leaves the marker for the next upload, zone change or the scheduled sweep.
     try {
-      await requeueAfterZoneChange(c.env, c.executionCtx, userId);
+      await ensureUserRequeued(c.env, c.executionCtx, userId);
     } catch (error) {
       console.error("Could not queue reprocessing after removing a zone.", error);
       return unavailable(c);

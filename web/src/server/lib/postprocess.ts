@@ -1,5 +1,5 @@
 import { z } from "@hono/zod-openapi";
-import { and, asc, eq, gt, isNotNull, isNull, ne, or, type SQL, sql } from "drizzle-orm";
+import { and, asc, eq, gt, isNotNull, isNull, lt, ne, or, type SQL, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
 import { privacyZones, type Session, sessions, users } from "../db/schema";
 import type { Zone } from "./session-privacy";
@@ -246,9 +246,13 @@ export async function processSession(
   }
 
   if (!needsWind(session)) return outcome;
+  const version = session.publicZonesVersion;
+  if (version === null) return outcome;
   const wind = await lookupWind(db, session, current, deps);
   if (!wind) return outcome;
-  // Only while the row still holds this processed track, is still shared, and has none.
+  // Wind is public data like the bounds: it is stored only while the row still holds this
+  // processed track, is still shared, has none, and its public data is still at the
+  // owner's current zones version (a zone change clears wind with the rest).
   await db
     .update(sessions)
     .set({ windJson: JSON.stringify(wind) })
@@ -258,6 +262,8 @@ export async function processSession(
         eq(sessions.processedEtag, msg.etag),
         ne(sessions.visibility, "private"),
         isNull(sessions.windJson),
+        eq(sessions.publicZonesVersion, version),
+        zonesStillAt(msg.userId, version),
       ),
     );
   return outcome === "processed" ? "processed" : "wind_only";
@@ -279,7 +285,12 @@ async function lookupWind(
 ): Promise<StoredWind | null> {
   await deps.hooks?.beforeWind?.();
   const [session] = await db.select().from(sessions).where(current);
-  if (!session || !needsWind(session) || session.processedEtag !== snapshot.processedEtag) {
+  if (
+    !session ||
+    !needsWind(session) ||
+    session.processedEtag !== snapshot.processedEtag ||
+    session.publicZonesVersion !== snapshot.publicZonesVersion
+  ) {
     return null;
   }
   const now = deps.now?.() ?? Date.now();
@@ -415,4 +426,53 @@ export async function processInline(env: ProcessEnv, messages: PostprocessMessag
       console.warn("Inline post-processing failed.", error);
     }
   }
+}
+
+/**
+ * Queues the user's reprocessing if a zone change has not been queued yet
+ * (users.zones_queued_version behind zones_version), then records it. Throws when the
+ * send fails, leaving the marker for the next zone change, upload or sweep.
+ */
+export async function ensureUserRequeued(
+  env: ProcessEnv,
+  ctx: Pick<ExecutionContext, "waitUntil">,
+  userId: string,
+): Promise<boolean> {
+  const db = drizzle(env.DB);
+  const [user] = await db
+    .select({ version: users.zonesVersion, queued: users.zonesQueuedVersion })
+    .from(users)
+    .where(eq(users.id, userId));
+  if (!user || user.queued >= user.version) return false;
+  await enqueuePostprocess(env, ctx, [{ v: 1, kind: "user", userId }]);
+  // Only forward: a later zone change keeps the marker behind its own version.
+  await db
+    .update(users)
+    .set({ zonesQueuedVersion: user.version })
+    .where(and(eq(users.id, userId), lt(users.zonesQueuedVersion, user.version)));
+  return true;
+}
+
+/** Users the scheduled sweep handles per run. */
+export const SWEEP_USERS = 100;
+
+/** Scheduled sweep: queues reprocessing for users whose zone change was never queued. */
+export async function sweepPendingZoneChanges(
+  env: ProcessEnv,
+  ctx: Pick<ExecutionContext, "waitUntil">,
+): Promise<number> {
+  const pending = await drizzle(env.DB)
+    .select({ id: users.id })
+    .from(users)
+    .where(lt(users.zonesQueuedVersion, users.zonesVersion))
+    .limit(SWEEP_USERS);
+  let queued = 0;
+  for (const { id } of pending) {
+    try {
+      if (await ensureUserRequeued(env, ctx, id)) queued += 1;
+    } catch (error) {
+      console.warn("Could not queue a pending zone change; the next sweep retries.", error);
+    }
+  }
+  return queued;
 }

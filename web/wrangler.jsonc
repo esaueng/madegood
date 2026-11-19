@@ -58,6 +58,8 @@
       }
     ]
   },
+  // Sweep for privacy zone changes whose reprocessing could not be queued (postprocess.ts).
+  "triggers": { "crons": ["*/30 * * * *"] },
   "env": {
     // Per-PR previews use their own database and bucket, never production data.
     "preview": {
@@ -81,7 +83,8 @@
       "r2_buckets": [{ "binding": "TRACKS", "bucket_name": "madegood-tracks-preview" }],
       // No queue: preview version uploads cannot set queue consumers. Without the binding
       // the Worker post-processes each upload after responding (waitUntil, one attempt).
-      "queues": {}
+      "queues": {},
+      "triggers": { "crons": [] }
     }
   }
 }

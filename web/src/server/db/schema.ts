@@ -37,6 +37,12 @@ export const users = sqliteTable(
      * (sessions.public_*) is served only while it was computed at the current version.
      */
     zonesVersion: integer("zones_version").notNull().default(0),
+    /**
+     * The zones_version whose reprocessing was last queued. Behind zones_version means a
+     * zone change still has to requeue the user's sessions: the next zone change, track
+     * upload or the scheduled sweep (lib/postprocess.ts) does it.
+     */
+    zonesQueuedVersion: integer("zones_queued_version").notNull().default(0),
   },
   (table) => [
     uniqueIndex("users_apple_sub_unique").on(table.appleSub),

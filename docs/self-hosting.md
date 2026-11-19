@@ -148,7 +148,8 @@ once by hand (above); the workflow does not manage secrets.
 - The schema lives in `web/src/server/db/schema.ts` (Drizzle).
 - `pnpm -C web db:generate` writes a new SQL file to `web/migrations/`, the folder
   `wrangler d1 migrations apply` reads. Never edit a migration that has been applied;
-  add a new one.
+  add a new one. That includes migrations only a PR preview has applied: preview
+  databases record them as done and skip a rewritten file.
 - Migrations are applied with Wrangler only. The tests apply the same files.
 - Production applies migrations just before deploying the new code, so the version
   already running must keep working with the new schema. Change the schema in steps:
@@ -180,15 +181,21 @@ track's ETag. Every write requires the row to still hold that exact track, so du
 deliveries, older revisions, replaced tracks and deleted sessions are dropped. After
 attaching a track, the upload reads the stored object back and moves the row to its
 ETag if a concurrent upload of the same revision replaced it, so the row always names
-the object R2 holds. A new upload or a newer revision clears the derived data at once.
+the object R2 holds and the queued message is for those bytes. An upload whose bytes
+were replaced that way answers 412 `track_replaced`, never success, so the client sends
+it again. A new upload or a newer revision clears the derived data at once.
 
 **Privacy zones.** Every zone change bumps the owner's `users.zones_version` in the same
-D1 batch. Public data records the version it was cut at, is written only while that
-version is still current, and is served only while it matches, so nothing computed
-without a zone is shown once the zone exists. The change then queues one `user`
-message, which requeues that user's sessions 50 at a time (follow-up messages carry a
-cursor). If that message cannot be queued, adding a zone is undone and answers 503, and
-removing one answers 503 so the client repeats it.
+D1 batch and clears the public bounds, times and wind. Public data (wind included)
+records the version it was cut at, is written only while that version is still
+current, and is served only while it matches, so nothing computed without a zone is
+shown once the zone exists. The change then queues one `user` message, which requeues
+that user's sessions 50 at a time (follow-up messages carry a cursor), and records it
+in `users.zones_queued_version`. If that message cannot be queued, the change stays
+marked pending: the user's next track upload or zone change queues it, and a cron
+sweep (`triggers.crons`, every 30 minutes) queues any that are left. Adding a zone that
+cannot be queued is undone and answers 503; removing one answers 503 but needs no
+retry. Removing a zone that does not exist changes nothing.
 
 **Retries and dead letters.** A failure (D1, R2, an Open-Meteo outage or rate limit)
 is retried after 30 s, 1, 2, 4 and 8 minutes. After 5 retries the message moves to
@@ -215,7 +222,7 @@ shared. Each request to
 
 - one position: the center of the session's **public** bounds, rounded to 0.1°
   (about 11 km), so no point inside a privacy zone shapes it;
-- the UTC calendar dates of the fixes others may see (no time of day);
+- the UTC calendar dates of the first and last fix others may see (no time of day);
 - the fixed variables `wind_speed_10m,wind_direction_10m,wind_gusts_10m` with
   `wind_speed_unit=ms`, `timeformat=unixtime`, `timezone=GMT`.
 

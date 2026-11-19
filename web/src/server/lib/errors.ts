@@ -29,6 +29,7 @@ export const errorCodes = [
   "stale_revision",
   "revision_mismatch",
   "postprocess_unavailable",
+  "track_replaced",
 ] as const;
 export type ErrorCode = (typeof errorCodes)[number];
 

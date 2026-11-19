@@ -5,7 +5,7 @@ import type { Context } from "hono";
 import { optionalAuth, requireAuth } from "../auth/middleware";
 import { privacyZones, type Session, sessions, sessionTombstones, users } from "../db/schema";
 import { apiError, errorResponse } from "../lib/errors";
-import { enqueuePostprocess, publicIsCurrent } from "../lib/postprocess";
+import { enqueuePostprocess, ensureUserRequeued, publicIsCurrent } from "../lib/postprocess";
 import { createRouter } from "../lib/router";
 import { SHARED_TRACK_MAX_FIXES, shareTrack } from "../lib/session-privacy";
 import {
@@ -382,7 +382,8 @@ function toSessionBody(
     bounds: shown ? boundsOf(session, owner) : null,
     trackStartedAt: shown && startedAt !== null ? iso(startedAt) : null,
     trackEndedAt: shown && endedAt !== null ? iso(endedAt) : null,
-    wind: windOf(session),
+    // Wind is public data cut with the zones too: others see it only while current.
+    wind: owner || publicIsCurrent(session, ownerZonesVersion) ? windOf(session) : null,
     isOwner: owner,
     createdAt: iso(session.createdAt),
     updatedAt: iso(session.updatedAt),
@@ -543,7 +544,8 @@ const putTrackRoute = createRoute({
     410: errorResponse("The caller deleted this session (`session_deleted`)."),
     412: revisionErrorResponse(
       "`revision` is not the stored metadata revision: older (`stale_revision`) or newer " +
-        "(`revision_mismatch`; PUT the metadata first).",
+        "(`revision_mismatch`; PUT the metadata first), or a concurrent upload of the same " +
+        "revision replaced this one's bytes (`track_replaced`; upload again).",
     ),
     415: errorResponse(`The body is not sent as ${TRACK_CONTENT_TYPE}.`),
     503: errorResponse(
@@ -819,6 +821,8 @@ sessionRoutes.openapi(putTrackRoute, async (c) => {
   // Post-processing (lib/postprocess.ts) reads the whole track, checks `v` and `sessionId`,
   // derives the bounds and times, and fetches wind for shared sessions. A failed send is a
   // 503: the client repeats the upload, which is idempotent and queues it again.
+  // Always for the ETag R2 holds, so the stored track is processed even when this upload
+  // lost a race with another one of the same revision.
   try {
     await enqueuePostprocess(c.env, c.executionCtx, [
       { v: 1, sessionId: id, userId, revision, etag: stored.etag },
@@ -833,6 +837,22 @@ sessionRoutes.openapi(putTrackRoute, async (c) => {
     );
   }
 
+  // A zone change whose reprocessing could not be queued earlier is retried here.
+  await ensureUserRequeued(c.env, c.executionCtx, userId).catch((error) =>
+    console.warn("Could not queue a pending zone change.", error),
+  );
+
+  if (stored.replaced) {
+    // Never report success for bytes that are not the stored ones; 412 makes the client
+    // send the metadata and track again, as for a revision change.
+    c.header(UPLOAD_REVISION_HEADER, String(revision));
+    return apiError(
+      c,
+      412,
+      "track_replaced",
+      "Another upload of this revision replaced the track; upload it again.",
+    );
+  }
   c.header("ETag", stored.httpEtag);
   return c.body(null, 204);
 });

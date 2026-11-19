@@ -19,6 +19,7 @@ import {
   processSession,
   retryDelaySeconds,
   type SessionMessage,
+  sweepPendingZoneChanges,
   USER_PAGE,
 } from "../src/server/lib/postprocess";
 import { SHARED_TRACK_MAX_FIXES } from "../src/server/lib/session-privacy";
@@ -372,10 +373,12 @@ describe("upload post-processing", { timeout: 30_000 }, () => {
     expect([r.publicMinLat, r.publicZonesVersion]).toEqual([null, null]);
     expect((await getSession(null, id)).bounds).toBeNull();
 
+    expect((await row(id)).windJson).toBeNull();
     const theirs = await waitUntilProcessed(null, id, (s) => s.bounds !== null);
     expect((theirs.bounds as { south: number }).south).toBeGreaterThan(300 * DEG_PER_M);
-    // Wind survives zone edits; it is not fetched again.
-    expect((await row(id)).windJson).not.toBeNull();
+    // Wind is public data too: cleared with the zone change, then fetched again.
+    const refetched = await waitUntilProcessed(null, id, (s) => s.wind !== null);
+    expect(refetched.wind).toMatchObject({ directionDeg: 270 });
   });
 
   it("asks for wind when a processed session is shared later", async () => {
@@ -452,6 +455,14 @@ describe("upload post-processing", { timeout: 30_000 }, () => {
 describe("review of #72", { timeout: 30_000 }, () => {
   const addZone = (token: string) =>
     api("/me/privacy-zones", json("POST", { lat: 0, lon: 0, radiusM: 300 }, token));
+  const zonesMarker = async (userId: string) => {
+    const [marker] = await drizzle(env.DB)
+      .select({ version: users.zonesVersion, queued: users.zonesQueuedVersion })
+      .from(users)
+      .where(eq(users.id, userId));
+    if (!marker) throw new Error("no user");
+    return marker;
+  };
   const south = (s: Record<string, unknown>) => (s.bounds as { south: number } | null)?.south;
 
   it("never stores a public box cut without a zone added while the track was being read", async () => {
@@ -465,7 +476,8 @@ describe("review of #72", { timeout: 30_000 }, () => {
     await drizzle(env.DB).update(sessions).set({ processedEtag: null }).where(eq(sessions.id, id));
     let added = false;
     const outcome = await processSession(env, message, {
-      fetch: noFetch,
+      // Shared, and the zone change clears its wind, so it asks again.
+      fetch: async (input) => steadyWest(new URL(String(input))),
       hooks: {
         afterDerive: async () => {
           if (added) return;
@@ -542,8 +554,9 @@ describe("review of #72", { timeout: 30_000 }, () => {
       },
     );
     const head = await env.TRACKS.head(key);
-    expect(second).toMatchObject({ kind: "attached", etag: head?.etag });
-    expect(first).toMatchObject({ kind: "attached", etag: head?.etag });
+    expect(second).toMatchObject({ kind: "attached", etag: head?.etag, replaced: false });
+    // A lost: it reports B's ETag and that its own bytes were replaced (the route's 412).
+    expect(first).toMatchObject({ kind: "attached", etag: head?.etag, replaced: true });
     expect((await row(id)).trackEtag).toBe(head?.etag);
     // So the message both uploads send gets processed rather than dropped.
     const message = await messageFor(id);
@@ -644,6 +657,12 @@ describe("review of #72", { timeout: 30_000 }, () => {
     expect(response.status).toBe(503);
     const list = await api("/me/privacy-zones", { headers: bearer(owner.accessToken) });
     expect(await list.json()).toEqual({ zones: [] });
+    // The rollback is itself a zone change; its reprocessing is left marked, not lost.
+    const marker = await zonesMarker(owner.user.id);
+    expect(marker.queued).toBeLessThan(marker.version);
+    expect(await sweepPendingZoneChanges(env, createExecutionContext())).toBeGreaterThanOrEqual(1);
+    const after = await zonesMarker(owner.user.id);
+    expect(after.queued).toBe(after.version);
   });
 
   it("reprocesses a zone change inline, bounded, without a queue", async () => {
@@ -659,5 +678,184 @@ describe("review of #72", { timeout: 30_000 }, () => {
       { v: 1, kind: "user", userId: owner.user.id },
     ]);
     expect((await row(id)).publicZonesVersion).not.toBeNull();
+  });
+});
+
+describe("scoped re-check of #72", { timeout: 30_000 }, () => {
+  const south = (s: Record<string, unknown>) => (s.bounds as { south: number } | null)?.south;
+  const addZone = (token: string) =>
+    api("/me/privacy-zones", json("POST", { lat: 0, lon: 0, radiusM: 300 }, token));
+  const failingQueue = {
+    send: async () => Promise.reject(new Error("down")),
+    sendBatch: async () => Promise.reject(new Error("down")),
+  };
+  /** The app with a queue that rejects every send. */
+  const withFailingQueue = (path: string, init: RequestInit) =>
+    createApp().request(
+      `/api${path}`,
+      init,
+      {
+        DB: env.DB,
+        TRACKS: env.TRACKS,
+        JWT_SIGNING_KEY: env.JWT_SIGNING_KEY,
+        APPLE_AUDIENCES: env.APPLE_AUDIENCES,
+        POSTPROCESS: failingQueue,
+      },
+      createExecutionContext(),
+    );
+  const marker = async (userId: string) => {
+    const [m] = await drizzle(env.DB)
+      .select({ version: users.zonesVersion, queued: users.zonesQueuedVersion })
+      .from(users)
+      .where(eq(users.id, userId));
+    if (!m) throw new Error("no user");
+    return m;
+  };
+
+  it("never serves wind from before a zone change, nor stores one fetched across it", async () => {
+    const owner = await signIn();
+    const id = crypto.randomUUID();
+    await upload(owner, id, track(id, line(100)));
+    await api(`/sessions/${id}`, json("PATCH", { visibility: "public" }, owner.accessToken));
+    await waitUntilProcessed(null, id, (s) => s.wind !== null);
+
+    // Stale public data (a zone change not yet applied to the row): no wind for others.
+    const r = await row(id);
+    await drizzle(env.DB)
+      .update(users)
+      .set({ zonesVersion: (r.publicZonesVersion ?? 0) + 1 })
+      .where(eq(users.id, owner.user.id));
+    expect((await getSession(null, id)).wind).toBeNull();
+    expect((await getSession(owner.accessToken, id)).wind).not.toBeNull();
+
+    // A zone added while Open-Meteo answers: the answer is not stored.
+    await drizzle(env.DB)
+      .update(sessions)
+      .set({ publicZonesVersion: null, windJson: null })
+      .where(eq(sessions.id, id));
+    await drizzle(env.DB)
+      .update(users)
+      .set({
+        zonesVersion: r.publicZonesVersion ?? 0,
+        zonesQueuedVersion: r.publicZonesVersion ?? 0,
+      })
+      .where(eq(users.id, owner.user.id));
+    let added = false;
+    const racing = vi.fn<typeof fetch>(async (input) => {
+      if (!added) {
+        added = true;
+        expect((await addZone(owner.accessToken)).status).toBe(201);
+      }
+      return steadyWest(new URL(String(input)));
+    });
+    await processSession(env, await messageFor(id), { fetch: racing });
+    expect(racing).toHaveBeenCalled();
+    const after = await row(id);
+    expect(
+      after.windJson === null || after.publicZonesVersion === (await marker(owner.user.id)).version,
+    ).toBe(true);
+    if (after.windJson !== null) expect(after.publicMinLat).toBeGreaterThan(300 * DEG_PER_M);
+  });
+
+  it("asks for wind on the dates others can see, not the hidden start's", async () => {
+    const owner = await signIn();
+    expect((await addZone(owner.accessToken)).status).toBe(201);
+    const id = crypto.randomUUID();
+    // Starts at 23:57 UTC; the zone hides the first 300 s, past midnight.
+    const doc = { ...track(id, line(100)), startedAt: "2000-01-01T23:57:00.000Z" };
+    await upload(owner, id, doc);
+    await waitUntilProcessed(owner.accessToken, id);
+    await drizzle(env.DB)
+      .update(sessions)
+      .set({ visibility: "public", windJson: null })
+      .where(eq(sessions.id, id));
+    const urls: URL[] = [];
+    const capture = vi.fn<typeof fetch>(async (input) => {
+      const url = new URL(String(input));
+      urls.push(url);
+      return steadyWest(url);
+    });
+    await processSession(env, await messageFor(id), { fetch: capture });
+    expect(urls.map((u) => u.searchParams.get("start_date"))).toEqual(["2000-01-02"]);
+  });
+
+  it("does nothing when deleting an unknown zone", async () => {
+    const owner = await signIn();
+    const id = crypto.randomUUID();
+    await upload(owner, id, track(id, line(10)));
+    await waitUntilProcessed(owner.accessToken, id);
+    const before = await marker(owner.user.id);
+    const response = await withFailingQueue(`/me/privacy-zones/${crypto.randomUUID()}`, {
+      method: "DELETE",
+      headers: bearer(owner.accessToken),
+    });
+    expect(response.status).toBe(204);
+    expect(await marker(owner.user.id)).toEqual(before);
+    expect((await row(id)).publicZonesVersion).toBe(before.version);
+  });
+
+  it("keeps a failed delete's reprocessing until an upload or the sweep queues it", async () => {
+    const owner = await signIn();
+    const zone = (await (await addZone(owner.accessToken)).json()) as { id: string };
+    const id = crypto.randomUUID();
+    await upload(owner, id, track(id, line(100)));
+    await waitUntilProcessed(owner.accessToken, id);
+
+    const response = await withFailingQueue(`/me/privacy-zones/${zone.id}`, {
+      method: "DELETE",
+      headers: bearer(owner.accessToken),
+    });
+    expect(response.status).toBe(503);
+    const pending = await marker(owner.user.id);
+    expect(pending.queued).toBeLessThan(pending.version);
+    expect((await row(id)).publicZonesVersion).toBeNull();
+
+    // The next upload, with a working queue, queues it and the data comes back.
+    const other = crypto.randomUUID();
+    await upload(owner, other, track(other, line(10)));
+    const caught = await marker(owner.user.id);
+    expect(caught.queued).toBe(caught.version);
+    const theirs = await waitUntilProcessed(owner.accessToken, id, () => true);
+    await api(`/sessions/${id}`, json("PATCH", { visibility: "public" }, owner.accessToken));
+    expect(theirs.processing).toBe("done");
+    const shared = await waitUntilProcessed(null, id, (s) => s.bounds !== null);
+    expect(south(shared)).toBe(0);
+  });
+
+  it("reports the stored ETag to an upload that loses after attaching", async () => {
+    const owner = await signIn();
+    const id = crypto.randomUUID();
+    await upload(owner, id, track(id, line(10)));
+    const db = drizzle(env.DB);
+    const key = (await row(id)).trackKey as string;
+    const input = { id, userId: owner.user.id, revision: 0, key };
+    const a = await gzip(JSON.stringify(track(id, line(20))));
+    const b = await gzip(JSON.stringify(track(id, line(30))));
+    // A puts and attaches; B puts and attaches before A reads the object back.
+    const first = await storeTrack(
+      db,
+      env.TRACKS,
+      { ...input, bytes: a },
+      {
+        afterAttach: async () => {
+          await storeTrack(db, env.TRACKS, { ...input, bytes: b });
+        },
+      },
+    );
+    const head = await env.TRACKS.head(key);
+    expect(first).toMatchObject({ kind: "attached", etag: head?.etag, replaced: true });
+    expect((await row(id)).trackEtag).toBe(head?.etag);
+  });
+
+  it("keeps migration 0007 as previews applied it, with the later columns in 0008", () => {
+    const byName = Object.fromEntries(
+      env.TEST_MIGRATIONS.map((m) => [m.name, m.queries.join("\n")]),
+    );
+    const first = byName["0007_session_postprocessing.sql"] ?? "";
+    const second = byName["0008_public_zones_version.sql"] ?? "";
+    expect(first.match(/ALTER TABLE/g)).toHaveLength(9);
+    expect(first).not.toMatch(/public_zones_version|public_track_started_at|zones_version/);
+    expect(second).toMatch(/public_zones_version/);
+    expect(second).toMatch(/zones_queued_version/);
   });
 });
