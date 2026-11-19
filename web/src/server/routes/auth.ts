@@ -104,7 +104,11 @@ export const auth = createRouter<AppEnv>()
   })
   .openapi(refreshRoute, async (c) => {
     const db = drizzle(c.env.DB);
-    const result = await rotateRefreshToken(db, c.req.valid("json").refreshToken);
+    const result = await rotateRefreshToken(
+      db,
+      c.req.valid("json").refreshToken,
+      c.env.JWT_SIGNING_KEY,
+    );
     if (!result.ok) {
       return result.reason === "reused"
         ? apiError(c, 401, "refresh_token_reused", "This refresh token was already used.")

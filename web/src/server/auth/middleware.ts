@@ -2,7 +2,7 @@ import { drizzle } from "drizzle-orm/d1";
 import type { Context } from "hono";
 import { createMiddleware } from "hono/factory";
 import { apiError } from "../lib/errors";
-import { isFamilyLive, verifyAccessClaims, verifyAccessToken } from "./tokens";
+import { isFamilyLive, verifyAccessClaims } from "./tokens";
 import { accessCookie, sameOrigin } from "./web-cookies";
 
 export type AuthEnv = { Bindings: Env; Variables: { userId: string } };
@@ -24,23 +24,25 @@ type Credential =
 // biome-ignore lint/suspicious/noExplicitAny: shared by both middleware environments.
 async function credential(c: Context<any>): Promise<Credential> {
   const header = c.req.header("Authorization");
-  if (header !== undefined) {
-    const token = bearerToken(header);
-    const userId = token ? await verifyAccessToken(token, c.env.JWT_SIGNING_KEY) : null;
-    return userId
-      ? { kind: "user", userId }
-      : { kind: "invalid", message: "The access token is invalid or expired." };
-  }
-  const cookie = accessCookie(c);
-  if (cookie === null) return { kind: "none" };
-  if (!sameOrigin(c)) return { kind: "forbidden" };
-  // Website tokens name their sign-in (`sid`); one that was signed out is dead at once,
-  // not 15 minutes later. One indexed D1 read per cookie-authenticated request.
-  const claims = await verifyAccessClaims(cookie, c.env.JWT_SIGNING_KEY);
-  if (claims?.sessionId && (await isFamilyLive(drizzle(c.env.DB), claims.sessionId))) {
-    return { kind: "user", userId: claims.userId };
-  }
-  return { kind: "invalid", message: "The session cookie is invalid or expired." };
+  const cookie = header === undefined ? accessCookie(c) : null;
+  if (header === undefined && cookie === null) return { kind: "none" };
+  if (cookie !== null && !sameOrigin(c)) return { kind: "forbidden" };
+  const token = header !== undefined ? bearerToken(header) : cookie;
+  const claims = token ? await verifyAccessClaims(token, c.env.JWT_SIGNING_KEY) : null;
+  // The cookie only ever holds website tokens. Any token naming a sign-in (`sid`), by
+  // cookie or bearer, is good only while that sign-in is live: one indexed D1 read.
+  const usable =
+    claims !== null &&
+    (cookie === null || claims.web) &&
+    (claims.sessionId === null || (await isFamilyLive(drizzle(c.env.DB), claims.sessionId)));
+  if (claims && usable) return { kind: "user", userId: claims.userId };
+  return {
+    kind: "invalid",
+    message:
+      cookie !== null
+        ? "The session cookie is invalid or expired."
+        : "The access token is invalid or expired.",
+  };
 }
 
 const crossSite = (c: Context) =>

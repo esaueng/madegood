@@ -101,7 +101,9 @@ openssl rand -base64 48 | pnpm exec wrangler secret put JWT_SIGNING_KEY --env pr
 
 A fork that ships its own app changes `APPLE_AUDIENCES` to its bundle ID. Changing
 `JWT_SIGNING_KEY` invalidates outstanding access tokens; clients get a new one with
-their refresh token, so nobody is signed out.
+their refresh token, so nobody is signed out. The key also derives each refresh token's
+successor, so a refresh token replayed within 30 s across the change counts as reuse and
+signs that user out.
 
 Sign-in fetches Apple's public keys from `https://appleid.apple.com/auth/keys` and
 caches them in memory for an hour.
