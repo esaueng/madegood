@@ -152,7 +152,7 @@ webAuth.post("/auth/web/refresh", async (c) => {
     return apiError(c, 401, "invalid_refresh_token", "Not signed in.");
   }
   const db = drizzle(c.env.DB);
-  const result = await rotateRefreshToken(db, token);
+  const result = await rotateRefreshToken(db, token, c.env.JWT_SIGNING_KEY);
   if (!result.ok) {
     clearSessionCookies(c);
     return apiError(c, 401, "invalid_refresh_token", "Sign in again.");

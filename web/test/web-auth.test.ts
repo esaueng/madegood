@@ -1,4 +1,5 @@
 import { env, exports } from "cloudflare:workers";
+import { SignJWT } from "jose";
 import { describe, expect, it } from "vitest";
 import { hashRefreshToken } from "../src/server/auth/tokens";
 import { api, bearer, identityToken, signIn } from "./apple";
@@ -277,10 +278,51 @@ describe("sign-out racing a refresh (review of #63)", () => {
     const { refresh: old } = await webSignIn();
     const [a, b] = [await post("/auth/web/refresh", old), await post("/auth/web/refresh", old)];
     expect([a.status, b.status]).toEqual([204, 204]);
+    // Both tabs get the same successor: one chain, not two.
+    expect(cookies(a).values.get("mg_rt")).toBe(cookies(b).values.get("mg_rt"));
     for (const response of [a, b]) {
       const access = cookies(response).values.get("mg_at") ?? "";
       expect((await api("/me", withCookie("mg_at", access))).status).toBe(200);
     }
+  });
+});
+
+describe("website access tokens by any transport (re-check of #63)", () => {
+  const key = new TextEncoder().encode(env.JWT_SIGNING_KEY);
+  const forge = (claims: Record<string, unknown>, audience: string, sub: string) =>
+    new SignJWT(claims)
+      .setProtectedHeader({ alg: "HS256", typ: "at+jwt" })
+      .setIssuer("madegood")
+      .setAudience(audience)
+      .setSubject(sub)
+      .setIssuedAt()
+      .setExpirationTime("10m")
+      .sign(key);
+
+  it("rejects a copied website token as a bearer once its sign-in ended", async () => {
+    const { access, refresh } = await webSignIn();
+    expect((await api("/me", { headers: bearer(access) })).status).toBe(200);
+    await api(
+      "/auth/web/signout",
+      withCookie("mg_rt", refresh, { method: "POST", headers: { origin: ORIGIN } }),
+    );
+    expect((await api("/me", { headers: bearer(access) })).status).toBe(401);
+  });
+
+  it("rejects website-audience tokens without sid, and app tokens in the cookie", async () => {
+    const app = await signIn();
+    const noSid = await forge({}, "madegood-web", app.user.id);
+    expect((await api("/me", { headers: bearer(noSid) })).status).toBe(401);
+    expect((await api("/me", withCookie("mg_at", noSid))).status).toBe(401);
+    // App tokens keep working as bearers, but never as the website cookie.
+    expect((await api("/me", { headers: bearer(app.accessToken) })).status).toBe(200);
+    expect((await api("/me", withCookie("mg_at", app.accessToken))).status).toBe(401);
+  });
+
+  it("checks sid on an app-audience token too", async () => {
+    const app = await signIn();
+    const withDeadSid = await forge({ sid: crypto.randomUUID() }, "madegood-api", app.user.id);
+    expect((await api("/me", { headers: bearer(withDeadSid) })).status).toBe(401);
   });
 });
 
