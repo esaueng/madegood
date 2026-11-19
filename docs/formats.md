@@ -72,14 +72,15 @@ mono = startedAt + (uptime − uptime at start)
 ```
 
 So it equals the wall clock at `meta.startedAt` and then advances steadily, without the
-jumps a system clock correction makes. Motion samples keep their exact relative timing and
-order. Absolute Unix seconds resolve to about 0.2 µs at today's dates, far finer than the
-10 ms between motion samples.
+jumps a system clock correction makes. Times are stored as doubles in Unix seconds, which
+resolve to about 0.24 µs at today's dates: motion samples keep their order and their
+relative timing to within that, far finer than the 10 ms between samples. A sample that
+rounds onto an anchor's `mono` value belongs to the segment before that anchor.
 
 Clock anchors pair the two clocks. The start is an implicit anchor (`mono = unix =
 startedAt`); the recorder appends another anchor to `clock.ndjson` every 60 s and whenever
-the system clock changes. Readers convert a monotonic time with the latest anchor at or
-before it:
+the system clock changes. Readers convert a monotonic time with the latest anchor before it
+(the first anchor for times at or before the start):
 
 ```
 unix = anchor.unix + (mono - anchor.mono)
@@ -175,8 +176,11 @@ ahead of the monotonic clock 60 s in).
 ### Raw recording v1
 
 Recordings made before version 2. Readers convert them on reading, and the iPhone converts
-one before sharing it (`RawFormatConversion`), so a shared raw recording is always
-version 2. Version 1 differs only in its clocks:
+one before sharing it (`RawFormatConversion`, streamed and cached), so a shared raw
+recording is always version 2 and holds only the recording's own files. The watch sends a
+version 2 recording only to an iPhone app that says it reads version 2 (`rawVersions` in
+its WatchConnectivity application context), and an iPhone never acknowledges a recording
+whose version it cannot read, so the watch keeps its copy. Version 1 differs only in its clocks:
 
 - `meta.json` has `"version": 1` and `"clock": {"unix": …, "uptime": …}`, the wall clock and
   the device uptime (seconds since boot) read together at the start.

@@ -15,6 +15,11 @@ import WaterKit
 ///   keeps the recording and sends it again on the next launch.
 /// - The recording in progress is never sent or deleted (`markActive`).
 ///
+/// - Raw format versions (docs/formats.md): the phone advertises the versions it reads
+///   (`rawVersions` in its application context; a phone build without it reads only 1).
+///   The watch sends a recording only to a phone that reads its version and otherwise
+///   keeps it, and the phone never acknowledges a `meta.json` whose version it cannot read.
+///
 /// The watch never talks to the API (docs/PLAN.md §4.1); the phone is the hub.
 final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
     static let shared = RecordingTransfer()
@@ -29,6 +34,35 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
         static let file = "file"
         static let stored = "stored"
         static let settings = "settings"
+        static let rawVersions = "rawVersions"
+    }
+
+    /// The raw recording versions this build reads, as it tells the other device.
+    static let readableRawVersions = RawFormat.readableVersions.sorted()
+
+    /// The raw versions a phone reads, from its application context. Builds from before raw
+    /// format 2 do not say, and read only version 1.
+    static func phoneRawVersions(fromContext context: [String: Any]) -> Set<Int> {
+        (context[Key.rawVersions] as? [Int]).map(Set.init) ?? [1]
+    }
+
+    /// Whether a recording of `version` may go to a phone that reads `phone`. A recording
+    /// without a readable version (an interrupted one) goes as before.
+    static func mayDeliver(version: Int?, toPhoneReading phone: Set<Int>) -> Bool {
+        version.map { phone.contains($0) } ?? true
+    }
+
+    /// Whether the phone may acknowledge this `meta.json`: only a version it reads. Until
+    /// then the watch keeps the recording.
+    static func acknowledgesMeta(_ data: Data) -> Bool {
+        struct Header: Decodable {
+            var format: String?
+            var version: Int?
+        }
+        guard let header = try? JSONDecoder().decode(Header.self, from: data),
+            header.format == RawFormat.formatName, let version = header.version
+        else { return false }
+        return RawFormat.readableVersions.contains(version)
     }
 
     /// Folder names of recordings being written right now; never sent or deleted.
@@ -68,7 +102,7 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
             guard session.activationState == .activated, !isActive(sessionId) else { return }
             let files = ((try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? [])
                 .filter(RecordingStore.isRecordingFileName)
-            guard !files.isEmpty else { return }
+            guard !files.isEmpty, phoneReads(folder: folder) else { return }
 
             let inFlight = Set(
                 session.outstandingFileTransfers
@@ -80,6 +114,14 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
                     folder.appendingPathComponent(name),
                     metadata: [Key.sessionId: sessionId, Key.file: name])
             }
+        }
+
+        /// Whether the paired phone's app reads this recording's raw format version. If not,
+        /// the recording stays on the watch until the phone app is updated.
+        func phoneReads(folder: URL) -> Bool {
+            let version = (try? RawSessionReader.readMeta(folder: folder))?.version
+            let phone = Self.phoneRawVersions(fromContext: WCSession.default.receivedApplicationContext)
+            return Self.mayDeliver(version: version, toPhoneReading: phone)
         }
 
         /// Sends every finished recording still on the watch, including ones interrupted
@@ -144,12 +186,20 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
                 print("RecordingTransfer: ignoring unexpected file \(file.fileURL.lastPathComponent)")
                 return
             }
+            if name == RawFormat.metaFileName,
+                !Self.acknowledgesMeta((try? Data(contentsOf: file.fileURL)) ?? Data())
+            {
+                // A version this build cannot read: not stored, not acknowledged, so the
+                // watch keeps the recording until this app is updated.
+                print("RecordingTransfer: \(sessionId) uses a raw format this app cannot read; not accepted")
+                return
+            }
             let fm = FileManager.default
             let folder = RecordingStore.recordingsRoot.appendingPathComponent(sessionId, isDirectory: true)
             let destination = folder.appendingPathComponent(name)
             // Stage next to the destination (same volume) so replacing is atomic and an old
             // copy survives if anything fails.
-            let staged = folder.appendingPathComponent(".incoming-\(UUID().uuidString)-\(name)")
+            let staged = folder.appendingPathComponent("\(RecordingStore.stagingPrefix)\(UUID().uuidString)-\(name)")
             do {
                 try fm.createDirectory(at: folder, withIntermediateDirectories: true)
                 try fm.moveItem(at: file.fileURL, to: staged)
@@ -214,7 +264,12 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
             guard session.isCompanionAppInstalled else { return }
         #endif
         do {
-            try session.updateApplicationContext([Key.settings: UserSettings.snapshot()])
+            var context: [String: Any] = [Key.settings: UserSettings.snapshot()]
+            #if os(iOS)
+                // Tells the watch which recordings this build can receive.
+                context[Key.rawVersions] = Self.readableRawVersions
+            #endif
+            try session.updateApplicationContext(context)
         } catch {
             print("RecordingTransfer: settings update failed: \(error)")
         }
@@ -229,6 +284,13 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
 
     nonisolated func session(_ session: WCSession, didReceiveApplicationContext context: [String: Any]) {
         receiveSettings(context)
+        #if os(watchOS)
+            // The phone may now read recordings it could not before.
+            sendAllPending()
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(name: Self.didDeliverRecording, object: nil)
+            }
+        #endif
     }
 
     /// Hops to the main actor (in arrival order) to apply a snapshot from the other device,

@@ -27,6 +27,8 @@ struct MadeGoodApp: App {
         _ = WatchWorkoutMirror.shared
         UserSettings.resetIfRequested()
         UserSettings.migrate()
+        // Staging copies of an interrupted transfer are never part of a recording.
+        RecordingStore.removeStaleStagingFiles()
         // Receive recordings from the watch, including ones sent while the app was closed.
         RecordingTransfer.shared.activate()
         DemoHistory.seedIfRequested()

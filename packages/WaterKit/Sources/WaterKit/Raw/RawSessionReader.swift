@@ -244,15 +244,18 @@ struct SessionClock: Sendable {
         }
     }
 
-    /// Converts a monotonic time using the latest anchor at or before it (or the first),
-    /// so wall-clock corrections during a session apply from the moment they were recorded.
+    /// Converts a monotonic time using the latest anchor before it (or the first), so
+    /// wall-clock corrections during a session apply from the moment they were recorded.
+    /// Times are doubles (about 0.24 µs resolution at today's dates), so a sample read just
+    /// before an anchor can land exactly on its value; such a tie stays in the earlier
+    /// segment, where the sample was recorded.
     func fromMono(_ mono: Double) -> Double {
         var anchor = anchors[0]
         var low = 0
         var high = anchors.count - 1
         while low <= high {
             let mid = (low + high) / 2
-            if anchors[mid].mono <= mono {
+            if anchors[mid].mono < mono {
                 anchor = anchors[mid]
                 low = mid + 1
             } else {
