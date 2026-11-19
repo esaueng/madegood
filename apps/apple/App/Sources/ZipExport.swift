@@ -137,17 +137,77 @@ enum ZipExport {
         return destination
     }
 
-    /// Settings → Export All Recordings: every recording folder on this iPhone (raw sensor
-    /// files and the analyzed track) in one zip, laid out as in the Files app. Nil when there
-    /// are no recordings. Runs the archiver off the main actor; a large library takes a while.
-    static func zipAllRecordings(root: URL, in directory: URL = ExportFiles.directory) async throws -> URL? {
-        try await Task.detached(priority: .userInitiated) {
-            let folders = (try? FileManager.default.contentsOfDirectory(
-                at: root, includingPropertiesForKeys: [.isDirectoryKey], options: .skipsHiddenFiles)) ?? []
-            guard folders.contains(where: { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true })
-            else { return nil }
-            return try zip(folder: root, name: "madegood-recordings.zip", in: directory)
+    /// What Export All Recordings made: the zip, and how many folders could not be included
+    /// (not a readable recording).
+    struct AllRecordings: Equatable {
+        var zip: URL
+        var skipped: Int
+    }
+
+    /// Settings → Export All Recordings: every recording on this iPhone in one zip, one folder
+    /// per recording, each exactly as Share raw recording sends it (`preparedRecording`):
+    /// raw format 2, converted from an older version through the streaming converter and the
+    /// shared cache, and only the recording's own files (no staging copy of an interrupted
+    /// watch transfer, no derived track). So no device-uptime reading leaves the phone. Nil
+    /// when there are no recordings. Runs off the main actor; `progress` goes from 0 to 1.
+    static func zipAllRecordings(
+        root: URL, in directory: URL = ExportFiles.directory, cache: URL = preparedRoot,
+        progress: @escaping @Sendable (Double) -> Void = { _ in }
+    ) async throws -> AllRecordings? {
+        let fm = FileManager.default
+        let staging = directory.appendingPathComponent(".all-\(UUID().uuidString)", isDirectory: true)
+        defer { try? fm.removeItem(at: staging) }
+        let folder = staging.appendingPathComponent("madegood-recordings", isDirectory: true)
+        guard let skipped = try await stageAllRecordings(root: root, into: folder, cache: cache, progress: progress)
+        else { return nil }
+        let zip = try await Task.detached(priority: .userInitiated) {
+            try zip(folder: folder, name: "madegood-recordings.zip", in: directory)
         }.value
+        return AllRecordings(zip: zip, skipped: skipped)
+    }
+
+    /// Copies the prepared form of every recording folder under `root` into `destination`
+    /// (one subfolder each). Returns how many folders were skipped because they are not
+    /// readable recordings, or nil when `root` holds no recording folders at all.
+    static func stageAllRecordings(
+        root: URL, into destination: URL, cache: URL = preparedRoot,
+        progress: @escaping @Sendable (Double) -> Void = { _ in }
+    ) async throws -> Int? {
+        let folders = try await Task.detached(priority: .userInitiated) { () -> [URL] in
+            let fm = FileManager.default
+            return ((try? fm.contentsOfDirectory(
+                at: root, includingPropertiesForKeys: [.isDirectoryKey], options: .skipsHiddenFiles)) ?? [])
+                .filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
+                .sorted { $0.lastPathComponent < $1.lastPathComponent }
+        }.value
+        guard !folders.isEmpty else { return nil }
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        var skipped = 0
+        progress(0)
+        for (index, folder) in folders.enumerated() {
+            let share = Double(index) / Double(folders.count)
+            let step = 1 / Double(folders.count)
+            let prepared: URL
+            do {
+                prepared = try await preparedRecording(folder: folder, root: cache) { fraction in
+                    progress(share + step * fraction)
+                }
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                // Not a readable recording (no or damaged meta.json, or a stream that cannot
+                // be converted): left out, and counted for the message.
+                skipped += 1
+                continue
+            }
+            try await Task.detached(priority: .userInitiated) {
+                // A clone on APFS: the prepared copy stays in the cache for single shares.
+                try FileManager.default.copyItem(
+                    at: prepared, to: destination.appendingPathComponent(folder.lastPathComponent, isDirectory: true))
+            }.value
+        }
+        progress(1)
+        return skipped
     }
 }
 

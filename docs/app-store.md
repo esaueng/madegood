@@ -157,7 +157,12 @@ session.
 - **Files app:** recordings live in the app's Documents folder, visible in Files
   (`UIFileSharingEnabled`).
 - **All recordings (iPhone):** Settings → Your Data → Export All Recordings zips every
-  recording folder on the phone and opens the share sheet. Export files are deleted when
+  recording on the phone, one folder each, exactly as Share raw recording sends it: raw
+  format 2 (an older recording is converted through the same streaming converter and
+  cache) and only the recording's own files, never an interrupted transfer's staging copy
+  or the derived track. So no device-uptime reading leaves the phone, which the 8FFB.1
+  boot-time declaration relies on. A folder that is not a readable recording is left out
+  and counted in a message. It then opens the share sheet. Export files are deleted when
   the share sheet finishes, and any left over are deleted at launch.
 - **Account-wide export (website):** Settings → Export all my data starts a background
   job (`POST /api/me/exports`). It freezes the list of sessions and voyages, then builds
