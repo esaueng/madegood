@@ -385,6 +385,10 @@ export class VoyageLive extends DurableObject<Env> {
       settings.share.revokedAtMs !== null ||
       settings.share.expiresAtMs <= now
     ) {
+      // A link that expired without being stopped keeps nothing: its positions go when it
+      // expires (the alarm is never set later than `expiresAtMs`), as on revoke.
+      if (settings?.share && settings.share.expiresAtMs <= now)
+        this.sql.exec("DELETE FROM positions");
       for (const socket of this.ctx.getWebSockets()) this.notify(socket, null);
       return this.ctx.storage.deleteAlarm();
     }

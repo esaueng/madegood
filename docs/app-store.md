@@ -15,11 +15,11 @@ get a rejection.
 |---|---|---|
 | 1 | ~~No in-app account deletion.~~ Done: iPhone Settings → Account → Delete Account and the website's Settings page both call `DELETE /api/me` after a confirmation. | Guideline 5.1.1(v). |
 | 2 | ~~Sign in with Apple tokens are not revoked on deletion.~~ Nothing to revoke: the server never holds an Apple refresh or access token. The iPhone sends only the identity token; the website asks Apple for `code id_token` (required by `form_post`) but verifies the identity token and never redeems the code. No Sign in with Apple private key is needed. If a later change redeems the code, it must store the refresh token and call Apple's `/auth/revoke` on deletion. | Apple asks apps to revoke tokens they hold when an account is deleted. |
-| 3 | **No privacy policy.** There is no privacy policy page or URL. | Required in App Store Connect for every app, and for HealthKit apps in particular. The website could serve one at `/privacy`. |
-| 4 | **No privacy manifest** (`PrivacyInfo.xcprivacy`). The app uses `UserDefaults` (settings and sync state) and file APIs. | Apps that use required-reason APIs must declare a reason in a privacy manifest. |
+| 3 | ~~No privacy policy.~~ Done: the website serves it at `/privacy`, linked from the landing page footer and iPhone Settings → About → Privacy Policy (`MADEGOOD_SITE_URL` in `Config/MadeGood.xcconfig`). Use `<site>/privacy` as the App Store Connect privacy policy URL. | Required in App Store Connect for every app, and for HealthKit apps in particular. |
+| 4 | ~~No privacy manifest.~~ Done: `App/Resources/PrivacyInfo.xcprivacy` and `Watch/Resources/PrivacyInfo.xcprivacy` declare tracking off, the collected types in the label table below, and the required-reason APIs in use: UserDefaults (CA92.1), system boot time via `ProcessInfo.systemUptime` (35F9.1 for on-device timers; 8FFB.1 for the absolute timestamps calculated from it, motion samples and clock anchors in each recording, which leave the device with the recording; since raw recording v2 (#87) no file holds the boot-time reading itself, and every way a recording leaves the phone sends version 2 only: Share raw recording (#87) and Export All Recordings (#91), which converts an older recording first) and file timestamps of the app's own recordings (C617.1). No disk-space or active-keyboard APIs are used; the widget extensions use none of these APIs. | Apps that use required-reason APIs must declare a reason in a privacy manifest. |
 | 5 | **TestFlight builds have no sync.** `MADEGOOD_API_URL` is empty in `apps/apple/Config/MadeGood.xcconfig`, and CI has no `Local.xcconfig`. | Reviewers would see "Account sync isn't set up in this build." The label answers below assume sync is on; if it ships off, most of the "collected" rows go away. |
-| 6 | **Health permission strings.** `NSHealthUpdateUsageDescription` says the app "runs a workout session" but not that it saves workouts, routes and heart rate to Health. `NSMotionUsageDescription` mentions detecting maneuvers, which use GPS, not motion. | Reviewers check that purpose strings describe what the app actually does (5.1.1(i)). Suggested wording is in [HealthKit](#healthkit). |
-| 7 | ~~No full data export.~~ Done: `GET /api/me/export` (website Settings → Export all my data) and iPhone Settings → Your Data → Export All Recordings. | Not an App Store requirement; the privacy policy can now describe it. |
+| 6 | ~~Health permission strings.~~ Done: the Health, motion and location strings in `Project.swift` now say what the app does (saves workouts with route and heart rate; motion counts paddle strokes). | Reviewers check that purpose strings describe what the app actually does (5.1.1(i)). |
+| 7 | ~~No full data export.~~ Done (#79): the website's Settings → Export your data starts a background export (`POST /api/me/exports`; status and parts from `GET /api/me/exports/{id}`), and iPhone Settings → Your Data → Export All Recordings zips the recordings on the phone. | Not an App Store requirement; the privacy policy describes it. |
 
 ## Privacy nutrition label
 
@@ -54,7 +54,10 @@ file themselves).
 session's detail, the phone sends Open-Meteo the selection's mean position rounded to
 0.5° (about 50 km) and its UTC start and end dates, with no account, key, cookies or
 identifiers (docs/metrics.md). It answers the request in real time and is not linked to
-the user. Proposed: not declared as collected (it is not retained for the developer),
+the user. Since #72 the **server** also asks Open-Meteo, automatically, for unlisted
+and public sessions only: the center of the session's zone-cut bounds rounded to 0.1°
+(about 11 km) and the UTC dates, nothing else (`web/src/server/lib/wind.ts`); the answer
+is stored with the session. The privacy policy describes both. Proposed: not declared as collected (it is not retained for the developer),
 but described in the privacy policy. Confirm.
 
 **Local conditions.** Off until the user taps Show on the start screen (or turns on
@@ -92,7 +95,7 @@ Draft justification for App Review:
 > account so they can view it on the website; it is deleted with the session or the
 > account.
 
-Suggested purpose strings (item 6):
+Purpose strings (item 6, in `apps/apple/Project.swift`):
 
 - `NSHealthShareUsageDescription`: "MadeGood reads your heart rate during a session to
   show it live and in your session summary."
@@ -142,6 +145,9 @@ session.
   signs out, removes the upload queue, frozen tracks, saved tokens and that account's
   sync consent; the website's session cookies are cleared in the same response.
   Recordings on the device are kept (they were never only in the account).
+- **Exports:** the first deletion pass also deletes the account's export jobs, and their
+  parts go with the rest of its R2 objects; an export step still running stops and
+  deletes what it wrote.
 - **Sign in with Apple:** no Apple tokens are held, so none are revoked (item 2).
 - Confirmation text (iPhone): "Delete your MadeGood account? This deletes every session
   you have uploaded, your privacy zones, your settings and your sign-in from MadeGood's
@@ -151,7 +157,8 @@ session.
 ## Export
 
 - **Per session (iPhone):** session detail → Export GPX (GPX 1.1 track), and Share raw
-  recording (the raw NDJSON folder, zipped). The detail screen warns that exports
+  recording (the raw NDJSON folder, zipped: always raw format 2 and only the recording's
+  own files; an older recording is converted, #87). The detail screen warns that exports
   contain precise locations and times.
 - **Apple Health:** saved workouts and routes are exportable through Health.
 - **Files app:** recordings live in the app's Documents folder, visible in Files
@@ -162,7 +169,8 @@ session.
   cache) and only the recording's own files, never an interrupted transfer's staging copy
   or the derived track. So no device-uptime reading leaves the phone, which the 8FFB.1
   boot-time declaration relies on. A folder that is not a readable recording is left out
-  and counted in a message. It then opens the share sheet. Export files are deleted when
+  and counted in a message; a storage error fails the export instead. It then opens the
+  share sheet. Export files are deleted when
   the share sheet finishes, and any left over are deleted at launch.
 - **Account-wide export (website):** Settings → Export all my data starts a background
   job (`POST /api/me/exports`). It freezes the list of sessions and voyages, then builds

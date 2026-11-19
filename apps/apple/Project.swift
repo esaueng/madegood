@@ -12,16 +12,17 @@ let versionKeys: [String: Plist.Value] = [
     "CFBundleDisplayName": "MadeGood",
 ]
 
-/// Permission prompts shared by both apps.
+/// Permission prompts shared by both apps (docs/app-store.md, item 6). Each says what the
+/// app actually does with the permission.
 let usageKeys: [String: Plist.Value] = [
     "NSLocationWhenInUseUsageDescription":
-        "MadeGood records your track, speed, and course while you are on the water.",
+        "MadeGood records your track, speed and course while you record a session, including with the screen off.",
     "NSMotionUsageDescription":
-        "MadeGood records wrist motion to count paddle strokes and detect maneuvers.",
+        "MadeGood records motion during a session to count paddle strokes.",
     "NSHealthShareUsageDescription":
-        "MadeGood reads your heart rate during a session.",
+        "MadeGood reads your heart rate during a session to show it live and in your session summary.",
     "NSHealthUpdateUsageDescription":
-        "MadeGood runs a workout session so recording continues with the screen off.",
+        "MadeGood saves your sessions to Health as workouts, with the route and heart rate, if you turn on Save to Health.",
 ]
 
 let healthKitEntitlements: [String: Plist.Value] = [
@@ -79,6 +80,8 @@ let project = Project(
                 "LSSupportsOpeningDocumentsInPlace": true,
                 // Session sync's API root (Config/MadeGood.xcconfig); empty turns sync off.
                 "MadeGoodAPIURL": "$(MADEGOOD_API_URL)",
+                // The website, for the privacy policy link in Settings (Config/MadeGood.xcconfig).
+                "MadeGoodSiteURL": "$(MADEGOOD_SITE_URL)",
                 // Only standard HTTPS, so App Store Connect needs no export compliance answer.
                 "ITSAppUsesNonExemptEncryption": false,
             ]),
