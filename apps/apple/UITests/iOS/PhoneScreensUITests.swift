@@ -24,8 +24,11 @@ final class PhoneScreensUITests: XCTestCase {
         attachScreenshot("\(appearance) record")
 
         // Scrolled partway: rows soften under the status bar instead of running into it.
+        let header = app.descendants(matching: .any)["start.header"]
+        let restingY = header.frame.minY
         let start = app.cells.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
         start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: 0, dy: -120)))
+        XCTAssertLessThan(header.frame.minY, restingY - 20, "the start list should scroll")
         attachScreenshot("\(appearance) record scrolled")
 
         // "See All" beside Recent opens History.
