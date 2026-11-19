@@ -25,7 +25,9 @@ function Account() {
   if (!me) {
     return (
       <a
-        href={signInUrl(location === "/" || location.startsWith("/signin") ? "/app" : location)}
+        href={signInUrl(
+          location === "/" || location.startsWith("/signin") ? "/sessions" : location,
+        )}
         className={buttonVariants({ size: "sm", variant: "outline" })}
       >
         Sign in
@@ -35,7 +37,7 @@ function Account() {
   return (
     <div className="flex items-center gap-1 sm:gap-2">
       <Link
-        to="/app"
+        to="/sessions"
         className="rounded-md px-2 py-1 text-sm hover:bg-accent"
         activeProps={{ className: "font-semibold" }}
         activeOptions={{ exact: true }}
@@ -43,7 +45,7 @@ function Account() {
         Dashboard
       </Link>
       <Link
-        to="/app/settings"
+        to="/settings"
         className="rounded-md px-2 py-1 text-sm hover:bg-accent"
         activeProps={{ className: "font-semibold" }}
       >
