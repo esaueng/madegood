@@ -259,6 +259,12 @@ private struct StartView: View {
         .listStyle(.insetGrouped)
         .scrollContentBackground(.hidden)
         .listSectionSpacing(12)
+        // The cards and Recent are about one screen tall: when they fit, don't let the
+        // list rubber-band; when they don't, it scrolls just the overflow.
+        .scrollBounceBehavior(.basedOnSize)
+        // The (empty) bar already clears the status bar; drop the grouped list's extra top
+        // margin so the header sits just under the bar.
+        .contentMargins(.top, 0, for: .scrollContent)
         .background { StartBackground() }
         .overlay(alignment: .bottom) {
             if let hidden = hiddenSport {
@@ -274,8 +280,11 @@ private struct StartView: View {
             if !Task.isCancelled { hiddenSport = nil }
         }
         // The header row stands in for the title; the title stays for the Back button.
+        // The bar stays (empty) so rows soften under the status bar as they scroll
+        // instead of running into the clock and the Dynamic Island.
         .navigationTitle(AppInfo.name)
-        .toolbarVisibility(.hidden, for: .navigationBar)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar(removing: .title)
         .navigationDestination(for: SessionLibrary.Item.self) { item in
             SessionDetailView(item: item, library: library)
         }
@@ -453,6 +462,9 @@ private struct PhoneCountdownView: View {
     let controller: SessionController
     let countdown: SessionController.Countdown
     let showManOverboard: () -> Void
+    @State private var startLine = StartLineController.shared
+
+    private var hasStartLine: Bool { countdown.sport == .sailing }
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 0.25)) { _ in
@@ -461,70 +473,83 @@ private struct PhoneCountdownView: View {
             let fraction =
                 countdown.timer.duration > 0 ? countdown.timer.remaining(at: now) / countdown.timer.duration : 0
             let isFinal = seconds <= 10
-            VStack(spacing: 28) {
-                Label {
-                    Text(countdown.sport.displayName)
-                } icon: {
-                    SportIcon(sport: countdown.sport, size: 22)
-                }
+            ScrollView {
+                VStack(spacing: hasStartLine ? 18 : 28) {
+                    Label {
+                        Text(countdown.sport.displayName)
+                    } icon: {
+                        SportIcon(sport: countdown.sport, size: 22)
+                    }
                     .font(.headline)
                     .foregroundStyle(.secondary)
-                ZStack {
-                    Circle().stroke(Color.accentColor.opacity(0.18), lineWidth: 14)
-                    Circle()
-                        .trim(from: 0, to: min(1, max(0, fraction)))
-                        .stroke(
-                            isFinal ? Theme.coral : Color.accentColor,
-                            style: StrokeStyle(lineWidth: 14, lineCap: .round)
-                        )
-                        .rotationEffect(.degrees(-90))
-                    Text(Formatting.elapsed(Double(seconds)))
-                        .font(.system(size: 76, weight: .bold, design: .rounded).monospacedDigit())
-                        .foregroundStyle(isFinal ? Theme.coral : .primary)
-                        .minimumScaleFactor(0.5)
-                        .lineLimit(1)
-                        .padding(.horizontal, 28)
-                        .accessibilityLabel("\(seconds) seconds to start")
-                        .accessibilityIdentifier("countdown.time")
-                }
-                .frame(maxWidth: 280, maxHeight: 280)
-                Text("Recording starts at zero")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                HStack(spacing: 12) {
-                    Button(role: .cancel) {
-                        controller.cancelCountdown()
-                    } label: {
-                        Label("Cancel", systemImage: "xmark").frame(maxWidth: .infinity, minHeight: 44)
+                    ZStack {
+                        Circle().stroke(Color.accentColor.opacity(0.18), lineWidth: 14)
+                        Circle()
+                            .trim(from: 0, to: min(1, max(0, fraction)))
+                            .stroke(
+                                isFinal ? Theme.coral : Color.accentColor,
+                                style: StrokeStyle(lineWidth: 14, lineCap: .round)
+                            )
+                            .rotationEffect(.degrees(-90))
+                        Text(Formatting.elapsed(Double(seconds)))
+                            .font(.system(size: 76, weight: .bold, design: .rounded).monospacedDigit())
+                            .foregroundStyle(isFinal ? Theme.coral : .primary)
+                            .minimumScaleFactor(0.5)
+                            .lineLimit(1)
+                            .padding(.horizontal, 28)
+                            .accessibilityLabel("\(seconds) seconds to start")
+                            .accessibilityIdentifier("countdown.time")
                     }
-                    .buttonStyle(.glass)
-                    .accessibilityIdentifier("countdown.cancel")
-                    if countdown.canSync {
-                        Button {
-                            controller.sync()
+                    .frame(maxWidth: hasStartLine ? 210 : 280, maxHeight: hasStartLine ? 210 : 280)
+                    Text("Recording starts at zero")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    HStack(spacing: 12) {
+                        Button(role: .cancel) {
+                            controller.cancelCountdown()
                         } label: {
-                            Label("Sync", systemImage: "arrow.trianglehead.2.clockwise")
-                                .frame(maxWidth: .infinity, minHeight: 44)
+                            Label("Cancel", systemImage: "xmark").frame(maxWidth: .infinity, minHeight: 44)
                         }
-                        .buttonStyle(.glassProminent)
-                        .accessibilityHint("Rounds to the nearest minute")
-                        .accessibilityIdentifier("countdown.sync")
+                        .buttonStyle(.glass)
+                        .accessibilityIdentifier("countdown.cancel")
+                        if countdown.canSync {
+                            Button {
+                                controller.sync()
+                            } label: {
+                                Label("Sync", systemImage: "arrow.trianglehead.2.clockwise")
+                                    .frame(maxWidth: .infinity, minHeight: 44)
+                            }
+                            .buttonStyle(.glassProminent)
+                            .accessibilityHint("Rounds to the nearest minute")
+                            .accessibilityIdentifier("countdown.sync")
+                        }
+                        Button {
+                            controller.startNow()
+                        } label: {
+                            Label("Start", systemImage: "play.fill").frame(maxWidth: .infinity, minHeight: 44)
+                        }
+                        .buttonStyle(.glass)
+                        .accessibilityLabel("Start now")
+                        .accessibilityIdentifier("countdown.startNow")
                     }
-                    Button {
-                        controller.startNow()
-                    } label: {
-                        Label("Start", systemImage: "play.fill").frame(maxWidth: .infinity, minHeight: 44)
+                    .font(.headline)
+                    .labelStyle(.titleAndIcon)
+                    // Above the start line panel, so it is always in reach.
+                    PhoneManOverboardControl(show: showManOverboard)
+                    if hasStartLine {
+                        StartLinePanel(
+                            startLine: startLine, remaining: countdown.timer.remaining(at: now),
+                            display: UserSettings.display(for: countdown.sport)
+                        )
+                        .padding()
+                        .glassEffect(.regular, in: .rect(cornerRadius: 24))
                     }
-                    .buttonStyle(.glass)
-                    .accessibilityLabel("Start now")
-                    .accessibilityIdentifier("countdown.startNow")
                 }
-                .font(.headline)
-                .labelStyle(.titleAndIcon)
-                PhoneManOverboardControl(show: showManOverboard)
+                .padding()
+                .frame(maxWidth: .infinity)
             }
-            .padding()
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .scrollBounceBehavior(.basedOnSize)
+            .defaultScrollAnchor(.center)
         }
         .navigationTitle("Countdown")
         .navigationBarTitleDisplayMode(.inline)
@@ -541,6 +566,7 @@ private struct LiveView: View {
     @State private var banner: SessionRecorder.DistanceAlertEvent?
     let showManOverboard: () -> Void
     @State private var manOverboard = ManOverboard.shared
+    @State private var startLine = StartLineController.shared
     @ScaledMetric(relativeTo: .largeTitle) private var primarySize = 64.0
 
     /// The sport's first screen, read once when the session opens.
@@ -586,6 +612,12 @@ private struct LiveView: View {
                     ManOverboardCard(manOverboard: manOverboard, sport: sport, open: showManOverboard)
                 }
 
+                if recorder != nil, let warning = startLine.warning {
+                    OCSBanner(warning: warning, display: display) { startLine.dismissWarning() }
+                }
+                if recorder != nil, let failed = startLine.failedAtStart {
+                    PingFailedBanner(end: failed) { startLine.dismissFailedAtStart() }
+                }
                 if let recorder, let startedAt {
                     if first == .map {
                         LiveTrackMap(points: recorder.trackPoints, manOverboard: manOverboard.mark)

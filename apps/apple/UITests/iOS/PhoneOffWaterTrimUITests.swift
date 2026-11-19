@@ -47,7 +47,7 @@ final class PhoneOffWaterTrimUITests: XCTestCase {
         XCTAssertTrue(app.navigationBars["Trim Session"].waitForNonExistence(timeout: 5))
 
         app.terminate()
-        app.launch()
+        launchFresh(app)
         openRecording(in: app)
         let cut = element("replay.removedInterval", in: app)
         XCTAssertTrue(cut.waitForExistence(timeout: 5))
@@ -114,7 +114,7 @@ final class PhoneOffWaterTrimUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["-demoOffWater"] + arguments
         app.launchEnvironment["MADEGOOD_OFF_WATER_TEST_RUN"] = UUID().uuidString
-        app.launch()
+        launchFresh(app)
         return app
     }
 

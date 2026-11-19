@@ -6,8 +6,30 @@ values are SI internally (m, s, m/s, degrees true) and converted only for displa
 
 Live metrics come from `SessionEngine`, which runs on the watch or phone during a
 session and only uses data it has already seen. Samples with a non-finite time are
-ignored. Post-session analysis (Phase 2) can
-revise some of them using the whole track.
+ignored. Session detail on the iPhone replays the recording through the same engine
+(`SessionReplay`), so live and after-session values match, and adds analyses that need
+the whole track: sailing maneuvers and wind, paddling splits, and strokes from the raw
+recording.
+
+## Where each metric is shown
+
+| Metric | Watch and iPhone, live | iPhone session detail | Stored in track v1 `summary` (and so on the website) |
+|---|---|---|---|
+| Distance, moving time, elapsed time, average speed | yes | yes | yes |
+| Max speed 2 s and 10 s | yes | yes | yes |
+| Heart rate (current, average, max) | yes | yes | average and max |
+| Laps | yes | yes | yes |
+| Windsurf speed categories | yes | yes | yes |
+| Strokes, stroke rate, distance per stroke, sides | yes | yes, from the raw recording | no |
+| Paddling 1 km splits | no | yes (replay) | no |
+| Sailing wind axis, VMG, tacks and gybes | yes | yes | no |
+| Motorboat trip log, engine time, fuel estimate | yes | yes | no (the website shows the distance) |
+
+The website shows what the summary stores, plus the track (map, speed and heart-rate
+charts). Units are converted for display only. In the apps they are set per sport and
+default ("Automatic") to knots and nautical miles for sailing, windsurfing and
+motorboating, and km/h and km for kayak, canoe and SUP. The website uses the account's
+single units setting (nautical by default).
 
 ## GPS cleaning
 
@@ -291,6 +313,54 @@ speed-weighted circular mean of the hourly values from the hour before the start
 the hour after the end; the speed is their mean. Offline or on any error, the detail
 keeps the track's own estimate and offers to try again.
 
+## Start line
+
+`StartLine` in WaterKit (`Stats/StartLine.swift`), shown on the sailing countdown screens.
+Not for navigation: the GPS is on the wrist or phone, a few metres from the bow.
+
+- **Pings.** Pressing Pin or Boat averages the fixes from 3 s before to 2 s after the
+  press with accuracy ≤ 15 m; it needs at least two. Each fix is first moved to the press
+  time along its own Doppler speed and course (not below 0.3 m/s, where course is
+  noise), so a boat sailing past the pin pings where it was at the press. The average is
+  weighted by 1/accuracy² on the unit sphere. Too few fixes: the ping fails (a failure
+  buzz). The pin is the port end, the boat (committee) the starboard end, looking from
+  the pre-start side.
+- **Line.** Ends 10 m – 5 km apart. The whole line is kept for 6 h after its last ping
+  (checked at each countdown start, every read, every ping and the gun; a ping after
+  expiry drops the old end rather than reviving it), so later races off the same line
+  reuse it. Saved ends are used again only once a fresh (≤ 5 s old by the countdown
+  clock) and accurate (≤ 25 m) position is within 2 km of them; until then they are
+  neither shown, checked nor recorded. Farther away they are ignored for that countdown
+  but kept. The line in use is recorded with the session (`linePing` events,
+  docs/formats.md).
+- **Distance to the line.** Perpendicular distance to the line's great circle, exact on
+  the spherical Earth used by `Geo` (no local projection, so it holds across ±180° and
+  near the poles). Positive on the pre-start side (right of pin → boat), negative when
+  over. "Outside ends" when the foot of the perpendicular lies beyond either end.
+- **Time to the line.** Distance ÷ the velocity component towards the line from the
+  current Doppler speed and course. None when over, not closing, or below 0.3 m/s.
+- **Time to burn.** Countdown time left − time to the line: positive is early, negative
+  late.
+- **Bias.** With a wind estimate, degrees the line is off square to the wind at its
+  middle, and which end is upwind (favoured); within 2° it is square. The countdown's
+  estimate comes from its own sailing (the course histogram of "Sailing wind and VMG"),
+  which knows only the axis; the wind is then taken from the course side of the line.
+- **Countdown clock.** Times during the countdown are unix seconds derived from the
+  monotonic clock through one anchor taken at the countdown's start. A fix's time is its
+  age on arrival subtracted from its arrival on that clock, so a device clock change
+  cannot make an old fix look fresh or move the gun.
+- **OCS.** The gun is the countdown's deadline (moved by a sync) on that clock, however
+  late the app handles it. The newest fix stamped at or before the gun (0.25 s
+  tolerance) and at most 2 s older is moved to the gun along its Doppler speed and
+  course (from 0.3 m/s). Over the line: "OCS: return". Within the fix's accuracy and
+  heading for the line, or within it and too slow to trust the course: "Possibly OCS".
+  No such fix: "OCS unknown", never a silent all-clear. A ping still being averaged at
+  the gun is finished first with the fixes it has; one that fails then, or failed in
+  the 15 s before the gun, is reported on the session screens. An over warning clears
+  when a recorded fix is behind the line by more than its accuracy, when dismissed, or
+  5 minutes after it appeared (on a timer, with or without GPS). Start now skips the
+  check.
+
 ## Motorboating
 
 - **Trip:** the session's distance (above), shown in nautical miles by default.
@@ -332,6 +402,20 @@ Pauses do not stop the categories, as for the max speeds; GPS gaps do. `waterkit
 reports the same values, computed over the engine's accepted fixes. Planing time
 and gybe count (PLAN §5) are not computed yet.
 
+## Start countdown and distance alerts
+
+These are cues, not metrics, but they follow fixed rules:
+
+- **Start countdown** (per sport: off, 1, 3 or 5 minutes): recording starts when it
+  reaches zero; the countdown itself is not part of the session. Haptics mark each
+  whole minute and each of the last 10 seconds. **Sync** rounds the time left to the
+  nearest whole minute, for matching a race start signal; with under 30 s left it
+  starts at once.
+- **Distance alert** (per sport: off or every 0.25, 0.5, 1, 2, 5 or 10 distance units):
+  fires each time the session distance passes a whole multiple of the interval. A
+  recalculation that lowers the distance never repeats an alert, and a jump past
+  several multiples alerts once.
+
 ## Heart rate
 
 Current heart rate is the latest reading. Average is the mean of the readings, and max
@@ -353,4 +437,11 @@ bumped whenever a definition on this page changes; 1.1.0 added the windsurf keys
 
 The track's events are the user's events plus the regenerated auto-pause, auto-resume
 and auto-lap events.
+
+## Not computed yet
+
+PLAN §5 lists these; they have no definition here until they ship: heart-rate zones,
+windsurf planing time and gybe count, race start line (pinging the ends, distance and
+time to the line), the motorboat anchor alarm, and stroke-based intervals. Calories
+come from Apple Health's workout builder, not from MadeGood.
 

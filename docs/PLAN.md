@@ -47,7 +47,7 @@ bundle prefix `app.madegood` (forks override it in `Local.xcconfig`) · GitHub r
 
 | Area | Choice |
 |---|---|
-| iOS + watchOS apps | Swift 6, SwiftUI, HealthKit, CoreLocation, CoreMotion, SwiftData, Swift Charts, MapKit |
+| iOS + watchOS apps | Swift 6, SwiftUI, HealthKit, CoreLocation, CoreMotion, Swift Charts, MapKit (sessions are stored as files, see §8 Phase 1 task 4) |
 | Xcode project | Tuist (generated project; no `.xcodeproj` merge conflicts) |
 | Shared algorithms | `WaterKit` Swift package (pure Swift, no Apple-only frameworks, so it tests on Linux CI) |
 | Website + API | TypeScript, one Cloudflare Worker: React (Vite + `@cloudflare/vite-plugin`) SPA + Hono API under `/api` |
@@ -95,7 +95,7 @@ LICENSE  NOTICE  CONTRIBUTING.md (DCO)  CODE_OF_CONDUCT.md  SECURITY.md
 ```
 Watch sensors ──► Session engine (Shared) ──► live analyzers ──► watch UI
       │                    │
-      │ mirrored workout   └──► local store (SwiftData + track file)
+      │ mirrored workout   └──► local store (recording + track files)
       ▼                                   │
 iPhone (live view / standalone session)   │ on finish: post-analysis (WaterKit)
                                           ▼
@@ -404,7 +404,7 @@ Each phase ends with a checkable exit criterion. Tasks are sized for one agent P
 1. Session engine in `Shared/`: sensor pipeline, GPS cleaning, auto-pause, laps.
 2. Watch session UI: start flow, metrics page, map page, controls, summary.
 3. iPhone: mirrored live view + standalone sessions + Live Activity.
-4. Storage: SwiftData models + track files; watch → phone handoff.
+4. Storage: track files on disk are the store (raw recording + track v1, docs/formats.md), with an in-memory analysis cache keyed by recording, settings and trim; watch → phone handoff. Decided against SwiftData: the files already back history, sync, export and the website, and a second store would need its own migrations.
 5. HealthKit save (workout + route + HR), correct activity type per sport.
 6. iPhone history + session detail (map colored by speed, stats, speed/HR charts).
 7. GPX export, units settings.
@@ -431,7 +431,6 @@ Each phase ends with a checkable exit criterion. Tasks are sized for one agent P
 4. Upload endpoints, R2 storage, queue consumer (wind, bbox).
 5. Web: dashboard, session page (map, replay, charts), profile, settings.
 6. Visibility + privacy zones, Open Graph tags for shared links.
-7. Strava export (optional, needs Strava API app approval).
 
 **Exit:** sign in on both sides, a session recorded on the watch shows up on the web within a minute of finishing, shared links preview correctly, privacy zones verified.
 
@@ -492,7 +491,6 @@ more sports (rowing, wing, kite, outrigger, dragon boat).
 |---|---|---|
 | Apple Developer account (team ID) | Phase 0 task 4 | Needed for device builds, HealthKit, TestFlight |
 | ~~TestFlight via Xcode Cloud or GitHub Actions + fastlane~~ | Phase 1 | Decided: GitHub Actions with plain `xcodebuild` and an App Store Connect API key, no fastlane (docs/releasing.md) |
-| Strava integration | Phase 3 | Requires Strava API approval |
 | Fixture data hosting | Phase 0 | Public R2 bucket vs Git LFS |
 
 ## 11. Risks

@@ -10,6 +10,9 @@ struct MadeGoodApp: App {
     private let demoSeedFailed: Bool
 
     init() {
+        #if DEBUG
+            VoyageRecorder.forgetTestLibraryIfRequested()
+        #endif
         if DemoOffWater.storage != nil {
             do {
                 try DemoOffWater.seedIfRequested()

@@ -2,8 +2,9 @@ import XCTest
 
 /// Man-overboard on the iPhone (docs/PLAN.md §5, Phase 2 task 6): hold to mark, the way
 /// back, the mark kept across a relaunch until cleared, and a mark made on the watch.
+@MainActor
 final class PhoneManOverboardUITests: XCTestCase {
-    override func setUp() {
+    override func setUp() async throws {
         continueAfterFailure = false
     }
 
