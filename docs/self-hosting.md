@@ -25,6 +25,8 @@ macOS, Linux and Windows (x64).
    cd web
    pnpm exec wrangler d1 create madegood
    pnpm exec wrangler r2 bucket create madegood-tracks
+   pnpm exec wrangler queues create madegood-postprocess
+   pnpm exec wrangler queues create madegood-postprocess-dlq
    ```
 
 2. Put the printed `database_id` into `web/wrangler.jsonc` in **your fork or
@@ -57,11 +59,11 @@ The project's own deployment (`madegood.esau.workers.dev`, previews on
   `madegood-preview` at `pr-<number>-madegood-preview.<subdomain>.workers.dev` and
   links it in a comment. Each PR gets its own D1 database, `madegood-pr-<number>`,
   which is deleted when the PR closes; previews share the preview R2 bucket.
-- Each push to `main` that touches `web/` builds, applies migrations, then deploys
-  production.
+- Each push to `main` that touches `web/` builds, applies migrations, creates the
+  post-processing queues if they are missing, then deploys production.
 
-The workflow needs the `CLOUDFLARE_API_TOKEN` secret (Workers Scripts and D1 edit on
-the account) and the repository variables `CLOUDFLARE_ACCOUNT_ID`, `D1_DATABASE_ID`
+The workflow needs the `CLOUDFLARE_API_TOKEN` secret (Workers Scripts, D1 and Queues
+edit on the account) and the repository variables `CLOUDFLARE_ACCOUNT_ID`, `D1_DATABASE_ID`
 and `D1_PREVIEW_DATABASE_ID`. `scripts/cloudflare-config` writes the IDs into the
 runner's copy of `wrangler.jsonc`; the repository keeps the placeholders. A fork can
 use the same workflow with its own secret and variables.
@@ -77,6 +79,58 @@ use the same workflow with its own secret and variables.
   already running must keep working with the new schema. Change the schema in steps:
   add new columns or tables first (expand), deploy code that uses them, and only drop
   or rename old ones in a later release (contract).
+
+## Upload post-processing
+
+After a track upload (`PUT /api/sessions/:id/track`) the Worker sends a message to the
+`madegood-postprocess` queue (binding `POSTPROCESS`), and the same Worker consumes it
+(`src/server/lib/postprocess.ts`). The consumer reads the stored track and saves:
+
+- the bounding box of the whole track and a 5-character start geohash (owner only);
+- the bounding box of the fixes others may see, with privacy zones cut out exactly as
+  in the shared track, which is all anyone else ever gets;
+- the first and last GPS fix times;
+- for public and unlisted sessions only, hourly modelled wind from Open-Meteo.
+
+The session's `processing` field reports `pending`, `done`, `too_large` or `invalid`.
+Tracks above the shared-track caps (8 MiB inflated or 500,000 fixes) are `too_large`
+and get no derived data. Tracks uploaded before post-processing existed report `none`
+until they are uploaded again.
+
+**Idempotency.** Each message names the session, its upload revision and the stored
+track's ETag. Every write requires the row to still hold that exact track, so duplicate
+deliveries, older revisions, replaced tracks and deleted sessions are dropped. A new
+upload or a newer revision clears the derived data at once; adding or removing a
+privacy zone clears every session's public bounds and queues them again.
+
+**Retries and dead letters.** A failure (D1, R2, an Open-Meteo outage or rate limit)
+is retried after 30 s, 1, 2, 4 and 8 minutes. After 5 retries the message moves to
+`madegood-postprocess-dlq`, which has no consumer: inspect it in the dashboard (Queues
+› madegood-postprocess-dlq) and, once the cause is fixed, either re-upload the track
+or send the message body back to `madegood-postprocess`. Messages that can never
+succeed (an invalid track, a malformed message) are acknowledged, not retried.
+
+**Without a queue.** Preview versions cannot set queue consumers, so `env.preview` has
+no queue. Without the `POSTPROCESS` binding the Worker processes each upload right after
+responding (`waitUntil`): one attempt, no retries, no dead letters. A self-hosted copy
+can drop the `queues` block the same way.
+
+### What is sent to Open-Meteo
+
+Wind is fetched only while a session is public or unlisted; private sessions never
+cause a request (sharing a session later queues the lookup). Each request to
+`api.open-meteo.com` (sessions that ended within 60 days) or `archive-api.open-meteo.com`
+(older ones) carries only:
+
+- one position: the center of the session's **public** bounds, rounded to 0.1°
+  (about 11 km), so no point inside a privacy zone shapes it;
+- the UTC calendar dates the session spans (no time of day);
+- the fixed variables `wind_speed_10m,wind_direction_10m,wind_gusts_10m` with
+  `wind_speed_unit=ms`, `timeformat=unixtime`, `timezone=GMT`.
+
+No account, session ID, track, title or API key is sent. Open-Meteo's free API is for
+non-commercial use; a commercial deployment needs its own Open-Meteo plan. Wind is a
+model value for the area, shown as such, and not for navigation.
 
 ## Secrets and settings
 

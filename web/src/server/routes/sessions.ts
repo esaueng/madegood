@@ -5,6 +5,7 @@ import type { Context } from "hono";
 import { optionalAuth, requireAuth } from "../auth/middleware";
 import { privacyZones, type Session, sessions, sessionTombstones, users } from "../db/schema";
 import { apiError, errorResponse } from "../lib/errors";
+import { CLEARED_DERIVED, enqueuePostprocess } from "../lib/postprocess";
 import { createRouter } from "../lib/router";
 import { SHARED_TRACK_MAX_FIXES, shareTrack } from "../lib/session-privacy";
 import {
@@ -24,6 +25,7 @@ import {
   TrackTooLarge,
   trackKey,
 } from "../lib/track";
+import type { StoredWind } from "../lib/wind";
 
 type SessionsEnv = {
   Bindings: Env;
@@ -166,6 +168,40 @@ const UpdateSessionRequest = z
   .strict()
   .openapi("UpdateSessionRequest");
 
+const BoundsBody = z
+  .object({
+    south: z.number(),
+    west: z.number(),
+    north: z.number(),
+    east: z.number().openapi({ description: "Less than `west` when the box crosses 180°." }),
+  })
+  .openapi("Bounds", { description: "A bounding box, degrees (WGS 84)." });
+
+const nullableNumber = z.number().nullable();
+const WindBody = z
+  .object({
+    source: z.enum(["open-meteo-forecast", "open-meteo-archive"]),
+    directionDeg: nullableNumber.openapi({
+      description: "Mean direction the wind blows from, degrees true.",
+    }),
+    speedMps: nullableNumber.openapi({ description: "Mean speed at 10 m, m/s." }),
+    gustMps: nullableNumber.openapi({ description: "Strongest hourly gust at 10 m, m/s." }),
+    samples: z.array(
+      z.object({
+        t: isoTime,
+        directionDeg: nullableNumber,
+        speedMps: nullableNumber,
+        gustMps: nullableNumber,
+      }),
+    ),
+    fetchedAt: isoTime,
+  })
+  .openapi("SessionWind", {
+    description:
+      "Hourly model values from the hour before the start to the hour after the end. " +
+      "Not an observation; not for navigation.",
+  });
+
 const SessionBody = z
   .object({
     id: z.string().openapi({ format: "uuid" }),
@@ -183,6 +219,24 @@ const SessionBody = z
     summary: z.record(z.string(), z.unknown()).nullable(),
     analyzerVersion: z.string().nullable(),
     hasTrack: z.boolean().openapi({ description: "Whether a track file has been uploaded." }),
+    processing: z.enum(["none", "pending", "done", "too_large", "invalid"]).openapi({
+      description:
+        "Server post-processing of the uploaded track: `none` without a track (or for a " +
+        "track uploaded before post-processing existed), `pending` until it has run, then " +
+        "`done`, or `too_large`/`invalid` when no data could be derived.",
+    }),
+    bounds: BoundsBody.nullable().openapi({
+      description:
+        "The track's bounding box, null until processed. The owner gets the whole track's; " +
+        "everyone else the box of what the shared track shows (privacy zones cut out).",
+    }),
+    trackStartedAt: isoTime.nullable().openapi({ description: "First GPS fix, once processed." }),
+    trackEndedAt: isoTime.nullable().openapi({ description: "Last GPS fix, once processed." }),
+    wind: WindBody.nullable().openapi({
+      description:
+        "Modelled wind from Open-Meteo for the session's time and area, fetched only while " +
+        "the session is public or unlisted. Null when not fetched or not available.",
+    }),
     isOwner: z.boolean().openapi({ description: "Whether the caller owns the session." }),
     createdAt: isoTime,
     updatedAt: isoTime,
@@ -254,7 +308,40 @@ export function viewSummary(
   return shared;
 }
 
+function processingState(session: Session): z.infer<typeof SessionBody>["processing"] {
+  if (session.trackKey === null || session.trackEtag === null) return "none";
+  if (session.processedEtag !== session.trackEtag || session.postprocessStatus === null) {
+    return "pending";
+  }
+  return session.postprocessStatus;
+}
+
+function boundsOf(session: Session, owner: boolean): z.infer<typeof BoundsBody> | null {
+  const box = owner
+    ? [session.minLat, session.minLon, session.maxLat, session.maxLon]
+    : [session.publicMinLat, session.publicMinLon, session.publicMaxLat, session.publicMaxLon];
+  const [south, west, north, east] = box;
+  if (south == null || west == null || north == null || east == null) return null;
+  return { south, west, north, east };
+}
+
+function windOf(session: Session): z.infer<typeof WindBody> | null {
+  if (session.windJson === null) return null;
+  const wind = JSON.parse(session.windJson) as StoredWind;
+  if (wind.status !== "ok") return null;
+  return {
+    source: wind.source,
+    directionDeg: wind.directionDeg,
+    speedMps: wind.speedMps,
+    gustMps: wind.gustMps,
+    samples: wind.samples.map((sample) => ({ ...sample, t: iso(sample.t) })),
+    fetchedAt: iso(wind.fetchedAt),
+  };
+}
+
 function toSessionBody(session: Session, viewerId: string | null): z.infer<typeof SessionBody> {
+  const owner = session.userId === viewerId;
+  const processed = processingState(session) === "done";
   return {
     id: session.id,
     sport: session.sport,
@@ -271,7 +358,13 @@ function toSessionBody(session: Session, viewerId: string | null): z.infer<typeo
     summary: viewSummary(session, viewerId),
     analyzerVersion: session.analyzerVersion,
     hasTrack: session.trackKey !== null,
-    isOwner: session.userId === viewerId,
+    processing: processingState(session),
+    bounds: processed ? boundsOf(session, owner) : null,
+    trackStartedAt:
+      processed && session.trackStartedAt !== null ? iso(session.trackStartedAt) : null,
+    trackEndedAt: processed && session.trackEndedAt !== null ? iso(session.trackEndedAt) : null,
+    wind: windOf(session),
+    isOwner: owner,
     createdAt: iso(session.createdAt),
     updatedAt: iso(session.updatedAt),
   };
@@ -408,7 +501,9 @@ const putTrackRoute = createRoute({
   description:
     `The body is the gzipped track v1 file (docs/formats.md), sent as \`${TRACK_CONTENT_TYPE}\` ` +
     `with no Content-Encoding, at most ${TRACK_MAX_BYTES} bytes. PUT the session's metadata ` +
-    "first, with the same `revision`. Repeating the upload replaces the file.",
+    "first, with the same `revision`. Repeating the upload replaces the file. The server then " +
+    "derives the session's bounds, track times and (for shared sessions) wind in the " +
+    "background; `processing` on the session reports progress.",
   tags: ["sessions"],
   security,
   middleware: [requireAuth] as const,
@@ -432,6 +527,10 @@ const putTrackRoute = createRoute({
         "(`revision_mismatch`; PUT the metadata first).",
     ),
     415: errorResponse(`The body is not sent as ${TRACK_CONTENT_TYPE}.`),
+    503: errorResponse(
+      "The track is stored but could not be queued for processing (`postprocess_unavailable`). " +
+        "Repeat the upload.",
+    ),
   },
 });
 
@@ -677,7 +776,8 @@ sessionRoutes.openapi(putTrackRoute, async (c) => {
   });
   const [attached] = await db
     .update(sessions)
-    .set({ trackKey: key, updatedAt: Date.now() })
+    // Clears data derived from an earlier upload; the consumer derives it again.
+    .set({ trackKey: key, trackEtag: object.etag, ...CLEARED_DERIVED, updatedAt: Date.now() })
     .where(
       and(
         eq(sessions.id, id),
@@ -705,9 +805,22 @@ sessionRoutes.openapi(putTrackRoute, async (c) => {
   }
   await deleteOlderTracks(c.env.TRACKS, userId, id, revision);
 
-  // TODO(post-processing): enqueue the session for the queue consumer (docs/PLAN.md §7),
-  // which reads the whole track, checks `v` and `sessionId`, computes the bbox and start
-  // geohash, and fetches wind. There is no Queue binding yet.
+  // Post-processing (lib/postprocess.ts) reads the whole track, checks `v` and `sessionId`,
+  // derives the bounds and times, and fetches wind for shared sessions. A failed send is a
+  // 503: the client repeats the upload, which is idempotent and queues it again.
+  try {
+    await enqueuePostprocess(c.env, c.executionCtx, [
+      { v: 1, sessionId: id, userId, revision, etag: object.etag },
+    ]);
+  } catch (error) {
+    console.error("Could not queue post-processing.", error);
+    return apiError(
+      c,
+      503,
+      "postprocess_unavailable",
+      "The track is stored but could not be processed; upload it again.",
+    );
+  }
 
   c.header("ETag", object.httpEtag);
   return c.body(null, 204);
@@ -792,7 +905,18 @@ sessionRoutes.openapi(patchRoute, async (c) => {
     .set({ ...changes, updatedAt: Date.now() })
     .where(mine)
     .returning();
-  return session ? c.json(toSessionBody(session, userId), 200) : notFound(c);
+  if (!session) return notFound(c);
+  // Wind is fetched only for sessions others can see; sharing one queues the lookup.
+  if (session.visibility !== "private" && session.windJson === null && session.trackEtag) {
+    try {
+      await enqueuePostprocess(c.env, c.executionCtx, [
+        { v: 1, sessionId: id, userId, revision: session.uploadRevision, etag: session.trackEtag },
+      ]);
+    } catch (error) {
+      console.warn("Could not queue the wind lookup.", error);
+    }
+  }
+  return c.json(toSessionBody(session, userId), 200);
 });
 
 sessionRoutes.openapi(deleteRoute, async (c) => {

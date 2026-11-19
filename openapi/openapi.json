@@ -139,7 +139,8 @@
               "internal",
               "session_deleted",
               "stale_revision",
-              "revision_mismatch"
+              "revision_mismatch",
+              "postprocess_unavailable"
             ]
           },
           "message": {
@@ -486,6 +487,39 @@
             "type": "boolean",
             "description": "Whether a track file has been uploaded."
           },
+          "processing": {
+            "type": "string",
+            "enum": [
+              "none",
+              "pending",
+              "done",
+              "too_large",
+              "invalid"
+            ],
+            "description": "Server post-processing of the uploaded track: `none` without a track (or for a track uploaded before post-processing existed), `pending` until it has run, then `done`, or `too_large`/`invalid` when no data could be derived."
+          },
+          "bounds": {
+            "$ref": "#/components/schemas/Bounds"
+          },
+          "trackStartedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "First GPS fix, once processed."
+          },
+          "trackEndedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Last GPS fix, once processed."
+          },
+          "wind": {
+            "$ref": "#/components/schemas/SessionWind"
+          },
           "isOwner": {
             "type": "boolean",
             "description": "Whether the caller owns the session."
@@ -515,10 +549,128 @@
           "summary",
           "analyzerVersion",
           "hasTrack",
+          "processing",
+          "bounds",
+          "trackStartedAt",
+          "trackEndedAt",
+          "wind",
           "isOwner",
           "createdAt",
           "updatedAt"
         ]
+      },
+      "Bounds": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "properties": {
+          "south": {
+            "type": "number"
+          },
+          "west": {
+            "type": "number"
+          },
+          "north": {
+            "type": "number"
+          },
+          "east": {
+            "type": "number",
+            "description": "Less than `west` when the box crosses 180\u00b0."
+          }
+        },
+        "required": [
+          "south",
+          "west",
+          "north",
+          "east"
+        ],
+        "description": "The track's bounding box, null until processed. The owner gets the whole track's; everyone else the box of what the shared track shows (privacy zones cut out)."
+      },
+      "SessionWind": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "properties": {
+          "source": {
+            "type": "string",
+            "enum": [
+              "open-meteo-forecast",
+              "open-meteo-archive"
+            ]
+          },
+          "directionDeg": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "Mean direction the wind blows from, degrees true."
+          },
+          "speedMps": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "Mean speed at 10 m, m/s."
+          },
+          "gustMps": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "Strongest hourly gust at 10 m, m/s."
+          },
+          "samples": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "t": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "directionDeg": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "speedMps": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "gustMps": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "t",
+                "directionDeg",
+                "speedMps",
+                "gustMps"
+              ]
+            }
+          },
+          "fetchedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "source",
+          "directionDeg",
+          "speedMps",
+          "gustMps",
+          "samples",
+          "fetchedAt"
+        ],
+        "description": "Modelled wind from Open-Meteo for the session's time and area, fetched only while the session is public or unlisted. Null when not fetched or not available."
       },
       "PutSessionRequest": {
         "type": "object",
@@ -2025,7 +2177,7 @@
       "put": {
         "operationId": "putSessionTrack",
         "summary": "Upload a session's track file",
-        "description": "The body is the gzipped track v1 file (docs/formats.md), sent as `application/gzip` with no Content-Encoding, at most 8388608 bytes. PUT the session's metadata first, with the same `revision`. Repeating the upload replaces the file.",
+        "description": "The body is the gzipped track v1 file (docs/formats.md), sent as `application/gzip` with no Content-Encoding, at most 8388608 bytes. PUT the session's metadata first, with the same `revision`. Repeating the upload replaces the file. The server then derives the session's bounds, track times and (for shared sessions) wind in the background; `processing` on the session reports progress.",
         "tags": [
           "sessions"
         ],
@@ -2146,6 +2298,16 @@
           },
           "415": {
             "description": "The body is not sent as application/gzip.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The track is stored but could not be queued for processing (`postprocess_unavailable`). Repeat the upload.",
             "content": {
               "application/json": {
                 "schema": {

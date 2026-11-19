@@ -1,6 +1,7 @@
 import { exports } from "cloudflare:workers";
 import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { vi } from "vitest";
+import { openMeteo } from "./open-meteo";
 
 // A stand-in for Apple's signing key. The Worker fetches the "Apple" JWKS from a mocked
 // fetch, so tests never reach appleid.apple.com.
@@ -21,6 +22,7 @@ vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     jwksRequests.push(url);
     return Response.json(jwks);
   }
+  if (new URL(url).hostname.endsWith("open-meteo.com")) return openMeteo(new URL(url));
   return realFetch(input, init);
 });
 

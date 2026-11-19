@@ -4,6 +4,7 @@ import { drizzle } from "drizzle-orm/d1";
 import { type AuthEnv, requireAuth } from "../auth/middleware";
 import { type PrivacyZone, privacyZones, users } from "../db/schema";
 import { apiError, errorResponse } from "../lib/errors";
+import { reprocessUserSessions } from "../lib/postprocess";
 import { createRouter } from "../lib/router";
 
 const security = [{ bearerAuth: [] }];
@@ -133,12 +134,17 @@ export const privacyZoneRoutes = createRouter<AuthEnv>()
     if (!zone) {
       return apiError(c, 409, "zone_limit", `At most ${MAX_ZONES} privacy zones.`);
     }
+    // After the insert, so no public bounds computed without this zone survive it.
+    await reprocessUserSessions(c.env, c.executionCtx, userId);
     return c.json(toBody(zone), 201);
   })
   .openapi(deleteZoneRoute, async (c) => {
     const { id } = c.req.valid("param");
-    await drizzle(c.env.DB)
+    const removed = await drizzle(c.env.DB)
       .delete(privacyZones)
-      .where(and(eq(privacyZones.id, id.toLowerCase()), eq(privacyZones.userId, c.var.userId)));
+      .where(and(eq(privacyZones.id, id.toLowerCase()), eq(privacyZones.userId, c.var.userId)))
+      .returning({ id: privacyZones.id });
+    // Fewer zones only shrink what is hidden; reprocess so the public bounds grow back.
+    if (removed.length > 0) await reprocessUserSessions(c.env, c.executionCtx, c.var.userId);
     return c.body(null, 204);
   });

@@ -1,6 +1,7 @@
 import { and, eq, isNull } from "drizzle-orm";
 import type { drizzle } from "drizzle-orm/d1";
 import { type Session, sessions } from "../db/schema";
+import { CLEARED_DERIVED } from "./postprocess";
 import { userPrefix } from "./storage";
 
 type Db = ReturnType<typeof drizzle>;
@@ -96,7 +97,8 @@ export async function replaceSessionMetadata(
       .set({
         ...fields,
         uploadRevision: revision,
-        ...(newer ? { trackKey: null } : {}),
+        // The derived data described the detached track (lib/postprocess.ts).
+        ...(newer ? { trackKey: null, trackEtag: null, ...CLEARED_DERIVED } : {}),
         updatedAt: Date.now(),
       })
       .where(and(own, eq(sessions.uploadRevision, current.uploadRevision)))
