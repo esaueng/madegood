@@ -20,7 +20,7 @@ enum Haptics {
         case manOverboard
         /// Over the start line at the gun (OCS).
         case overTheLine
-        /// The press did nothing it could confirm (no position for a MOB mark).
+        /// The press did nothing it could confirm.
         case failure
     }
 

@@ -279,9 +279,15 @@ final class SessionRecorder {
         if demo {
             startDemoFeed(session: sessionId, sport: sport, startUptime: anchor.uptime)
         } else if let writer = writers[.gps] {
-            let location = LocationSource(writer: writer) { [weak self] line in
-                Task { @MainActor in self?.ingestFix(line, session: sessionId) }
-            }
+            let location = LocationSource(
+                writer: writer,
+                onFix: { [weak self] line in
+                    Task { @MainActor in self?.ingestFix(line, session: sessionId) }
+                },
+                onIssue: { issue in
+                    // MOB surfaces say why fixes stopped (PLAN §5).
+                    Task { @MainActor in ManOverboard.shared.setRecorderLocationIssue(issue) }
+                })
             location.start()
             self.location = location
         }
@@ -339,7 +345,9 @@ final class SessionRecorder {
                     guard let readings = self?.mirrorReadings(for: sessionID) else { return }
                     sequence += 1
                     let snapshot = WorkoutMirrorSnapshot(
-                        sessionID: sessionID, sequence: sequence, sport: sport, sentAt: Date(), readings: readings)
+                        sessionID: sessionID, sequence: sequence, sport: sport, sentAt: Date(), readings: readings,
+                        manOverboard: ManOverboard.shared.mark, manOverboardMarks: ManOverboard.shared.marks,
+                        manOverboardCleared: ManOverboard.shared.clearedMarkIDs)
                     if let data = try? encoder.encode(snapshot) {
                         // HealthKit reconnects on its own. Send the latest snapshot on the
                         // next tick rather than replaying samples after a dropped link.
@@ -399,16 +407,14 @@ final class SessionRecorder {
 
     func lap() { userEvent(.lap) }
 
-    /// Marks man-overboard (PLAN §5) at the latest position in `ManOverboard`, and
-    /// records a `mob` event with that position and how old it was.
-    /// Returns whether a position was marked (false before the first fix).
-    @discardableResult
-    func markManOverboard() -> Bool {
-        guard isRecording else { return false }
+    /// Records a man-overboard press (PLAN §5, `SessionController.markManOverboard`) as a
+    /// `mob` event with the marked position and how old it was, or without a position
+    /// when the press is still waiting for the first fix.
+    func recordManOverboard(_ result: ManOverboard.MarkResult) {
+        guard isRecording else { return }
         let now = Date()
-        let mark = ManOverboard.shared.markNow(at: now)
         var data: [String: JSONValue]?
-        if let mark {
+        if case .marked(let mark) = result {
             data = [
                 "lat": .number(mark.latitude), "lon": .number(mark.longitude),
                 "positionAge": .number((mark.positionAge * 10).rounded() / 10),
@@ -416,7 +422,6 @@ final class SessionRecorder {
         }
         writers[.events]?.append(RawFormat.EventLine(ts: now.timeIntervalSince1970, type: .mob, data: data))
         ingest(.event(SessionEvent(t: now.timeIntervalSince1970 - startUnix, type: .mob, data: data)))
-        return mark != nil
     }
 
     func pause() { userEvent(.pause) }
@@ -621,6 +626,7 @@ final class SessionRecorder {
         if let clockObserver { NotificationCenter.default.removeObserver(clockObserver) }
         clockObserver = nil
         location?.stop()
+        ManOverboard.shared.setRecorderLocationIssue(nil)
         motion?.stop()
         heading?.stop()
         savedToHealth =

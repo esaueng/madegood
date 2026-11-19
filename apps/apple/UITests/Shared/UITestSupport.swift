@@ -3,11 +3,13 @@ import XCTest
 extension XCTestCase {
     /// Launches the app with the synthetic demo session (DemoFeed in the app), so tests
     /// need no GPS, Health or permission prompts and see the same numbers every run.
-    /// Settings start from their defaults unless `resetSettings` is false. A
-    /// `-settings.<key> <value>` argument pins that setting for the launch.
+    /// Settings start from their defaults, with no man-overboard mark, unless
+    /// `resetSettings` is false (a relaunch that keeps them). A `-settings.<key> <value>`
+    /// argument pins that setting for the launch.
     func launchDemoApp(extraArguments: [String] = [], resetSettings: Bool = true) -> XCUIApplication {
         let app = XCUIApplication()
-        app.launchArguments = ["-demoSession"] + (resetSettings ? ["-resetSettings"] : []) + extraArguments
+        app.launchArguments =
+            ["-demoSession"] + (resetSettings ? ["-resetSettings", "-resetManOverboard"] : []) + extraArguments
         launchFresh(app)
         return app
     }
