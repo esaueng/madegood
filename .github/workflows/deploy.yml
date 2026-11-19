@@ -10,8 +10,8 @@ name: Deploy
 # - Pushes to main: production (`madegood`).
 #
 # Real resource IDs are not in the repository (AGENTS.md). They come from repository
-# variables (CLOUDFLARE_ACCOUNT_ID, D1_DATABASE_ID, D1_PREVIEW_DATABASE_ID) and the
-# CLOUDFLARE_API_TOKEN secret, and scripts/cloudflare-config writes them into the
+# secrets (CLOUDFLARE_ACCOUNT_ID, D1_DATABASE_ID, D1_PREVIEW_DATABASE_ID, as Cloudflare's
+# CI docs recommend, so the public logs mask them) and the CLOUDFLARE_API_TOKEN secret, and scripts/cloudflare-config writes them into the
 # runner's copy of web/wrangler.jsonc.
 
 on:
@@ -44,9 +44,9 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-  D1_DATABASE_ID: ${{ vars.D1_DATABASE_ID }}
-  D1_PREVIEW_DATABASE_ID: ${{ vars.D1_PREVIEW_DATABASE_ID }}
+  CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+  D1_DATABASE_ID: ${{ secrets.D1_DATABASE_ID }}
+  D1_PREVIEW_DATABASE_ID: ${{ secrets.D1_PREVIEW_DATABASE_ID }}
 
 jobs:
   preview:
@@ -88,6 +88,8 @@ jobs:
             id=$(find_id)
           fi
           test -n "$id"
+          # Per-PR database IDs aren't repository secrets; mask this one in the log too.
+          echo "::add-mask::$id"
           echo "id=$id" >> "$GITHUB_OUTPUT"
       - name: Fill in resource IDs
         env:
