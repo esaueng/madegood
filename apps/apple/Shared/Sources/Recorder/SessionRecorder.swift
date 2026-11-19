@@ -459,16 +459,19 @@ final class SessionRecorder {
 
     /// Feeds the engine, stores any events it generated, and publishes the new metrics.
     private func ingest(_ sample: Sample) {
-        guard var engine else { return }
-        engine.ingest(sample)
-        let generated = engine.generatedEvents
+        // In place: a copy of a still-stored engine would copy its growing buffers each fix.
+        guard
+            let (generated, snapshot) = engine.update({ engine in
+                engine.ingest(sample)
+                return (engine.generatedEvents, engine.snapshot)
+            })
+        else { return }
         for event in generated.dropFirst(writtenGeneratedEvents) {
             writers[.events]?.append(
                 RawFormat.EventLine(ts: startUnix + event.t, type: event.type, data: event.data))
         }
         writtenGeneratedEvents = generated.count
-        self.engine = engine
-        metrics = engine.snapshot
+        metrics = snapshot
         checkDistanceAlert()
         #if os(iOS)
             if let liveSport { liveActivity.update(metrics, sport: liveSport) }
@@ -485,11 +488,12 @@ final class SessionRecorder {
     /// Moves the engine's clock to now, so elapsed time and a stale speed update even when
     /// no sensor is reporting.
     private func tick() {
-        guard isRecording, var engine else { return }
+        guard isRecording, engine != nil else { return }
         let now = Date().timeIntervalSince1970 - startUnix
-        engine.advance(to: now)
-        self.engine = engine
-        metrics = engine.snapshot
+        metrics = engine.update { engine in
+            engine.advance(to: now)
+            return engine.snapshot
+        }
         if let liveStrokes { strokes = liveStrokes.snapshot() }
         #if os(iOS)
             if let liveSport { liveActivity.update(metrics, sport: liveSport) }

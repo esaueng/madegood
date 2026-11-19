@@ -255,11 +255,16 @@ that touch a maneuver's approach-to-departure range are left out. Reaching (80�
 counts toward the tack totals but neither VMG.
 
 **Live.** The watch and iPhone run the same rules over the engine's accepted fixes so
-far (raw course, as after the session). Every 10 s they re-estimate the wind (without
-a prior, so only its axis is known) and look for maneuvers in the observations since a
-minute before the previous scan, keeping those already found; every observation is
-rescanned only when the estimate has moved more than 10° since, and once more when the
-session stops, so a turn completed after the last refresh still counts. The estimate
+far (raw course, as after the session), with the same run breaks, including a gap of
+more than 5 s between accepted fixes. Every 10 s they re-estimate the wind (without a
+prior, so only its axis is known) and look for maneuvers in the observations since a
+minute before the previous scan. The shown axis follows the estimate while it stays
+within 10°; a different axis replaces it only after winning six refreshes in a row with
+at least 10 % more time on its legs, so two near-equal axes cannot alternate. Every
+observation is rescanned when the shown axis has moved more than 10° since the last
+rescan, at most once every 5 minutes, and once more when the session stops, so a turn
+completed after the last refresh still counts. Live, a turn once counted is never
+removed (counts only grow); session detail recomputes from scratch. The estimate
 appears once both legs have their time, which on a beat is shortly after the first
 tack. The live page shows the axis (both ends, and a line rather than an arrow), |VMG|
 from the current speed (3 s mean) and smoothed course, the angle to the axis, and the

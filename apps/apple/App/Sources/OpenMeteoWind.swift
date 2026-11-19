@@ -161,3 +161,40 @@ enum OpenMeteoCache {
         if let data = try? JSONEncoder().encode(wind) { defaults.set(data, forKey: query.cacheKey) }
     }
 }
+
+/// Forecast results and fetch state per query, for session detail. A fetch that
+/// completes after the selection changed lands under its own query, so it never shows
+/// for (or overwrites) the selection now on screen.
+struct OpenMeteoForecasts: Equatable {
+    enum State: Equatable { case idle, loading, failed }
+
+    private var results: [OpenMeteo.Query: OpenMeteoWind] = [:]
+    private var loading: Set<OpenMeteo.Query> = []
+    private var failed: Set<OpenMeteo.Query> = []
+
+    func wind(for query: OpenMeteo.Query?) -> OpenMeteoWind? {
+        query.flatMap { results[$0] }
+    }
+
+    func state(for query: OpenMeteo.Query?) -> State {
+        guard let query else { return .idle }
+        if loading.contains(query) { return .loading }
+        return failed.contains(query) ? .failed : .idle
+    }
+
+    mutating func start(_ query: OpenMeteo.Query) {
+        loading.insert(query)
+        failed.remove(query)
+    }
+
+    mutating func complete(_ query: OpenMeteo.Query, with wind: OpenMeteoWind) {
+        loading.remove(query)
+        failed.remove(query)
+        results[query] = wind
+    }
+
+    mutating func fail(_ query: OpenMeteo.Query) {
+        loading.remove(query)
+        failed.insert(query)
+    }
+}

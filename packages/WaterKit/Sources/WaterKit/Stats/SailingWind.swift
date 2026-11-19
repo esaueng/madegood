@@ -164,6 +164,17 @@ public struct CourseHistogram: Sendable, Hashable {
         return (-2 * log(max(resultant, 1e-12))).squareRoot() * 180 / .pi
     }
 
+    /// Sailing time within ±12.5° of each of an estimate's legs, s: how strongly the
+    /// track supports that axis.
+    func legTime(_ estimate: WindEstimate) -> Double {
+        let n = Self.binCount
+        return estimate.legCourses.reduce(0) { total, course in
+            let bin = Int(GPSFilter.normalize(course) / Self.binWidth) % n
+            return total
+                + (-Self.legHalfWidth...Self.legHalfWidth).reduce(0) { $0 + weights[((bin + $1) % n + n) % n] }
+        }
+    }
+
     /// Time-weighted circular mean course around a bin, degrees true.
     private func refined(_ bin: Int) -> Double? {
         let n = Self.binCount
@@ -368,26 +379,63 @@ struct SailingTracker: Sendable {
     static let refreshInterval = 10.0
     /// Longer than a turn (20 s) plus both legs (5 s each) and the median's reach, s.
     static let rescanMargin = 60.0
+    /// The axis may drift this far before the stored maneuvers are rescanned, degrees.
     static let rescanWindChange = 10.0
+    /// A different axis replaces the shown one only after winning this many refreshes in
+    /// a row by `axisSwitchMargin` of leg time, so two near-equal axes cannot alternate.
+    static let axisSwitchRefreshes = 6
+    static let axisSwitchMargin = 1.1
+    /// Full rescans run at most this often while live (the stop always runs one), s.
+    static let minimumRescanInterval = 300.0
 
-    private var observations: [SailingObservation] = []
-    /// The run each observation belongs to; a change starts a new run.
-    private var runIDs: [Int] = []
+    /// Every observation and the run it belongs to (a change of run ID starts a new
+    /// run), in a reference buffer that is copied only when shared, and counted then.
+    private final class Store: @unchecked Sendable {
+        // Mutated only through `SailingTracker.append`, after a uniqueness check.
+        var observations: [SailingObservation] = []
+        var runIDs: [Int] = []
+
+        func copy() -> Store {
+            let store = Store()
+            store.observations = observations
+            store.runIDs = runIDs
+            return store
+        }
+    }
+
+    private var store = Store()
+    private var observations: [SailingObservation] { store.observations }
+    private var runIDs: [Int] { store.runIDs }
+    /// For tests: how often the history was copied because the tracker (inside its engine)
+    /// was mutated while another copy still shared it. In place it stays 0.
+    private(set) var storageCopies = 0
     private var runID = 0
     private var runOpen = false
+    /// The last accepted fix, usable or not: a longer gap than the replay route's breaks
+    /// the run, as after the session.
+    private var lastFixTime: Double?
     private var histogram = CourseHistogram()
     private var lastRefresh = -Double.infinity
     private var lastScan = -Double.infinity
+    private var lastFullRescan = -Double.infinity
     /// The wind the stored maneuvers were found against, degrees true.
     private var scanWind: Double?
+    /// A different axis waiting to replace the shown one, and for how many refreshes it has won.
+    private var pendingAxis: (estimate: WindEstimate, refreshes: Int)?
     private var maneuvers: [SailingManeuver] = []
+    /// The estimate shown (with hysteresis; see `axisSwitchRefreshes`).
     private(set) var wind: WindEstimate?
+    /// For tests: how many times every observation was rescanned.
+    private(set) var fullRescans = 0
 
+    /// Turns found so far. Live they are never removed, so the counts only grow.
     var tacks: Int { maneuvers.count { $0.event.type == .tack } }
     var gybes: Int { maneuvers.count - tacks }
 
     /// One accepted fix. `course` is the receiver's raw course, as post-session.
     mutating func ingest(t: Double, speed: Double?, course: Double?, courseAccuracy: Double?) {
+        if let lastFixTime, t - lastFixTime > SessionReplayTimeline.maxRouteGap { breakRun() }
+        lastFixTime = t
         guard let speed, speed >= SailingManeuverDetector.minimumCourseSpeed,
             let course, (0...360).contains(course),
             SailingManeuverDetector.reliableCourseAccuracy(courseAccuracy)
@@ -405,9 +453,13 @@ struct SailingTracker: Sendable {
             runID += 1
             runOpen = true
         }
-        observations.append(SailingObservation(t: t, speed: speed, course: course))
-        runIDs.append(runID)
-        if t - lastRefresh >= Self.refreshInterval { refresh(at: t, full: false) }
+        if !isKnownUniquelyReferenced(&store) {
+            store = store.copy()
+            storageCopies += 1
+        }
+        store.observations.append(SailingObservation(t: t, speed: speed, course: course))
+        store.runIDs.append(runID)
+        if t - lastRefresh >= Self.refreshInterval { refresh(at: t, final: false) }
     }
 
     /// A pause, GPS anchor or unreliable course: evidence on either side is not joined.
@@ -415,31 +467,74 @@ struct SailingTracker: Sendable {
         runOpen = false
     }
 
-    /// The session ended: a last full refresh, so a turn completed since the last periodic
-    /// one is counted.
+    /// The session ended: a last full rescan, so a turn completed since the last periodic
+    /// refresh is counted.
     mutating func finish(at t: Double) {
         breakRun()
-        refresh(at: t, full: true)
+        refresh(at: t, final: true)
     }
 
-    private mutating func refresh(at t: Double, full: Bool) {
+    private static func axisDifference(_ a: Double, _ b: Double) -> Double {
+        let d = abs(GPSFilter.signedDifference(from: a, to: b))
+        return min(d, 180 - d)
+    }
+
+    private mutating func updateWind() {
+        guard let candidate = histogram.windEstimate() else { return }
+        guard let current = wind else {
+            wind = candidate
+            return
+        }
+        if Self.axisDifference(current.fromDegrees, candidate.fromDegrees) <= Self.rescanWindChange {
+            // The same axis, drifting: follow it.
+            wind = candidate
+            pendingAxis = nil
+            return
+        }
+        guard histogram.legTime(candidate) >= Self.axisSwitchMargin * histogram.legTime(current) else {
+            pendingAxis = nil
+            return
+        }
+        let refreshes =
+            pendingAxis.map {
+                Self.axisDifference($0.estimate.fromDegrees, candidate.fromDegrees) <= Self.rescanWindChange
+                    ? $0.refreshes + 1 : 1
+            } ?? 1
+        if refreshes >= Self.axisSwitchRefreshes {
+            wind = candidate
+            pendingAxis = nil
+        } else {
+            pendingAxis = (candidate, refreshes)
+        }
+    }
+
+    private mutating func refresh(at t: Double, final: Bool) {
         lastRefresh = t
-        wind = histogram.windEstimate()
+        updateWind()
         guard let direction = wind?.fromDegrees else { return }
         let moved = scanWind.map { abs(GPSFilter.signedDifference(from: $0, to: direction)) } ?? .infinity
-        if full || moved > Self.rescanWindChange {
-            maneuvers = SailingManeuverDetector.detect(in: runs(from: 0), windFrom: direction)
+        let rescanDue = moved > Self.rescanWindChange && t - lastFullRescan >= Self.minimumRescanInterval
+        if final || scanWind == nil || rescanDue {
+            // Keep every turn already counted; add the ones this axis finds elsewhere.
+            merge(SailingManeuverDetector.detect(in: runs(from: 0), windFrom: direction))
             scanWind = direction
+            lastFullRescan = t
+            fullRescans += 1
         } else if let scanWind {
-            let windowStart = lastScan - Self.rescanMargin
-            let first = firstIndex(atOrAfter: windowStart)
-            let found = SailingManeuverDetector.detect(in: runs(from: first), windFrom: scanWind)
-            for maneuver in found
-            where maneuvers.last.map({ $0.range.upperBound <= maneuver.range.lowerBound }) ?? true {
-                maneuvers.append(maneuver)
-            }
+            let first = firstIndex(atOrAfter: lastScan - Self.rescanMargin)
+            merge(SailingManeuverDetector.detect(in: runs(from: first), windFrom: scanWind))
         }
         lastScan = t
+    }
+
+    private mutating func merge(_ found: [SailingManeuver]) {
+        var added = false
+        for maneuver in found
+        where !maneuvers.contains(where: { $0.range.overlaps(maneuver.range) }) {
+            maneuvers.append(maneuver)
+            added = true
+        }
+        if added { maneuvers.sort { $0.event.t < $1.event.t } }
     }
 
     /// Observations from `start` on, split into runs.

@@ -12,22 +12,19 @@ struct SessionMomentsSection: View {
     @State private var wind: Double?
     @State private var editingWind = false
     @State private var sailingResult: (request: SailingRequest, analysis: SailingAnalysis)?
-    /// The fetched forecast and the query it answers; shown only for that query, so a
-    /// trimmed or edited selection in another area or on another day asks again.
-    @State private var forecast: (query: OpenMeteo.Query, wind: OpenMeteoWind)?
-    @State private var forecastState = ForecastState.idle
+    /// Fetched forecasts and fetch state per query; only the one for the displayed
+    /// selection is shown, so a trimmed or edited selection in another area or on another
+    /// day asks again, and a late answer for an earlier selection stays with it.
+    @State private var forecasts = OpenMeteoForecasts()
 
-    private enum ForecastState: Equatable { case idle, loading, failed }
+    private var forecastState: OpenMeteoForecasts.State { forecasts.state(for: forecastQuery) }
 
     private var forecastQuery: OpenMeteo.Query? {
         OpenMeteo.query(track: presentation.selection.track, duration: presentation.selection.duration)
     }
 
     /// The forecast for the displayed selection, if one has been fetched for it.
-    private var currentForecast: OpenMeteoWind? {
-        guard let forecast, forecast.query == forecastQuery else { return nil }
-        return forecast.wind
-    }
+    private var currentForecast: OpenMeteoWind? { forecasts.wind(for: forecastQuery) }
 
     private struct SailingRequest: Equatable {
         let source: SessionLibrary.Source
@@ -74,7 +71,7 @@ struct SessionMomentsSection: View {
             Button {
                 editingWind = true
             } label: {
-                LabeledContent("True wind from", value: windText(analysis))
+                LabeledContent(windTitle(analysis), value: windText(analysis))
                     .contentShape(.rect)
             }
             .buttonStyle(.plain)
@@ -113,13 +110,21 @@ struct SessionMomentsSection: View {
         }
     }
 
+    /// "Wind axis" while only the axis is known, else "True wind from".
+    private func windTitle(_ analysis: SailingAnalysis?) -> String {
+        guard wind == nil, let analysis, analysis.windSource == .estimate, !analysis.windResolved else {
+            return "True wind from"
+        }
+        return "Wind axis"
+    }
+
     private func windText(_ analysis: SailingAnalysis?) -> String {
         if let wind { return "\(wind.formatted(.number))°" }
         guard let analysis, analysis.windSource == .estimate, let estimate = analysis.estimate else {
             return "Optional"
         }
         let direction = Int(estimate.fromDegrees.rounded()) % 360
-        guard analysis.windResolved else { return "\(direction)°/\((direction + 180) % 360)° (estimated axis)" }
+        guard analysis.windResolved else { return "\(direction)°/\((direction + 180) % 360)° (estimated)" }
         return "\(direction)° (estimated)"
     }
 
@@ -247,16 +252,16 @@ struct SessionMomentsSection: View {
     }
 
     private func loadCachedForecast() {
-        forecastState = .idle
         guard currentForecast == nil, !DemoFeed.isEnabled, let query = forecastQuery,
             let cached = OpenMeteoCache.wind(for: query)
         else { return }
-        forecast = (query, cached)
+        forecasts.complete(query, with: cached)
     }
 
     private func fetchForecast() async {
+        // The query is fixed now: the answer is filed under it even if the selection changes.
         guard let query = forecastQuery else { return }
-        forecastState = .loading
+        forecasts.start(query)
         do {
             let result: OpenMeteoWind
             if DemoFeed.isEnabled {
@@ -270,10 +275,9 @@ struct SessionMomentsSection: View {
                 result = try await OpenMeteo.fetch(query)
                 OpenMeteoCache.store(result, for: query)
             }
-            forecast = (query, result)
-            forecastState = .idle
+            forecasts.complete(query, with: result)
         } catch {
-            forecastState = .failed
+            forecasts.fail(query)
         }
     }
 

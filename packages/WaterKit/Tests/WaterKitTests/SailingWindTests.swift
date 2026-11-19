@@ -306,6 +306,114 @@ import Testing
         #expect(count == course.labels.count)
     }
 
+    /// Re-check regression: the app stored the engine and fed it through a copy
+    /// (copy out, mutate, store back), so each fix copied the growing sailing history.
+    /// `Optional<SessionEngine>.update` is what the recorder uses: over 8 h it never
+    /// copies the history, where the old pattern copied it on every fix.
+    @Test func recorderMutationPatternStaysLinear() {
+        final class Recorder {
+            var engine: SessionEngine? = SessionEngine(sport: .sailing)
+            var metrics: LiveMetrics?
+            let inPlace: Bool
+            init(inPlace: Bool) { self.inPlace = inPlace }
+            func ingest(_ sample: Sample) {
+                if inPlace {
+                    metrics = engine.update { engine in
+                        engine.ingest(sample)
+                        return engine.snapshot
+                    }
+                } else {
+                    // The old pattern, for contrast.
+                    guard var copy = engine else { return }
+                    copy.ingest(sample)
+                    engine = copy
+                    metrics = copy.snapshot
+                }
+            }
+        }
+        let pattern: [Double] = [110, 125, 115, 130]
+        let course = SyntheticCourse.beat(windFrom: 75, legs: (0..<60).flatMap { _ in pattern })
+        let recorder = Recorder(inPlace: true)
+        let elapsed = ContinuousClock().measure {
+            recorder.ingest(.event(SessionEvent(t: 0, type: .start)))
+            for fix in course.fixes { recorder.ingest(.gps(fix)) }
+        }
+        #expect(elapsed < .seconds(10), "recorder pattern \(elapsed)")
+        #expect(recorder.engine?.sailingStorageCopies == 0)
+        #expect(recorder.metrics?.sailing?.maneuverCount ?? 0 >= course.labels.count - 1)
+
+        let old = Recorder(inPlace: false)
+        old.ingest(.event(SessionEvent(t: 0, type: .start)))
+        for fix in course.fixes.prefix(600) { old.ingest(.gps(fix)) }
+        #expect(old.engine?.sailingStorageCopies ?? 0 > 500)
+        var missing: SessionEngine?
+        #expect(missing.update { $0.snapshot } == nil)
+    }
+
+    /// Re-check regression: with legs on 000°, 080° and 160°, the axes 040° and 120° are
+    /// nearly equal and could alternate every refresh, each switch rescanning everything
+    /// and removing or restoring turns. The shown axis needs a clear, lasting win, full
+    /// rescans are capped, and live counts never fall.
+    @Test func competingAxesDoNotThrashTheLiveTracker() {
+        var tracker = SailingTracker()
+        let legs: [Double] = [0, 80, 160, 80]
+        var t = 0.0
+        var counts: [Int] = []
+        var axes: [Double] = []
+        for repetition in 0..<30 {
+            for (index, leg) in legs.enumerated() {
+                let next = legs[(index + 1) % legs.count]
+                for second in 0..<60 {
+                    let jitter = Double((repetition * 7 + second * 13) % 7) - 3
+                    tracker.ingest(t: t, speed: 5, course: GPSFilter.normalize(leg + jitter), courseAccuracy: nil)
+                    t += 1
+                }
+                for step in 0..<6 {
+                    let fraction = Double(step) / 6
+                    let dip = 1 - 0.5 * (1 - abs(fraction * 2 - 1))
+                    let course = leg + GPSFilter.signedDifference(from: leg, to: next) * fraction
+                    tracker.ingest(t: t, speed: 5 * dip, course: GPSFilter.normalize(course), courseAccuracy: nil)
+                    t += 1
+                    counts.append(tracker.tacks + tracker.gybes)
+                }
+                if let wind = tracker.wind?.fromDegrees { axes.append(wind) }
+            }
+        }
+        // Monotone live counts.
+        #expect(zip(counts, counts.dropFirst()).allSatisfy { $0 <= $1 })
+        // At most one full rescan per 5 minutes (plus the first).
+        #expect(tracker.fullRescans <= Int(t / SailingTracker.minimumRescanInterval) + 1)
+        // The shown axis switches rarely, not every leg.
+        let switches = zip(axes, axes.dropFirst()).count {
+            let d = abs(GPSFilter.signedDifference(from: $0, to: $1))
+            return min(d, 180 - d) > SailingTracker.rescanWindChange
+        }
+        #expect(switches <= 4, "axis switched \(switches) times over \(axes.count) legs")
+    }
+
+    /// Re-check regression: a 6 s GPS outage inside a turn split post-session runs (the
+    /// replay route breaks after 5 s) but not live runs, so the counts differed. Live
+    /// now breaks its runs at the same gap.
+    @Test func gpsOutageInsideATurnBreaksLiveAndPostAlike() throws {
+        // A 16 s turn, so the course step across the 6 s gap (about 34°) is small enough
+        // that only the gap rule, not the step limit, keeps the turn out.
+        let full = SyntheticCourse.beat(windFrom: 0, legs: [90, 90, 90], noise: 0, turn: 16)
+        let turn = full.labels[0].t
+        var course = full
+        course.fixes.removeAll { $0.t > turn - 3 && $0.t < turn + 3 }
+        #expect(full.fixes.count - course.fixes.count == 5)
+        #expect(try SessionSelection(session: full.session()).sailingAnalysis().maneuvers.count == 2)
+        var engine = SessionEngine(sport: .sailing)
+        engine.ingest(.event(SessionEvent(t: 0, type: .start)))
+        for fix in course.fixes { engine.ingest(.gps(fix)) }
+        engine.ingest(.event(SessionEvent(t: course.duration + 1, type: .stop)))
+        let post = try SessionSelection(session: course.session()).sailingAnalysis().maneuvers
+        let live = try #require(engine.snapshot.sailing).maneuverCount
+        #expect(post.count == 1)
+        #expect(live == post.count)
+        #expect(post.allSatisfy { !$0.range.contains(turn) })
+    }
+
     // MARK: Helpers
 
     private func expectMatches(_ maneuvers: [SailingManeuver], labels: [SessionEvent]) {

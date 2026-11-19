@@ -81,6 +81,20 @@ public struct LiveMetrics: Sendable, Hashable {
     public var sailing: LiveSailing? = nil
 }
 
+extension Optional where Wrapped == SessionEngine {
+    /// Runs `body` on the stored engine in place. The engine is moved out first, so the
+    /// mutation does not copy its buffers (the sailing history grows all session; a
+    /// copy-out/mutate/store-back of a still-referenced engine copied it on every fix).
+    /// Returns nil, without calling `body`, when there is no engine.
+    @discardableResult
+    public mutating func update<T>(_ body: (inout SessionEngine) throws -> T) rethrows -> T? {
+        guard var engine = self else { return nil }
+        self = nil
+        defer { self = engine }
+        return try body(&engine)
+    }
+}
+
 /// The sport-independent live session engine: GPS cleaning, auto-pause, laps and the
 /// headline metrics. Sport analyzers (strokes, maneuvers) build on top of it.
 public struct SessionEngine: LiveAnalyzer {
@@ -235,6 +249,9 @@ public struct SessionEngine: LiveAnalyzer {
             acceptedFixes: acceptedFixes, rejectedFixes: rejectedFixes, isFinished: finished,
             speedCategories: speedCategories, sailing: sailing)
     }
+
+    /// For tests: see `SailingTracker.storageCopies`.
+    var sailingStorageCopies: Int { sailingTracker?.storageCopies ?? 0 }
 
     private var sailing: LiveSailing? {
         guard let sailingTracker else { return nil }

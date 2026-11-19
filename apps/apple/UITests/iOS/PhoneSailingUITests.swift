@@ -49,7 +49,7 @@ final class PhoneSailingUITests: XCTestCase {
         let windRow = app.buttons["moments.wind.edit"]
         scrollTo(windRow, in: app)
         let estimated = NSPredicate(
-            format: "label MATCHES %@", "True wind from, (0|35[5-9]|[1-5])°/(17[5-9]|18[0-5])° \\(estimated axis\\)")
+            format: "label MATCHES %@", "Wind axis, (0|35[5-9]|[1-5])°/(17[5-9]|18[0-5])° \\(estimated\\)")
         XCTAssertEqual(
             XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: estimated, object: windRow)], timeout: 15),
             .completed, windRow.label)

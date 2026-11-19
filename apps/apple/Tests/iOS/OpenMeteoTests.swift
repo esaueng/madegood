@@ -94,6 +94,37 @@ final class OpenMeteoTests: XCTestCase {
     }
 }
 
+final class OpenMeteoForecastsTests: XCTestCase {
+    private func query(day: Double) -> OpenMeteo.Query {
+        OpenMeteo.Query(
+            latitude: 10, longitude: -30, startDate: "2000-01-0\(Int(day) + 1)", endDate: "2000-01-0\(Int(day) + 1)",
+            firstHour: 946_684_800 + day * 86_400, lastHour: 946_684_800 + day * 86_400)
+    }
+
+    /// Re-check regression: a fetch for selection A that completed after the user trimmed
+    /// to selection B overwrote the single forecast slot, so B showed A's wind.
+    func testLateCompletionStaysWithItsOwnQuery() {
+        let a = query(day: 0)
+        let b = query(day: 1)
+        var forecasts = OpenMeteoForecasts()
+        forecasts.start(a)
+        XCTAssertEqual(forecasts.state(for: a), .loading)
+        // The selection changes to B while A is in flight; B starts idle with no wind.
+        XCTAssertEqual(forecasts.state(for: b), .idle)
+        XCTAssertNil(forecasts.wind(for: b))
+        forecasts.start(b)
+        forecasts.fail(b)
+        // A answers late: it is filed under A and changes nothing for B.
+        let late = OpenMeteoWind(fromDegrees: 120, speed: 4, hours: 2)
+        forecasts.complete(a, with: late)
+        XCTAssertNil(forecasts.wind(for: b))
+        XCTAssertEqual(forecasts.state(for: b), .failed)
+        XCTAssertEqual(forecasts.wind(for: a), late)
+        XCTAssertEqual(forecasts.state(for: a), .idle)
+        XCTAssertNil(forecasts.wind(for: nil))
+    }
+}
+
 final class SailingReadingsTests: XCTestCase {
     private func readings(side: WindEstimate.Side, vmg: Double, angle: Double) -> SailingReadings {
         let wind = WindEstimate(
