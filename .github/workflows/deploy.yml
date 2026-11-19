@@ -150,7 +150,7 @@ jobs:
     timeout-minutes: 15
     environment:
       name: production
-      url: https://madegood.esau.workers.dev
+      url: https://madegood.app
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -196,7 +196,7 @@ jobs:
       - name: Check production responds
         run: |
           for attempt in 1 2 3 4 5 6; do
-            if curl -fsS https://madegood.esau.workers.dev/api/health; then exit 0; fi
+            if curl -fsS https://madegood.app/api/health; then exit 0; fi
             sleep 5
           done
           exit 1
