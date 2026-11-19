@@ -1,0 +1,299 @@
+import Foundation
+import Testing
+
+@testable import WaterKit
+
+/// Wind estimate, VMG and live sailing against synthetic tracks with known answers
+/// (docs/metrics.md, "Sailing wind and VMG"). PLAN §5 targets: ≥ 95 % of labelled
+/// maneuvers, < 5 % false positives, wind within ±10°.
+@Suite struct SailingWindTests {
+    // MARK: Wind estimate
+
+    @Test(arguments: [0.0, 30, 95, 182.5, 271, 355])
+    func upwindBeatEstimatesWindWithinTenDegrees(wind: Double) throws {
+        let course = SyntheticCourse.beat(windFrom: wind, legs: [70, 85, 60, 95, 75, 80, 65, 90])
+        let selection = try SessionSelection(session: course.session())
+        let estimate = try #require(selection.estimatedWind())
+        #expect(abs(GPSFilter.signedDifference(from: wind, to: estimate.fromDegrees)) <= 10)
+        #expect(!estimate.resolvedByPrior)
+        #expect(abs(estimate.legAngle - 90) <= 10)
+        #expect(estimate.confidence > 0.6)
+
+        let analysis = selection.sailingAnalysis()
+        #expect(analysis.windSource == .estimate)
+        expectMatches(analysis.maneuvers, labels: course.labels)
+        #expect(analysis.tackCount == course.labels.count)
+        #expect(analysis.gybeCount == 0)
+    }
+
+    @Test func unevenTacksAndCourseNoiseStayWithinTenDegrees() throws {
+        // One tack sailed three times longer than the other, with ±6° course noise.
+        let course = SyntheticCourse.beat(windFrom: 210, legs: [150, 50, 160, 45, 140, 55], noise: 6)
+        let estimate = try #require(try SessionSelection(session: course.session()).estimatedWind())
+        #expect(abs(GPSFilter.signedDifference(from: 210, to: estimate.fromDegrees)) <= 10)
+    }
+
+    @Test func downwindLegsNeedAPriorToResolveTheDirection() throws {
+        // Gybing downwind at 140° true wind angle: legs 80° apart around the downwind axis.
+        let course = SyntheticCourse.beat(windFrom: 20, legs: [80, 70, 90, 75], halfAngle: 140)
+        let selection = try SessionSelection(session: course.session())
+
+        let unresolved = try #require(selection.estimatedWind())
+        // Without a prior the legs are taken as upwind: 180° off.
+        #expect(abs(GPSFilter.signedDifference(from: 200, to: unresolved.fromDegrees)) <= 10)
+        #expect(!unresolved.resolvedByPrior)
+
+        // A forecast 30° off still picks the right side of the axis.
+        let resolved = try #require(selection.estimatedWind(prior: 50))
+        #expect(abs(GPSFilter.signedDifference(from: 20, to: resolved.fromDegrees)) <= 10)
+        #expect(resolved.resolvedByPrior)
+        #expect(abs(resolved.confidence - unresolved.confidence) < 1e-9)
+
+        let analysis = selection.sailingAnalysis(windPrior: 50)
+        expectMatches(analysis.maneuvers, labels: course.labels)
+        #expect(analysis.gybeCount == course.labels.count)
+        #expect(analysis.upwindVMG == nil)
+        // Downwind VMG: 5 m/s at 140° true wind angle is 5 × cos 40° away from the wind.
+        let downwind = try #require(analysis.downwindVMG)
+        #expect(abs(downwind - 5 * cos(40 * Double.pi / 180)) < 0.2)
+    }
+
+    @Test func aPriorThatAgreesWithNeitherDirectionHalvesTheConfidence() throws {
+        let selection = try SessionSelection(session: SyntheticCourse.beat(windFrom: 0, legs: [90, 90, 90]).session())
+        let plain = try #require(selection.estimatedWind())
+        let sideways = try #require(selection.estimatedWind(prior: 90))
+        #expect(abs(sideways.confidence - plain.confidence / 2) < 1e-9)
+    }
+
+    @Test func noEstimateWithoutTwoLegs() throws {
+        // Straight line, a single short tack, and reaches 180° apart.
+        let straight = SyntheticCourse.beat(windFrom: 0, legs: [300])
+        #expect(try SessionSelection(session: straight.session()).estimatedWind() == nil)
+        let short = SyntheticCourse.beat(windFrom: 0, legs: [15, 15])
+        #expect(try SessionSelection(session: short.session()).estimatedWind() == nil)
+        let reaches = SyntheticCourse.beat(windFrom: 0, legs: [120, 120, 120], halfAngle: 90)
+        #expect(try SessionSelection(session: reaches.session()).estimatedWind() == nil)
+
+        let repository = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let folder = repository.appendingPathComponent("fixtures/sailing/synthetic-straight-line")
+        let fixture = try SessionSelection(session: RawSessionReader.read(folder: folder, includeMotion: false))
+        let analysis = fixture.sailingAnalysis()
+        #expect(analysis.estimate == nil)
+        #expect(analysis.windSource == .none)
+        #expect(analysis.maneuvers.isEmpty)
+    }
+
+    @Test func histogramIgnoresInvalidInputAndWrapsAtNorth() {
+        var histogram = CourseHistogram()
+        histogram.add(course: .nan, seconds: 10)
+        histogram.add(course: 10, seconds: -1)
+        histogram.add(course: 10, seconds: .infinity)
+        #expect(histogram.totalTime == 0)
+        // Legs at 315° and 45° (through north) and at 355°±45° wrapped by a whole turn.
+        histogram.add(course: 315 - 720, seconds: 100)
+        histogram.add(course: 45 + 360, seconds: 100)
+        let estimate = histogram.windEstimate()
+        #expect(estimate.map { abs(GPSFilter.signedDifference(from: 0, to: $0.fromDegrees)) < 0.001 } == true)
+        #expect(estimate?.legCourses.map { $0.rounded() } == [45, 315])
+        #expect(estimate.map { abs($0.confidence - 100.0 / 120) < 1e-9 } == true)
+    }
+
+    @Test func replayStatsReportTheSameWindAndManeuvers() throws {
+        let course = SyntheticCourse.beat(windFrom: 30, legs: [70, 85, 60, 95])
+        let stats = SessionStats(session: course.session())
+        let sailing = try #require(stats.sailing)
+        #expect(sailing.tacks == 3)
+        #expect(sailing.gybes == 0)
+        #expect(abs(GPSFilter.signedDifference(from: 30, to: sailing.windFrom ?? 210)) <= 10)
+        #expect(stats.textReport().contains("Sailing   3 tacks, 0 gybes, wind from "))
+        #expect(SessionStats(session: course.session(sport: .kayak)).sailing == nil)
+    }
+
+    // MARK: VMG
+
+    @Test func vmgAndTrueWindAngleByHand() {
+        // Close-hauled on port: wind from 0°, sailing 045°.
+        #expect(SailingVMG.trueWindAngle(course: 45, windFrom: 0) == -45)
+        #expect(abs(SailingVMG.vmg(speed: 5, course: 45, windFrom: 0) - 5 * 0.5.squareRoot()) < 1e-12)
+        // Starboard, across north: wind from 350°, sailing 300°.
+        #expect(SailingVMG.trueWindAngle(course: 300, windFrom: 350) == 50)
+        // Running: VMG is negative (away from the wind).
+        #expect(abs(SailingVMG.vmg(speed: 4, course: 180, windFrom: 0) + 4) < 1e-12)
+    }
+
+    @Test func userWindDrivesVMGTackTotalsAndPointing() throws {
+        // Hand-computed: 5 m/s at 45° true wind angle, so upwind VMG is 5 cos 45° = 3.54.
+        let course = SyntheticCourse.beat(windFrom: 0, legs: [120, 80], noise: 0)
+        let selection = try SessionSelection(session: course.session())
+        let analysis = selection.sailingAnalysis(windFromDegreesTrue: 0)
+        #expect(analysis.windSource == .user)
+        #expect(analysis.windFrom == 0)
+        let tack = try #require(analysis.maneuvers.first)
+        #expect(analysis.maneuvers.count == 1)
+        #expect(abs((tack.turnAngle ?? 0) - 90) < 0.001)
+        #expect(abs((tack.speedLossPercent ?? 0) - 50) < 0.001)
+
+        #expect(abs((analysis.upwindVMG ?? 0) - 5 * cos(Double.pi / 4)) < 0.001)
+        #expect(abs((analysis.pointingAngle ?? 0) - 45) < 0.001)
+        #expect(analysis.downwindVMG == nil)
+        // The first leg (course 315°) has the wind on starboard. Intervals that touch the
+        // turn's approach-to-departure range count toward neither tack.
+        let starboardEnd = tack.range.lowerBound
+        let portStart = tack.range.upperBound
+        #expect(abs(analysis.starboard.time - starboardEnd) < 0.001)
+        #expect(abs(analysis.starboard.distance - 5 * starboardEnd) < 0.001)
+        #expect(abs(analysis.port.time - (course.duration - portStart)) < 0.001)
+
+        // An invalid user wind falls back to the estimate.
+        #expect(selection.sailingAnalysis(windFromDegreesTrue: 400).windSource == .estimate)
+    }
+
+    /// Review regression: with a gradual turn the legs' edge fixes are already turning
+    /// (11.25° steps fit the 12° leg band), and an angle between them read 68° for 90°.
+    @Test func turnAngleUsesTheLegsMeanCourses() throws {
+        let course = SyntheticCourse.beat(windFrom: 0, legs: [90, 90], noise: 0, turn: 8)
+        let tack = try #require(
+            try SessionSelection(session: course.session()).sailingAnalysis(windFromDegreesTrue: 0).maneuvers.first)
+        // Hand-computed: each leg's 3 s mean includes one fix 11.25° into the turn.
+        #expect(abs((tack.turnAngle ?? 0) - (90 - 2 * 11.25 / 4)) < 0.001)
+    }
+
+    @Test func otherSportsHaveNoSailingAnalysis() throws {
+        let course = SyntheticCourse.beat(windFrom: 0, legs: [90, 90, 90])
+        let kayak = try SessionSelection(session: course.session(sport: .kayak))
+        let analysis = kayak.sailingAnalysis(windFromDegreesTrue: 0)
+        #expect(analysis.maneuvers.isEmpty)
+        #expect(analysis.estimate == nil)
+        #expect(analysis.upwindVMG == nil)
+    }
+
+    // MARK: Live
+
+    @Test func liveEngineEstimatesWindAndCountsTheSameManeuvers() throws {
+        let course = SyntheticCourse.beat(windFrom: 30, legs: [70, 85, 60, 95, 75, 80])
+        var engine = SessionEngine(sport: .sailing)
+        engine.ingest(.event(SessionEvent(t: 0, type: .start)))
+        var firstEstimate: Double?
+        for fix in course.fixes {
+            engine.ingest(.gps(fix))
+            if firstEstimate == nil, engine.snapshot.sailing?.wind != nil { firstEstimate = fix.t }
+        }
+        let live = try #require(engine.snapshot.sailing)
+        let wind = try #require(live.wind)
+        #expect(abs(GPSFilter.signedDifference(from: 30, to: wind.fromDegrees)) <= 10)
+        // Live, the estimate appears after the first tack once both legs have 20 s.
+        #expect((firstEstimate ?? .infinity) < course.labels[0].t + 40)
+
+        let post = try SessionSelection(session: course.session()).sailingAnalysis()
+        #expect(live.maneuverCount == post.maneuvers.count)
+        #expect(live.tacks == course.labels.count)
+
+        // VMG from the current speed and smoothed course.
+        let snapshot = engine.snapshot
+        let angle = try #require(live.trueWindAngle)
+        let vmg = try #require(live.vmg)
+        #expect(abs(vmg - (snapshot.speed ?? 0) * cos(angle * .pi / 180)) < 1e-9)
+        #expect(abs(abs(angle) - 45) < 10)
+
+        #expect(SessionEngine(sport: .kayak).snapshot.sailing == nil)
+        #expect(SessionEngine(sport: .sailing).snapshot.sailing == LiveSailing())
+    }
+
+    @Test func livePauseBreaksManeuverEvidence() {
+        // A manual pause across the only tack: the turn is not joined across it.
+        let course = SyntheticCourse.beat(windFrom: 0, legs: [90, 90], noise: 0)
+        let turn = course.labels[0].t
+        var engine = SessionEngine(sport: .sailing)
+        engine.ingest(.event(SessionEvent(t: 0, type: .start)))
+        for fix in course.fixes {
+            if fix.t == turn - 2 { engine.ingest(.event(SessionEvent(t: fix.t, type: .pause))) }
+            if fix.t == turn + 2 { engine.ingest(.event(SessionEvent(t: fix.t, type: .resume))) }
+            engine.ingest(.gps(fix))
+        }
+        #expect(engine.snapshot.sailing?.wind != nil)
+        #expect(engine.snapshot.sailing?.maneuverCount == 0)
+    }
+
+    // MARK: Helpers
+
+    private func expectMatches(_ maneuvers: [SailingManeuver], labels: [SessionEvent]) {
+        var unmatched = maneuvers
+        var matches = 0
+        for label in labels {
+            if let index = unmatched.firstIndex(where: {
+                $0.event.type == label.type && abs($0.event.t - label.t) <= 2 && $0.range.contains(label.t)
+            }) {
+                unmatched.remove(at: index)
+                matches += 1
+            }
+        }
+        #expect(Double(matches) / Double(labels.count) >= 0.95)
+        #expect(Double(unmatched.count) / Double(max(1, maneuvers.count)) < 0.05)
+    }
+}
+
+/// A synthetic zig-zag: legs at ±`halfAngle` true wind angle joined by `turn` s turns through
+/// the wind (or downwind axis) with a 50 % speed dip, 1 Hz fixes, deterministic noise.
+struct SyntheticCourse {
+    var fixes: [GPSFix] = []
+    var labels: [SessionEvent] = []
+    var duration = 0.0
+
+    static func beat(
+        windFrom wind: Double, legs: [Double], halfAngle: Double = 45, speed: Double = 5, noise: Double = 3,
+        turn: Double = 6
+    ) -> SyntheticCourse {
+        var course = SyntheticCourse()
+        var position = (lat: 10.0, lon: -30.0)
+        var random: UInt64 = 0x2545_F491_4F6C_DD1D
+        func jitter() -> Double {
+            random = random &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
+            return (Double(random >> 11) / Double(1 << 53) * 2 - 1) * noise
+        }
+        var t = 0.0
+        // Starboard first: the wind on the right, so course = wind − angle.
+        var side = -1.0
+        let type: EventType = halfAngle < 90 ? .tack : .gybe
+        for (index, leg) in legs.enumerated() {
+            var segment: [(course: Double, speed: Double)] = Array(
+                repeating: (wind + side * halfAngle, speed), count: Int(leg))
+            if index < legs.count - 1 {
+                let from = wind + side * halfAngle
+                // Upwind turns go through the wind; downwind turns through the run.
+                let to = halfAngle < 90 ? wind - side * halfAngle : wind - side * halfAngle + side * 360
+                for step in 0..<Int(turn) {
+                    let fraction = Double(step) / turn
+                    let dip = 1 - 0.5 * (1 - abs(fraction * 2 - 1))
+                    segment.append((from + (to - from) * fraction, speed * dip))
+                }
+                course.labels.append(SessionEvent(t: t + leg + turn / 2, type: type))
+            }
+            for (heading, v) in segment {
+                let reported = GPSFilter.normalize(heading + jitter())
+                course.fixes.append(
+                    GPSFix(
+                        t: t, latitude: position.lat, longitude: position.lon, horizontalAccuracy: 5, speed: v,
+                        course: reported))
+                position = Geo.destination(lat: position.lat, lon: position.lon, bearing: reported, distance: v)
+                t += 1
+            }
+            side = -side
+        }
+        course.duration = t - 1
+        return course
+    }
+
+    func session(sport: Sport = .sailing) -> RawSession {
+        let start = 946_684_800.0
+        let endTime = (fixes.last?.t ?? 0) + 1
+        let meta = RawFormat.Meta(
+            sessionId: UUID(), sport: sport, startedAt: start, endedAt: start + endTime,
+            clock: RawFormat.ClockAnchor(unix: start, uptime: 1_000),
+            device: RawFormat.Device(kind: "watch", model: "Synthetic", os: "watchOS"),
+            app: RawFormat.App(version: "1.0", build: "test"))
+        return RawSession(
+            meta: meta, gps: fixes, events: [.init(t: 0, type: .start), .init(t: endTime, type: .stop)])
+    }
+}

@@ -20,6 +20,8 @@ struct LiveReadings: Codable, Equatable, Sendable {
     var strokeCount: Int?
     /// Windsurfing only. Optional, so snapshots from an older watch app still decode.
     var speedCategories: SpeedCategoryReadings?
+    /// Sailing only: wind estimate, VMG and maneuvers. Optional for older watch apps.
+    var sailing: SailingReadings?
 
     init(_ metrics: LiveMetrics?, strokes: StrokeDetector.Metrics? = nil) {
         elapsed = metrics?.elapsed ?? 0
@@ -36,6 +38,7 @@ struct LiveReadings: Codable, Equatable, Sendable {
         strokeRate = strokes?.strokeRate
         strokeCount = strokes?.strokeCount
         speedCategories = metrics?.speedCategories.map(SpeedCategoryReadings.init)
+        sailing = metrics?.sailing.map(SailingReadings.init)
     }
 }
 

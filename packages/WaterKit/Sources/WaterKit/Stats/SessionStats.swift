@@ -45,6 +45,20 @@ public struct SessionStats: Sendable, Hashable, Codable {
     public var issues: [String]
     /// Paddle strokes, for kayak, canoe and SUP recordings with motion (docs/metrics.md "Strokes").
     public var strokes: StrokeStats?
+    /// Sailing recordings: the track's wind estimate, maneuvers and VMG (docs/metrics.md
+    /// "Sailing wind and VMG"). No prior, so the wind assumes the legs are upwind.
+    public var sailing: SailingStats?
+
+    public struct SailingStats: Sendable, Hashable, Codable {
+        /// Degrees true; nil without an estimate.
+        public var windFrom: Double?
+        public var windConfidence: Double?
+        public var tacks: Int
+        public var gybes: Int
+        /// m/s
+        public var upwindVMG: Double?
+        public var downwindVMG: Double?
+    }
 
     public struct StrokeStats: Sendable, Hashable, Codable {
         public var count: Int
@@ -77,6 +91,12 @@ extension SessionStats {
                 count: analysis.strokeCount, averageRate: analysis.averageStrokeRate,
                 distancePerStroke: analysis.distancePerStroke, sideSwitches: singleBlade ? analysis.sideSwitches : nil,
                 sideBalance: analysis.sideBalance)
+        }
+        if session.meta.sport == .sailing, let selection = try? SessionSelection(session: session) {
+            let analysis = selection.sailingAnalysis()
+            sailing = SailingStats(
+                windFrom: analysis.windFrom, windConfidence: analysis.estimate?.confidence, tacks: analysis.tackCount,
+                gybes: analysis.gybeCount, upwindVMG: analysis.upwindVMG, downwindVMG: analysis.downwindVMG)
         }
     }
 

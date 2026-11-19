@@ -607,6 +607,9 @@ private struct LiveView: View {
             if let categories = readings.speedCategories {
                 speedBests(categories, display: display)
             }
+            if let sailing = readings.sailing {
+                sailingCard(sailing, course: readings.course, display: display)
+            }
             DisclosureGroup("More metrics") {
                 VStack(spacing: 12) {
                     ForEach(supporting.dropFirst(3)) { metric in
@@ -703,6 +706,56 @@ private struct LiveView: View {
         .accessibilityIdentifier("live.speedBests")
     }
 
+    /// The sailing sport page (PLAN §6): VMG, heading, the wind arrow once the track gives
+    /// an estimate, and tacks and gybes (docs/metrics.md, "Sailing wind and VMG").
+    private func sailingCard(_ sailing: SailingReadings, course: Double?, display: LiveDisplay) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top) {
+                Text("Sailing")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if let wind = sailing.windFrom {
+                    WindArrow(windFrom: wind, course: course, size: 52)
+                }
+            }
+            let column = GridItem(.flexible(), alignment: .leading)
+            LazyVGrid(columns: [column, column], alignment: .leading, spacing: 12) {
+                ForEach(sailingMetrics(sailing, course: course, display: display)) { metric in
+                    VStack(alignment: .leading, spacing: 2) {
+                        metric.caption.font(.caption)
+                        metric.reading(numberFont: .title3.weight(.semibold), unitFont: .footnote)
+                    }
+                }
+            }
+            Text(
+                sailing.windFrom == nil
+                    ? "Wind appears after a tack, once both tacks have some time."
+                    : "Wind estimated from your tacks. Not for navigation."
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(.background.secondary, in: .rect(cornerRadius: 12))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("live.sailing")
+    }
+
+    private func sailingMetrics(_ sailing: SailingReadings, course: Double?, display: LiveDisplay) -> [LiveMetric] {
+        [
+            LiveMetric(id: "metric.vmg", title: LiveDisplay.vmgCaption(sailing.vmg), text: display.vmg(sailing.vmg)),
+            LiveMetric(id: "metric.heading", title: "Heading", text: LiveDisplay.course(course)),
+            LiveMetric(
+                id: "metric.wind", title: "Wind from (est.)",
+                text: sailing.windFrom.map { LiveDisplay.windFrom($0) } ?? "–"),
+            LiveMetric(id: "metric.windAngle", title: "Wind angle", text: LiveDisplay.windAngle(sailing.trueWindAngle)),
+            LiveMetric(id: "metric.tacks", title: "Tacks", text: "\(sailing.tacks)"),
+            LiveMetric(id: "metric.gybes", title: "Gybes", text: "\(sailing.gybes)"),
+        ]
+    }
+
     private func metricRow(_ metric: LiveMetric) -> some View {
         let reading = metric.reading(numberFont: .title2.weight(.semibold), unitFont: .footnote)
         return ViewThatFits(in: .horizontal) {
@@ -770,6 +823,8 @@ private struct LiveMetric: Identifiable {
         case "spm": "\(number) strokes per minute"
         case "ft": "\(number) feet"
         case "°": "\(number) degrees true"
+        case "stbd": "\(number) starboard"
+        case "port": "\(number) port"
         default: text == "–" ? "Unavailable" : text
         }
     }

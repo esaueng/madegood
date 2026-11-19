@@ -1,0 +1,344 @@
+import Foundation
+
+/// A true-wind direction estimated from the boat's own track (docs/PLAN.md §5, "Wind
+/// direction"; docs/metrics.md, "Sailing wind and VMG").
+public struct WindEstimate: Sendable, Hashable {
+    /// Direction the wind blows from, degrees true in [0, 360).
+    public var fromDegrees: Double
+    /// 0...1: how much of the sailing time sits on the two legs, scaled down while
+    /// either leg is still short. A heuristic for "show it or not", not a probability.
+    public var confidence: Double
+    /// The courses of the two legs either side of the wind, degrees true.
+    public var legCourses: [Double]
+    /// The angle between the two legs, degrees (the tacking or gybing angle).
+    public var legAngle: Double
+    /// True when a prior (a forecast or the user) chose between the two directions the
+    /// legs allow. Without one the legs are assumed to be upwind, so the estimate can be
+    /// 180° off on a session spent gybing downwind.
+    public var resolvedByPrior: Bool
+
+    public init(
+        fromDegrees: Double, confidence: Double, legCourses: [Double], legAngle: Double, resolvedByPrior: Bool
+    ) {
+        self.fromDegrees = fromDegrees
+        self.confidence = confidence
+        self.legCourses = legCourses
+        self.legAngle = legAngle
+        self.resolvedByPrior = resolvedByPrior
+    }
+}
+
+/// A time-weighted histogram of course over ground while sailing, the input to the wind
+/// estimate. It is small and fixed in size, so the watch can keep one for a whole session.
+public struct CourseHistogram: Sendable, Hashable {
+    /// Bin width, degrees.
+    public static let binWidth = 5.0
+    static let binCount = 72
+    /// Course is only sailing evidence at or above this Doppler speed, m/s (about 1.9 kn).
+    public static let minimumSailingSpeed = 1.0
+    /// The time one fix stands for is capped, so a gap cannot weight a single course, s.
+    public static let maximumFixWeight = 5.0
+    /// Legs are 70–110° apart (PLAN §5).
+    public static let legAngleRange = 70.0...110.0
+    /// A leg's mass is the time within ±12.5° of its bin (five bins).
+    static let legHalfWidth = 2
+    /// The leg direction is the circular mean of courses within ±17.5° of its bin.
+    static let refineHalfWidth = 3
+    /// Each leg needs this much time, and the two together `minimumPairTime`, s.
+    public static let minimumLegTime = 20.0
+    public static let minimumPairTime = 60.0
+    /// Below this much time on the shorter leg the confidence is scaled down, s.
+    static let fullConfidenceLegTime = 120.0
+
+    private var weights = [Double](repeating: 0, count: binCount)
+    private var sines = [Double](repeating: 0, count: binCount)
+    private var cosines = [Double](repeating: 0, count: binCount)
+    /// Total time added, s.
+    public private(set) var totalTime = 0.0
+
+    public init() {}
+
+    /// Adds `seconds` of sailing on `course` (degrees true). Non-finite or non-positive
+    /// weights are ignored.
+    public mutating func add(course: Double, seconds: Double) {
+        guard course.isFinite, seconds.isFinite, seconds > 0 else { return }
+        let normalized = GPSFilter.normalize(course)
+        let bin = Int(normalized / Self.binWidth) % Self.binCount
+        let radians = normalized * .pi / 180
+        weights[bin] += seconds
+        sines[bin] += seconds * sin(radians)
+        cosines[bin] += seconds * cos(radians)
+        totalTime += seconds
+    }
+
+    /// The wind estimate: the two most-sailed courses 70–110° apart, and the direction
+    /// midway between them. A prior (degrees true, from a forecast or the user) picks
+    /// which of the two opposite directions it is; without one the legs count as upwind.
+    /// Nil until both legs have enough time.
+    public func windEstimate(prior: Double? = nil) -> WindEstimate? {
+        let n = Self.binCount
+        func mass(around bin: Int, halfWidth: Int) -> Double {
+            (-halfWidth...halfWidth).reduce(0) { $0 + weights[((bin + $1) % n + n) % n] }
+        }
+        let masses = (0..<n).map { mass(around: $0, halfWidth: Self.legHalfWidth) }
+        let minimumSeparation = Int((Self.legAngleRange.lowerBound / Self.binWidth).rounded())
+        let maximumSeparation = Int((Self.legAngleRange.upperBound / Self.binWidth).rounded())
+        var best: (a: Int, b: Int, score: Double)?
+        for a in 0..<n {
+            for separation in minimumSeparation...maximumSeparation {
+                let b = (a + separation) % n
+                let (ma, mb) = (masses[a], masses[b])
+                guard min(ma, mb) >= Self.minimumLegTime, ma + mb >= Self.minimumPairTime else { continue }
+                if ma + mb > (best?.score ?? 0) { best = (a, b, ma + mb) }
+            }
+        }
+        guard let best, let first = refined(best.a), let second = refined(best.b) else { return nil }
+        let separation = GPSFilter.signedDifference(from: first, to: second)
+        // Refinement may move the legs a little; still require two distinct legs.
+        guard abs(separation) >= Self.legAngleRange.lowerBound - Self.binWidth,
+            abs(separation) <= Self.legAngleRange.upperBound + Self.binWidth
+        else { return nil }
+        let bisector = GPSFilter.normalize(first + separation / 2)
+        let opposite = GPSFilter.normalize(bisector + 180)
+
+        let share = totalTime > 0 ? min(1, best.score / totalTime) : 0
+        let shorterLeg = min(masses[best.a], masses[best.b])
+        var confidence = share * min(1, shorterLeg / Self.fullConfidenceLegTime)
+        var direction = bisector
+        var resolved = false
+        if let prior, prior.isFinite {
+            let toBisector = abs(GPSFilter.signedDifference(from: prior, to: bisector))
+            let toOpposite = abs(GPSFilter.signedDifference(from: prior, to: opposite))
+            direction = toBisector <= toOpposite ? bisector : opposite
+            resolved = true
+            // A prior that agrees with neither direction is weak support for the axis.
+            if min(toBisector, toOpposite) > 45 { confidence *= 0.5 }
+        }
+        return WindEstimate(
+            fromDegrees: direction, confidence: confidence, legCourses: [first, second].sorted(),
+            legAngle: abs(separation), resolvedByPrior: resolved)
+    }
+
+    /// Time-weighted circular mean course around a bin, degrees true.
+    private func refined(_ bin: Int) -> Double? {
+        let n = Self.binCount
+        var (s, c) = (0.0, 0.0)
+        for offset in -Self.refineHalfWidth...Self.refineHalfWidth {
+            let index = ((bin + offset) % n + n) % n
+            s += sines[index]
+            c += cosines[index]
+        }
+        guard s != 0 || c != 0 else { return nil }
+        return GPSFilter.normalize(atan2(s, c) * 180 / .pi)
+    }
+}
+
+/// Velocity made good against the wind.
+public enum SailingVMG {
+    /// True wind angle: the wind's direction relative to the bow, degrees in (-180, 180].
+    /// Positive when the wind comes over the starboard side (starboard tack).
+    public static func trueWindAngle(course: Double, windFrom: Double) -> Double {
+        GPSFilter.signedDifference(from: course, to: windFrom)
+    }
+
+    /// Speed toward the wind, m/s: `speed × cos(true wind angle)`. Negative downwind.
+    public static func vmg(speed: Double, course: Double, windFrom: Double) -> Double {
+        speed * cos(trueWindAngle(course: course, windFrom: windFrom) * .pi / 180)
+    }
+
+    /// Upwind is a true wind angle below this, degrees; downwind is above 180 minus it.
+    /// Reaching in between counts toward neither VMG.
+    public static let upwindLimit = 80.0
+}
+
+/// Time and Doppler distance on one tack.
+public struct SailingTackTotals: Sendable, Hashable {
+    public var time = 0.0
+    public var distance = 0.0
+
+    public init(time: Double = 0, distance: Double = 0) {
+        self.time = time
+        self.distance = distance
+    }
+}
+
+/// Post-session sailing analysis: wind, maneuvers and VMG (docs/metrics.md).
+public struct SailingAnalysis: Sendable {
+    public enum WindSource: Sendable, Hashable {
+        /// The user entered the direction.
+        case user
+        /// Estimated from the track.
+        case estimate
+        /// No direction: too little evidence and none entered.
+        case none
+    }
+
+    /// The wind-from direction the analysis used, degrees true.
+    public var windFrom: Double?
+    public var windSource: WindSource
+    /// The track's own estimate, also when the user's direction was used.
+    public var estimate: WindEstimate?
+    public var maneuvers: [SailingManeuver]
+    /// Mean VMG while sailing upwind / downwind, m/s (downwind as a positive speed away
+    /// from the wind). Nil without wind or time in that mode.
+    public var upwindVMG: Double?
+    public var downwindVMG: Double?
+    /// Mean true wind angle while sailing upwind, degrees.
+    public var pointingAngle: Double?
+    /// Time and distance with the wind over the starboard / port side, outside maneuvers.
+    public var starboard: SailingTackTotals
+    public var port: SailingTackTotals
+
+    public var tackCount: Int { maneuvers.count { $0.event.type == .tack } }
+    public var gybeCount: Int { maneuvers.count { $0.event.type == .gybe } }
+}
+
+extension SessionSelection {
+    /// Wind, maneuvers and VMG for a sailing selection. A user direction (degrees true,
+    /// 0...360) is used as given; otherwise the track's estimate, with `windPrior` (for
+    /// example an Open-Meteo direction) choosing between its two opposite directions.
+    public func sailingAnalysis(windFromDegreesTrue userWind: Double? = nil, windPrior: Double? = nil)
+        -> SailingAnalysis
+    {
+        let runs = sailingObservationRuns()
+        let estimate = Self.courseHistogram(runs).windEstimate(prior: windPrior)
+        let validUser = userWind.flatMap { $0.isFinite && (0...360).contains($0) ? $0 : nil }
+        let wind = validUser ?? estimate?.fromDegrees
+        let source: SailingAnalysis.WindSource = validUser != nil ? .user : (estimate != nil ? .estimate : .none)
+        var analysis = SailingAnalysis(
+            windFrom: wind, windSource: source, estimate: estimate, maneuvers: [], upwindVMG: nil, downwindVMG: nil,
+            pointingAngle: nil, starboard: SailingTackTotals(), port: SailingTackTotals())
+        guard track.sport == .sailing, let wind else { return analysis }
+        analysis.maneuvers = SailingManeuverDetector.detect(in: runs, windFrom: wind)
+
+        var upwind = (time: 0.0, vmg: 0.0, angle: 0.0)
+        var downwind = (time: 0.0, vmg: 0.0)
+        var maneuverRanges = analysis.maneuvers.map(\.range).makeIterator()
+        var maneuverRange = maneuverRanges.next()
+        for run in runs {
+            for (a, b) in zip(run, run.dropFirst()) {
+                while let range = maneuverRange, range.upperBound <= a.t { maneuverRange = maneuverRanges.next() }
+                // An interval that touches a turn belongs to the turn.
+                if let range = maneuverRange, b.t > range.lowerBound { continue }
+                let dt = min(b.t - a.t, CourseHistogram.maximumFixWeight)
+                let speed = (a.speed + b.speed) / 2
+                guard dt > 0, speed >= CourseHistogram.minimumSailingSpeed else { continue }
+                let angle = SailingVMG.trueWindAngle(course: a.course, windFrom: wind)
+                let vmg = speed * cos(angle * .pi / 180)
+                if angle > 0 {
+                    analysis.starboard.time += dt
+                    analysis.starboard.distance += speed * dt
+                } else {
+                    analysis.port.time += dt
+                    analysis.port.distance += speed * dt
+                }
+                if abs(angle) < SailingVMG.upwindLimit {
+                    upwind.time += dt
+                    upwind.vmg += vmg * dt
+                    upwind.angle += abs(angle) * dt
+                } else if abs(angle) > 180 - SailingVMG.upwindLimit {
+                    downwind.time += dt
+                    downwind.vmg -= vmg * dt
+                }
+            }
+        }
+        if upwind.time > 0 {
+            analysis.upwindVMG = upwind.vmg / upwind.time
+            analysis.pointingAngle = upwind.angle / upwind.time
+        }
+        if downwind.time > 0 { analysis.downwindVMG = downwind.vmg / downwind.time }
+        return analysis
+    }
+
+    /// The track's wind estimate on its own (see `sailingAnalysis`).
+    public func estimatedWind(prior: Double? = nil) -> WindEstimate? {
+        Self.courseHistogram(sailingObservationRuns()).windEstimate(prior: prior)
+    }
+
+    static func courseHistogram(_ runs: [[SailingObservation]]) -> CourseHistogram {
+        var histogram = CourseHistogram()
+        for run in runs {
+            for (a, b) in zip(run, run.dropFirst()) where a.speed >= CourseHistogram.minimumSailingSpeed {
+                histogram.add(course: a.course, seconds: min(b.t - a.t, CourseHistogram.maximumFixWeight))
+            }
+        }
+        return histogram
+    }
+}
+
+/// Live sailing state for the sport page.
+public struct LiveSailing: Sendable, Hashable {
+    /// The track's wind estimate so far; nil until both legs have enough time.
+    public var wind: WindEstimate?
+    /// Tacks and gybes so far, against the current estimate. A tack and a gybe swap if
+    /// the estimate is 180° off, so the total is the reliable live figure.
+    public var tacks: Int
+    public var gybes: Int
+    /// Current VMG and true wind angle from the current speed and smoothed course; nil
+    /// without a wind estimate, speed or course.
+    public var vmg: Double?
+    public var trueWindAngle: Double?
+
+    public var maneuverCount: Int { tacks + gybes }
+
+    public init(
+        wind: WindEstimate? = nil, tacks: Int = 0, gybes: Int = 0, vmg: Double? = nil, trueWindAngle: Double? = nil
+    ) {
+        self.wind = wind
+        self.tacks = tacks
+        self.gybes = gybes
+        self.vmg = vmg
+        self.trueWindAngle = trueWindAngle
+    }
+}
+
+/// The causal side of the sailing analysis, fed by the session engine with accepted fixes.
+/// It applies the post-session rules to what it has seen so far, so the counts converge on
+/// session detail's. The estimate and maneuvers are refreshed every `refreshInterval`.
+struct SailingTracker: Sendable {
+    static let refreshInterval = 10.0
+
+    private var runs: [[SailingObservation]] = []
+    private var run: [SailingObservation] = []
+    private var histogram = CourseHistogram()
+    private var lastRefresh = -Double.infinity
+    private(set) var wind: WindEstimate?
+    private(set) var tacks = 0
+    private(set) var gybes = 0
+
+    /// One accepted fix. `course` is the receiver's raw course, as post-session.
+    mutating func ingest(t: Double, speed: Double?, course: Double?, courseAccuracy: Double?) {
+        guard let speed, speed >= SailingManeuverDetector.minimumCourseSpeed,
+            let course, (0...360).contains(course),
+            SailingManeuverDetector.reliableCourseAccuracy(courseAccuracy)
+        else {
+            breakRun()
+            return
+        }
+        if let last = run.last {
+            guard t > last.t else { return }
+            if last.speed >= CourseHistogram.minimumSailingSpeed {
+                histogram.add(course: last.course, seconds: min(t - last.t, CourseHistogram.maximumFixWeight))
+            }
+        }
+        run.append(SailingObservation(t: t, speed: speed, course: course))
+        if t - lastRefresh >= Self.refreshInterval { refresh(at: t) }
+    }
+
+    /// A pause, GPS anchor or unreliable course: evidence on either side is not joined.
+    mutating func breakRun() {
+        guard !run.isEmpty else { return }
+        runs.append(run)
+        run.removeAll(keepingCapacity: true)
+    }
+
+    private mutating func refresh(at t: Double) {
+        lastRefresh = t
+        wind = histogram.windEstimate()
+        guard let wind else { return }
+        let maneuvers = SailingManeuverDetector.detect(
+            in: run.isEmpty ? runs : runs + [run], windFrom: wind.fromDegrees)
+        tacks = maneuvers.count { $0.event.type == .tack }
+        gybes = maneuvers.count - tacks
+    }
+}

@@ -171,20 +171,104 @@ within ±3 %, rate within ±2 SPM) are checked in `StrokeDetectorTests` against
 amplitude and period jitter, pauses, rate changes, side switches, sensor gaps and 50 or
 100 Hz sampling. Labeled real sessions still have to confirm them.
 
-## Sailing replay maneuvers
+## Sailing maneuvers
 
-The iPhone's Moments section uses a session-wide wind-from direction entered in
-degrees clockwise from true north. This input is optional and lives in the open
-detail view. With a direction, replay looks for a sustained course change across
-the wind axis with a Doppler speed dip. An upwind crossing is a tack and a
-downwind crossing is a gybe. Each retained span is analyzed independently. Pauses,
-GPS gaps and unreliable course or speed interrupt the evidence within a span.
-A reported course uncertainty greater than 20° also interrupts the evidence.
+Session detail's Moments section lists tacks and gybes. It uses a session-wide
+wind-from direction (degrees clockwise from true north): the one the user enters, or
+else the track's own estimate (below). Without either, it asks for a direction. The
+user's direction is used only in the open detail view.
 
-Each result highlights the detector's approach-to-departure bounds and moves
-the replay cursor to the estimated wind-axis crossing. Both use the displayed
-selection's clock. The results require wind and sufficient track evidence and
-live in the detail view alongside the wind input.
+With a direction, replay looks for a sustained course change across the wind axis with
+a Doppler speed dip. An upwind crossing is a tack and a downwind crossing is a gybe.
+Each retained span is analyzed independently. Pauses, GPS gaps and unreliable course
+or speed interrupt the evidence within a span. A reported course uncertainty greater
+than 20° also interrupts the evidence.
+
+| Rule | Value |
+|---|---|
+| Course | The receiver's course, median of three to remove single-fix spikes |
+| Turn | More than 60° and less than 180°, crossing the axis, at most 20 s from the approach leg to the departure leg, at most 20° of counter-turn |
+| Legs | At least three fixes over 3 s within a 12° band, either side of the turn |
+| Speed dip | The lowest speed in the turn at least 10 % below the slower leg's mean |
+
+Each maneuver reports:
+
+| Value | Definition |
+|---|---|
+| Time | The estimated wind-axis crossing, interpolated between fixes |
+| Duration | Approach-leg edge to departure-leg edge, s |
+| Speed loss | 1 − lowest speed in the turn ÷ the approach leg's mean speed, % |
+| Turn angle | Between the approach and departure legs' mean courses (3 s each), degrees |
+
+Each result highlights the detector's approach-to-departure bounds and moves the replay
+cursor to the crossing. Both use the displayed selection's clock.
+
+## Sailing wind and VMG
+
+**Wind estimate (PLAN §5).** Sailing time is binned by course over ground: 5° bins,
+each fix weighted by the time to the next fix (at most 5 s), only at 1.0 m/s (about
+1.9 kn) or faster and with the same run breaks as maneuvers. A leg's mass is the time
+within ±12.5° of a bin. The estimate takes the pair of bins 70–110° apart with the most
+combined mass, where each has at least 20 s and both together at least 60 s. Each leg's
+direction is the time-weighted circular mean of courses within ±17.5°, and the wind is
+the direction midway between the two legs.
+
+The legs fix the wind's axis, not its side: two legs 90° apart are as consistent with
+beating as with gybing downwind. A prior picks the side: the Open-Meteo direction when
+the user has fetched it, otherwise the legs are assumed to be upwind, which is
+labelled. A prior more than 45° from both candidates halves the confidence.
+
+**Confidence** is the share of sailing time on the two legs, scaled by
+min(1, shorter leg's time ÷ 120 s). It is a heuristic for whether to show the estimate,
+not a probability.
+
+**Accuracy.** No labelled real sailing recordings exist yet. `SailingWindTests` checks
+the PLAN §5 targets (wind within ±10°, ≥ 95 % of maneuvers found, < 5 % false
+positives) on synthetic beats and downwind runs with course noise, uneven tacks and
+directions across north, with hand-computed VMG and tack totals. Real labelled
+sessions still have to confirm them.
+
+**VMG.** True wind angle (TWA) is the wind's direction relative to the course over
+ground, positive with the wind over the starboard side (starboard tack). VMG =
+Doppler speed × cos(TWA): positive upwind, negative downwind.
+
+| Value | Definition |
+|---|---|
+| Upwind VMG | Time-weighted mean VMG while \|TWA\| < 80°, m/s |
+| Downwind VMG | Time-weighted mean of −VMG while \|TWA\| > 100°, m/s |
+| Pointing | Time-weighted mean \|TWA\| while upwind, degrees |
+| Starboard / port tack | Time and Doppler distance (mean speed of each interval × its time) with TWA > 0 / < 0 |
+
+These use the intervals between consecutive fixes in a run, with each interval's mean
+speed and its first fix's course, at most 5 s long and at 1.0 m/s or faster. Intervals
+that touch a maneuver's approach-to-departure range are left out. Reaching (80–100°)
+counts toward the tack totals but neither VMG.
+
+**Live.** The watch and iPhone run the same rules over the engine's accepted fixes so
+far (raw course, as after the session), refreshed every 10 s: the wind estimate
+(without a prior, so it assumes upwind legs), and tacks and gybes against it. It
+appears once both legs have their time, which on a beat is shortly after the first
+tack. Live VMG uses the current speed (3 s mean) and the smoothed course. If the
+estimate is 180° off, tacks and gybes swap, so the live page shows their total.
+Manual pauses, GPS anchors and unreliable course break the runs.
+
+`waterkit-replay` prints the estimate, tack and gybe counts and VMG for sailing
+recordings.
+
+### Open-Meteo
+
+Session detail on the iPhone can fetch Open-Meteo's modelled 10 m wind for a sailing
+session, only when the user taps "Compare with Open-Meteo". The watch never calls the
+network. The result is shown beside the estimate, used as its prior, and kept on the
+phone for that session.
+
+Sent to Open-Meteo, with no API key, cookies or identifiers: the mean position of the
+session's fixes rounded to 0.1° (about 11 km), the session's UTC start and end dates
+(whole days), and the requested variables. Sessions that ended more than 7 days ago
+use the historical archive API, newer ones the forecast API. The direction is the
+speed-weighted circular mean of the hourly values from the hour before the start to
+the hour after the end; the speed is their mean. Offline or on any error, the detail
+keeps the track's own estimate and offers to try again.
 
 ## Motorboating
 

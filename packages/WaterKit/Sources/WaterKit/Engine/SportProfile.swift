@@ -9,16 +9,19 @@ public struct SportProfile: Sendable, Hashable {
     public var savesWorkoutByDefault: Bool
     /// Whether the engine tracks the speedsurfing categories (docs/metrics.md).
     public var tracksSpeedCategories: Bool
+    /// Whether the engine estimates wind and counts tacks and gybes (docs/metrics.md).
+    public var tracksSailing: Bool
 
     public init(
         sport: Sport, autoPause: AutoPause.Config, autoLapDistance: Double? = nil, savesWorkoutByDefault: Bool = true,
-        tracksSpeedCategories: Bool? = nil
+        tracksSpeedCategories: Bool? = nil, tracksSailing: Bool? = nil
     ) {
         self.sport = sport
         self.autoPause = autoPause
         self.autoLapDistance = autoLapDistance
         self.savesWorkoutByDefault = savesWorkoutByDefault
         self.tracksSpeedCategories = tracksSpeedCategories ?? (sport == .windsurfing)
+        self.tracksSailing = tracksSailing ?? (sport == .sailing)
     }
 
     /// Defaults from docs/PLAN.md §5: auto-pause is on for paddling and off for sailing,

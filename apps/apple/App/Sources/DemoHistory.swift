@@ -17,11 +17,17 @@ enum DemoHistory {
             }
             guard arguments.contains(launchArgument) else { return }
             seed(id: "00000000-0000-4000-8000-00000000d001", sport: .sailing, start: now - 2 * day, minutes: 48) { t in
-                // Upwind beats: tack every 4 minutes, slower through each tack.
+                // Upwind beats, wind from north: tack every 4 minutes, turning through the
+                // wind over 8 s and slower through each tack.
                 let leg = Int(t / 240)
                 let intoLeg = t.truncatingRemainder(dividingBy: 240)
                 let speed = intoLeg < 12 ? 1.2 + intoLeg * 0.15 : 3.1 + 0.4 * sin(t / 37)
-                return (speed, leg.isMultiple(of: 2) ? 45 : 315)
+                let course: Double = leg.isMultiple(of: 2) ? 45 : 315
+                guard leg > 0, intoLeg < 8 else { return (speed, course) }
+                // From the previous leg's course to this one, through 0°.
+                let from: Double = leg.isMultiple(of: 2) ? -45 : 45
+                let turning = from + (course - from + (leg.isMultiple(of: 2) ? 0 : -360)) * intoLeg / 8
+                return (speed, (turning + 360).truncatingRemainder(dividingBy: 360))
             }
             seed(
                 id: "00000000-0000-4000-8000-00000000d002", sport: .kayak, start: now - 9 * day, minutes: 35,
