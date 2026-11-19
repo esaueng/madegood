@@ -237,7 +237,7 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
         DispatchQueue.main.async {
             MainActor.assumeIsolated {
                 var push = alwaysPush
-                switch snapshot.value.map(UserSettings.apply) {
+                switch snapshot.value.map({ UserSettings.apply($0) }) {
                 case .applied:
                     NotificationCenter.default.post(name: UserSettings.didChangeRemotely, object: nil)
                     #if os(iOS)
@@ -245,6 +245,10 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
                         // reinstalled later.
                         push = true
                     #endif
+                case .merged:
+                    // Kept values the other build does not know, under a newer revision.
+                    NotificationCenter.default.post(name: UserSettings.didChangeRemotely, object: nil)
+                    push = true
                 case .keptLocalNewer:
                     push = true
                 case .unchanged, nil:

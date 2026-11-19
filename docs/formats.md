@@ -344,6 +344,20 @@ first per-sport fields (`speedUnit`, `distanceUnit`, `firstScreen`, `autoPause`,
 per-sport key it carries. Adding a setting therefore needs no version bump; its key is
 listed automatically.
 
+When applying a newer snapshot keeps a local value for a key its sender does not know,
+the receiver does not adopt the sender's revision: it stamps the merged state as its own
+newer revision and sends it back. The older build applies the keys it knows and adopts
+that revision. After it upgrades, both devices hold the same (revision, device) with
+different values, so equal stamps whose values differ for keys the sender knows are
+settled by the stamp's author: the author sends its state again and the other device
+applies it.
+
+One limitation remains for builds that know the Action button (#58) or the fuel estimate
+(#60) but send no `settings.knownKeys`: a reset of such a key to its default is not
+stored, so the snapshot omits it, and that looks the same as not knowing the key. The
+receiver keeps its old value and the reset does not propagate. No value is lost, and only
+those builds are affected.
+
 ---
 
 ## Privacy

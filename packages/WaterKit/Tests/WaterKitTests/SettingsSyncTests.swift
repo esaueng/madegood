@@ -26,8 +26,8 @@ import Testing
             SettingsSync.stampLocalChange(now: now, device: id, reading: read, writing: write)
         }
 
-        func receive(_ snapshot: [String: Any]) -> SettingsSync.Outcome {
-            SettingsSync.apply(remote: snapshot, reading: read, writing: write)
+        func receive(_ snapshot: [String: Any], at now: Double = 0) -> SettingsSync.Outcome {
+            SettingsSync.apply(remote: snapshot, now: now, device: id, reading: read, writing: write)
         }
 
         func settings(_ sport: Sport) -> SportSettings { SportSettings(sport: sport, reading: read) }
@@ -285,7 +285,7 @@ import Testing
         older.edit(SportSettings.Key.countdown(.motorboating), 5, at: 200)
         older.edit(SportSettings.Key.distanceAlert(.motorboating), nil, at: 300)
         #expect(older.snapshot[SettingsSync.Key.knownKeys] == nil)
-        #expect(newer.receive(older.snapshot) == .applied)
+        #expect(newer.receive(older.snapshot, at: 301) == .merged)
 
         let settings = newer.settings(.motorboating)
         #expect(settings.countdownMinutes == 5)
@@ -294,7 +294,68 @@ import Testing
         #expect(settings.fuelBurnRate == 30)
         #expect(settings.idleFuelBurnRate == 4)
         #expect(settings.fuelUnit == .usGallons)
-        #expect(newer.revision == 300_000)
+        // Kept values the older build lacks, so the merged state is a newer local revision.
+        #expect(newer.revision == 301_000)
+        #expect(newer.values[SettingsSync.Key.revisionDevice] as? String == newer.id)
+    }
+
+    /// Review of #62: the merge after an older build's edit survives that build's upgrade
+    /// and a later edit on it.
+    @Test func keptValuesSurviveTheOlderBuildsUpgrade() {
+        let phone = Device(id: "phone")
+        let older = OlderBuild()
+        phone.edit(.sailing, at: 10) { $0.actionButton = .mark }
+        older.receive(phone.snapshot)
+
+        // The older watch edits the countdown; the phone keeps Mark under a newer revision
+        // of its own and sends it back. The older build applies it, minus the Action button.
+        older.edit(SportSettings.Key.countdown(.sailing), 3, at: 11)
+        #expect(phone.receive(older.snapshot, at: 11.5) == .merged)
+        #expect(phone.revision == 11_500)
+        older.receive(phone.snapshot)
+        #expect(older.values[SportSettings.Key.actionButton(.sailing)] == nil)
+        #expect(SettingsSync.revision(older.values[SettingsSync.Key.revision]) == 11_500)
+
+        // The watch upgrades: same stamp, but it lacks Mark. The phone made that stamp, so
+        // it answers with its state, and the watch takes it.
+        let watch = Device(id: older.id)
+        watch.values = older.values
+        #expect(phone.receive(watch.snapshot) == .keptLocalNewer)
+        #expect(watch.receive(phone.snapshot) == .applied)
+        #expect(watch.settings(.sailing).actionButton == .mark)
+        #expect(watch.receive(phone.snapshot) == .unchanged)
+        #expect(phone.receive(watch.snapshot) == .unchanged)
+
+        // A later unrelated edit on the watch keeps Mark on both.
+        watch.edit(.sailing, at: 20) { $0.countdownMinutes = 5 }
+        #expect(phone.receive(watch.snapshot) == .applied)
+        #expect(phone.settings(.sailing).actionButton == .mark)
+        #expect(phone.settings(.sailing).countdownMinutes == 5)
+    }
+
+    /// Equal stamps with different values: only the stamp's author keeps its state, so the
+    /// two devices never trade states back and forth.
+    @Test func equalStampsWithDifferentValuesFollowTheAuthor() {
+        let author = Device(id: "author")
+        let other = Device(id: "other")
+        author.edit(.kayak, at: 50) { $0.actionButton = .mark }
+        other.values = author.values
+        other.values[SportSettings.Key.actionButton(.kayak)] = nil
+        #expect(author.receive(other.snapshot) == .keptLocalNewer)
+        #expect(author.settings(.kayak).actionButton == .mark)
+        #expect(other.receive(author.snapshot) == .applied)
+        #expect(other.settings(.kayak).actionButton == .mark)
+        #expect(author.receive(other.snapshot) == .unchanged)
+    }
+
+    /// A number that comes back as another numeric type is the same value.
+    @Test func sameValueToleratesStoreTypes() {
+        #expect(SettingsSync.sameValue(5, 5.0))
+        #expect(SettingsSync.sameValue(true, true))
+        #expect(SettingsSync.sameValue("mark", "mark"))
+        #expect(!SettingsSync.sameValue("mark", nil))
+        #expect(!SettingsSync.sameValue("1", 1))
+        #expect(!SettingsSync.sameValue(2, 3))
     }
 
     /// A list-less snapshot that carries a newer key (a build with the Action button but no
@@ -309,7 +370,7 @@ import Testing
             SportSettings.Key.actionButton(.sailing): "manOverboard",
             SettingsSync.Key.revision: 200_000, SettingsSync.Key.revisionDevice: "other",
         ]
-        #expect(device.receive(remote) == .applied)
+        #expect(device.receive(remote) == .merged)
         #expect(device.settings(.sailing).actionButton == .manOverboard)
         #expect(device.settings(.sailing).fuelBurnRate == 10)
     }
@@ -370,7 +431,7 @@ import Testing
             SportSettings.Key.countdown(.canoe): 1,
             SettingsSync.Key.revision: 200_000, SettingsSync.Key.revisionDevice: "other",
         ]
-        #expect(device.receive(remote) == .applied)
+        #expect(device.receive(remote) == .merged)
         #expect(device.settings(.canoe).countdownMinutes == 1)
         #expect(device.settings(.canoe).actionButton == .manOverboard)
     }

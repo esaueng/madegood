@@ -120,6 +120,10 @@ public enum SettingsSync {
     public enum Outcome: Equatable, Sendable {
         /// It was newer: its values replaced this device's.
         case applied
+        /// It was newer and its values were applied, but this device kept values for keys
+        /// its sender does not know, under a new local revision: send this device's state
+        /// back so the other side has it once its build knows those keys.
+        case merged
         /// This device's state is newer: send it back so the other side catches up.
         case keptLocalNewer
         /// The same (revision, device), or neither side has anything: nothing to do.
@@ -130,8 +134,23 @@ public enum SettingsSync {
     /// knows but `remote` lacks are removed, so "Automatic" stays automatic; keys its sender
     /// does not know keep their local values. Older builds' global units in `remote` are
     /// migrated first. Always raises "highest seen" to the remote revision.
+    ///
+    /// When a kept value is set (stored values always differ from their default), adopting
+    /// the sender's stamp would leave the two devices with equal stamps but different
+    /// state: once the sender upgrades and learns the key, neither would apply the other,
+    /// and the sender's next edit would erase the value. So the result is stamped as a
+    /// local change by `device` at `now`, newer than the sender's, and the outcome is
+    /// `.merged`: send it back. An older build ignores the keys it does not know, so this
+    /// settles after one round trip.
+    ///
+    /// An older build that adopts that stamp drops the keys it does not know, so after it
+    /// upgrades both devices hold the same stamp with different values. Equal stamps whose
+    /// values differ for keys the sender knows are therefore settled by the stamp's author
+    /// (`device` made it): the author keeps its state and sends it back
+    /// (`.keptLocalNewer`); the other device applies the author's state.
     public static func apply(
-        remote: [String: Any], reading value: (String) -> Any?, writing set: (String, Any?) -> Void
+        remote: [String: Any], now: Double, device: String, reading value: (String) -> Any?,
+        writing set: (String, Any?) -> Void
     ) -> Outcome {
         var remote = remote
         let known = keysKnown(by: remote)
@@ -149,11 +168,26 @@ public enum SettingsSync {
         }
         let theirStamp = Stamp(revision: theirs, device: remote[Key.revisionDevice] as? String ?? "")
         if let ourStamp {
-            if theirStamp == ourStamp { return .unchanged }
             if theirStamp < ourStamp { return .keptLocalNewer }
+            if theirStamp == ourStamp {
+                let differs = SportSettings.Key.allSports.contains {
+                    known.contains($0) && !sameValue(remote[$0], value($0))
+                }
+                guard differs else { return .unchanged }
+                if ourStamp.device == device { return .keptLocalNewer }
+            }
         }
-        for key in SportSettings.Key.allSports where known.contains(key) {
-            set(key, remote[key])
+        var keptLocalValue = false
+        for key in SportSettings.Key.allSports {
+            if known.contains(key) {
+                set(key, remote[key])
+            } else if value(key) != nil {
+                keptLocalValue = true
+            }
+        }
+        if keptLocalValue {
+            stampLocalChange(now: now, device: device, reading: value, writing: set)
+            return .merged
         }
         set(Key.revision, theirs)
         set(Key.revisionDevice, theirStamp.device)
@@ -168,6 +202,23 @@ public enum SettingsSync {
         }
         result[Key.knownKeys] = SportSettings.Key.allSports
         return result
+    }
+
+    /// Whether two stored values are the same setting. Values may arrive as numbers, Bools
+    /// or strings of different types after a round trip through the platform's store.
+    static func sameValue(_ a: Any?, _ b: Any?) -> Bool {
+        switch (a, b) {
+        case (nil, nil): return true
+        case (nil, _), (_, nil): return false
+        default: break
+        }
+        if let x = a as? String, let y = b as? String { return x == y }
+        func scalar(_ value: Any?) -> Double? {
+            if value is String { return nil }
+            return SportSettings.number(value) ?? SportSettings.bool(value).map { $0 ? 1 : 0 }
+        }
+        if let x = scalar(a), let y = scalar(b) { return x == y }
+        return false
     }
 
     /// A stored revision; nil when missing or not a positive number.
