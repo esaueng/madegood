@@ -75,8 +75,9 @@ enum UserSettings {
 
     /// Applies each setting from the other device whose stamp is newer (`SettingsSync`).
     @MainActor
-    static func apply(_ snapshot: [String: Any]) -> SettingsSync.Outcome {
-        SettingsSync.apply(remote: snapshot, reading: read, writing: write)
+    static func apply(_ snapshot: [String: Any], at date: Date = Date()) -> SettingsSync.Outcome {
+        SettingsSync.apply(
+            remote: snapshot, now: date.timeIntervalSince1970, device: deviceID, reading: read, writing: write)
     }
 
     /// Moves settings from older builds to the current keys and gives them per-setting

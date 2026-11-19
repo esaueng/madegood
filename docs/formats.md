@@ -362,9 +362,16 @@ per-sport fields (`speedUnit`, `distanceUnit`, `firstScreen`, `autoPause`, `save
 Because such a build takes the whole state of any newer snapshot, its snapshot wins its
 keys only when it is newer than every stamp on the receiver; otherwise the receiver
 answers with its own state and both end the same. On first launch of a build with
-per-setting versions, stored settings get the stored revision as their stamp (the first
-per-sport fields of every sport, defaults included, plus every other stored key); values
-from before revisions get a new one.
+per-setting versions, every stored value gets the stored revision as its stamp (values
+from before revisions get a new one). Settings at their default get no stamp: "never
+written" loses to any stamp, so when both devices migrate, one's defaults never erase
+the other's explicit values.
+
+Each device lets a sport be hidden only while another stays visible, but crossing edits
+can still hide every sport. When applying a snapshot leaves every sport hidden, the
+receiver shows again the sport whose hide has the oldest stamp (no stamp counts as
+oldest; ties follow the usual sport order) as a new local edit, and replies. Both devices
+hold the same stamps by then, so both pick the same sport.
 
 Limits while one device runs an older build:
 
@@ -373,7 +380,10 @@ Limits while one device runs an older build:
 - A build that knows the Action button (#58) or the fuel estimate (#60) does not store a
   reset of such a key to its default, so its snapshot omits it, which looks the same as
   not knowing the key. The receiver keeps its value and the reset does not propagate.
-  No value is lost, and only those builds are affected.
+  No value is lost, and only those builds are affected. A later edit of any other
+  setting on the newer device sends a newer snapshot revision, so the older device takes
+  the newer device's value back and the reset is undone there too. This affects only
+  mixed builds and ends once both devices run a build with per-setting versions.
 
 ---
 

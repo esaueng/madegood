@@ -28,8 +28,8 @@ import Testing
             SettingsSync.save(settings, for: sport, now: now, device: id, reading: read, writing: write)
         }
 
-        func receive(_ snapshot: [String: Any]) -> SettingsSync.Outcome {
-            SettingsSync.apply(remote: snapshot, reading: read, writing: write)
+        func receive(_ snapshot: [String: Any], at now: Double = 0) -> SettingsSync.Outcome {
+            SettingsSync.apply(remote: snapshot, now: now, device: id, reading: read, writing: write)
         }
 
         func settings(_ sport: Sport) -> SportSettings { SportSettings(sport: sport, reading: read) }
@@ -129,15 +129,15 @@ import Testing
         #expect(device.stamp(SportSettings.Key.distanceAlert(.sup)) == .init(revision: 20_000, device: "d"))
     }
 
-    /// Settings from a build with one revision get that revision as every known key's
-    /// stamp, defaults included, and the old fields go.
+    /// Settings from a build with one revision get that revision as the stamp of every
+    /// stored value; defaults stay unstamped, and the old fields go.
     @Test func migrationStampsWithTheSnapshotRevision() {
         let legacy = LegacyBuild(id: "w", alsoKnows: [SportSettings.Key.actionButton(.kayak)])
         legacy.edit(SportSettings.Key.actionButton(.kayak), "mark", at: 7)
         let device = legacy.upgraded(at: 100)
         let stamp = SettingsSync.Stamp(revision: 7_000, device: "w")
         #expect(device.stamp(SportSettings.Key.actionButton(.kayak)) == stamp)
-        #expect(device.stamp(SportSettings.Key.countdown(.canoe)) == stamp)  // a default
+        #expect(device.stamp(SportSettings.Key.countdown(.canoe)) == nil)  // a default
         #expect(device.stamp(SportSettings.Key.fuelBurn(.motorboating)) == nil)  // unknown, unset
         #expect(device.values[SettingsSync.Key.revision] == nil)
         #expect(device.values[SettingsSync.Key.revisionDevice] == nil)
@@ -167,6 +167,71 @@ import Testing
         #expect(fresh.receive(upgraded.snapshot) == .applied)
         #expect(fresh.settings(.sailing).speedUnit == .milesPerHour)
         #expect(!fresh.settings(.kayak).autoPause)
+    }
+
+    /// Review of the rework, finding 2: both devices had explicit values in different
+    /// settings before upgrading. Whichever migrates later, neither one's defaults erase
+    /// the other's values.
+    @Test func migratingBothDevicesKeepsBothExplicitValues() {
+        let phoneLegacy = LegacyBuild(id: "phone")
+        let watchLegacy = LegacyBuild(id: "watch")
+        phoneLegacy.edit(SportSettings.Key.distanceUnit(.kayak), "mi", at: 10)
+        watchLegacy.edit(SportSettings.Key.speedUnit(.kayak), "mph", at: 20)
+        // Offline: neither has seen the other's edit.
+        let phone = phoneLegacy.upgraded(at: 30)
+        let watch = watchLegacy.upgraded(at: 40)
+        let fromPhone = phone.snapshot
+        let fromWatch = watch.snapshot
+        #expect(phone.receive(fromWatch).changed)
+        #expect(watch.receive(fromPhone).changed)
+        #expect(watch.receive(phone.snapshot) == .unchanged)
+        #expect(phone.receive(watch.snapshot) == .unchanged)
+        for device in [phone, watch] {
+            #expect(device.settings(.kayak).distanceUnit == .statuteMiles)
+            #expect(device.settings(.kayak).speedUnit == .milesPerHour)
+        }
+    }
+
+    /// Review of the rework, finding 3: crossing hide edits can hide every sport. Both
+    /// devices show the same sport again (the oldest hide) and converge.
+    @Test func crossingHidesNeverLeaveEverySportHidden() {
+        let phone = Device(id: "phone")
+        let watch = Device(id: "watch")
+        let others = Sport.allCases.filter { $0 != .sailing && $0 != .kayak }
+        for (index, sport) in others.enumerated() {
+            phone.edit(sport, at: Double(10 + index)) { $0.isHidden = true }
+        }
+        #expect(watch.receive(phone.snapshot) == .applied)
+        // Offline, each hides one of the two visible sports; each is allowed locally.
+        #expect(SportList.canHide(.sailing, hidden: Set(others)))
+        phone.edit(.sailing, at: 100) { $0.isHidden = true }
+        watch.edit(.kayak, at: 101) { $0.isHidden = true }
+        let fromPhone = phone.snapshot
+        let fromWatch = watch.snapshot
+        #expect(phone.receive(fromWatch, at: 102) == .appliedAndKeptLocalNewer)
+        #expect(watch.receive(fromPhone, at: 103) == .appliedAndKeptLocalNewer)
+        // The oldest hide is the first of `others`; both show it again.
+        let shown = others[0]
+        #expect(!phone.settings(shown).isHidden)
+        #expect(!watch.settings(shown).isHidden)
+        // Their replies settle on one stamp for it, and nothing more is sent.
+        _ = phone.receive(watch.snapshot, at: 104)
+        _ = watch.receive(phone.snapshot, at: 105)
+        #expect(phone.receive(watch.snapshot) == .unchanged)
+        #expect(watch.receive(phone.snapshot) == .unchanged)
+        for device in [phone, watch] {
+            #expect(Sport.allCases.filter { !device.settings($0).isHidden } == [shown])
+            #expect(device.stamp(SportSettings.Key.hidden(shown)) == phone.stamp(SportSettings.Key.hidden(shown)))
+        }
+    }
+
+    /// With no stamps on any hide (migrated values), the usual sport order decides.
+    @Test func allHiddenWithoutStampsShowsTheFirstSport() {
+        let device = Device(id: "d")
+        for sport in Sport.allCases { device.values[SportSettings.Key.hidden(sport)] = true }
+        #expect(SettingsSync.sportToShowWhenAllHidden(stamps: [:], reading: device.read) == Sport.allCases[0])
+        device.values[SportSettings.Key.hidden(.sup)] = nil
+        #expect(SettingsSync.sportToShowWhenAllHidden(stamps: [:], reading: device.read) == nil)
     }
 
     /// An old-format snapshot with no or junk revision never changes anything.

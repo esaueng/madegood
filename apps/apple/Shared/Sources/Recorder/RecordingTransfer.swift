@@ -238,7 +238,7 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
         DispatchQueue.main.async {
             MainActor.assumeIsolated {
                 var push = alwaysPush
-                if let outcome = snapshot.value.map(UserSettings.apply) {
+                if let outcome = snapshot.value.map({ UserSettings.apply($0) }) {
                     if outcome.changed {
                         NotificationCenter.default.post(name: UserSettings.didChangeRemotely, object: nil)
                         #if os(iOS)

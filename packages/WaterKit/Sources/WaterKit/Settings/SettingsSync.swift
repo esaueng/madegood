@@ -119,10 +119,12 @@ public enum SettingsSync {
         set(Key.highestSeen, stamp.revision)
     }
 
-    /// Gives stamps to settings stored by a build before per-setting versions. Their
+    /// Gives stamps to settings stored by a build before per-setting versions: their
     /// revision (or, for values from before revisions, a new one at `now`) stamps every key
-    /// that build knew, values and defaults alike, plus any newer key it stored. Does
-    /// nothing once stamps exist. Returns whether it stamped anything.
+    /// with a stored value. Keys at their default get no stamp ("never written"), so they
+    /// lose to any stamp: when both devices migrate, neither one's defaults erase the
+    /// other's explicit values. Does nothing once stamps exist. Returns whether it stamped
+    /// anything.
     @discardableResult
     public static func migrateToKeyStamps(
         now: Double, device: String, reading value: (String) -> Any?, writing set: (String, Any?) -> Void
@@ -138,13 +140,13 @@ public enum SettingsSync {
         }
         var stamps: [String: Stamp] = [:]
         if let stamp {
-            for key in legacyKnownKeys.union(stored) { stamps[key] = stamp }
+            for key in stored { stamps[key] = stamp }
             if stamp.revision > seen { set(Key.highestSeen, stamp.revision) }
         }
         set(Key.stamps, encode(stamps))
         set(Key.revision, nil)
         set(Key.revisionDevice, nil)
-        return stamp != nil
+        return !stored.isEmpty && stamp != nil
     }
 
     // MARK: Sync
@@ -167,8 +169,15 @@ public enum SettingsSync {
 
     /// Applies a snapshot from the other device: each setting whose stamp is newer than
     /// ours is taken, every other setting is kept. Always raises "highest seen".
+    ///
+    /// Each device only lets a sport be hidden while another stays visible, but crossing
+    /// edits can still hide every sport. Then the sport whose hide is oldest (by stamp; a
+    /// sport with no stamp counts as oldest, ties go to the usual sport order) is shown
+    /// again as a local edit by `device` at `now`, and the snapshot is answered. Both
+    /// devices hold the same stamps by then, so both pick the same sport.
     public static func apply(
-        remote: [String: Any], reading value: (String) -> Any?, writing set: (String, Any?) -> Void
+        remote: [String: Any], now: Double, device: String, reading value: (String) -> Any?,
+        writing set: (String, Any?) -> Void
     ) -> Outcome {
         var remote = remote
         SportSettings.migrateLegacyUnits(reading: { remote[$0] }, writing: { remote[$0] = $1 })
@@ -211,12 +220,37 @@ public enum SettingsSync {
         }
         if stampsChanged { set(Key.stamps, encode(stamps)) }
 
+        if changed, let sport = sportToShowWhenAllHidden(stamps: stamps, reading: value) {
+            let key = SportSettings.Key.hidden(sport)
+            let seen = max(revision(value(Key.highestSeen)) ?? 0, stamps.values.map(\.revision).max() ?? 0)
+            let stamp = Stamp(revision: nextRevision(now: now, highestSeen: seen), device: device)
+            set(key, nil)
+            stamps[key] = stamp
+            set(Key.stamps, encode(stamps))
+            set(Key.highestSeen, stamp.revision)
+            return Outcome(changed: true, replyNeeded: true)
+        }
+
         // Reply when this device holds a setting newer than the one received, or one the
         // sender has no stamp for. An older build that won above was newer than everything
         // here, so it needs nothing back.
         let replyNeeded =
             !isLegacy && stamps.contains { key, stamp in theirs[key].map { stamp > $0 } ?? true }
         return Outcome(changed: changed, replyNeeded: replyNeeded)
+    }
+
+    /// When every sport is hidden, the one to show again: the oldest hide by stamp (none is
+    /// oldest), ties in the usual sport order. Nil while any sport is visible.
+    static func sportToShowWhenAllHidden(stamps: [String: Stamp], reading value: (String) -> Any?) -> Sport? {
+        guard Sport.allCases.allSatisfy({ SportSettings(sport: $0, reading: value).isHidden }) else { return nil }
+        func older(_ a: Stamp?, _ b: Stamp?) -> Bool {
+            switch (a, b) {
+            case (nil, .some): true
+            case (.some(let x), .some(let y)): x < y
+            default: false
+            }
+        }
+        return Sport.allCases.min { older(stamps[SportSettings.Key.hidden($0)], stamps[SportSettings.Key.hidden($1)]) }
     }
 
     // MARK: Values and stamps
