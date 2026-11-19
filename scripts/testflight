@@ -3,8 +3,10 @@
 # uploads it to App Store Connect, where it becomes a TestFlight build. Used by
 # .github/workflows/testflight.yml; it also runs locally.
 #
-# Signing is automatic and uses an App Store Connect API key, so the runner needs no
-# certificates or profiles: Xcode fetches or creates them with the key.
+# Signing is automatic and uses an App Store Connect API key: Xcode fetches or creates the
+# profiles with the key. Archiving needs an Apple Development identity in the keychain
+# (testflight.yml imports one from a secret); without one, Xcode creates a new certificate
+# on every run.
 #
 # Required environment:
 #   APPLE_TEAM_ID                  Apple Developer team ID
