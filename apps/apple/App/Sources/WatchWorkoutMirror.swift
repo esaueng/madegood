@@ -74,7 +74,8 @@ final class WatchWorkoutMirror: NSObject, HKWorkoutSessionDelegate {
         // ManOverboard keeps, across relaunches, which watch marks it took (with the
         // sequence that delivered each) and which were cleared, by mark ID.
         if ManOverboard.shared.applyMirrored(
-            accepted.manOverboardMarks, sessionID: accepted.sessionID, sequence: accepted.sequence)
+            accepted.watchMarks, clearedByWatch: accepted.manOverboardCleared, sessionID: accepted.sessionID,
+            sequence: accepted.sequence)
         {
             Haptics.play(.manOverboard)
         }
@@ -114,7 +115,7 @@ final class WatchWorkoutMirror: NSObject, HKWorkoutSessionDelegate {
             receive(
                 WorkoutMirrorSnapshot(
                     sessionID: UUID(), sequence: 1, sport: .canoe, sentAt: .now, readings: readings,
-                    manOverboardMarks: mark.map { [$0] } ?? []),
+                    manOverboard: mark, manOverboardMarks: mark.map { [$0] } ?? [], manOverboardCleared: []),
                 from: connection)
         }
     #endif

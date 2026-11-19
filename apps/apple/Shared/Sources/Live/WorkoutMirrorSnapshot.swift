@@ -54,10 +54,22 @@ struct WorkoutMirrorSnapshot: Codable, Equatable, Sendable {
     let sport: Sport
     let sentAt: Date
     let readings: LiveReadings
-    /// The watch's man-overboard marks with their IDs, empty when none is set. Optional
-    /// and outside the version: older watch apps leave it out (nil, which changes nothing
-    /// on the phone), and older phone apps ignore it.
+    // Man-overboard fields: optional and outside the version, so older apps on either
+    // side decode the rest and keep MOB working with what they know.
+
+    /// The watch's guidance target, the one field builds before the list read.
+    var manOverboard: ManOverboard.Mark? = nil
+    /// All of the watch's marks with their IDs, empty when none is set.
     var manOverboardMarks: [ManOverboard.Mark]? = nil
+    /// IDs of marks the watch cleared. Only these clear the phone's copy: a mark merely
+    /// missing from `manOverboardMarks` is never treated as cleared.
+    var manOverboardCleared: [UUID]? = nil
+
+    /// The watch's marks, from whichever field the sender wrote; nil from a watch app
+    /// that sends neither.
+    var watchMarks: [ManOverboard.Mark]? {
+        manOverboardMarks ?? manOverboard.map { [$0] }
+    }
 
     func age(at date: Date) -> TimeInterval {
         max(0, date.timeIntervalSince(sentAt))

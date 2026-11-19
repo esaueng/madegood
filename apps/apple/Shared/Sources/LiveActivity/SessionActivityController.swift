@@ -145,7 +145,7 @@
             withManOverboard(
                 isActive: manOverboard.isActive, guidance: manOverboard.guidance(),
                 fixAt: manOverboard.position?.at, mark: manOverboard.mark,
-                locationIssue: manOverboard.locationIssue, display: display)
+                locationIssue: manOverboard.locationIssue, positionAge: manOverboard.positionAge(), display: display)
         }
 
         /// Adds distance and true bearing back to the man-overboard target, a location
@@ -153,7 +153,7 @@
         /// with how far to trust the mark and the fix time for the stale date.
         func withManOverboard(
             isActive: Bool, guidance: ManOverboard.Guidance?, fixAt: Date?, mark: ManOverboard.Mark?,
-            locationIssue: ManOverboard.LocationIssue?, display: LiveDisplay
+            locationIssue: ManOverboard.LocationIssue?, positionAge: TimeInterval? = nil, display: LiveDisplay
         ) -> SessionActivityAttributes.ContentState {
             var state = SessionActivityController.finalState(self)
             guard isActive else { return state }
@@ -166,7 +166,8 @@
                 state.manOverboardHasGuidance = false
                 state.manOverboardLocationIssue = true
             } else {
-                state.manOverboard = mark == nil ? "Getting a position to mark" : "Waiting for GPS"
+                // "No GPS — last fix N s ago" once fixes stop, rather than a bare "waiting".
+                state.manOverboard = ManOverboardNotes.waiting(positionAge: positionAge, hasMark: mark != nil)
                 state.manOverboardHasGuidance = false
             }
             state.manOverboardNote = mark.flatMap(ManOverboardNotes.markQuality)

@@ -279,9 +279,15 @@ final class SessionRecorder {
         if demo {
             startDemoFeed(session: sessionId, sport: sport, startUptime: anchor.uptime)
         } else if let writer = writers[.gps] {
-            let location = LocationSource(writer: writer) { [weak self] line in
-                Task { @MainActor in self?.ingestFix(line, session: sessionId) }
-            }
+            let location = LocationSource(
+                writer: writer,
+                onFix: { [weak self] line in
+                    Task { @MainActor in self?.ingestFix(line, session: sessionId) }
+                },
+                onIssue: { issue in
+                    // MOB surfaces say why fixes stopped (PLAN §5).
+                    Task { @MainActor in ManOverboard.shared.setRecorderLocationIssue(issue) }
+                })
             location.start()
             self.location = location
         }
@@ -340,7 +346,8 @@ final class SessionRecorder {
                     sequence += 1
                     let snapshot = WorkoutMirrorSnapshot(
                         sessionID: sessionID, sequence: sequence, sport: sport, sentAt: Date(), readings: readings,
-                        manOverboardMarks: ManOverboard.shared.marks)
+                        manOverboard: ManOverboard.shared.mark, manOverboardMarks: ManOverboard.shared.marks,
+                        manOverboardCleared: ManOverboard.shared.clearedMarkIDs)
                     if let data = try? encoder.encode(snapshot) {
                         // HealthKit reconnects on its own. Send the latest snapshot on the
                         // next tick rather than replaying samples after a dropped link.
@@ -619,6 +626,7 @@ final class SessionRecorder {
         if let clockObserver { NotificationCenter.default.removeObserver(clockObserver) }
         clockObserver = nil
         location?.stop()
+        ManOverboard.shared.setRecorderLocationIssue(nil)
         motion?.stop()
         heading?.stop()
         savedToHealth =

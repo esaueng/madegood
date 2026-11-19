@@ -22,10 +22,19 @@ final class ManOverboard {
     nonisolated static let minSpeedForCourse = 0.5
     /// How many cleared and adopted mark records the phone remembers.
     nonisolated static let memoryLimit = 50
-    /// The most marks kept at once.
-    nonisolated static let markLimit = 10
+    /// The most marks kept at once. A mark beyond it is refused, never evicting another.
+    nonisolated static let markLimit = 50
     /// A press still waiting for a fix after this long marks the last known position, s.
     nonisolated static let fallbackAfter: TimeInterval = 15
+    /// The last known position is used for that only when this recent, s, and this
+    /// accurate, m.
+    nonisolated static let fallbackMaxAge: TimeInterval = 120
+    nonisolated static let fallbackMaxAccuracy: Double = 50
+    /// A fresh fix this soon after the press replaces an approximate mark's position, s.
+    nonisolated static let refineWindow: TimeInterval = 120
+    /// Marks pressed this close together count as simultaneous when choosing the target;
+    /// this device's own mark wins then, s.
+    nonisolated static let targetTieWindow: TimeInterval = 5
 
     enum Origin: String, Codable, Sendable {
         /// Taken from the watch's mirrored session.
@@ -49,10 +58,13 @@ final class ManOverboard {
         var origin: Origin?
         /// The watch recording an adopted mark came from.
         var recordingID: UUID?
+        /// Marked from a cached last known position after no fix arrived: shown as
+        /// approximate, and never the target over a mark from a real fix.
+        var isApproximate: Bool?
 
         init(
             id: UUID? = UUID(), latitude: Double, longitude: Double, markedAt: Date, positionAt: Date,
-            positionAge: TimeInterval, origin: Origin? = nil, recordingID: UUID? = nil
+            positionAge: TimeInterval, origin: Origin? = nil, recordingID: UUID? = nil, isApproximate: Bool? = nil
         ) {
             self.id = id
             self.latitude = latitude
@@ -62,6 +74,7 @@ final class ManOverboard {
             self.positionAge = positionAge
             self.origin = origin
             self.recordingID = recordingID
+            self.isApproximate = isApproximate
         }
 
         /// `id`, or for a mark without one, an ID derived from its exact stored values
@@ -105,16 +118,20 @@ final class ManOverboard {
         /// How old the fix already was when it arrived, s: the wall clock at arrival minus
         /// the fix's timestamp. A fix delivered late counts as old from the start.
         var ageAtReceipt: TimeInterval
+        /// Horizontal accuracy, m, when known.
+        var accuracy: Double?
 
         init(
             latitude: Double, longitude: Double, at: Date, speed: Double? = nil, course: Double? = nil,
-            receivedAt: Date = Date(), receivedUptime: TimeInterval = ProcessInfo.processInfo.systemUptime
+            accuracy: Double? = nil, receivedAt: Date = Date(),
+            receivedUptime: TimeInterval = ProcessInfo.processInfo.systemUptime
         ) {
             self.latitude = latitude
             self.longitude = longitude
             self.at = at
             self.speed = speed
             self.course = course
+            self.accuracy = accuracy
             self.receivedUptime = receivedUptime
             ageAtReceipt = max(0, receivedAt.timeIntervalSince(at))
         }
@@ -167,7 +184,7 @@ final class ManOverboard {
     /// What the phone does with the watch's marks in one mirrored snapshot.
     struct MirrorUpdate: Equatable {
         var adopt: [Mark] = []
-        /// IDs of adopted watch marks the watch has since cleared.
+        /// IDs of adopted watch marks the watch has explicitly cleared.
         var clear: [UUID] = []
         var isEmpty: Bool { adopt.isEmpty && clear.isEmpty }
     }
@@ -175,9 +192,11 @@ final class ManOverboard {
     /// The outcome of a MOB press.
     enum MarkResult: Equatable {
         case marked(Mark)
-        /// No position yet: the press is kept and marks the first fix to arrive, or the
-        /// last known position after `fallbackAfter`.
+        /// No position yet: the press is kept and marks the first fix to arrive, or a
+        /// recent, accurate last known position after `fallbackAfter`.
         case awaitingFix
+        /// `markLimit` marks are already set: nothing was marked (`notice` says so).
+        case full
     }
 
     private enum Key {
@@ -196,8 +215,16 @@ final class ManOverboard {
     private(set) var awaitingFixSince: Date?
     /// The latest accepted position from a session or this object's own updates.
     private(set) var position: Position?
-    /// Set when location is denied, restricted, approximate or unavailable.
-    private(set) var locationIssue: LocationIssue?
+    /// Location denied, restricted, approximate or unavailable, from this object's own
+    /// updates or from a recording's (`setRecorderLocationIssue`).
+    var locationIssue: LocationIssue? { ownLocationIssue ?? recorderLocationIssue }
+    private var ownLocationIssue: LocationIssue?
+    private var recorderLocationIssue: LocationIssue?
+    /// A short message for the MOB screens: another mark arrived without becoming the
+    /// target, or a mark was refused at `markLimit`. Cleared with `dismissNotice`.
+    private(set) var notice: String?
+    /// A manual "Steer to this" choice; otherwise the target is chosen by press time.
+    private var pinnedTargetID: UUID?
     private var updates: Task<Void, Never>?
     private var fallback: Task<Void, Never>?
     #if os(iOS)
@@ -213,10 +240,16 @@ final class ManOverboard {
     /// by default. Tests replace it.
     var lastKnownPosition: @MainActor () -> Position? = { ManOverboard.cachedSystemPosition() }
 
-    /// The guidance target: the mark added last.
-    var mark: Mark? { marks.last }
-    /// The marks other than the target, newest first.
-    var otherMarks: [Mark] { Array(marks.dropLast().reversed()) }
+    /// The guidance target: a mark picked with "Steer to this", else the newest by press
+    /// time (`targetIndex`), so a delayed older mark never takes over on arrival.
+    var mark: Mark? { Self.targetIndex(in: marks, pinned: pinnedTargetID).map { marks[$0] } }
+    /// The marks other than the target, newest press first.
+    var otherMarks: [Mark] {
+        guard let target = mark else { return [] }
+        return marks.filter { $0.identity != target.identity }.sorted { $0.markedAt > $1.markedAt }
+    }
+    /// IDs of the marks cleared on this device, most recent last (sent to the phone).
+    var clearedMarkIDs: [UUID] { cleared.map(\.markID) }
     /// A mark is set, or a press is waiting for its first position.
     var isActive: Bool { !marks.isEmpty || awaitingFixSince != nil }
 
@@ -233,7 +266,8 @@ final class ManOverboard {
             marks = saved
         } else {
             // A single mark saved before marks were a list.
-            marks = defaults.data(forKey: Key.legacyMark).flatMap { try? decoder.decode(Mark.self, from: $0) }
+            marks =
+                defaults.data(forKey: Key.legacyMark).flatMap { try? decoder.decode(Mark.self, from: $0) }
                 .map { [$0] } ?? []
         }
         cleared = defaults.data(forKey: Key.cleared).flatMap { try? decoder.decode([Cleared].self, from: $0) } ?? []
@@ -243,20 +277,44 @@ final class ManOverboard {
     }
 
     /// Fed by the recorder with every accepted fix, and by this object's own updates. A
-    /// press waiting for a position marks the first one, as its own mark.
+    /// press waiting for a position marks the first one, as its own mark; a fresh fix soon
+    /// after an approximate mark replaces its position.
     func update(_ position: Position) {
         self.position = position
-        guard let pressedAt = awaitingFixSince else { return }
-        resolveAwaiting(pressedAt: pressedAt, with: position)
+        if let pressedAt = awaitingFixSince {
+            resolveAwaiting(pressedAt: pressedAt, with: position)
+        } else {
+            refineApproximate(with: position)
+        }
     }
 
-    private func resolveAwaiting(pressedAt: Date, with position: Position) {
-        add(Self.makeMark(from: position, markedAt: pressedAt, uptime: ProcessInfo.processInfo.systemUptime))
+    private func resolveAwaiting(pressedAt: Date, with position: Position, approximate: Bool = false) {
+        var mark = Self.makeMark(from: position, markedAt: pressedAt, uptime: ProcessInfo.processInfo.systemUptime)
+        if approximate { mark.isApproximate = true }
+        guard add(mark) else { return }
         setAwaiting(nil)
         fallback?.cancel()
         fallback = nil
         Haptics.play(.manOverboard)
-        if ownUpdateOwners.isEmpty { stopOwnUpdates() }
+        // An approximate mark keeps updates running for the fix that refines it.
+        if ownUpdateOwners.isEmpty && !approximate { stopOwnUpdates() }
+    }
+
+    /// Replaces an approximate mark's position with the first fresh fix within
+    /// `refineWindow` of its press.
+    private func refineApproximate(with position: Position) {
+        let uptime = ProcessInfo.processInfo.systemUptime
+        guard Self.isFresh(position, atUptime: uptime),
+            let index = marks.firstIndex(where: {
+                $0.isApproximate == true && $0.origin == nil
+                    && position.at.timeIntervalSince($0.markedAt) <= Self.refineWindow
+            })
+        else { return }
+        var refined = Self.makeMark(from: position, markedAt: marks[index].markedAt, uptime: uptime)
+        refined.id = marks[index].id
+        var updated = marks
+        updated[index] = refined
+        setMarks(updated)
     }
 
     /// Marks the latest known position, even a stale one (the screen then says how old it
@@ -264,7 +322,7 @@ final class ManOverboard {
     func markNow(at now: Date = Date()) -> Mark? {
         guard let position else { return nil }
         let mark = Self.makeMark(from: position, markedAt: now, uptime: ProcessInfo.processInfo.systemUptime)
-        add(mark)
+        guard add(mark) else { return nil }
         return mark
     }
 
@@ -273,6 +331,12 @@ final class ManOverboard {
     /// back to the last known position after `fallbackAfter`.
     func press(at now: Date = Date()) -> MarkResult {
         refreshLocationIssue()
+        guard marks.count < Self.markLimit else {
+            refuseFull()
+            return .full
+        }
+        // A new press on this device is the target, even over a "Steer to this" choice.
+        pinnedTargetID = nil
         if let mark = markNow(at: now) { return .marked(mark) }
         setAwaiting(now)
         startOwnUpdates()
@@ -280,13 +344,23 @@ final class ManOverboard {
         return .awaitingFix
     }
 
-    /// Marks a waiting press at the last known position (with its age), if there is one.
-    /// Returns whether it marked.
+    /// Marks a waiting press at the last known position, as an approximate mark with its
+    /// age, if one is recent and accurate enough (`isUsableFallback`). Returns whether it
+    /// marked; otherwise the press keeps waiting.
     @discardableResult
     func resolveAwaitingWithLastKnown() -> Bool {
-        guard let pressedAt = awaitingFixSince, let last = position ?? lastKnownPosition() else { return false }
-        resolveAwaiting(pressedAt: pressedAt, with: last)
+        let uptime = ProcessInfo.processInfo.systemUptime
+        guard let pressedAt = awaitingFixSince,
+            let last = [position, lastKnownPosition()].compactMap({ $0 })
+                .first(where: { Self.isUsableFallback($0, atUptime: uptime) })
+        else { return false }
+        resolveAwaiting(pressedAt: pressedAt, with: last, approximate: true)
         return true
+    }
+
+    nonisolated static func isUsableFallback(_ position: Position, atUptime uptime: TimeInterval) -> Bool {
+        guard let accuracy = position.accuracy, accuracy >= 0, accuracy <= fallbackMaxAccuracy else { return false }
+        return position.age(atUptime: uptime) <= fallbackMaxAge
     }
 
     private func scheduleFallback() {
@@ -307,7 +381,7 @@ final class ManOverboard {
     /// Clears the guidance target, or with no mark, cancels a waiting press. The next
     /// newest mark becomes the target.
     func clear() {
-        if let target = marks.last {
+        if let target = mark {
             remove(target.identity)
         } else {
             setAwaiting(nil)
@@ -320,22 +394,67 @@ final class ManOverboard {
         }
     }
 
-    /// Makes an earlier mark the guidance target.
+    /// Makes another mark the guidance target ("Steer to this").
     func target(_ markID: UUID) {
-        guard let index = marks.firstIndex(where: { $0.identity == markID }) else { return }
-        var reordered = marks
-        reordered.append(reordered.remove(at: index))
-        setMarks(reordered)
+        guard marks.contains(where: { $0.identity == markID }) else { return }
+        pinnedTargetID = markID
+    }
+
+    func dismissNotice() { notice = nil }
+
+    /// The target's index: the pinned mark if present; otherwise marks from a real fix
+    /// before approximate ones, then the newest press. Presses within `targetTieWindow`
+    /// count as simultaneous and this device's own mark wins; a full tie keeps the
+    /// earlier-added mark, so the choice is stable.
+    nonisolated static func targetIndex(in marks: [Mark], pinned: UUID?) -> Int? {
+        if let pinned, let index = marks.firstIndex(where: { $0.identity == pinned }) { return index }
+        func beats(_ a: Mark, _ b: Mark) -> Bool {
+            let aReal = a.isApproximate != true
+            let bReal = b.isApproximate != true
+            if aReal != bReal { return aReal }
+            let gap = a.markedAt.timeIntervalSince(b.markedAt)
+            if abs(gap) <= targetTieWindow {
+                let aLocal = a.origin == nil
+                let bLocal = b.origin == nil
+                if aLocal != bLocal { return aLocal }
+                if gap == 0 { return false }
+            }
+            return gap > 0
+        }
+        var best: Int?
+        for index in marks.indices where best.map({ beats(marks[index], marks[$0]) }) ?? true {
+            best = index
+        }
+        return best
     }
 
     private func remove(_ markID: UUID) {
         guard let mark = marks.first(where: { $0.identity == markID }) else { return }
         remember(Cleared(markID: markID, recordingID: mark.id == nil ? mark.recordingID : nil))
+        if pinnedTargetID == markID { pinnedTargetID = nil }
         setMarks(marks.filter { $0.identity != markID })
     }
 
-    private func add(_ mark: Mark) {
-        setMarks(Array((marks.filter { $0.identity != mark.identity } + [mark]).suffix(Self.markLimit)))
+    /// Adds a mark, or refuses it at `markLimit`. Never evicts another mark.
+    @discardableResult
+    private func add(_ mark: Mark) -> Bool {
+        if let index = marks.firstIndex(where: { $0.identity == mark.identity }) {
+            var updated = marks
+            updated[index] = mark
+            setMarks(updated)
+            return true
+        }
+        guard marks.count < Self.markLimit else {
+            refuseFull()
+            return false
+        }
+        setMarks(marks + [mark])
+        return true
+    }
+
+    private func refuseFull() {
+        notice = "\(Self.markLimit) marks are set. Clear one to add another."
+        Haptics.play(.failure)
     }
 
     func isFresh() -> Bool {
@@ -382,49 +501,60 @@ final class ManOverboard {
     /// Returns whether it adopted a new mark. A waiting press on this device is never
     /// touched: it still becomes its own mark at its first fix.
     @discardableResult
-    func applyMirrored(_ incoming: [Mark]?, sessionID: UUID, sequence: UInt64) -> Bool {
+    func applyMirrored(
+        _ incoming: [Mark]?, clearedByWatch: [UUID]? = nil, sessionID: UUID, sequence: UInt64
+    ) -> Bool {
         let update = Self.mirrorUpdate(
-            incoming: incoming, sessionID: sessionID, sequence: sequence, held: marks, adopted: adopted,
-            cleared: cleared)
+            incoming: incoming, clearedByWatch: clearedByWatch, sessionID: sessionID, sequence: sequence,
+            held: marks, adopted: adopted, cleared: cleared)
         guard !update.isEmpty else { return false }
         for id in update.clear { remove(id) }
+        var adoptedAny = false
         for mark in update.adopt {
             var taken = mark
             taken.origin = .watch
             taken.recordingID = sessionID
-            add(taken)
+            guard add(taken) else { break }
+            adoptedAny = true
             rememberAdopted(Adopted(markID: mark.identity, sessionID: sessionID, sequence: sequence))
+            if mark.identity != self.mark?.identity {
+                // An older press arriving late does not take over the arrow.
+                notice = "Another mark arrived from Apple Watch."
+            }
         }
         if !isActive { stopOwnUpdates() }
-        return !update.adopt.isEmpty
+        return adoptedAny
     }
 
     /// How the phone follows the watch's marks, by mark ID only, never by timestamp.
     /// A watch mark is adopted unless the phone cleared it, holds it, or already took it
-    /// once. An adopted mark is cleared only by a snapshot of the same recording with a
-    /// higher sequence than the one that delivered it that no longer carries it, so a
-    /// cached older snapshot replayed after a relaunch cannot clear it. A snapshot
-    /// without the field (`incoming == nil`, an older watch app) changes nothing.
+    /// once. An adopted mark is cleared only when the watch says it cleared it
+    /// (`clearedByWatch`), in a snapshot of the same recording with a higher sequence than
+    /// the one that delivered it; a mark merely missing from a snapshot is never cleared.
+    /// So a cached older snapshot, an older watch app (no fields) or a watch at its mark
+    /// limit cannot clear a mark.
     nonisolated static func mirrorUpdate(
-        incoming: [Mark]?, sessionID: UUID, sequence: UInt64, held: [Mark], adopted: [Adopted], cleared: [Cleared]
+        incoming: [Mark]?, clearedByWatch: [UUID]? = nil, sessionID: UUID, sequence: UInt64, held: [Mark],
+        adopted: [Adopted], cleared: [Cleared]
     ) -> MirrorUpdate {
-        guard let incoming else { return MirrorUpdate() }
         var update = MirrorUpdate()
-        let carried = Set(incoming.map(\.identity))
         let heldIDs = Set(held.map(\.identity))
+        let clearedIDs = Set(clearedByWatch ?? [])
+        for record in adopted
+        where record.sessionID == sessionID && sequence > record.sequence && clearedIDs.contains(record.markID)
+            && heldIDs.contains(record.markID)
+        {
+            update.clear.append(record.markID)
+        }
+        guard let incoming else { return update }
         for mark in incoming {
             let id = mark.identity
             // A legacy ID (derived from values) only counts within its own recording.
             let takenBefore = adopted.contains { $0.markID == id && (mark.id != nil || $0.sessionID == sessionID) }
             if heldIDs.contains(id) || takenBefore { continue }
             if cleared.contains(where: { $0.matches(mark, recording: sessionID) }) { continue }
+            if clearedIDs.contains(id) { continue }
             update.adopt.append(mark)
-        }
-        for record in adopted
-        where record.sessionID == sessionID && sequence > record.sequence && !carried.contains(record.markID)
-            && heldIDs.contains(record.markID)
-        {
-            update.clear.append(record.markID)
         }
         return update
     }
@@ -472,7 +602,8 @@ final class ManOverboard {
                         Position(
                             latitude: location.coordinate.latitude, longitude: location.coordinate.longitude,
                             at: location.timestamp, speed: location.speed >= 0 ? location.speed : nil,
-                            course: location.course >= 0 ? location.course : nil))
+                            course: location.course >= 0 ? location.course : nil,
+                            accuracy: location.horizontalAccuracy))
                 }
             } catch {
                 self?.setLocationIssue(.unavailable)
@@ -492,7 +623,13 @@ final class ManOverboard {
     }
 
     private func setLocationIssue(_ issue: LocationIssue?) {
-        if locationIssue != issue { locationIssue = issue }
+        if ownLocationIssue != issue { ownLocationIssue = issue }
+    }
+
+    /// A recording's location diagnostics (`LocationSource`), so the MOB surfaces say why
+    /// fixes stopped during a session too. Nil when fine or when the recording ends.
+    func setRecorderLocationIssue(_ issue: LocationIssue?) {
+        if recorderLocationIssue != issue { recorderLocationIssue = issue }
     }
 
     /// Reads the authorization now, so a denial shows at once rather than after the
@@ -545,7 +682,8 @@ final class ManOverboard {
         guard !DemoFeed.isEnabled, let location = CLLocationManager().location, location.horizontalAccuracy >= 0
         else { return nil }
         return Position(
-            latitude: location.coordinate.latitude, longitude: location.coordinate.longitude, at: location.timestamp)
+            latitude: location.coordinate.latitude, longitude: location.coordinate.longitude, at: location.timestamp,
+            accuracy: location.horizontalAccuracy)
     }
 
     // MARK: Storage

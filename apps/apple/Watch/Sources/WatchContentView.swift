@@ -843,6 +843,10 @@ struct ManOverboardPage: View {
                             .foregroundStyle(.orange)
                             .accessibilityIdentifier("mob.locationIssue")
                     }
+                    if let notice = manOverboard.notice {
+                        Text(notice).font(.footnote)
+                            .accessibilityIdentifier("mob.notice")
+                    }
                     if manOverboard.mark != nil, manOverboard.awaitingFixSince != nil {
                         Text("A press here is waiting for a position").font(.footnote)
                             .accessibilityIdentifier("mob.pending")

@@ -27,6 +27,22 @@ struct ManOverboardScreen: View {
                 if let issue = manOverboard.locationIssue {
                     LocationIssueBanner(issue: issue)
                 }
+                if let notice = manOverboard.notice {
+                    // Non-intrusive: another mark arrived without taking over the arrow, or
+                    // the mark limit refused a press.
+                    HStack(alignment: .firstTextBaseline) {
+                        Label(notice, systemImage: "info.circle.fill")
+                            .font(.subheadline.weight(.semibold))
+                            .accessibilityIdentifier("mob.notice")
+                        Spacer(minLength: 8)
+                        Button("Dismiss", systemImage: "xmark") { manOverboard.dismissNotice() }
+                            .labelStyle(.iconOnly)
+                            .accessibilityIdentifier("mob.dismissNotice")
+                    }
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.background.secondary, in: .rect(cornerRadius: 12))
+                }
                 TimelineView(.periodic(from: .now, by: 1)) { context in
                     let _ = context.date  // re-evaluate freshness every second
                     guidanceView(display: display)
@@ -149,9 +165,11 @@ struct ManOverboardScreen: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(ManOverboardNotes.origin(other)).font(.subheadline.weight(.semibold))
                         if let guidance = manOverboard.guidance(to: other) {
-                            Text("\(display.distance(guidance.distance)) · \(LiveDisplay.course(guidance.bearing)) true")
-                                .font(.subheadline.monospacedDigit())
-                                .foregroundStyle(.secondary)
+                            Text(
+                                "\(display.distance(guidance.distance)) · \(LiveDisplay.course(guidance.bearing)) true"
+                            )
+                            .font(.subheadline.monospacedDigit())
+                            .foregroundStyle(.secondary)
                         }
                     }
                     Spacer(minLength: 8)
@@ -216,6 +234,9 @@ struct ManOverboardCard: View {
                         }
                         if let issue = manOverboard.locationIssue, guidance == nil {
                             Text(ManOverboardNotes.locationIssue(issue)).font(.footnote.weight(.semibold))
+                        }
+                        if let notice = manOverboard.notice {
+                            Text(notice).font(.footnote)
                         }
                         if let mark = manOverboard.mark, let note = ManOverboardNotes.markQuality(mark) {
                             Text(note).font(.footnote.weight(.semibold))
@@ -377,7 +398,8 @@ struct LocationIssueBanner: View {
                 .font(.headline)
                 .foregroundStyle(.black)
                 .accessibilityIdentifier("mob.locationIssue")
-            if issue == .denied || issue == .reducedAccuracy, let url = URL(string: UIApplication.openSettingsURLString) {
+            if issue == .denied || issue == .reducedAccuracy, let url = URL(string: UIApplication.openSettingsURLString)
+            {
                 Button {
                     openURL(url)
                 } label: {

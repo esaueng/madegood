@@ -150,6 +150,8 @@ final class SessionController {
     @discardableResult
     func markManOverboard() -> ManOverboard.MarkResult {
         let result = ManOverboard.shared.press()
+        // At the mark limit nothing was marked: ManOverboard has said so with a failure buzz.
+        guard result != .full else { return result }
         if recorder.isRecording { recorder.recordManOverboard(result) }
         Haptics.play(.manOverboard)
         return result
