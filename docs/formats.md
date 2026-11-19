@@ -352,6 +352,67 @@ offers evidence. See the [local validation commands](off-water-suggestions.md#lo
 
 ---
 
+## Settings sync snapshot
+
+The phone and watch apps send each other their per-sport settings as a flat dictionary
+(the WatchConnectivity application context, of which only the latest is delivered),
+built and applied by WaterKit's `SettingsSync`. Every snapshot is the sender's full
+state, so a skipped one loses nothing.
+
+Each per-sport key (`settings.<field>.<sport>`) has its own last-writer-wins stamp,
+stored on the device in `settings.stamps`: a dictionary from key to `[revision, device]`.
+The revision is a hybrid logical clock in milliseconds (`max(now, highest seen + 1)`);
+stamps compare by revision, then device ID. A local edit stamps only the keys whose
+values change. A return to the default removes the value and keeps a new stamp, so
+"absent with a stamp" means "set to the default".
+
+A snapshot carries:
+
+- every stored per-sport value (values equal to their default are not stored),
+- `settings.stamps`, the stamps of every key the sender has stamped,
+- `settings.revision` and `settings.revisionDevice`: the newest stamp, for builds before
+  per-setting versions.
+
+Applying a snapshot takes each key whose stamp is newer than the local one (value or
+default) and keeps every other key, including keys the snapshot has no stamp for. The
+receiver sends its own snapshot back when it holds a key newer than the one received, or
+one the sender has no stamp for; once both hold the same stamps nothing more is sent.
+
+### Builds before per-setting versions
+
+Those builds send only values and `settings.revision`/`settings.revisionDevice`, and
+apply a snapshot with a newer (revision, device) by writing every key they know. A
+snapshot without `settings.stamps` is read as stamping, with its revision, the first
+per-sport fields (`speedUnit`, `distanceUnit`, `firstScreen`, `autoPause`, `saveWorkout`,
+`distanceAlert`, `countdown`, `hidden`) of every sport plus any per-sport key it carries.
+Because such a build takes the whole state of any newer snapshot, its snapshot wins its
+keys only when it is newer than every stamp on the receiver; otherwise the receiver
+answers with its own state and both end the same. On first launch of a build with
+per-setting versions, every stored value gets the stored revision as its stamp (values
+from before revisions get a new one). Settings at their default get no stamp: "never
+written" loses to any stamp, so when both devices migrate, one's defaults never erase
+the other's explicit values.
+
+Each device lets a sport be hidden only while another stays visible, but crossing edits
+can still hide every sport. When applying a snapshot leaves every sport hidden, the
+receiver shows again the sport whose hide has the oldest stamp (no stamp counts as
+oldest; ties follow the usual sport order) as a new local edit, and replies. Both devices
+hold the same stamps by then, so both pick the same sport.
+
+Limits while one device runs an older build:
+
+- Sync between the two is whole-snapshot last-writer-wins for the keys the older build
+  knows, as before: concurrent edits of different settings can lose the older one.
+- A build that knows the Action button (#58) or the fuel estimate (#60) does not store a
+  reset of such a key to its default, so its snapshot omits it, which looks the same as
+  not knowing the key. The receiver keeps its value and the reset does not propagate.
+  No value is lost, and only those builds are affected. A later edit of any other
+  setting on the newer device sends a newer snapshot revision, so the older device takes
+  the newer device's value back and the reset is undone there too. This affects only
+  mixed builds and ends once both devices run a build with per-setting versions.
+
+---
+
 ## Privacy
 
 Both formats contain precise locations and times. Before a recording goes into

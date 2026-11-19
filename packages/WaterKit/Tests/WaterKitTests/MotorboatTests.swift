@@ -127,7 +127,7 @@ private func run(_ sport: Sport, _ samples: [Sample], autoPause: Bool? = nil) ->
         let read = SportSettings(sport: .motorboating) { store[$0] }
         #expect(read == settings)
         #expect(read.fuelModel == FuelModel(burnRate: 24, idleBurnRate: 2))
-        #expect(SettingsSync.snapshotKeys.contains("settings.fuelBurn.motorboating"))
+        #expect(SettingsSync.storedKeys.contains("settings.fuelBurn.motorboating"))
 
         for bad: Any in [-3.0, 0.0, "abc", 1e9] {
             let parsed = SportSettings(sport: .motorboating) { $0 == "settings.fuelBurn.motorboating" ? bad : nil }
