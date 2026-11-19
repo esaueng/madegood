@@ -135,9 +135,12 @@ Set in the repository (Settings → Secrets and variables → Actions):
 | Name | Kind | Value |
 |---|---|---|
 | `CLOUDFLARE_API_TOKEN` | secret | An API token with Workers Scripts, D1 and Queues edit on the account (plus R2 edit if the workflow should create buckets; it does not today) |
-| `CLOUDFLARE_ACCOUNT_ID` | variable | Your account ID |
-| `D1_DATABASE_ID` | variable | The `madegood` database's ID |
-| `D1_PREVIEW_DATABASE_ID` | variable | The `madegood-preview` database's ID |
+| `CLOUDFLARE_ACCOUNT_ID` | secret | Your account ID |
+| `D1_DATABASE_ID` | secret | The `madegood` database's ID |
+| `D1_PREVIEW_DATABASE_ID` | secret | The `madegood-preview` database's ID |
+
+The IDs aren't credentials, but they're secrets rather than variables so GitHub masks them
+in the public workflow logs (Cloudflare's CI guides store `CLOUDFLARE_ACCOUNT_ID` the same way).
 
 `scripts/cloudflare-config` writes the IDs into the runner's copy of `wrangler.jsonc`;
 the repository keeps the placeholders. Set the `JWT_SIGNING_KEY` secret on both Workers

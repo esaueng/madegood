@@ -146,6 +146,14 @@ degrees. `true` is left out when no location is available.
 `resume`, `mark`, `lap`, `mob`, plus analysis types such as `tack` and `gybe`. Unknown
 types are kept as they are. `data` is optional and free-form.
 
+`linePing` records one end of a race start line pinged during the countdown
+(docs/metrics.md, "Start line"). The countdown is before the session, so the recorder
+writes the line in use at the `start` event's `ts`, one event per pinged end:
+`{"ts":…,"type":"linePing","data":{"end":"pin","lat":…,"lon":…,"fixes":3,"hacc":4.0,"age":42.5}}`.
+`end` is `pin` or `boat`; `fixes` the fixes averaged; `hacc` their mean accuracy (m,
+optional); `age` the seconds from the ping to the event (the ping was at `ts - age`).
+It holds positions, so it is not part of published recordings or shared copies.
+
 **clock**: `{"unix":1809165660.5,"uptime":5060.0}`.
 
 ---

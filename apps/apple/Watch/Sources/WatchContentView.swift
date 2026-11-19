@@ -258,7 +258,47 @@ private struct TitleScaleKey: PreferenceKey {
 }
 
 /// The countdown before recording: a ring and the time left, with Sync for race starts.
+/// Sailing adds a second page for the start line.
 private struct CountdownView: View {
+    let controller: SessionController
+    let countdown: SessionController.Countdown
+
+    var body: some View {
+        if countdown.sport == .sailing {
+            TabView {
+                CountdownTimerPage(controller: controller, countdown: countdown)
+                StartLinePage(countdown: countdown)
+            }
+            .tabViewStyle(.verticalPage)
+            .toolbar(.hidden, for: .navigationBar)
+        } else {
+            CountdownTimerPage(controller: controller, countdown: countdown)
+        }
+    }
+}
+
+/// The start line during a sailing countdown (docs/metrics.md, "Start line").
+private struct StartLinePage: View {
+    let countdown: SessionController.Countdown
+    @State private var startLine = StartLineController.shared
+    @Environment(\.isLuminanceReduced) private var isLuminanceReduced
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: isLuminanceReduced ? 1 : 0.5)) { _ in
+            ScrollView {
+                StartLinePanel(
+                    startLine: startLine, remaining: countdown.timer.remaining(at: SessionController.now),
+                    display: UserSettings.display(for: .sailing), compact: true
+                )
+                // Clear of the page indicator on the right edge.
+                .padding(.trailing, 8)
+            }
+        }
+        .toolbar(.hidden, for: .navigationBar)
+    }
+}
+
+private struct CountdownTimerPage: View {
     let controller: SessionController
     let countdown: SessionController.Countdown
     @Environment(\.isLuminanceReduced) private var isLuminanceReduced
@@ -388,6 +428,7 @@ private struct SessionPages: View {
     let sport: Sport
     @State private var page: Page
     @State private var manOverboard = ManOverboard.shared
+    @State private var startLine = StartLineController.shared
     @State private var banner: SessionRecorder.DistanceAlertEvent?
     private let hero: LiveScreen
 
@@ -422,6 +463,21 @@ private struct SessionPages: View {
             MapPage(points: recorder.trackPoints, manOverboard: manOverboard.mark).tag(Page.map)
         }
         .tabViewStyle(.verticalPage)
+        .overlay(alignment: .top) {
+            VStack(spacing: 4) {
+                if let warning = startLine.warning {
+                    OCSBanner(warning: warning, display: UserSettings.display(for: sport), compact: true) {
+                        startLine.dismissWarning()
+                    }
+                }
+                if let failed = startLine.failedAtStart {
+                    PingFailedBanner(end: failed, compact: true) { startLine.dismissFailedAtStart() }
+                }
+            }
+            .transition(.move(edge: .top).combined(with: .opacity))
+        }
+        .animation(.snappy, value: startLine.warning)
+        .animation(.snappy, value: startLine.failedAtStart)
         .overlay(alignment: .bottom) {
             if let banner {
                 DistanceAlertBanner(text: UserSettings.display(for: sport).distance(banner.distance))
