@@ -594,3 +594,147 @@ describe("account deletion", () => {
     expect(await env.TRACKS.head(trackKey(owner.user.id, id))).toBeNull();
   });
 });
+
+const putSessionAt = (token: string, id: string, revision: number, body: unknown = metadata()) =>
+  api(`/sessions/${id}?revision=${revision}`, {
+    method: "PUT",
+    headers: { ...bearer(token), "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+const putTrackAt = (token: string, id: string, revision: number, body: BodyInit) =>
+  api(`/sessions/${id}/track?revision=${revision}`, {
+    method: "PUT",
+    headers: { ...bearer(token), "content-type": "application/gzip" },
+    body,
+  });
+
+const revisionKey = (userId: string, id: string, revision: number) =>
+  `users/${userId}/sessions/${id}/track.v1.r${revision}.gz`;
+
+/** A track whose content says which revision it is, to tell stored files apart. */
+const trackFor = (id: string, revision: number) =>
+  gzip(trackJson(id).replace('"summary":{}', `"summary":{"revision":${revision}}`));
+
+describe("upload revisions", () => {
+  it("rejects a PUT older than the stored revision", async () => {
+    const owner = await signIn();
+    const id = crypto.randomUUID();
+    expect((await putSessionAt(owner.accessToken, id, 2)).status).toBe(201);
+    expect((await putSessionAt(owner.accessToken, id, 2)).status).toBe(200);
+
+    const stale = await putSessionAt(owner.accessToken, id, 1, metadata({ distanceM: 1 }));
+    expect(stale.status).toBe(412);
+    expect(((await stale.json()) as { error: string }).error).toBe("stale_revision");
+    expect((await putSession(owner.accessToken, id)).status).toBe(412);
+    const stored = (await (await getSession(owner.accessToken, id)).json()) as {
+      distanceM: number;
+    };
+    expect(stored.distanceM).toBe(5000);
+
+    const oldTrack = await putTrackAt(owner.accessToken, id, 1, await trackFor(id, 1));
+    expect(oldTrack.status).toBe(412);
+    expect(((await oldTrack.json()) as { error: string }).error).toBe("stale_revision");
+    const early = await putTrackAt(owner.accessToken, id, 3, await trackFor(id, 3));
+    expect(early.status).toBe(412);
+    expect(((await early.json()) as { error: string }).error).toBe("revision_mismatch");
+    expect(await env.TRACKS.head(revisionKey(owner.user.id, id, 3))).toBeNull();
+  });
+
+  it("detaches and deletes the old track when a newer revision's metadata arrives", async () => {
+    const owner = await signIn();
+    const id = crypto.randomUUID();
+    expect((await putSessionAt(owner.accessToken, id, 1)).status).toBe(201);
+    expect((await putTrackAt(owner.accessToken, id, 1, await trackFor(id, 1))).status).toBe(204);
+    expect(await env.TRACKS.head(revisionKey(owner.user.id, id, 1))).not.toBeNull();
+
+    expect((await putSessionAt(owner.accessToken, id, 2)).status).toBe(200);
+    // The untrimmed track is gone before the trimmed one arrives.
+    expect((await getTrack(owner.accessToken, id)).status).toBe(404);
+    expect(await env.TRACKS.head(revisionKey(owner.user.id, id, 1))).toBeNull();
+
+    expect((await putTrackAt(owner.accessToken, id, 2, await trackFor(id, 2))).status).toBe(204);
+    const track = await getTrack(owner.accessToken, id);
+    expect(await gunzip(await track.arrayBuffer())).toContain('"revision":2');
+  });
+
+  it("never lets a delayed older track upload replace a newer one", async () => {
+    const owner = await signIn();
+    const id = crypto.randomUUID();
+    expect((await putSessionAt(owner.accessToken, id, 1)).status).toBe(201);
+    const old = await trackFor(id, 1);
+    let reading: () => void = () => {};
+    const readingStarted = new Promise<void>((resolve) => {
+      reading = resolve;
+    });
+    let release: () => void = () => {};
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let sent = false;
+    const body = new ReadableStream<Uint8Array>(
+      {
+        async pull(controller) {
+          if (!sent) {
+            sent = true;
+            controller.enqueue(old.slice(0, 10));
+            return;
+          }
+          reading();
+          await released;
+          controller.enqueue(old.slice(10));
+          controller.close();
+        },
+      },
+      { highWaterMark: 0 },
+    );
+    const delayed = putTrackAt(owner.accessToken, id, 1, body);
+    await readingStarted;
+
+    expect((await putSessionAt(owner.accessToken, id, 2)).status).toBe(200);
+    expect((await putTrackAt(owner.accessToken, id, 2, await trackFor(id, 2))).status).toBe(204);
+    release();
+    expect((await delayed).status).toBe(412);
+
+    const track = await getTrack(owner.accessToken, id);
+    expect(await gunzip(await track.arrayBuffer())).toContain('"revision":2');
+    expect(await env.TRACKS.head(revisionKey(owner.user.id, id, 1))).toBeNull();
+  });
+});
+
+describe("deleted sessions stay deleted", () => {
+  it("answers 410 to a PUT for a session the caller deleted", async () => {
+    const owner = await signIn();
+    const id = await sessionWithTrack(owner);
+    expect((await deleteSession(owner.accessToken, id)).status).toBe(204);
+
+    const again = await putSessionAt(owner.accessToken, id, 5);
+    expect(again.status).toBe(410);
+    expect(((await again.json()) as { error: string }).error).toBe("session_deleted");
+    expect((await putSession(owner.accessToken, id)).status).toBe(410);
+    expect((await putTrack(owner.accessToken, id, await gzip(trackJson(id)))).status).toBe(410);
+    expect((await getSession(owner.accessToken, id)).status).toBe(404);
+    const row = await env.DB.prepare("select id from sessions where id = ?").bind(id).first();
+    expect(row).toBeNull();
+  });
+
+  it("only tombstones the caller's own deletions, and removes them with the account", async () => {
+    const owner = await signIn();
+    const other = await signIn();
+    const id = crypto.randomUUID();
+    // Another account deleting an ID does not block the owner from uploading it.
+    expect((await deleteSession(other.accessToken, id)).status).toBe(204);
+    expect((await putSession(owner.accessToken, id)).status).toBe(201);
+    expect((await deleteSession(owner.accessToken, id)).status).toBe(204);
+
+    const count = () =>
+      env.DB.prepare("select count(*) as n from session_tombstones where user_id = ?")
+        .bind(owner.user.id)
+        .first<{ n: number }>();
+    expect((await count())?.n).toBe(1);
+    expect(
+      (await api("/me", { method: "DELETE", headers: bearer(owner.accessToken) })).status,
+    ).toBe(204);
+    expect((await count())?.n).toBe(0);
+  });
+});

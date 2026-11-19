@@ -21,12 +21,17 @@ Sync never sends a recording to an account that did not consent to it.
 
 - The switch is on only for the sign-in that turned it on. Signing out, losing the
   sign-in (a failed refresh) or signing in again, even to the same account, turns it off.
-- A recording started while an account was signed in belongs to that account and uploads
-  to it automatically. A recording started while another account was signed in never
-  uploads to this one.
-- Recordings made while nobody was signed in upload only after **Upload N Earlier
-  Sessions** in Settings.
+- Each sign-in's window is written to `consent.json` before its credentials reach the
+  Keychain, and closed before a sign-out removes them (`ConsentRecordingStore`). A failed
+  consent write fails the sign-in; credentials without a recorded window get nothing
+  automatically.
+- A recording uploads automatically only when its whole time range, widened by 10 min on
+  each side for clock skew, lies inside one window of this account. A recording that
+  touches an account switch or a time nobody was signed in appears under **Upload N
+  Earlier Sessions**; one recorded entirely in another account's window never uploads.
 - Sign-out cancels that sign-in's uploads and deletes its queue and frozen tracks.
+- A session the user deleted from the account (the server answers 410) is recorded and
+  never queued for that account again.
 
 ## Queue
 
@@ -36,13 +41,14 @@ its local trim applied, and frozen: the metadata for `PUT /sessions/{id}` and a 
 gzipped track v1 for `PUT /sessions/{id}/track`. Retries resend the same bytes. A recording
 whose trim can't be read waits rather than uploading the untrimmed track.
 
-Each snapshot records what it was made from (the trim and the analysis inputs). When a
-queued session's trim or inputs change before it synced, it is frozen again and starts
-over with metadata; a request still carrying the old snapshot is cancelled and its result
-ignored (each snapshot has a generation in its task description). When the trim of a
-synced session changes, it uploads again: both PUTs replace what the account stored, so
-trimmed-off data is removed. Other changes after a session synced (for example the
-auto-pause setting) are not uploaded again.
+Each snapshot records what it was made from (the trim and the analysis inputs), a
+generation, and an upload revision that increases with every new snapshot. When any input
+changes, synced or not, the session is frozen again (into a new per-generation file; the
+journal is committed before the old file is removed) and starts over with metadata. A
+request still carrying the old snapshot is cancelled and its result ignored, and the
+server rejects both PUTs for a lower revision than it stores (412), keeping each
+revision's track as its own object and detaching the old track as soon as newer metadata
+arrives. So trimmed-off data never stays on, or returns to, the account.
 
 - Order: metadata, then the track, through a background URLSession (`.session-track`), so a
   track upload continues while the app is suspended.
@@ -54,12 +60,13 @@ auto-pause setting) are not uploaded again.
   for the Wi-Fi setting; on a working network they use up attempts like other failures.
 - The background session and its delegate are created at launch, including a background
   relaunch. Before anything else, uploads the current settings no longer allow (sync off,
-  signed out, another sign-in, a different Wi-Fi setting) are cancelled. A track upload that
+  signed out, another sign-in, a different Wi-Fi setting, or not the journal's current
+  generation) are cancelled. A track upload that
   finishes while nothing waits for it is journalled from the delegate, so it is not resent.
 - 401: one refresh and retry; a failed refresh signs out.
-- 409 (**Belongs to another account**), 413 or a track over 8 MiB (**Too large to upload**)
-  and other 4xx (**Upload rejected**) stop without retrying. A 404 on the track resends the
-  metadata first.
+- 409 (**Belongs to another account**), 410 (**Deleted from your account**), 413 or a track
+  over 8 MiB (**Too large to upload**) and other 4xx (**Upload rejected**) stop without
+  retrying. A 404 or 412 on the track resends the metadata first.
 - Retry (session detail, or Settings for all) clears the failure and backoff.
 - Deleting a recording drops it from the queue unless it is already synced. Sign-out
   cancels that sign-in's uploads and removes its queue.

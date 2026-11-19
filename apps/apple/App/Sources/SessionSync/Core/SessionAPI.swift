@@ -33,7 +33,9 @@ final class SessionAPI {
     }
 
     /// `PUT /sessions/{id}`: idempotent, so a retry after a lost response is safe.
-    func putSession(_ snapshot: SessionUploadSnapshot, bearer: String, policy: SessionNetworkPolicy) async throws {
+    func putSession(
+        _ snapshot: SessionUploadSnapshot, revision: Int64, bearer: String, policy: SessionNetworkPolicy
+    ) async throws {
         let summary = try snapshot.summary.map {
             try JSONDecoder().decode(
                 Components.Schemas.PutSessionRequest.summaryPayload.self, from: JSONEncoder().encode($0))
@@ -49,7 +51,9 @@ final class SessionAPI {
         )
         try await perform(bearer: bearer, policy: policy) { client in
             switch try await client.putSession(
-                .init(path: .init(id: snapshot.sessionID.uuidString.lowercased()), body: .json(body)))
+                .init(
+                    path: .init(id: snapshot.sessionID.uuidString.lowercased()), query: .init(revision: revision),
+                    body: .json(body)))
             {
             case .ok, .created: break
             default: throw VoyageAPIError.invalidResponse
@@ -60,13 +64,16 @@ final class SessionAPI {
     /// `PUT /sessions/{id}/track`: the gzipped track v1 bytes, read from `file` by the
     /// transport. Repeating it replaces the stored file.
     func putTrack(
-        file: URL, sessionID: UUID, taskDescription: String, bearer: String, policy: SessionNetworkPolicy
+        file: URL, sessionID: UUID, revision: Int64, taskDescription: String, bearer: String,
+        policy: SessionNetworkPolicy
     ) async throws {
         let upload = GeneratedSessionTransport.FileUpload(file: file, taskDescription: taskDescription)
         try await perform(bearer: bearer, policy: policy, upload: upload) { client in
             // The body is never read: the transport uploads the file itself.
             _ = try await client.putSessionTrack(
-                .init(path: .init(id: sessionID.uuidString.lowercased()), body: .application_gzip(HTTPBody()))
+                .init(
+                    path: .init(id: sessionID.uuidString.lowercased()), query: .init(revision: revision),
+                    body: .application_gzip(HTTPBody()))
             ).noContent
         }
     }
@@ -105,8 +112,14 @@ private struct GeneratedSessionTransport: ClientTransport {
     func send(
         _ request: HTTPRequest, body: HTTPBody?, baseURL: URL, operationID: String
     ) async throws -> (HTTPResponse, HTTPBody?) {
-        guard let path = request.path else { throw VoyageAPIError.invalidResponse }
-        var absolute = HTTPRequest(method: request.method, url: baseURL.appending(path: path))
+        // The generated path carries the query (`?revision=`): keep it out of the path.
+        guard let path = request.path, let parts = URLComponents(string: path),
+            var components = URLComponents(
+                url: baseURL.appending(path: parts.path), resolvingAgainstBaseURL: false)
+        else { throw VoyageAPIError.invalidResponse }
+        components.percentEncodedQuery = parts.percentEncodedQuery
+        guard let url = components.url else { throw VoyageAPIError.invalidResponse }
+        var absolute = HTTPRequest(method: request.method, url: url)
         absolute.headerFields = request.headerFields
         absolute.headerFields[.authorization] = "Bearer " + bearer
         guard var request = URLRequest(httpRequest: absolute) else { throw VoyageAPIError.invalidResponse }

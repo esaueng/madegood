@@ -20,17 +20,22 @@ final class SessionSync {
     private(set) var queueUnavailable = false
     /// Finished sessions still being prepared (analyzed and frozen) for the queue.
     private(set) var preparing = false
-    /// Finished recordings made while nobody was signed in, not chosen for this account.
+    /// Finished recordings this account may receive only by explicit choice.
     private(set) var earlierSessions: [UUID] = []
-    private(set) var consent: SessionSyncConsent
+    private let ledger: SessionConsentLedger
+    var consent: SessionSyncConsent { ledger.consent }
 
     /// "Sync sessions": on only for the sign-in that turned it on.
     var isEnabled: Bool {
         get { consent.isEnabled(for: account.binding) }
         set {
             guard let binding = account.binding, newValue != isEnabled else { return }
-            consent.setEnabled(newValue, for: binding)
-            saveConsent()
+            do {
+                try ledger.update { $0.setEnabled(newValue, for: binding) }
+            } catch {
+                queueUnavailable = true
+                return
+            }
             Task { await settingsDidChange() }
         }
     }
@@ -55,7 +60,6 @@ final class SessionSync {
     @ObservationIgnored private var rescan = false
     @ObservationIgnored private var pathMonitor: NWPathMonitor?
 
-    static let consentKey = "sessionSync.consent"
     static let wifiOnlyKey = "sessionSync.wifiOnly"
 
     init(
@@ -63,7 +67,13 @@ final class SessionSync {
         preferences: UserDefaults = .standard, isDemo: Bool = false
     ) {
         let network = NetworkState()
-        account = VoyageAccount(store: store, api: VoyageAPI(baseURL: apiRoot, transport: transport))
+        // Consent is recorded before credentials change (write-ahead).
+        let guarded = ConsentRecordingStore(store)
+        let ledger = SessionConsentLedger(url: root.appending(path: "consent.json"))
+        let account = VoyageAccount(store: guarded, api: VoyageAPI(baseURL: apiRoot, transport: transport))
+        ledger.guardCredentials(guarded, now: { .now }, isSignedIn: { [weak account] in account?.binding != nil })
+        self.account = account
+        self.ledger = ledger
         outbox = SessionOutbox(
             root: root, account: account, api: SessionAPI(baseURL: apiRoot, transport: transport),
             networkAvailable: { network.canUpload(under: $0) })
@@ -71,10 +81,6 @@ final class SessionSync {
         self.transport = transport
         self.preferences = preferences
         self.isDemo = isDemo
-        consent =
-            preferences.data(forKey: Self.consentKey).flatMap {
-                try? JSONDecoder().decode(SessionSyncConsent.self, from: $0)
-            } ?? SessionSyncConsent()
         wifiOnly = preferences.bool(forKey: Self.wifiOnlyKey)
     }
 
@@ -83,7 +89,10 @@ final class SessionSync {
 
     /// The session's place in the queue, or nil when sync is off or it is not queued.
     func status(for sessionID: UUID) -> SessionSyncStatus? {
-        guard isActive else { return nil }
+        guard isActive, let binding = account.binding else { return nil }
+        if consent.deletedFromCloud[binding.accountID]?.contains(sessionID) == true {
+            return .failed(.deletedFromCloud)
+        }
         return outbox.status(for: sessionID)
     }
 
@@ -114,13 +123,12 @@ final class SessionSync {
         launch()
         await reconciled?.value
         let binding = account.binding
-        if let binding {
-            consent.signedIn(binding, at: .now)
-        } else {
-            consent.signedOut(at: .now)
+        if binding == nil {
+            // A lost sign-in (failed refresh) never went through the store's sign-out;
+            // the window is opened only when credentials are saved, never here.
+            try? ledger.update { $0.signedOut(at: .now) }
             stopWork()
         }
-        saveConsent()
         // Uploads started by an earlier sign-in must not finish under this one.
         await reconcileUploads()
         guard !Task.isCancelled, account.binding == binding else { return }
@@ -162,8 +170,11 @@ final class SessionSync {
         let binding = account.binding
         let enabled = isActive
         let policy = policy
+        // The journal decides which generation of each session may still be uploading.
+        if let binding { try? outbox.restore(for: binding) }
+        let outbox = outbox
         await transport.reconcileUploads { description, request in
-            SessionOutbox.shouldKeepUpload(
+            outbox.shouldKeepUpload(
                 taskDescription: description, allowsCellular: request?.allowsCellularAccess ?? true,
                 binding: binding, syncEnabled: enabled, policy: policy)
         }
@@ -208,8 +219,13 @@ final class SessionSync {
     /// The user chose to upload the earlier sessions to the signed-in account.
     func uploadEarlierSessions() {
         guard let binding = account.binding, !earlierSessions.isEmpty else { return }
-        consent.adopt(earlierSessions, for: binding)
-        saveConsent()
+        let chosen = earlierSessions
+        do {
+            try ledger.update { $0.adopt(chosen, for: binding) }
+        } catch {
+            queueUnavailable = true
+            return
+        }
         earlierSessions = []
         recordingsChanged()
     }
@@ -237,6 +253,9 @@ final class SessionSync {
             guard !Task.isCancelled else { return }
             do {
                 let retryAt = try await outbox.drain(for: binding, policy: policy)
+                // Deleted on the server: never queued for this account again.
+                let deleted = outbox.deletedFromCloudIDs
+                if account.binding == binding { try? ledger.update { $0.markDeleted(deleted, for: binding) } }
                 guard !Task.isCancelled, account.binding == binding else { return }
                 queueUnavailable = false
                 if let retryAt {
@@ -270,10 +289,6 @@ final class SessionSync {
         Task { await accountDidChange() }
     }
 
-    private func saveConsent() {
-        if let data = try? JSONEncoder().encode(consent) { preferences.set(data, forKey: Self.consentKey) }
-    }
-
     /// Freezes each consented, finished recording's analyzed track (trimmed, if the user
     /// trimmed it) into the queue, and re-freezes one whose trim or analysis inputs
     /// changed. Analysis runs off the main actor.
@@ -283,13 +298,14 @@ final class SessionSync {
         var allowed: Set<UUID> = []
         var held: Set<UUID> = []
         for entry in entries {
-            guard let meta = entry.meta, meta.endedAt != nil else { continue }
+            guard let meta = entry.meta, let endedAt = meta.endedAt else { continue }
             switch consent.eligibility(
-                sessionID: meta.sessionId, startedAt: Date(timeIntervalSince1970: meta.startedAt), for: binding)
+                sessionID: meta.sessionId, startedAt: Date(timeIntervalSince1970: meta.startedAt),
+                endedAt: Date(timeIntervalSince1970: endedAt), for: binding)
             {
             case .automatic: allowed.insert(meta.sessionId)
             case .earlier: earlier.append(meta.sessionId)
-            case .otherAccount: break
+            case .otherAccount, .deletedFromCloud: break
             }
         }
         earlierSessions = earlier

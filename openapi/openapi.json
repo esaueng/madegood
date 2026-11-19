@@ -134,7 +134,10 @@
               "unsupported_media_type",
               "payload_too_large",
               "invalid_track",
-              "internal"
+              "internal",
+              "session_deleted",
+              "stale_revision",
+              "revision_mismatch"
             ]
           },
           "message": {
@@ -1367,7 +1370,7 @@
       "put": {
         "operationId": "putSession",
         "summary": "Create or replace a session's metadata and summary",
-        "description": "Idempotent: the ID is generated on the device, so retrying an upload is safe. A new session takes the user's default visibility.",
+        "description": "Idempotent: the ID is generated on the device, so retrying an upload is safe. A new session takes the user's default visibility. A higher `revision` than the stored one detaches the stored track until the track for that revision is uploaded.",
         "tags": [
           "sessions"
         ],
@@ -1388,6 +1391,17 @@
             "description": "The device-generated session UUID. Either case; stored lowercase.",
             "name": "id",
             "in": "path"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "description": "The device's upload revision for this session, increasing with each new snapshot (0 when omitted). A PUT with a lower revision than the stored one is rejected (412)."
+            },
+            "required": false,
+            "description": "The device's upload revision for this session, increasing with each new snapshot (0 when omitted). A PUT with a lower revision than the stored one is rejected (412).",
+            "name": "revision",
+            "in": "query"
           }
         ],
         "requestBody": {
@@ -1443,6 +1457,26 @@
           },
           "409": {
             "description": "Another account has a session with this ID (`session_id_taken`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "The caller deleted this session (`session_deleted`); it stays deleted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The stored revision is newer than `revision` (`stale_revision`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -1604,7 +1638,7 @@
       "delete": {
         "operationId": "deleteSession",
         "summary": "Delete a session and its track",
-        "description": "Idempotent: deleting a session the caller does not have also returns 204.",
+        "description": "Idempotent: deleting a session the caller does not have also returns 204. The ID stays deleted for the caller: a later PUT for it returns 410, so a device still holding the recording cannot recreate it.",
         "tags": [
           "sessions"
         ],
@@ -1658,7 +1692,7 @@
       "put": {
         "operationId": "putSessionTrack",
         "summary": "Upload a session's track file",
-        "description": "The body is the gzipped track v1 file (docs/formats.md), sent as `application/gzip` with no Content-Encoding, at most 8388608 bytes. PUT the session's metadata first. Repeating the upload replaces the file.",
+        "description": "The body is the gzipped track v1 file (docs/formats.md), sent as `application/gzip` with no Content-Encoding, at most 8388608 bytes. PUT the session's metadata first, with the same `revision`. Repeating the upload replaces the file.",
         "tags": [
           "sessions"
         ],
@@ -1679,6 +1713,17 @@
             "description": "The device-generated session UUID. Either case; stored lowercase.",
             "name": "id",
             "in": "path"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "description": "The device's upload revision for this session, increasing with each new snapshot (0 when omitted). A PUT with a lower revision than the stored one is rejected (412)."
+            },
+            "required": false,
+            "description": "The device's upload revision for this session, increasing with each new snapshot (0 when omitted). A PUT with a lower revision than the stored one is rejected (412).",
+            "name": "revision",
+            "in": "query"
           }
         ],
         "requestBody": {
@@ -1718,6 +1763,26 @@
           },
           "404": {
             "description": "The caller has no session with this ID; PUT its metadata first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "The caller deleted this session (`session_deleted`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "`revision` is not the stored metadata revision: older (`stale_revision`) or newer (`revision_mismatch`; PUT the metadata first).",
             "content": {
               "application/json": {
                 "schema": {

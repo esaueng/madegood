@@ -336,26 +336,39 @@ struct SessionOutboxTests {
         #expect(rig.transport.uploaded.last == trimmedBytes)
     }
 
-    @Test func aTrimAfterSyncReplacesTheUploadedTrackButOtherChangesDoNot() async throws {
+    @Test func anyInputChangeAfterSyncReplacesBothUploadsAtAHigherRevision() async throws {
         let rig = try Rig()
         defer { rig.cleanUp() }
         let binding = try await rig.signIn()
         let id = UUID()
         let (original, originalBytes) = try rig.session(id: id, fixes: 5)
         let (trimmed, trimmedBytes) = try rig.session(id: id, fixes: 2)
+        let (reanalyzed, reanalyzedBytes) = try rig.session(id: id, fixes: 3)
         let outbox = rig.outbox()
         try outbox.enqueue(original, revision: .init(trim: "original", analysis: "a"), for: binding) { originalBytes }
         #expect(try await outbox.drain(for: binding, policy: .init()) == nil)
         #expect(outbox.status(for: id) == .synced)
 
-        #expect(!outbox.needsSnapshot(id, revision: .init(trim: "original", analysis: "b")))
         let trim = SessionUploadRevision(trim: "1-2", analysis: "a")
         #expect(outbox.needsSnapshot(id, revision: trim))
         try outbox.enqueue(trimmed, revision: trim, for: binding) { trimmedBytes }
         #expect(outbox.status(for: id) == .pending)
         #expect(try await outbox.drain(for: binding, policy: .init()) == nil)
+
+        // Not only trims: a new analysis (auto-pause, analyzer) is uploaded too.
+        let analysis = SessionUploadRevision(trim: "1-2", analysis: "b")
+        #expect(outbox.needsSnapshot(id, revision: analysis))
+        try outbox.enqueue(reanalyzed, revision: analysis, for: binding) { reanalyzedBytes }
+        #expect(try await outbox.drain(for: binding, policy: .init()) == nil)
         #expect(outbox.status(for: id) == .synced)
-        #expect(rig.transport.uploaded == [originalBytes, trimmedBytes])
+        #expect(rig.transport.uploaded == [originalBytes, trimmedBytes, reanalyzedBytes])
+
+        // Every request carries its snapshot's revision, and each snapshot's is higher.
+        let revisions = rig.transport.calls.filter { $0.step != "apple" }.map(\.revision)
+        #expect(revisions.count == 6)
+        #expect(revisions.allSatisfy { $0 != nil })
+        for pair in stride(from: 0, to: 6, by: 2) { #expect(revisions[pair] == revisions[pair + 1]) }
+        #expect(revisions[0]! < revisions[2]! && revisions[2]! < revisions[4]!)
     }
 
     @Test func aResultForAReplacedSnapshotNeverAcknowledgesTheNewOne() async throws {
@@ -407,27 +420,48 @@ struct SessionOutboxTests {
         #expect(rig.transport.calls.filter { $0.step == "track" }.count == 1, "the track is not sent again")
     }
 
-    @Test func reconcilingKeepsOnlyUploadsTheSettingsAllow() throws {
-        let binding = VoyageAccountBinding(accountID: "synthetic-a", signInID: UUID())
-        let other = VoyageAccountBinding(accountID: "synthetic-b", signInID: UUID())
-        let mine = SessionOutbox.taskDescription(binding: binding, sessionID: UUID(), generation: UUID())
-        let theirs = SessionOutbox.taskDescription(binding: other, sessionID: UUID(), generation: UUID())
-        func keep(_ description: String?, cellular: Bool, binding: VoyageAccountBinding?, enabled: Bool, wifiOnly: Bool)
-            -> Bool
+    @Test func reconcilingKeepsOnlyTheCurrentGenerationUnderTheCurrentSettings() async throws {
+        let rig = try Rig()
+        defer { rig.cleanUp() }
+        let binding = try await rig.signIn()
+        let id = UUID()
+        let (original, originalBytes) = try rig.session(id: id, fixes: 5)
+        let (trimmed, trimmedBytes) = try rig.session(id: id, fixes: 2)
+        let outbox = rig.outbox()
+        try outbox.enqueue(original, revision: .init(trim: "original", analysis: "a"), for: binding) { originalBytes }
+        rig.networkUp = false
+        rig.transport.trackResults = [.failure(URLError(.networkConnectionLost))]
+        _ = try await outbox.drain(for: binding, policy: .init())
+        let old = try #require(rig.transport.calls.last?.taskDescription)
+        try outbox.enqueue(trimmed, revision: .init(trim: "1-2", analysis: "a"), for: binding) { trimmedBytes }
+        rig.transport.trackResults = [.failure(URLError(.networkConnectionLost))]
+        rig.now = rig.now.addingTimeInterval(3600)
+        _ = try await outbox.drain(for: binding, policy: .init())
+        let current = try #require(rig.transport.calls.last?.taskDescription)
+        #expect(old != current)
+
+        // After a crash both tasks may still exist: only the journal's generation stays.
+        let relaunched = rig.outbox(account: VoyageAccount(store: rig.store, api: rig.voyageAPI))
+        try relaunched.restore(for: binding)
+        func keep(_ description: String?, cellular: Bool = true, binding: VoyageAccountBinding? = nil,
+                  enabled: Bool = true, wifiOnly: Bool = false) -> Bool
         {
-            SessionOutbox.shouldKeepUpload(
-                taskDescription: description, allowsCellular: cellular, binding: binding, syncEnabled: enabled,
-                policy: .init(allowsCellular: !wifiOnly))
+            relaunched.shouldKeepUpload(
+                taskDescription: description, allowsCellular: cellular, binding: binding ?? rig.account.binding,
+                syncEnabled: enabled, policy: .init(allowsCellular: !wifiOnly))
         }
-        #expect(keep(mine, cellular: true, binding: binding, enabled: true, wifiOnly: false))
-        #expect(keep(mine, cellular: false, binding: binding, enabled: true, wifiOnly: true))
-        #expect(!keep(mine, cellular: true, binding: binding, enabled: false, wifiOnly: false), "sync off")
-        #expect(!keep(mine, cellular: true, binding: nil, enabled: true, wifiOnly: false), "signed out")
-        #expect(!keep(mine, cellular: true, binding: binding, enabled: true, wifiOnly: true), "Wi-Fi only")
-        #expect(!keep(mine, cellular: false, binding: binding, enabled: true, wifiOnly: false), "old Wi-Fi-only task")
-        #expect(!keep(theirs, cellular: true, binding: binding, enabled: true, wifiOnly: false), "another sign-in")
-        #expect(!keep(nil, cellular: true, binding: binding, enabled: true, wifiOnly: false))
-        #expect(!keep("voyage/legacy", cellular: true, binding: binding, enabled: true, wifiOnly: false))
+        #expect(keep(current))
+        #expect(!keep(old), "a superseded generation is cancelled")
+        #expect(keep(current, cellular: false, wifiOnly: true))
+        #expect(!keep(current, enabled: false), "sync off")
+        #expect(!keep(current, wifiOnly: true), "Wi-Fi only")
+        #expect(!keep(current, cellular: false), "old Wi-Fi-only task")
+        let other = VoyageAccountBinding(accountID: "synthetic-b", signInID: UUID())
+        #expect(!keep(current, binding: other), "another sign-in")
+        #expect(!keep(nil))
+        #expect(!keep("voyage/legacy"))
+        try rig.account.signOut()
+        #expect(!keep(current, binding: nil), "signed out")
     }
 
     @Test func signOutDropsTheQueueAndFrozenTracks() async throws {
@@ -447,41 +481,258 @@ struct SessionOutboxTests {
 
     @Test func consentNeverBackfillsAnotherAccount() {
         let start = Date(timeIntervalSince1970: 1_700_000_000)
+        let hour: TimeInterval = 3600
         let a = VoyageAccountBinding(accountID: "synthetic-a", signInID: UUID())
         let b = VoyageAccountBinding(accountID: "synthetic-b", signInID: UUID())
         let beforeAnyone = UUID()
         let duringA = UUID()
         let duringB = UUID()
         var consent = SessionSyncConsent()
+        func check(_ id: UUID, _ from: TimeInterval, _ to: TimeInterval, _ binding: VoyageAccountBinding)
+            -> SessionSyncConsent.Eligibility
+        {
+            consent.eligibility(
+                sessionID: id, startedAt: start.addingTimeInterval(from), endedAt: start.addingTimeInterval(to),
+                for: binding)
+        }
 
-        consent.signedIn(a, at: start.addingTimeInterval(100))
+        consent.signedIn(a, at: start.addingTimeInterval(1 * hour))
         #expect(!consent.isEnabled(for: a))
         consent.setEnabled(true, for: a)
         #expect(consent.isEnabled(for: a))
-        #expect(consent.eligibility(sessionID: beforeAnyone, startedAt: start, for: a) == .earlier)
-        #expect(consent.eligibility(sessionID: duringA, startedAt: start.addingTimeInterval(200), for: a) == .automatic)
+        #expect(check(beforeAnyone, 0, 0.5 * hour, a) == .earlier)
+        #expect(check(duringA, 2 * hour, 3 * hour, a) == .automatic)
 
         // A signs out; B signs in on the same phone.
-        consent.signedOut(at: start.addingTimeInterval(300))
+        consent.signedOut(at: start.addingTimeInterval(4 * hour))
         #expect(!consent.isEnabled(for: a), "sign-out turns sync off")
-        consent.signedIn(b, at: start.addingTimeInterval(400))
+        consent.signedIn(b, at: start.addingTimeInterval(5 * hour))
         #expect(!consent.isEnabled(for: b), "B does not inherit A's switch")
         consent.setEnabled(true, for: b)
-        #expect(consent.eligibility(sessionID: duringA, startedAt: start.addingTimeInterval(200), for: b) == .otherAccount)
-        #expect(consent.eligibility(sessionID: duringB, startedAt: start.addingTimeInterval(500), for: b) == .automatic)
-        #expect(consent.eligibility(sessionID: beforeAnyone, startedAt: start, for: b) == .earlier)
+        #expect(check(duringA, 2 * hour, 3 * hour, b) == .otherAccount)
+        #expect(check(duringB, 6 * hour, 7 * hour, b) == .automatic)
+        #expect(check(beforeAnyone, 0, 0.5 * hour, b) == .earlier)
 
         // Choosing earlier sessions reaches only ones nobody was signed in for.
         consent.adopt([beforeAnyone, duringA], for: b)
-        #expect(consent.eligibility(sessionID: beforeAnyone, startedAt: start, for: b) == .automatic)
-        #expect(consent.eligibility(sessionID: duringA, startedAt: start.addingTimeInterval(200), for: b) == .otherAccount)
-        #expect(consent.eligibility(sessionID: beforeAnyone, startedAt: start, for: a) == .earlier)
+        #expect(check(beforeAnyone, 0, 0.5 * hour, b) == .automatic)
+        #expect(check(duringA, 2 * hour, 3 * hour, b) == .otherAccount)
+        #expect(check(beforeAnyone, 0, 0.5 * hour, a) == .earlier)
 
         // Signing in again (even to A) needs the switch again.
         let again = VoyageAccountBinding(accountID: "synthetic-a", signInID: UUID())
-        consent.signedIn(again, at: start.addingTimeInterval(600))
+        consent.signedIn(again, at: start.addingTimeInterval(8 * hour))
         #expect(!consent.isEnabled(for: again))
-        #expect(consent.eligibility(sessionID: duringA, startedAt: start.addingTimeInterval(200), for: again) == .automatic)
+        #expect(check(duringA, 2 * hour, 3 * hour, again) == .automatic)
+    }
+
+    @Test func aRecordingNearAnAccountBoundaryNeedsAnExplicitChoice() {
+        let start = Date(timeIntervalSince1970: 1_700_000_000)
+        let a = VoyageAccountBinding(accountID: "synthetic-a", signInID: UUID())
+        let b = VoyageAccountBinding(accountID: "synthetic-b", signInID: UUID())
+        var consent = SessionSyncConsent()
+        consent.signedIn(a, at: start)
+        consent.signedOut(at: start.addingTimeInterval(3600))
+        consent.signedIn(b, at: start.addingTimeInterval(3600))
+        func check(_ from: TimeInterval, _ to: TimeInterval, _ binding: VoyageAccountBinding)
+            -> SessionSyncConsent.Eligibility
+        {
+            consent.eligibility(
+                sessionID: UUID(), startedAt: start.addingTimeInterval(from), endedAt: start.addingTimeInterval(to),
+                for: binding)
+        }
+        // A watch clock a few minutes off puts these on the wrong side of the switch.
+        #expect(check(3600 + 120, 3600 + 1800, b) == .earlier, "starts within the margin after the switch")
+        #expect(check(1800, 3600 - 60, b) == .otherAccount, "entirely in A's window")
+        #expect(check(1800, 3600 + 300, b) == .earlier, "spans the switch")
+        #expect(check(1800, 3600 + 300, a) == .earlier)
+        #expect(check(3600 - 300, 3600 + 300, a) == .earlier)
+        #expect(check(3600 + 900, 3600 + 1800, b) == .automatic, "well inside B's window")
+        #expect(check(600 + 1, 1800, a) == .automatic)
+        #expect(check(300, 1800, a) == .earlier, "within the margin of A's sign-in")
+    }
+
+    @Test func credentialsWithoutAPersistedWindowGetNothingAutomatically() {
+        let start = Date(timeIntervalSince1970: 1_700_000_000)
+        let a = VoyageAccountBinding(accountID: "synthetic-a", signInID: UUID())
+        let unrecorded = VoyageAccountBinding(accountID: "synthetic-a", signInID: UUID())
+        var consent = SessionSyncConsent()
+        consent.signedIn(a, at: start)
+        consent.setEnabled(true, for: unrecorded)
+        #expect(!consent.isEnabled(for: unrecorded))
+        #expect(
+            consent.eligibility(
+                sessionID: UUID(), startedAt: start.addingTimeInterval(3600), endedAt: start.addingTimeInterval(4000),
+                for: unrecorded) == .earlier)
+    }
+
+    @Test func theSignInWindowIsDurableBeforeTheCredentialsAreSaved() async throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appending(path: "consent.json")
+        let saved = MemoryCredentials()
+        let store = ConsentRecordingStore(saved)
+        let ledger = SessionConsentLedger(url: file)
+        let transport = StubTransport()
+        let account = VoyageAccount(
+            store: store, api: VoyageAPI(baseURL: URL(string: "https://synthetic.invalid/api")!, transport: transport))
+        ledger.guardCredentials(store, now: { Date(timeIntervalSince1970: 1_700_000_000) }, isSignedIn: {
+            account.binding != nil
+        })
+        var windowsOnDiskAtSave: [Int] = []
+        saved.onSave = { credentials in
+            let onDisk = (try? Data(contentsOf: file)).flatMap { try? JSONDecoder().decode(SessionSyncConsent.self, from: $0) }
+            windowsOnDiskAtSave.append(onDisk?.windows.count ?? 0)
+            if credentials != nil {
+                #expect(onDisk?.windows.last?.signInID == credentials?.binding.signInID)
+                #expect(onDisk?.windows.last?.end == nil)
+            } else {
+                #expect(onDisk?.windows.last?.end == nil, "a refresh is not a sign-out")
+            }
+        }
+        try await account.signIn(identityToken: "synthetic-identity", displayName: nil)
+        let binding = try #require(account.binding)
+
+        // A refresh clears the rotating token while still signed in: not a sign-out.
+        transport.metadataStatuses = [401]
+        transport.refresh = { Data(#"{"accessToken":"synthetic-access-2","refreshToken":"synthetic-refresh-2"}"#.utf8) }
+        try await account.authorized(for: binding) { bearer in
+            if bearer == "synthetic-access" {
+                throw VoyageAPIError.http(status: 401, code: "unauthorized", retryAfter: nil)
+            }
+        }
+        #expect(ledger.consent.windows.count == 1 && ledger.consent.windows[0].end == nil)
+        saved.onSave = { credentials in
+            let onDisk = (try? Data(contentsOf: file)).flatMap { try? JSONDecoder().decode(SessionSyncConsent.self, from: $0) }
+            if credentials == nil { #expect(onDisk?.windows.last?.end != nil) }
+        }
+        try account.signOut()
+        #expect(ledger.consent.windows.count == 1 && ledger.consent.windows[0].end != nil)
+        #expect(windowsOnDiskAtSave.first == 1)
+
+        // A failed consent write fails the sign-in: no credentials without a window.
+        try FileManager.default.removeItem(at: root)
+        try Data().write(to: root)
+        await #expect(throws: (any Error).self) {
+            try await account.signIn(identityToken: "synthetic-identity", displayName: nil)
+        }
+        #expect(account.binding == nil)
+        #expect(saved.credentials == nil)
+        try FileManager.default.removeItem(at: root)
+    }
+
+    @Test func aSessionDeletedFromTheAccountIsNeverSentAgain() async throws {
+        let rig = try Rig()
+        defer { rig.cleanUp() }
+        let binding = try await rig.signIn()
+        let (snapshot, bytes) = try rig.session()
+        let outbox = rig.outbox()
+        try outbox.enqueue(snapshot, revision: .init(trim: "original", analysis: "a"), for: binding) { bytes }
+        rig.transport.metadataStatuses = [410]
+        #expect(try await outbox.drain(for: binding, policy: .init()) == nil)
+        #expect(outbox.status(for: snapshot.sessionID) == .failed(.deletedFromCloud))
+        #expect(outbox.deletedFromCloudIDs == [snapshot.sessionID])
+        try outbox.retry(for: binding)
+        #expect(!outbox.needsSnapshot(snapshot.sessionID, revision: .init(trim: "1-2", analysis: "b")))
+        #expect(try await outbox.drain(for: binding, policy: .init()) == nil)
+        #expect(rig.transport.calls.filter { $0.step == "metadata" }.count == 1)
+
+        // Across sign-ins, the consent record keeps it out of the queue.
+        var consent = SessionSyncConsent()
+        consent.signedIn(binding, at: rig.now.addingTimeInterval(-7200))
+        consent.markDeleted(outbox.deletedFromCloudIDs, for: binding)
+        #expect(
+            consent.eligibility(
+                sessionID: snapshot.sessionID, startedAt: snapshot.startedAt, endedAt: snapshot.startedAt, for: binding)
+                == .deletedFromCloud)
+    }
+
+    @Test func aStaleTrackRevisionResendsTheMetadata() async throws {
+        let rig = try Rig()
+        defer { rig.cleanUp() }
+        let binding = try await rig.signIn()
+        let (snapshot, bytes) = try rig.session()
+        let outbox = rig.outbox()
+        try outbox.enqueue(snapshot, for: binding) { bytes }
+        rig.transport.trackResults = [.success(412)]
+        let retryAt = try #require(try await outbox.drain(for: binding, policy: .init()))
+        rig.now = retryAt
+        #expect(try await outbox.drain(for: binding, policy: .init()) == nil)
+        #expect(rig.transport.calls.map(\.step) == ["apple", "metadata", "track", "metadata", "track"])
+
+        // 412 on the metadata means the account holds a newer snapshot: stop.
+        let (other, otherBytes) = try rig.session()
+        try outbox.enqueue(other, for: binding) { otherBytes }
+        rig.transport.metadataStatuses = [412]
+        #expect(try await outbox.drain(for: binding, policy: .init()) == nil)
+        #expect(outbox.status(for: other.sessionID) == .failed(.rejected(status: 412)))
+    }
+
+    @Test func eachGenerationHasItsOwnFrozenTrackAndOrphansAreRemoved() async throws {
+        let rig = try Rig()
+        defer { rig.cleanUp() }
+        let binding = try await rig.signIn()
+        let id = UUID()
+        let (original, originalBytes) = try rig.session(id: id, fixes: 5)
+        let (trimmed, trimmedBytes) = try rig.session(id: id, fixes: 2)
+        let outbox = rig.outbox()
+        let folder = rig.root.appending(path: "queue").appending(path: binding.signInID.uuidString.lowercased())
+        func tracks() throws -> [String] {
+            try FileManager.default.contentsOfDirectory(atPath: folder.path).filter { $0.hasSuffix(".track.json.gz") }
+                .sorted()
+        }
+        try outbox.enqueue(original, revision: .init(trim: "original", analysis: "a"), for: binding) { originalBytes }
+        let first = try tracks()
+        #expect(first.count == 1)
+        try outbox.enqueue(trimmed, revision: .init(trim: "1-2", analysis: "a"), for: binding) { trimmedBytes }
+        let second = try tracks()
+        #expect(second.count == 1 && second != first, "a new file per generation; the old one removed")
+        #expect(try Data(contentsOf: folder.appending(path: second[0])) == trimmedBytes)
+
+        // A crash between writing a new generation and committing the journal leaves an
+        // orphan; the journal still points at its own file, and restore removes the orphan.
+        let orphan = folder.appending(path: id.uuidString.lowercased() + "." + UUID().uuidString.lowercased() + ".track.json.gz")
+        try originalBytes.write(to: orphan)
+        let relaunched = rig.outbox(account: VoyageAccount(store: rig.store, api: rig.voyageAPI))
+        try relaunched.restore(for: binding)
+        #expect(try tracks() == second)
+        #expect(try await relaunched.drain(for: binding, policy: .init()) == nil)
+        #expect(rig.transport.uploaded == [trimmedBytes])
+        #expect(try tracks().isEmpty, "a synced session's frozen track is removed")
+    }
+
+    @Test func anOldGenerationsCompletionDuringARebuildNeverMarksTheNewOneSynced() async throws {
+        let rig = try Rig()
+        defer { rig.cleanUp() }
+        let binding = try await rig.signIn()
+        let id = UUID()
+        let (original, originalBytes) = try rig.session(id: id, fixes: 5)
+        let (rebuilt, rebuiltBytes) = try rig.session(id: id, fixes: 4)
+        let outbox = rig.outbox()
+        try outbox.enqueue(original, revision: .init(trim: "original", analysis: "a"), for: binding) { originalBytes }
+        rig.networkUp = false
+        rig.transport.trackResults = [.failure(URLError(.networkConnectionLost))]
+        _ = try await outbox.drain(for: binding, policy: .init())
+        let old = try #require(rig.transport.calls.last?.taskDescription)
+
+        // The analysis changed (same trim) and the rebuild is queued; then the old
+        // generation's background task reports success.
+        let rebuiltRevision = SessionUploadRevision(trim: "original", analysis: "b")
+        #expect(outbox.needsSnapshot(id, revision: rebuiltRevision))
+        try outbox.enqueue(rebuilt, revision: rebuiltRevision, for: binding) { rebuiltBytes }
+        outbox.recordBackgroundCompletion(taskDescription: old, statusCode: 204)
+        #expect(outbox.status(for: id) == .pending, "the old generation's success is not the new one's")
+
+        // A completion that arrives before the rebuild is queued doesn't block it either.
+        let (third, thirdBytes) = try rig.session(id: id, fixes: 3)
+        let thirdRevision = SessionUploadRevision(trim: "original", analysis: "c")
+        rig.networkUp = true
+        #expect(try await outbox.drain(for: binding, policy: .init()) == nil)
+        #expect(outbox.status(for: id) == .synced)
+        #expect(outbox.needsSnapshot(id, revision: thirdRevision), "synced, but the analysis changed")
+        try outbox.enqueue(third, revision: thirdRevision, for: binding) { thirdBytes }
+        #expect(try await outbox.drain(for: binding, policy: .init()) == nil)
+        #expect(rig.transport.uploaded.suffix(2) == [rebuiltBytes, thirdBytes])
     }
 
     @Test func snapshotKeepsValuesWithinTheAPILimits() {
@@ -557,8 +808,12 @@ private final class Rig {
 @MainActor
 private final class MemoryCredentials: VoyageCredentialStore {
     var credentials: VoyageCredentials?
+    var onSave: ((VoyageCredentials?) -> Void)?
     func load() throws -> VoyageCredentials? { credentials }
-    func save(_ credentials: VoyageCredentials?) throws { self.credentials = credentials }
+    func save(_ credentials: VoyageCredentials?) throws {
+        onSave?(credentials)
+        self.credentials = credentials
+    }
 }
 
 @MainActor
@@ -574,6 +829,7 @@ private final class StubTransport: SessionSyncTransport {
         let allowsExpensive: Bool
         let json: [String: Any]?
         var taskDescription: String?
+        let revision: Int64?
 
         init(_ step: String, _ request: URLRequest, taskDescription: String? = nil) {
             self.step = step
@@ -586,6 +842,8 @@ private final class StubTransport: SessionSyncTransport {
             allowsExpensive = request.allowsExpensiveNetworkAccess
             json = request.httpBody.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
             self.taskDescription = taskDescription
+            revision = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?
+                .first { $0.name == "revision" }?.value.flatMap { Int64($0) }
         }
     }
 

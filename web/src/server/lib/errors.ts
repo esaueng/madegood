@@ -23,6 +23,9 @@ export const errorCodes = [
   "payload_too_large",
   "invalid_track",
   "internal",
+  "session_deleted",
+  "stale_revision",
+  "revision_mismatch",
 ] as const;
 export type ErrorCode = (typeof errorCodes)[number];
 

@@ -13,6 +13,7 @@ extension SessionSyncStatus {
         case .failed(.tooLarge): "Too large to upload"
         case .failed(.rejected): "Upload rejected"
         case .failed(.retriesExhausted): "Upload failed"
+        case .failed(.deletedFromCloud): "Deleted from your account"
         }
     }
 
@@ -28,15 +29,18 @@ extension SessionSyncStatus {
 
     var isProblem: Bool {
         switch self {
+        case .failed(.deletedFromCloud): false
         case .failed: true
         case .retrying(_, let offline): !offline
         default: false
         }
     }
 
-    /// Retry is offered for anything waiting on a timer or stopped.
+    /// Retry is offered for anything waiting on a timer or stopped, except a session the
+    /// user deleted from the account.
     var canRetry: Bool {
         switch self {
+        case .failed(.deletedFromCloud): false
         case .failed, .retrying: true
         default: false
         }

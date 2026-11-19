@@ -16,6 +16,8 @@ enum SessionSyncFailure: Codable, Equatable, Sendable {
     case tooLarge
     /// Another 4xx, for example a body the API rejects.
     case rejected(status: Int)
+    /// 410: the user deleted the session from their account. It is never sent again.
+    case deletedFromCloud
 }
 
 /// One session's place in the upload queue.
@@ -66,8 +68,11 @@ final class SessionOutbox {
         var snapshot: SessionUploadSnapshot
         var revision: SessionUploadRevision
         /// Changes whenever the snapshot is replaced, so a request for an older snapshot
-        /// can never acknowledge the new one.
+        /// can never acknowledge the new one. The frozen track is stored per generation.
         var generation = UUID()
+        /// Sent as `revision` with both PUTs; increases with each replacement, so the
+        /// server rejects a delayed request for an older snapshot (412).
+        var uploadRevision: Int64
         var metadataSent = false
         var trackSent = false
         var attempts = 0
@@ -108,16 +113,21 @@ final class SessionOutbox {
         return Set(journal.entries.map(\.id))
     }
 
-    /// Whether `revision` needs a new snapshot: the session is not queued; or it is not
-    /// synced and anything changed; or it is synced and its trim changed (the track PUT
-    /// replaces the stored file, so trimmed-off data is removed from the account). Other
-    /// changes after a session synced are not uploaded again.
+    /// Whether `revision` needs a new snapshot: the session is not queued, or any recorded
+    /// input differs, whether or not the old snapshot already synced (both PUTs replace
+    /// what the account stores, at a higher upload revision). A session deleted from the
+    /// account never does.
     func needsSnapshot(_ id: UUID, revision: SessionUploadRevision) -> Bool {
         guard let journal, journal.binding == account.binding,
             let entry = journal.entries.first(where: { $0.id == id })
         else { return true }
-        if entry.revision == revision { return false }
-        return !entry.trackSent || entry.revision.trim != revision.trim
+        return entry.failure != .deletedFromCloud && entry.revision != revision
+    }
+
+    /// Sessions the server reported as deleted from the account (410).
+    var deletedFromCloudIDs: Set<UUID> {
+        guard let journal, journal.binding == account.binding else { return [] }
+        return Set(journal.entries.filter { $0.failure == .deletedFromCloud }.map(\.id))
     }
 
     /// Queues a finished session, or replaces its snapshot when `needsSnapshot` says so.
@@ -133,12 +143,18 @@ final class SessionOutbox {
         let index = journal.entries.firstIndex { $0.id == snapshot.sessionID }
         if index != nil, !needsSnapshot(snapshot.sessionID, revision: revision) { return false }
         let track = try gzipTrack()
-        var entry = Entry(snapshot: snapshot, revision: revision)
-        let file = trackURL(snapshot.sessionID, for: binding)
+        let previous = index.map { journal.entries[$0] }
+        let millis = Int64((now().timeIntervalSince1970 * 1000).rounded(.down))
+        var entry = Entry(
+            snapshot: snapshot, revision: revision,
+            uploadRevision: max(millis, (previous?.uploadRevision ?? 0) + 1))
+        // The new generation's file is written first and the old one removed only after
+        // the journal points at the new one, so a crash never pairs a track with the
+        // wrong snapshot.
+        let file = trackURL(snapshot.sessionID, generation: entry.generation, for: binding)
         if track.count > Self.maxTrackBytes {
             // Queue it as failed, so History says why it never reaches the account.
             entry.failure = .tooLarge
-            try? FileManager.default.removeItem(at: file)
         } else {
             guard Gzip.isGzipped(track), let decoded = try? TrackCodec.decode(track),
                 decoded.sessionId == snapshot.sessionID
@@ -152,7 +168,15 @@ final class SessionOutbox {
         } else {
             journal.entries.append(entry)
         }
-        try save(journal)
+        do {
+            try save(journal)
+        } catch {
+            try? FileManager.default.removeItem(at: file)
+            throw error
+        }
+        if let previous {
+            try? FileManager.default.removeItem(at: trackURL(previous.id, generation: previous.generation, for: binding))
+        }
         return wasActive
     }
 
@@ -166,12 +190,27 @@ final class SessionOutbox {
         let wasActive = active.map { active in removed.contains { $0.id == active.id } } ?? false
         journal.entries.removeAll { entry in removed.contains { $0.id == entry.id } }
         try save(journal)
-        for entry in removed { try? FileManager.default.removeItem(at: trackURL(entry.id, for: binding)) }
+        for entry in removed {
+            try? FileManager.default.removeItem(at: trackURL(entry.id, generation: entry.generation, for: binding))
+        }
         return wasActive
     }
 
     func restore(for binding: VoyageAccountBinding) throws {
-        journal = try load(for: binding)
+        let restored = try load(for: binding)
+        journal = restored
+        // Frozen tracks the journal no longer points at (a crash between writing a new
+        // generation and removing the old one).
+        let keep = Set(
+            restored.entries.filter { !$0.trackSent }.map {
+                trackURL($0.id, generation: $0.generation, for: binding).lastPathComponent
+            })
+        let files =
+            (try? FileManager.default.contentsOfDirectory(at: directory(for: binding), includingPropertiesForKeys: nil))
+            ?? []
+        for file in files where file.lastPathComponent.hasSuffix(".track.json.gz") && !keep.contains(file.lastPathComponent) {
+            try? FileManager.default.removeItem(at: file)
+        }
     }
 
     func status(for id: UUID) -> SessionSyncStatus? {
@@ -190,7 +229,8 @@ final class SessionOutbox {
     /// the next drain sends it right away.
     func retry(_ id: UUID? = nil, for binding: VoyageAccountBinding) throws {
         var journal = try load(for: binding)
-        for index in journal.entries.indices where !journal.entries[index].trackSent {
+        for index in journal.entries.indices
+        where !journal.entries[index].trackSent && journal.entries[index].failure != .deletedFromCloud {
             guard id == nil || journal.entries[index].id == id else { continue }
             journal.entries[index].failure = nil
             journal.entries[index].retryAt = nil
@@ -236,10 +276,12 @@ final class SessionOutbox {
                 try await account.authorized(for: binding) { bearer in
                     switch step {
                     case .metadata:
-                        try await api.putSession(entry.snapshot, bearer: bearer, policy: policy)
+                        try await api.putSession(
+                            entry.snapshot, revision: entry.uploadRevision, bearer: bearer, policy: policy)
                     case .track:
                         try await api.putTrack(
-                            file: trackURL(entry.id, for: binding), sessionID: entry.id,
+                            file: trackURL(entry.id, generation: entry.generation, for: binding),
+                            sessionID: entry.id, revision: entry.uploadRevision,
                             taskDescription: Self.taskDescription(
                                 binding: binding, sessionID: entry.id, generation: entry.generation),
                             bearer: bearer, policy: policy)
@@ -279,7 +321,7 @@ final class SessionOutbox {
             }
             try save(updated)
             if updated.entries[index].trackSent {
-                try? FileManager.default.removeItem(at: trackURL(entry.id, for: binding))
+                try? FileManager.default.removeItem(at: trackURL(entry.id, generation: entry.generation, for: binding))
             }
             active = nil
         }
@@ -319,20 +361,26 @@ final class SessionOutbox {
         journal.entries[index].offline = false
         journal.entries[index].failure = nil
         guard (try? save(journal)) != nil else { return }
-        try? FileManager.default.removeItem(at: trackURL(parsed.session, for: binding))
+        try? FileManager.default.removeItem(
+            at: trackURL(parsed.session, generation: parsed.generation, for: binding))
     }
 
-    /// Whether a background upload task may keep running under the current settings: it
-    /// belongs to the signed-in sign-in, sync is on, and it was started under the current
-    /// network policy. Everything else is cancelled at launch and on every change.
-    static func shouldKeepUpload(
+    /// Whether a background upload task may keep running: it belongs to the signed-in
+    /// sign-in, sync is on, it was started under the current network policy, and it
+    /// carries the journal's current, unsent generation of that session. Everything else
+    /// is cancelled at launch and on every change, so after a crash no older snapshot's
+    /// upload can still be running next to the current one.
+    func shouldKeepUpload(
         taskDescription: String?, allowsCellular: Bool, binding: VoyageAccountBinding?, syncEnabled: Bool,
         policy: SessionNetworkPolicy
     ) -> Bool {
-        guard syncEnabled, let binding, let taskDescription, let parsed = parse(taskDescription: taskDescription),
-            parsed.signIn == binding.signInID
+        guard syncEnabled, let binding, let taskDescription,
+            let parsed = Self.parse(taskDescription: taskDescription), parsed.signIn == binding.signInID,
+            allowsCellular == policy.allowsCellular, let journal = try? load(for: binding),
+            let entry = journal.entries.first(where: { $0.id == parsed.session })
         else { return false }
-        return allowsCellular == policy.allowsCellular
+        return entry.generation == parsed.generation && entry.metadataSent && !entry.trackSent
+            && entry.failure == nil
     }
 
     private func isDue(_ entry: Entry) -> Bool {
@@ -373,10 +421,15 @@ final class SessionOutbox {
             entry.failure = .tooLarge
             entry.retryAt = nil
             return
-        case 404 where step == .track:
-            // The server lost the metadata (or never stored it): send it again first.
+        case 410:
+            entry.failure = .deletedFromCloud
+            entry.retryAt = nil
+            return
+        case 404 where step == .track, 412 where step == .track:
+            // The server lost the metadata, or holds another revision's: send it first.
             entry.metadataSent = false
-        case let status? where (400..<500).contains(status) && ![401, 404, 408, 425, 429].contains(status):
+        case let status? where (400..<500).contains(status) && ![401, 404, 408, 412, 425, 429].contains(status)
+            || (status == 412 && step == .metadata):
             entry.failure = .rejected(status: status)
             entry.retryAt = nil
             return
@@ -430,7 +483,8 @@ final class SessionOutbox {
     func removeOtherSignIns(keeping binding: VoyageAccountBinding?) {
         let keep = binding?.signInID.uuidString.lowercased()
         let folders = (try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? []
-        for folder in folders where folder.lastPathComponent != keep {
+        // Only sign-in folders (UUIDs); other files in the root (the consent record) stay.
+        for folder in folders where UUID(uuidString: folder.lastPathComponent) != nil && folder.lastPathComponent != keep {
             try? FileManager.default.removeItem(at: folder)
         }
         if binding == nil { journal = nil }
@@ -452,8 +506,9 @@ final class SessionOutbox {
         directory(for: binding).appending(path: "outbox.json")
     }
 
-    private func trackURL(_ id: UUID, for binding: VoyageAccountBinding) -> URL {
-        directory(for: binding).appending(path: id.uuidString.lowercased() + ".track.json.gz")
+    private func trackURL(_ id: UUID, generation: UUID, for binding: VoyageAccountBinding) -> URL {
+        directory(for: binding).appending(
+            path: id.uuidString.lowercased() + "." + generation.uuidString.lowercased() + ".track.json.gz")
     }
 
     private static var privateWriteOptions: Data.WritingOptions {

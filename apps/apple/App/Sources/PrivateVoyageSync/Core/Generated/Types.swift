@@ -27,14 +27,14 @@ internal protocol APIProtocol: Sendable {
     func post_sol_auth_sol_refresh(_ input: Operations.post_sol_auth_sol_refresh.Input) async throws -> Operations.post_sol_auth_sol_refresh.Output
     /// Create or replace a session's metadata and summary
     ///
-    /// Idempotent: the ID is generated on the device, so retrying an upload is safe. A new session takes the user's default visibility.
+    /// Idempotent: the ID is generated on the device, so retrying an upload is safe. A new session takes the user's default visibility. A higher `revision` than the stored one detaches the stored track until the track for that revision is uploaded.
     ///
     /// - Remark: HTTP `PUT /sessions/{id}`.
     /// - Remark: Generated from `#/paths//sessions/{id}/put(putSession)`.
     func putSession(_ input: Operations.putSession.Input) async throws -> Operations.putSession.Output
     /// Upload a session's track file
     ///
-    /// The body is the gzipped track v1 file (docs/formats.md), sent as `application/gzip` with no Content-Encoding, at most 8388608 bytes. PUT the session's metadata first. Repeating the upload replaces the file.
+    /// The body is the gzipped track v1 file (docs/formats.md), sent as `application/gzip` with no Content-Encoding, at most 8388608 bytes. PUT the session's metadata first, with the same `revision`. Repeating the upload replaces the file.
     ///
     /// - Remark: HTTP `PUT /sessions/{id}/track`.
     /// - Remark: Generated from `#/paths//sessions/{id}/track/put(putSessionTrack)`.
@@ -107,34 +107,38 @@ extension APIProtocol {
     }
     /// Create or replace a session's metadata and summary
     ///
-    /// Idempotent: the ID is generated on the device, so retrying an upload is safe. A new session takes the user's default visibility.
+    /// Idempotent: the ID is generated on the device, so retrying an upload is safe. A new session takes the user's default visibility. A higher `revision` than the stored one detaches the stored track until the track for that revision is uploaded.
     ///
     /// - Remark: HTTP `PUT /sessions/{id}`.
     /// - Remark: Generated from `#/paths//sessions/{id}/put(putSession)`.
     internal func putSession(
         path: Operations.putSession.Input.Path,
+        query: Operations.putSession.Input.Query = .init(),
         headers: Operations.putSession.Input.Headers = .init(),
         body: Operations.putSession.Input.Body
     ) async throws -> Operations.putSession.Output {
         try await putSession(Operations.putSession.Input(
             path: path,
+            query: query,
             headers: headers,
             body: body
         ))
     }
     /// Upload a session's track file
     ///
-    /// The body is the gzipped track v1 file (docs/formats.md), sent as `application/gzip` with no Content-Encoding, at most 8388608 bytes. PUT the session's metadata first. Repeating the upload replaces the file.
+    /// The body is the gzipped track v1 file (docs/formats.md), sent as `application/gzip` with no Content-Encoding, at most 8388608 bytes. PUT the session's metadata first, with the same `revision`. Repeating the upload replaces the file.
     ///
     /// - Remark: HTTP `PUT /sessions/{id}/track`.
     /// - Remark: Generated from `#/paths//sessions/{id}/track/put(putSessionTrack)`.
     internal func putSessionTrack(
         path: Operations.putSessionTrack.Input.Path,
+        query: Operations.putSessionTrack.Input.Query = .init(),
         headers: Operations.putSessionTrack.Input.Headers = .init(),
         body: Operations.putSessionTrack.Input.Body
     ) async throws -> Operations.putSessionTrack.Output {
         try await putSessionTrack(Operations.putSessionTrack.Input(
             path: path,
+            query: query,
             headers: headers,
             body: body
         ))
@@ -366,6 +370,9 @@ internal enum Components {
                 case payload_too_large = "payload_too_large"
                 case invalid_track = "invalid_track"
                 case _internal = "internal"
+                case session_deleted = "session_deleted"
+                case stale_revision = "stale_revision"
+                case revision_mismatch = "revision_mismatch"
             }
             /// - Remark: Generated from `#/components/schemas/Error/error`.
             internal var error: Components.Schemas._Error.errorPayload
@@ -2190,7 +2197,7 @@ internal enum Operations {
     }
     /// Create or replace a session's metadata and summary
     ///
-    /// Idempotent: the ID is generated on the device, so retrying an upload is safe. A new session takes the user's default visibility.
+    /// Idempotent: the ID is generated on the device, so retrying an upload is safe. A new session takes the user's default visibility. A higher `revision` than the stored one detaches the stored track until the track for that revision is uploaded.
     ///
     /// - Remark: HTTP `PUT /sessions/{id}`.
     /// - Remark: Generated from `#/paths//sessions/{id}/put(putSession)`.
@@ -2212,6 +2219,21 @@ internal enum Operations {
                 }
             }
             internal var path: Operations.putSession.Input.Path
+            /// - Remark: Generated from `#/paths/sessions/{id}/PUT/query`.
+            internal struct Query: Sendable, Hashable {
+                /// The device's upload revision for this session, increasing with each new snapshot (0 when omitted). A PUT with a lower revision than the stored one is rejected (412).
+                ///
+                /// - Remark: Generated from `#/paths/sessions/{id}/PUT/query/revision`.
+                internal var revision: Swift.Int64?
+                /// Creates a new `Query`.
+                ///
+                /// - Parameters:
+                ///   - revision: The device's upload revision for this session, increasing with each new snapshot (0 when omitted). A PUT with a lower revision than the stored one is rejected (412).
+                internal init(revision: Swift.Int64? = nil) {
+                    self.revision = revision
+                }
+            }
+            internal var query: Operations.putSession.Input.Query
             /// - Remark: Generated from `#/paths/sessions/{id}/PUT/header`.
             internal struct Headers: Sendable, Hashable {
                 internal var accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.putSession.AcceptableContentType>]
@@ -2234,14 +2256,17 @@ internal enum Operations {
             ///
             /// - Parameters:
             ///   - path:
+            ///   - query:
             ///   - headers:
             ///   - body:
             internal init(
                 path: Operations.putSession.Input.Path,
+                query: Operations.putSession.Input.Query = .init(),
                 headers: Operations.putSession.Input.Headers = .init(),
                 body: Operations.putSession.Input.Body
             ) {
                 self.path = path
+                self.query = query
                 self.headers = headers
                 self.body = body
             }
@@ -2502,6 +2527,108 @@ internal enum Operations {
                     }
                 }
             }
+            internal struct Gone: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/sessions/{id}/PUT/responses/410/content`.
+                internal enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/sessions/{id}/PUT/responses/410/content/application\/json`.
+                    case json(Components.Schemas._Error)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    internal var json: Components.Schemas._Error {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                internal var body: Operations.putSession.Output.Gone.Body
+                /// Creates a new `Gone`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                internal init(body: Operations.putSession.Output.Gone.Body) {
+                    self.body = body
+                }
+            }
+            /// The caller deleted this session (`session_deleted`); it stays deleted.
+            ///
+            /// - Remark: Generated from `#/paths//sessions/{id}/put(putSession)/responses/410`.
+            ///
+            /// HTTP response code: `410 gone`.
+            case gone(Operations.putSession.Output.Gone)
+            /// The associated value of the enum case if `self` is `.gone`.
+            ///
+            /// - Throws: An error if `self` is not `.gone`.
+            /// - SeeAlso: `.gone`.
+            internal var gone: Operations.putSession.Output.Gone {
+                get throws {
+                    switch self {
+                    case let .gone(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "gone",
+                            response: self
+                        )
+                    }
+                }
+            }
+            internal struct PreconditionFailed: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/sessions/{id}/PUT/responses/412/content`.
+                internal enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/sessions/{id}/PUT/responses/412/content/application\/json`.
+                    case json(Components.Schemas._Error)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    internal var json: Components.Schemas._Error {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                internal var body: Operations.putSession.Output.PreconditionFailed.Body
+                /// Creates a new `PreconditionFailed`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                internal init(body: Operations.putSession.Output.PreconditionFailed.Body) {
+                    self.body = body
+                }
+            }
+            /// The stored revision is newer than `revision` (`stale_revision`).
+            ///
+            /// - Remark: Generated from `#/paths//sessions/{id}/put(putSession)/responses/412`.
+            ///
+            /// HTTP response code: `412 preconditionFailed`.
+            case preconditionFailed(Operations.putSession.Output.PreconditionFailed)
+            /// The associated value of the enum case if `self` is `.preconditionFailed`.
+            ///
+            /// - Throws: An error if `self` is not `.preconditionFailed`.
+            /// - SeeAlso: `.preconditionFailed`.
+            internal var preconditionFailed: Operations.putSession.Output.PreconditionFailed {
+                get throws {
+                    switch self {
+                    case let .preconditionFailed(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "preconditionFailed",
+                            response: self
+                        )
+                    }
+                }
+            }
             /// Undocumented response.
             ///
             /// A response with a code that is not documented in the OpenAPI document.
@@ -2535,7 +2662,7 @@ internal enum Operations {
     }
     /// Upload a session's track file
     ///
-    /// The body is the gzipped track v1 file (docs/formats.md), sent as `application/gzip` with no Content-Encoding, at most 8388608 bytes. PUT the session's metadata first. Repeating the upload replaces the file.
+    /// The body is the gzipped track v1 file (docs/formats.md), sent as `application/gzip` with no Content-Encoding, at most 8388608 bytes. PUT the session's metadata first, with the same `revision`. Repeating the upload replaces the file.
     ///
     /// - Remark: HTTP `PUT /sessions/{id}/track`.
     /// - Remark: Generated from `#/paths//sessions/{id}/track/put(putSessionTrack)`.
@@ -2557,6 +2684,21 @@ internal enum Operations {
                 }
             }
             internal var path: Operations.putSessionTrack.Input.Path
+            /// - Remark: Generated from `#/paths/sessions/{id}/track/PUT/query`.
+            internal struct Query: Sendable, Hashable {
+                /// The device's upload revision for this session, increasing with each new snapshot (0 when omitted). A PUT with a lower revision than the stored one is rejected (412).
+                ///
+                /// - Remark: Generated from `#/paths/sessions/{id}/track/PUT/query/revision`.
+                internal var revision: Swift.Int64?
+                /// Creates a new `Query`.
+                ///
+                /// - Parameters:
+                ///   - revision: The device's upload revision for this session, increasing with each new snapshot (0 when omitted). A PUT with a lower revision than the stored one is rejected (412).
+                internal init(revision: Swift.Int64? = nil) {
+                    self.revision = revision
+                }
+            }
+            internal var query: Operations.putSessionTrack.Input.Query
             /// - Remark: Generated from `#/paths/sessions/{id}/track/PUT/header`.
             internal struct Headers: Sendable, Hashable {
                 internal var accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.putSessionTrack.AcceptableContentType>]
@@ -2579,14 +2721,17 @@ internal enum Operations {
             ///
             /// - Parameters:
             ///   - path:
+            ///   - query:
             ///   - headers:
             ///   - body:
             internal init(
                 path: Operations.putSessionTrack.Input.Path,
+                query: Operations.putSessionTrack.Input.Query = .init(),
                 headers: Operations.putSessionTrack.Input.Headers = .init(),
                 body: Operations.putSessionTrack.Input.Body
             ) {
                 self.path = path
+                self.query = query
                 self.headers = headers
                 self.body = body
             }
@@ -2775,6 +2920,108 @@ internal enum Operations {
                     default:
                         try throwUnexpectedResponseStatus(
                             expectedStatus: "notFound",
+                            response: self
+                        )
+                    }
+                }
+            }
+            internal struct Gone: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/sessions/{id}/track/PUT/responses/410/content`.
+                internal enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/sessions/{id}/track/PUT/responses/410/content/application\/json`.
+                    case json(Components.Schemas._Error)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    internal var json: Components.Schemas._Error {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                internal var body: Operations.putSessionTrack.Output.Gone.Body
+                /// Creates a new `Gone`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                internal init(body: Operations.putSessionTrack.Output.Gone.Body) {
+                    self.body = body
+                }
+            }
+            /// The caller deleted this session (`session_deleted`).
+            ///
+            /// - Remark: Generated from `#/paths//sessions/{id}/track/put(putSessionTrack)/responses/410`.
+            ///
+            /// HTTP response code: `410 gone`.
+            case gone(Operations.putSessionTrack.Output.Gone)
+            /// The associated value of the enum case if `self` is `.gone`.
+            ///
+            /// - Throws: An error if `self` is not `.gone`.
+            /// - SeeAlso: `.gone`.
+            internal var gone: Operations.putSessionTrack.Output.Gone {
+                get throws {
+                    switch self {
+                    case let .gone(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "gone",
+                            response: self
+                        )
+                    }
+                }
+            }
+            internal struct PreconditionFailed: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/sessions/{id}/track/PUT/responses/412/content`.
+                internal enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/sessions/{id}/track/PUT/responses/412/content/application\/json`.
+                    case json(Components.Schemas._Error)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    internal var json: Components.Schemas._Error {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                internal var body: Operations.putSessionTrack.Output.PreconditionFailed.Body
+                /// Creates a new `PreconditionFailed`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                internal init(body: Operations.putSessionTrack.Output.PreconditionFailed.Body) {
+                    self.body = body
+                }
+            }
+            /// `revision` is not the stored metadata revision: older (`stale_revision`) or newer (`revision_mismatch`; PUT the metadata first).
+            ///
+            /// - Remark: Generated from `#/paths//sessions/{id}/track/put(putSessionTrack)/responses/412`.
+            ///
+            /// HTTP response code: `412 preconditionFailed`.
+            case preconditionFailed(Operations.putSessionTrack.Output.PreconditionFailed)
+            /// The associated value of the enum case if `self` is `.preconditionFailed`.
+            ///
+            /// - Throws: An error if `self` is not `.preconditionFailed`.
+            /// - SeeAlso: `.preconditionFailed`.
+            internal var preconditionFailed: Operations.putSessionTrack.Output.PreconditionFailed {
+                get throws {
+                    switch self {
+                    case let .preconditionFailed(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "preconditionFailed",
                             response: self
                         )
                     }

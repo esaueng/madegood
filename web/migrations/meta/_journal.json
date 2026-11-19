@@ -29,6 +29,13 @@
       "when": 1795000613443,
       "tag": "0003_voyage_live_registry",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1795050511285,
+      "tag": "0004_session_revisions_tombstones",
+      "breakpoints": true
     }
   ]
 }
