@@ -16,7 +16,7 @@ MADEGOOD_API_URL =
 
 // The website that serves the privacy policy (Settings → About → Privacy Policy opens
 // <site>/privacy). A fork that runs its own server overrides it in Local.xcconfig.
-MADEGOOD_SITE_URL = https:/$()/madegood.esau.workers.dev
+MADEGOOD_SITE_URL = https:/$()/madegood.app
 
 // SWIFT_VERSION (6.0) is set in Project.swift; see the comment there.
 SWIFT_STRICT_CONCURRENCY = complete
