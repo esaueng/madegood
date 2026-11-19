@@ -11,8 +11,9 @@ import Observation
 /// - A recording uploads automatically only when its whole time range, widened by
 ///   `clockMargin` for clock skew (watch recordings), lies inside one window of this
 ///   account. One that touches a boundary or a gap with no window needs an explicit
-///   choice ("Upload earlier sessions"); one recorded entirely inside another account's
-///   window never uploads to this one.
+///   choice ("Upload earlier sessions"). One whose widened range touches another
+///   account's window is never offered to a different account than the one signed in
+///   when it started: only that account may upload it, and only explicitly.
 /// - A session the user deleted from the account is never queued for it again.
 struct SessionSyncConsent: Codable, Equatable, Sendable {
     /// Widens each recording's time range on both sides before matching it to a window.
@@ -26,6 +27,12 @@ struct SessionSyncConsent: Codable, Equatable, Sendable {
 
         func contains(_ range: ClosedRange<Date>) -> Bool {
             start <= range.lowerBound && end.map { range.upperBound < $0 } ?? true
+        }
+
+        func contains(_ date: Date) -> Bool { contains(date...date) }
+
+        func overlaps(_ range: ClosedRange<Date>) -> Bool {
+            start <= range.upperBound && end.map { range.lowerBound < $0 } ?? true
         }
     }
 
@@ -80,12 +87,16 @@ struct SessionSyncConsent: Codable, Equatable, Sendable {
     ) -> Eligibility {
         if deletedFromCloud[binding.accountID]?.contains(sessionID) == true { return .deletedFromCloud }
         let recorded = startedAt...max(startedAt, endedAt)
-        if windows.contains(where: { $0.accountID != binding.accountID && $0.contains(recorded) }) {
-            return .otherAccount
-        }
         let widened =
             recorded.lowerBound.addingTimeInterval(-Self.clockMargin)...recorded.upperBound.addingTimeInterval(
                 Self.clockMargin)
+        let mine = { (window: Window) in window.accountID == binding.accountID }
+        if windows.contains(where: { !mine($0) && $0.overlaps(widened) }) {
+            // Near another account's sign-in: ambiguous, so it belongs to whoever was signed
+            // in when it started, and even then needs an explicit choice.
+            guard windows.contains(where: { mine($0) && $0.contains(startedAt) }) else { return .otherAccount }
+            return adopted[binding.accountID]?.contains(sessionID) == true ? .automatic : .earlier
+        }
         if hasWindow(for: binding),
             windows.contains(where: { $0.accountID == binding.accountID && $0.contains(widened) })
         {

@@ -543,9 +543,12 @@ struct SessionOutboxTests {
         }
         // A watch clock a few minutes off puts these on the wrong side of the switch.
         #expect(check(3600 + 120, 3600 + 1800, b) == .earlier, "starts within the margin after the switch")
+        #expect(check(3600 + 120, 3600 + 1800, a) == .otherAccount, "started under B: never A's")
         #expect(check(1800, 3600 - 60, b) == .otherAccount, "entirely in A's window")
-        #expect(check(1800, 3600 + 300, b) == .earlier, "spans the switch")
-        #expect(check(1800, 3600 + 300, a) == .earlier)
+        // Made under A, but a watch clock 2 min fast stamps its end after the switch.
+        #expect(check(1800, 3600 + 60, b) == .otherAccount, "never offered to B")
+        #expect(check(1800, 3600 + 60, a) == .earlier, "A may upload it, explicitly")
+        #expect(check(1800, 3600 + 300, b) == .otherAccount, "spans the switch, started under A")
         #expect(check(3600 - 300, 3600 + 300, a) == .earlier)
         #expect(check(3600 + 900, 3600 + 1800, b) == .automatic, "well inside B's window")
         #expect(check(600 + 1, 1800, a) == .automatic)
@@ -660,12 +663,41 @@ struct SessionOutboxTests {
         #expect(try await outbox.drain(for: binding, policy: .init()) == nil)
         #expect(rig.transport.calls.map(\.step) == ["apple", "metadata", "track", "metadata", "track"])
 
-        // 412 on the metadata means the account holds a newer snapshot: stop.
-        let (other, otherBytes) = try rig.session()
-        try outbox.enqueue(other, for: binding) { otherBytes }
+    }
+
+    @Test func aRevisionBehindTheServersMovesAboveItAndResends() async throws {
+        let rig = try Rig()
+        defer { rig.cleanUp() }
+        let binding = try await rig.signIn()
+        let (snapshot, bytes) = try rig.session()
+        let outbox = rig.outbox()
+        try outbox.enqueue(snapshot, for: binding) { bytes }
+        // After a reinstall the device clock gives a revision below the stored one.
+        let stored: Int64 = 9_000_000_000_000
+        rig.transport.storedRevision = stored
         rig.transport.metadataStatuses = [412]
         #expect(try await outbox.drain(for: binding, policy: .init()) == nil)
-        #expect(outbox.status(for: other.sessionID) == .failed(.rejected(status: 412)))
+        #expect(outbox.status(for: snapshot.sessionID) == .synced)
+        let sent = rig.transport.calls.filter { $0.step != "apple" }
+        #expect(sent.map(\.step) == ["metadata", "metadata", "track"])
+        #expect(sent[0].revision! < stored)
+        #expect(sent[1].revision == stored + 1 && sent[2].revision == stored + 1)
+
+        // The same on a track whose metadata revision the server no longer has.
+        let (other, otherBytes) = try rig.session()
+        try outbox.enqueue(other, for: binding) { otherBytes }
+        rig.transport.storedRevision = stored + 5
+        rig.transport.trackResults = [.success(412)]
+        #expect(try await outbox.drain(for: binding, policy: .init()) == nil)
+        #expect(outbox.status(for: other.sessionID) == .synced)
+        #expect(rig.transport.calls.last?.revision == stored + 6)
+
+        // Bounded: a server that keeps answering 412 ends in a failure, not a loop.
+        let (third, thirdBytes) = try rig.session()
+        try outbox.enqueue(third, for: binding) { thirdBytes }
+        rig.transport.metadataStatuses = Array(repeating: 412, count: SessionOutbox.maxAttempts)
+        #expect(try await outbox.drain(for: binding, policy: .init()) == nil)
+        #expect(outbox.status(for: third.sessionID) == .failed(.retriesExhausted(status: 412)))
     }
 
     @Test func eachGenerationHasItsOwnFrozenTrackAndOrphansAreRemoved() async throws {
@@ -850,6 +882,8 @@ private final class StubTransport: SessionSyncTransport {
     var calls: [Call] = []
     var uploaded: [Data] = []
     var metadataStatuses: [Int] = []
+    /// Sent as `Upload-Revision` with every 412.
+    var storedRevision: Int64?
     var metadataErrors: [URLError] = []
     var retryAfter: String?
     var trackResults: [Result<Int, URLError>] = []
@@ -931,6 +965,7 @@ private final class StubTransport: SessionSyncTransport {
     private func response(_ request: URLRequest, _ status: Int) -> HTTPURLResponse {
         var headers = ["Content-Type": "application/json"]
         if let retryAfter { headers["Retry-After"] = retryAfter }
+        if status == 412, let storedRevision { headers["Upload-Revision"] = String(storedRevision) }
         return HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: headers)!
     }
 }

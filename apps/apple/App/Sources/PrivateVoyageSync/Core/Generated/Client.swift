@@ -446,6 +446,11 @@ internal struct Client: APIProtocol {
                     }
                     return .gone(.init(body: body))
                 case 412:
+                    let headers: Operations.putSession.Output.PreconditionFailed.Headers = .init(Upload_hyphen_Revision: try converter.getRequiredHeaderFieldAsURI(
+                        in: response.headerFields,
+                        name: "Upload-Revision",
+                        as: Swift.String.self
+                    ))
                     let contentType = converter.extractContentTypeIfPresent(in: response.headerFields)
                     let body: Operations.putSession.Output.PreconditionFailed.Body
                     let chosenContentType = try converter.bestContentType(
@@ -466,7 +471,10 @@ internal struct Client: APIProtocol {
                     default:
                         preconditionFailure("bestContentType chose an invalid content type.")
                     }
-                    return .preconditionFailed(.init(body: body))
+                    return .preconditionFailed(.init(
+                        headers: headers,
+                        body: body
+                    ))
                 default:
                     return .undocumented(
                         statusCode: response.status.code,
@@ -616,6 +624,11 @@ internal struct Client: APIProtocol {
                     }
                     return .gone(.init(body: body))
                 case 412:
+                    let headers: Operations.putSessionTrack.Output.PreconditionFailed.Headers = .init(Upload_hyphen_Revision: try converter.getRequiredHeaderFieldAsURI(
+                        in: response.headerFields,
+                        name: "Upload-Revision",
+                        as: Swift.String.self
+                    ))
                     let contentType = converter.extractContentTypeIfPresent(in: response.headerFields)
                     let body: Operations.putSessionTrack.Output.PreconditionFailed.Body
                     let chosenContentType = try converter.bestContentType(
@@ -636,7 +649,10 @@ internal struct Client: APIProtocol {
                     default:
                         preconditionFailure("bestContentType chose an invalid content type.")
                     }
-                    return .preconditionFailed(.init(body: body))
+                    return .preconditionFailed(.init(
+                        headers: headers,
+                        body: body
+                    ))
                 case 413:
                     let contentType = converter.extractContentTypeIfPresent(in: response.headerFields)
                     let body: Operations.putSessionTrack.Output.ContentTooLarge.Body

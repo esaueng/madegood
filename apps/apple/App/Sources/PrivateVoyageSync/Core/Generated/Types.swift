@@ -2579,6 +2579,22 @@ internal enum Operations {
                 }
             }
             internal struct PreconditionFailed: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/sessions/{id}/PUT/responses/412/headers`.
+                internal struct Headers: Sendable, Hashable {
+                    /// The revision the server stores. A device behind it continues above it.
+                    ///
+                    /// - Remark: Generated from `#/paths/sessions/{id}/PUT/responses/412/headers/Upload-Revision`.
+                    internal var Upload_hyphen_Revision: Swift.String
+                    /// Creates a new `Headers`.
+                    ///
+                    /// - Parameters:
+                    ///   - Upload_hyphen_Revision: The revision the server stores. A device behind it continues above it.
+                    internal init(Upload_hyphen_Revision: Swift.String) {
+                        self.Upload_hyphen_Revision = Upload_hyphen_Revision
+                    }
+                }
+                /// Received HTTP response headers
+                internal var headers: Operations.putSession.Output.PreconditionFailed.Headers
                 /// - Remark: Generated from `#/paths/sessions/{id}/PUT/responses/412/content`.
                 internal enum Body: Sendable, Hashable {
                     /// - Remark: Generated from `#/paths/sessions/{id}/PUT/responses/412/content/application\/json`.
@@ -2601,8 +2617,13 @@ internal enum Operations {
                 /// Creates a new `PreconditionFailed`.
                 ///
                 /// - Parameters:
+                ///   - headers: Received HTTP response headers
                 ///   - body: Received HTTP response body
-                internal init(body: Operations.putSession.Output.PreconditionFailed.Body) {
+                internal init(
+                    headers: Operations.putSession.Output.PreconditionFailed.Headers,
+                    body: Operations.putSession.Output.PreconditionFailed.Body
+                ) {
+                    self.headers = headers
                     self.body = body
                 }
             }
@@ -2977,6 +2998,22 @@ internal enum Operations {
                 }
             }
             internal struct PreconditionFailed: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/sessions/{id}/track/PUT/responses/412/headers`.
+                internal struct Headers: Sendable, Hashable {
+                    /// The revision the server stores. A device behind it continues above it.
+                    ///
+                    /// - Remark: Generated from `#/paths/sessions/{id}/track/PUT/responses/412/headers/Upload-Revision`.
+                    internal var Upload_hyphen_Revision: Swift.String
+                    /// Creates a new `Headers`.
+                    ///
+                    /// - Parameters:
+                    ///   - Upload_hyphen_Revision: The revision the server stores. A device behind it continues above it.
+                    internal init(Upload_hyphen_Revision: Swift.String) {
+                        self.Upload_hyphen_Revision = Upload_hyphen_Revision
+                    }
+                }
+                /// Received HTTP response headers
+                internal var headers: Operations.putSessionTrack.Output.PreconditionFailed.Headers
                 /// - Remark: Generated from `#/paths/sessions/{id}/track/PUT/responses/412/content`.
                 internal enum Body: Sendable, Hashable {
                     /// - Remark: Generated from `#/paths/sessions/{id}/track/PUT/responses/412/content/application\/json`.
@@ -2999,8 +3036,13 @@ internal enum Operations {
                 /// Creates a new `PreconditionFailed`.
                 ///
                 /// - Parameters:
+                ///   - headers: Received HTTP response headers
                 ///   - body: Received HTTP response body
-                internal init(body: Operations.putSessionTrack.Output.PreconditionFailed.Body) {
+                internal init(
+                    headers: Operations.putSessionTrack.Output.PreconditionFailed.Headers,
+                    body: Operations.putSessionTrack.Output.PreconditionFailed.Body
+                ) {
+                    self.headers = headers
                     self.body = body
                 }
             }

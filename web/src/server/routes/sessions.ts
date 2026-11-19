@@ -1,11 +1,16 @@
 import { createRoute, z } from "@hono/zod-openapi";
-import { and, desc, eq, isNull, lt, lte, or } from "drizzle-orm";
+import { and, desc, eq, isNull, lt, or } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
 import type { Context } from "hono";
 import { optionalAuth, requireAuth } from "../auth/middleware";
 import { privacyZones, type Session, sessions, sessionTombstones, users } from "../db/schema";
 import { apiError, errorResponse } from "../lib/errors";
 import { createRouter } from "../lib/router";
+import {
+  deleteOlderTracks,
+  replaceSessionMetadata,
+  UPLOAD_REVISION_HEADER,
+} from "../lib/session-upload";
 import { deletePrefix, userPrefix } from "../lib/storage";
 import {
   checkTrack,
@@ -43,6 +48,15 @@ const PAGE_MAX = 100;
 
 // Any RFC 4122 layout, in either case; stored lowercase like track v1's `sessionId`.
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+const revisionErrorResponse = (description: string) => ({
+  ...errorResponse(description),
+  headers: z.object({
+    [UPLOAD_REVISION_HEADER]: z.string().openapi({
+      description: "The revision the server stores. A device behind it continues above it.",
+    }),
+  }),
+});
 
 const RevisionQuery = z.object({
   revision: z.coerce
@@ -351,7 +365,7 @@ const putRoute = createRoute({
     401: errorResponse("Missing or invalid access token, or the account no longer exists."),
     409: errorResponse("Another account has a session with this ID (`session_id_taken`)."),
     410: errorResponse("The caller deleted this session (`session_deleted`); it stays deleted."),
-    412: errorResponse("The stored revision is newer than `revision` (`stale_revision`)."),
+    412: revisionErrorResponse("The stored revision is newer than `revision` (`stale_revision`)."),
   },
 });
 
@@ -402,7 +416,7 @@ const putTrackRoute = createRoute({
     404: errorResponse("The caller has no session with this ID; PUT its metadata first."),
     413: errorResponse(`The body is larger than ${TRACK_MAX_BYTES} bytes.`),
     410: errorResponse("The caller deleted this session (`session_deleted`)."),
-    412: errorResponse(
+    412: revisionErrorResponse(
       "`revision` is not the stored metadata revision: older (`stale_revision`) or newer " +
         "(`revision_mismatch`; PUT the metadata first).",
     ),
@@ -464,9 +478,9 @@ const deleteRoute = createRoute({
   operationId: "deleteSession",
   summary: "Delete a session and its track",
   description:
-    "Idempotent: deleting a session the caller does not have also returns 204. The ID stays " +
-    "deleted for the caller: a later PUT for it returns 410, so a device still holding the " +
-    "recording cannot recreate it.",
+    "Idempotent: deleting a session the caller does not have also returns 204 and changes " +
+    "nothing. A deleted session stays deleted for the caller: a later PUT for its ID returns " +
+    "410, so a device still holding the recording cannot recreate it.",
   tags: ["sessions"],
   security,
   middleware: [requireAuth] as const,
@@ -522,8 +536,17 @@ async function isTombstoned(db: ReturnType<typeof drizzle>, userId: string, id: 
 
 const sessionDeleted = (c: Context) =>
   apiError(c, 410, "session_deleted", "This session was deleted from the account.");
-const staleRevision = (c: Context) =>
-  apiError(c, 412, "stale_revision", "A newer revision of this session is already stored.");
+/** 412 with the stored revision, so a device whose counter fell behind can move past it. */
+const revisionError = (
+  c: Context,
+  stored: number,
+  error: "stale_revision" | "revision_mismatch" = "stale_revision",
+) => {
+  c.header(UPLOAD_REVISION_HEADER, String(stored));
+  return error === "stale_revision"
+    ? apiError(c, 412, error, "A newer revision of this session is already stored.")
+    : apiError(c, 412, error, "PUT the session's metadata for this revision first.");
+};
 
 sessionRoutes.openapi(putRoute, async (c) => {
   const { id } = c.req.valid("param");
@@ -545,8 +568,6 @@ sessionRoutes.openapi(putRoute, async (c) => {
     summaryJson: body.summary == null ? null : JSON.stringify(body.summary),
     analyzerVersion: body.analyzerVersion ?? null,
   };
-  const own = and(eq(sessions.id, id), eq(sessions.userId, userId), isNull(sessions.deletedAt));
-
   // A DELETE that raced this PUT leaves a tombstone: remove what the PUT wrote.
   const settle = async (session: Session, status: 200 | 201) => {
     if (await isTombstoned(db, userId, id)) {
@@ -559,32 +580,11 @@ sessionRoutes.openapi(putRoute, async (c) => {
   // Replace the caller's own session, unless it holds a newer revision. A newer revision
   // detaches the old track: its data may be what the user has since trimmed away. The
   // user_id condition means another account's session with this ID is never touched.
-  const replace = async () => {
-    const [current] = await db
-      .select({ trackKey: sessions.trackKey, uploadRevision: sessions.uploadRevision })
-      .from(sessions)
-      .where(own);
-    if (!current) return undefined;
-    if (current.uploadRevision > revision) return "stale" as const;
-    const newer = revision > current.uploadRevision;
-    const [updated] = await db
-      .update(sessions)
-      .set({
-        ...fields,
-        uploadRevision: revision,
-        ...(newer ? { trackKey: null } : {}),
-        updatedAt: Date.now(),
-      })
-      .where(and(own, lte(sessions.uploadRevision, revision)))
-      .returning();
-    if (!updated) return "stale" as const;
-    if (newer && current.trackKey) await c.env.TRACKS.delete(current.trackKey);
-    return updated;
-  };
+  const replace = () => replaceSessionMetadata(db, c.env.TRACKS, { id, userId, revision, fields });
 
   const replaced = await replace();
-  if (replaced === "stale") return staleRevision(c);
-  if (replaced) return settle(replaced, 200);
+  if (replaced.kind === "stale") return revisionError(c, replaced.stored);
+  if (replaced.kind === "updated") return settle(replaced.session, 200);
 
   const [user] = await db
     .select({ defaultVisibility: users.defaultVisibility })
@@ -602,8 +602,8 @@ sessionRoutes.openapi(putRoute, async (c) => {
   // The ID exists. It is either another account's, or the caller's own from a concurrent
   // first upload, which a retry of the update above handles.
   const raced = await replace();
-  if (raced === "stale") return staleRevision(c);
-  if (raced) return settle(raced, 200);
+  if (raced.kind === "stale") return revisionError(c, raced.stored);
+  if (raced.kind === "updated") return settle(raced.session, 200);
   return apiError(c, 409, "session_id_taken", "This session ID is already in use.");
 });
 
@@ -639,16 +639,13 @@ sessionRoutes.openapi(putTrackRoute, async (c) => {
   if (!session || session.userId !== userId) {
     return notFound(c);
   }
-  const mismatch = () =>
-    session.uploadRevision > revision
-      ? staleRevision(c)
-      : apiError(
-          c,
-          412,
-          "revision_mismatch",
-          "PUT the session's metadata for this revision first.",
-        );
-  if (session.uploadRevision !== revision) return mismatch();
+  if (session.uploadRevision !== revision) {
+    return revisionError(
+      c,
+      session.uploadRevision,
+      session.uploadRevision > revision ? "stale_revision" : "revision_mismatch",
+    );
+  }
 
   const bytes = await readBody(c.req.raw.body, TRACK_MAX_BYTES);
   if (!bytes) return tooLarge();
@@ -687,9 +684,9 @@ sessionRoutes.openapi(putTrackRoute, async (c) => {
       .select({ uploadRevision: sessions.uploadRevision })
       .from(sessions)
       .where(and(eq(sessions.id, id), eq(sessions.userId, userId), isNull(sessions.deletedAt)));
-    return now ? staleRevision(c) : notFound(c);
+    return now ? revisionError(c, now.uploadRevision) : notFound(c);
   }
-  if (session.trackKey && session.trackKey !== key) await c.env.TRACKS.delete(session.trackKey);
+  await deleteOlderTracks(c.env.TRACKS, userId, id, revision);
 
   // TODO(post-processing): enqueue the session for the queue consumer (docs/PLAN.md §7),
   // which reads the whole track, checks `v` and `sessionId`, computes the bbox and start
@@ -761,11 +758,6 @@ sessionRoutes.openapi(deleteRoute, async (c) => {
   const { id } = c.req.valid("param");
   const userId = c.var.userId;
   const db = drizzle(c.env.DB);
-  // The tombstone goes first, so no device can bring the session back with a later PUT.
-  await db
-    .insert(sessionTombstones)
-    .values({ id, userId, deletedAt: Date.now() })
-    .onConflictDoNothing();
   // The row goes first, then the objects (review of #37). A track upload attaches its
   // object only if the row still exists and otherwise deletes it, so with this order no
   // upload that overlaps the delete can leave a track behind. The objects are deleted even
@@ -774,6 +766,16 @@ sessionRoutes.openapi(deleteRoute, async (c) => {
     .delete(sessions)
     .where(and(eq(sessions.id, id), eq(sessions.userId, userId)))
     .returning({ trackKey: sessions.trackKey });
+  if (deleted.length > 0) {
+    // Only a session that existed is tombstoned, so a later PUT cannot bring it back; an
+    // unknown ID leaves nothing behind. A PUT that recreated the row before the tombstone
+    // was written is removed again here (PUTs also re-check the tombstone after writing).
+    await db
+      .insert(sessionTombstones)
+      .values({ id, userId, deletedAt: Date.now() })
+      .onConflictDoNothing();
+    await db.delete(sessions).where(and(eq(sessions.id, id), eq(sessions.userId, userId)));
+  }
   await deletePrefix(c.env.TRACKS, `${userPrefix(userId)}sessions/${id}/`);
   const keys = deleted.flatMap((row) => (row.trackKey ? [row.trackKey] : []));
   if (keys.length > 0) await c.env.TRACKS.delete(keys);

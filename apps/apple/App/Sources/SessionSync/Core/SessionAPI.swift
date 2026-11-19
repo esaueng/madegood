@@ -16,6 +16,11 @@ protocol SessionSyncTransport: VoyageTransport {
     func reconcileUploads(keep: (_ taskDescription: String?, _ request: URLRequest?) -> Bool) async
 }
 
+/// A 412: the server stores another upload revision for the session (`Upload-Revision`).
+struct SessionRevisionConflict: Error, Equatable {
+    let stored: Int64
+}
+
 /// Which networks an upload may use: the Settings "Wi-Fi only" switch.
 struct SessionNetworkPolicy: Equatable, Sendable {
     var allowsCellular = true
@@ -135,6 +140,11 @@ private struct GeneratedSessionTransport: ClientTransport {
         } else {
             if let body { request.httpBody = try await Data(collecting: body, upTo: 128 * 1024) }
             (data, response) = try await transport.send(request)
+        }
+        if response.statusCode == 412,
+            let stored = response.value(forHTTPHeaderField: "Upload-Revision").flatMap({ Int64($0) })
+        {
+            throw SessionRevisionConflict(stored: stored)
         }
         guard (200..<300).contains(response.statusCode) else {
             struct Failure: Decodable { let error: String }

@@ -405,6 +405,22 @@ final class SessionOutbox {
         let status = (error as? VoyageAPIError)?.status
         entry.offline = false
 
+        if let conflict = error as? SessionRevisionConflict {
+            // The server holds another revision (a reinstall or another device reset the
+            // counter, or the metadata was lost): continue above it and resend the metadata
+            // right away. Each round uses up an attempt, so this cannot loop forever.
+            entry.uploadRevision = max(entry.uploadRevision, conflict.stored) + 1
+            entry.metadataSent = false
+            entry.attempts += 1
+            if entry.attempts >= Self.maxAttempts {
+                entry.failure = .retriesExhausted(status: 412)
+                entry.retryAt = nil
+            } else {
+                entry.retryAt = now()
+            }
+            return
+        }
+
         // DNS and refused connections also happen with a working network (a server or
         // configuration problem); only a path that can't carry the upload means offline.
         if let urlError, Self.connectionCodes.contains(urlError.code), !networkAvailable(policy) {
@@ -428,8 +444,7 @@ final class SessionOutbox {
         case 404 where step == .track, 412 where step == .track:
             // The server lost the metadata, or holds another revision's: send it first.
             entry.metadataSent = false
-        case let status? where (400..<500).contains(status) && ![401, 404, 408, 412, 425, 429].contains(status)
-            || (status == 412 && step == .metadata):
+        case let status? where (400..<500).contains(status) && ![401, 404, 408, 412, 425, 429].contains(status):
             entry.failure = .rejected(status: status)
             entry.retryAt = nil
             return

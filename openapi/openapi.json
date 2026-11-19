@@ -1477,6 +1477,16 @@
           },
           "412": {
             "description": "The stored revision is newer than `revision` (`stale_revision`).",
+            "headers": {
+              "Upload-Revision": {
+                "schema": {
+                  "type": "string",
+                  "description": "The revision the server stores. A device behind it continues above it."
+                },
+                "required": true,
+                "description": "The revision the server stores. A device behind it continues above it."
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -1638,7 +1648,7 @@
       "delete": {
         "operationId": "deleteSession",
         "summary": "Delete a session and its track",
-        "description": "Idempotent: deleting a session the caller does not have also returns 204. The ID stays deleted for the caller: a later PUT for it returns 410, so a device still holding the recording cannot recreate it.",
+        "description": "Idempotent: deleting a session the caller does not have also returns 204 and changes nothing. A deleted session stays deleted for the caller: a later PUT for its ID returns 410, so a device still holding the recording cannot recreate it.",
         "tags": [
           "sessions"
         ],
@@ -1783,6 +1793,16 @@
           },
           "412": {
             "description": "`revision` is not the stored metadata revision: older (`stale_revision`) or newer (`revision_mismatch`; PUT the metadata first).",
+            "headers": {
+              "Upload-Revision": {
+                "schema": {
+                  "type": "string",
+                  "description": "The revision the server stores. A device behind it continues above it."
+                },
+                "required": true,
+                "description": "The revision the server stores. A device behind it continues above it."
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {

@@ -28,7 +28,8 @@ Sync never sends a recording to an account that did not consent to it.
 - A recording uploads automatically only when its whole time range, widened by 10 min on
   each side for clock skew, lies inside one window of this account. A recording that
   touches an account switch or a time nobody was signed in appears under **Upload N
-  Earlier Sessions**; one recorded entirely in another account's window never uploads.
+  Earlier Sessions**. One whose widened range touches another account's window is only
+  ever offered to the account signed in when it started (explicitly), never to another.
 - Sign-out cancels that sign-in's uploads and deletes its queue and frozen tracks.
 - A session the user deleted from the account (the server answers 410) is recorded and
   never queued for that account again.
@@ -46,7 +47,11 @@ generation, and an upload revision that increases with every new snapshot. When 
 changes, synced or not, the session is frozen again (into a new per-generation file; the
 journal is committed before the old file is removed) and starts over with metadata. A
 request still carrying the old snapshot is cancelled and its result ignored, and the
-server rejects both PUTs for a lower revision than it stores (412), keeping each
+server rejects both PUTs for a lower revision than it stores (412, with the stored
+revision in `Upload-Revision`; the phone then continues above it, within the attempt
+limit). Metadata updates are compare-and-swap on the revision read: the same revision
+never detaches the track, and older track objects are found from the bucket listing and
+deleted after each successful PUT, so a failed delete is retried. The server keeps each
 revision's track as its own object and detaching the old track as soon as newer metadata
 arrives. So trimmed-off data never stays on, or returns to, the account.
 

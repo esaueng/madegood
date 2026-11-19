@@ -1,5 +1,7 @@
 import { env } from "cloudflare:workers";
+import { drizzle } from "drizzle-orm/d1";
 import { describe, expect, it } from "vitest";
+import { replaceSessionMetadata } from "../src/server/lib/session-upload";
 import { api, bearer, type SignIn, signIn } from "./apple";
 
 // Synthetic data only (AGENTS.md): positions near 0,0 and dates in 2000.
@@ -625,6 +627,8 @@ describe("upload revisions", () => {
 
     const stale = await putSessionAt(owner.accessToken, id, 1, metadata({ distanceM: 1 }));
     expect(stale.status).toBe(412);
+    // The stored revision, so a device whose counter fell behind can continue above it.
+    expect(stale.headers.get("Upload-Revision")).toBe("2");
     expect(((await stale.json()) as { error: string }).error).toBe("stale_revision");
     expect((await putSession(owner.accessToken, id)).status).toBe(412);
     const stored = (await (await getSession(owner.accessToken, id)).json()) as {
@@ -637,6 +641,7 @@ describe("upload revisions", () => {
     expect(((await oldTrack.json()) as { error: string }).error).toBe("stale_revision");
     const early = await putTrackAt(owner.accessToken, id, 3, await trackFor(id, 3));
     expect(early.status).toBe(412);
+    expect(early.headers.get("Upload-Revision")).toBe("2");
     expect(((await early.json()) as { error: string }).error).toBe("revision_mismatch");
     expect(await env.TRACKS.head(revisionKey(owner.user.id, id, 3))).toBeNull();
   });
@@ -718,12 +723,19 @@ describe("deleted sessions stay deleted", () => {
     expect(row).toBeNull();
   });
 
-  it("only tombstones the caller's own deletions, and removes them with the account", async () => {
+  it("only tombstones sessions that existed, and removes them with the account", async () => {
     const owner = await signIn();
     const other = await signIn();
     const id = crypto.randomUUID();
-    // Another account deleting an ID does not block the owner from uploading it.
+    // Deleting an unknown ID, by anyone, leaves nothing that blocks a first upload.
     expect((await deleteSession(other.accessToken, id)).status).toBe(204);
+    expect((await deleteSession(owner.accessToken, id)).status).toBe(204);
+    const tombstones = await env.DB.prepare(
+      "select count(*) as n from session_tombstones where id = ?",
+    )
+      .bind(id)
+      .first<{ n: number }>();
+    expect(tombstones?.n).toBe(0);
     expect((await putSession(owner.accessToken, id)).status).toBe(201);
     expect((await deleteSession(owner.accessToken, id)).status).toBe(204);
 
@@ -736,5 +748,80 @@ describe("deleted sessions stay deleted", () => {
       (await api("/me", { method: "DELETE", headers: bearer(owner.accessToken) })).status,
     ).toBe(204);
     expect((await count())?.n).toBe(0);
+  });
+});
+
+describe("concurrent metadata PUTs", () => {
+  const fields = {
+    sport: "kayak" as const,
+    startedAt: Date.parse(START),
+    endedAt: null,
+    durationS: 3600,
+    movingS: 3300,
+    distanceM: 5000,
+    maxSpeedMps: 2.4,
+    avgSpeedMps: 1.52,
+    summaryJson: null,
+    analyzerVersion: "1.0.0",
+  };
+
+  it("never detaches a track for the same revision, even when both read the old one", async () => {
+    const owner = await signIn();
+    const id = crypto.randomUUID();
+    expect((await putSessionAt(owner.accessToken, id, 1)).status).toBe(201);
+    expect((await putTrackAt(owner.accessToken, id, 1, await trackFor(id, 1))).status).toBe(204);
+
+    // This PUT reads revision 1; before it writes, another PUT of revision 2 and its track
+    // complete. It must not clear the revision-2 track.
+    let interleaved = false;
+    const result = await replaceSessionMetadata(
+      drizzle(env.DB),
+      env.TRACKS,
+      { id, userId: owner.user.id, revision: 2, fields },
+      {
+        afterRead: async () => {
+          if (interleaved) return;
+          interleaved = true;
+          expect((await putSessionAt(owner.accessToken, id, 2)).status).toBe(200);
+          expect((await putTrackAt(owner.accessToken, id, 2, await trackFor(id, 2))).status).toBe(
+            204,
+          );
+        },
+      },
+    );
+    expect(result.kind).toBe("updated");
+    const track = await getTrack(owner.accessToken, id);
+    expect(track.status).toBe(200);
+    expect(await gunzip(await track.arrayBuffer())).toContain('"revision":2');
+    expect(await env.TRACKS.head(revisionKey(owner.user.id, id, 2))).not.toBeNull();
+    expect(await env.TRACKS.head(revisionKey(owner.user.id, id, 1))).toBeNull();
+  });
+
+  it("retries an old track's deletion that failed on the next PUT", async () => {
+    const owner = await signIn();
+    const id = crypto.randomUUID();
+    expect((await putSessionAt(owner.accessToken, id, 1)).status).toBe(201);
+    expect((await putTrackAt(owner.accessToken, id, 1, await trackFor(id, 1))).status).toBe(204);
+
+    const failingDelete = new Proxy(env.TRACKS, {
+      get(target, property) {
+        if (property === "delete")
+          return async () => Promise.reject(new Error("synthetic R2 failure"));
+        const value = Reflect.get(target, property);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const result = await replaceSessionMetadata(drizzle(env.DB), failingDelete, {
+      id,
+      userId: owner.user.id,
+      revision: 2,
+      fields,
+    });
+    expect(result.kind).toBe("updated");
+    expect(await env.TRACKS.head(revisionKey(owner.user.id, id, 1))).not.toBeNull();
+
+    // The next successful PUT derives the leftover from the listing and deletes it.
+    expect((await putSessionAt(owner.accessToken, id, 2)).status).toBe(200);
+    expect(await env.TRACKS.head(revisionKey(owner.user.id, id, 1))).toBeNull();
   });
 });
