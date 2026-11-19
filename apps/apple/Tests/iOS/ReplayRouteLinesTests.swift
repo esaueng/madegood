@@ -42,6 +42,22 @@ final class ReplayRouteLinesTests: XCTestCase {
         XCTAssertEqual(Set(lines.map(\.level)), [4])
     }
 
+    /// Review regression: the color followed the number of fixes, so two slow steps of
+    /// half a metre outvoted a fast 15 m step in the same line.
+    func testColorFollowsDistanceNotFixCount() {
+        func point(_ metres: Double) -> CLLocationCoordinate2D {
+            CLLocationCoordinate2D(latitude: 0, longitude: metres / 111_319.5)
+        }
+        let lines = [
+            Line(level: 0, coordinates: [point(0), point(0.5)]),
+            Line(level: 0, coordinates: [point(0.5), point(1)]),
+            Line(level: 4, coordinates: [point(1), point(16)]),
+        ]
+        let simplified = SessionReplayView.Data.simplified(lines, maxCount: 1)
+        XCTAssertEqual(simplified.map(\.level), [4])
+        XCTAssertEqual(simplified.first?.coordinates.count, 4)
+    }
+
     func testFewLinesAreLeftAlone() {
         let lines = run(levels: [0, 3, 1, 4], pointsEach: 1)
         let simplified = SessionReplayView.Data.simplified(lines, maxCount: 64)
