@@ -135,13 +135,17 @@ final class SessionController {
         Haptics.play(.lap)
     }
 
-    /// Marks man-overboard with its haptic. Before the first GPS fix there is nothing to
-    /// mark: a failure buzz says so. Returns whether a position was marked.
+    /// Marks man-overboard (PLAN §5) at any time: during a recording, a countdown, a
+    /// mirrored watch session or none. The mark comes from `ManOverboard`'s latest
+    /// position (a session's fixes, or its own location updates); with none yet, it
+    /// marks the first fix to arrive. The `mob` event goes into the local recording only
+    /// when there is one.
     @discardableResult
-    func markManOverboard() -> Bool {
-        let marked = recorder.markManOverboard()
-        Haptics.play(marked ? .manOverboard : .failure)
-        return marked
+    func markManOverboard() -> ManOverboard.MarkResult {
+        let result = ManOverboard.shared.press()
+        if recorder.isRecording { recorder.recordManOverboard(result) }
+        Haptics.play(.manOverboard)
+        return result
     }
 
     /// One press of the Action button after the one that started the session: works the

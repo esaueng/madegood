@@ -7,7 +7,10 @@
     /// system budgets them, and the timer on the Lock Screen ticks by itself.
     @MainActor
     final class SessionActivityController {
-        static let minimumUpdateInterval: TimeInterval = 5
+        nonisolated static let minimumUpdateInterval: TimeInterval = 5
+        /// Man-overboard guidance on the Lock Screen is stale after this long without an
+        /// update, s, so a suspended or ended app never leaves an old distance showing.
+        nonisolated static let manOverboardStaleAfter: TimeInterval = 10
 
         private var activity: Activity<SessionActivityAttributes>?
         private var lastUpdate = Date.distantPast
@@ -27,8 +30,8 @@
                 sportName: sport.displayName, sportIcon: sport.iconName, startedAt: startedAt)
             let state = Self.state(nil, sport: sport)
             do {
-                let activity = try Activity.request(
-                    attributes: attributes, content: .init(state: state, staleDate: nil))
+                let content = ActivityContent(state: state, staleDate: Self.staleDate(for: state, now: Date()))
+                let activity = try Activity.request(attributes: attributes, content: content)
                 self.activity = activity
                 lastState = state
                 lastUpdate = Date()
@@ -45,19 +48,16 @@
         func update(_ metrics: LiveMetrics?, sport: Sport) {
             guard let activity else { return }
             let state = Self.state(metrics, sport: sport)
-            // Pause and man-overboard changes go out at once; otherwise at most every few seconds.
-            let pauseChanged = state.pauseLabel != lastState?.pauseLabel
-            let mobChanged = (state.manOverboard == nil) != (lastState?.manOverboard == nil)
-            guard state != lastState,
-                pauseChanged || mobChanged || Date().timeIntervalSince(lastUpdate) >= Self.minimumUpdateInterval
-            else { return }
-            lastUpdate = Date()
+            let now = Date()
+            guard Self.shouldSend(state, after: lastState, lastUpdate: lastUpdate, now: now) else { return }
+            lastUpdate = now
             lastState = state
             let id = activity.id
+            let staleDate = Self.staleDate(for: state, now: now)
             enqueue {
                 // Look the activity up inside the task: Activity is not Sendable.
                 for activity in Activity<SessionActivityAttributes>.activities where activity.id == id {
-                    await activity.update(.init(state: state, staleDate: nil))
+                    await activity.update(.init(state: state, staleDate: staleDate))
                 }
             }
         }
@@ -66,7 +66,7 @@
             guard let activity else { return }
             self.activity = nil
             lastState = nil
-            let final = Self.state(metrics, sport: sport)
+            let final = Self.finalState(Self.state(metrics, sport: sport))
             let id = activity.id
             enqueue {
                 for activity in Activity<SessionActivityAttributes>.activities where activity.id == id {
@@ -97,16 +97,62 @@
                     ?? "–",
                 distance: display.distance(metrics?.distance ?? 0),
                 movingTime: Formatting.elapsed(metrics?.movingTime ?? 0),
-                pauseLabel: metrics.flatMap { LiveDisplay.pauseLabel($0.pauseState) },
-                manOverboard: manOverboardText(display: display))
+                pauseLabel: metrics.flatMap { LiveDisplay.pauseLabel($0.pauseState) }
+            )
+            .withManOverboard(
+                isActive: ManOverboard.shared.isActive, guidance: ManOverboard.shared.guidance(), display: display)
         }
 
-        /// Distance and true bearing back to the man-overboard mark, if one is set.
-        static func manOverboardText(display: LiveDisplay) -> String? {
-            let manOverboard = ManOverboard.shared
-            guard manOverboard.mark != nil else { return nil }
-            guard let guidance = manOverboard.guidance() else { return "Waiting for GPS" }
-            return "\(display.distance(guidance.distance)) · \(LiveDisplay.course(guidance.bearing))"
+        /// Pause and man-overboard changes (marked, guidance lost or back, cleared) go out
+        /// at once; otherwise at most every few seconds. While a mark shows, an unchanged
+        /// state is still resent then, to push its stale date on.
+        nonisolated static func shouldSend(
+            _ state: SessionActivityAttributes.ContentState, after last: SessionActivityAttributes.ContentState?,
+            lastUpdate: Date, now: Date
+        ) -> Bool {
+            guard let last else { return true }
+            if state.pauseLabel != last.pauseLabel || state.manOverboardKind != last.manOverboardKind { return true }
+            guard now.timeIntervalSince(lastUpdate) >= minimumUpdateInterval else { return false }
+            return state != last || state.manOverboard != nil
+        }
+
+        /// Content with man-overboard guidance goes stale after `manOverboardStaleAfter`.
+        nonisolated static func staleDate(for state: SessionActivityAttributes.ContentState, now: Date) -> Date? {
+            state.manOverboard == nil ? nil : now.addingTimeInterval(manOverboardStaleAfter)
+        }
+
+        /// The content an ended activity keeps: no man-overboard guidance, which would
+        /// otherwise stay on the Lock Screen with nothing updating it.
+        nonisolated static func finalState(
+            _ state: SessionActivityAttributes.ContentState
+        ) -> SessionActivityAttributes.ContentState {
+            var final = state
+            final.manOverboard = nil
+            final.manOverboardHasGuidance = nil
+            return final
+        }
+    }
+
+    extension SessionActivityAttributes.ContentState {
+        /// Adds distance and true bearing back to the man-overboard mark, or a waiting
+        /// message without a fresh position, when a mark is set or a press waits for one.
+        func withManOverboard(
+            isActive: Bool, guidance: ManOverboard.Guidance?, display: LiveDisplay
+        ) -> SessionActivityAttributes.ContentState {
+            var state = self
+            guard isActive else {
+                state.manOverboard = nil
+                state.manOverboardHasGuidance = nil
+                return state
+            }
+            if let guidance {
+                state.manOverboard = "\(display.distance(guidance.distance)) · \(LiveDisplay.course(guidance.bearing))"
+                state.manOverboardHasGuidance = true
+            } else {
+                state.manOverboard = "Waiting for GPS"
+                state.manOverboardHasGuidance = false
+            }
+            return state
         }
     }
 #endif

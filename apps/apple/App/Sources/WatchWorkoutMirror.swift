@@ -66,17 +66,14 @@ final class WatchWorkoutMirror: NSObject, HKWorkoutSessionDelegate {
         }
     }
 
-    /// The watch's man-overboard mark in the last accepted snapshot, by recording.
-    private var mirroredMark: (sessionID: UUID, mark: ManOverboard.Mark?)?
-
     private func receive(_ snapshot: WorkoutMirrorSnapshot, from connection: ObjectIdentifier) {
         let before = state.lastConfirmed
         state.receive(snapshot, from: connection)
         guard let accepted = state.lastConfirmed, accepted != before else { return }
         // A mark on the watch shows on the phone too, and stays until cleared (PLAN §5).
-        let previous = mirroredMark?.sessionID == accepted.sessionID ? mirroredMark?.mark : nil
-        mirroredMark = (accepted.sessionID, accepted.manOverboard)
-        if ManOverboard.shared.applyMirrored(accepted.manOverboard, previous: previous) {
+        // ManOverboard keeps, across relaunches, which watch mark it took and which marks
+        // were cleared, by mark ID.
+        if ManOverboard.shared.applyMirrored(accepted.manOverboard, sessionID: accepted.sessionID) {
             Haptics.play(.manOverboard)
         }
     }

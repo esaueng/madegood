@@ -56,24 +56,34 @@ private struct RecordView: View {
     let library: SessionLibrary
     let showHistory: () -> Void
     @State private var manOverboard = ManOverboard.shared
+    @State private var showingManOverboard = false
+
+    /// With no session or countdown, an active mark fills the tab instead of a sheet.
+    private var showsManOverboardInline: Bool {
+        controller.countdown == nil && controller.recorder.state == .idle && controller.watchWorkout == nil
+            && manOverboard.isActive
+    }
 
     var body: some View {
+        let showManOverboard = { showingManOverboard = true }
         NavigationStack {
             if let countdown = controller.countdown {
-                PhoneCountdownView(controller: controller, countdown: countdown)
+                PhoneCountdownView(controller: controller, countdown: countdown, showManOverboard: showManOverboard)
             } else {
                 switch controller.recorder.state {
                 case .idle:
                     if let workout = controller.watchWorkout {
-                        LiveView(watchWorkout: workout, library: library)
+                        LiveView(watchWorkout: workout, library: library, showManOverboard: showManOverboard)
                             .id(workout.sessionID)
-                    } else if manOverboard.mark != nil {
+                    } else if manOverboard.isActive {
                         // An active mark outlives the session (and relaunches) until cleared,
                         // as on the watch.
                         ManOverboardScreen(manOverboard: manOverboard, sport: controller.sport ?? .sailing)
                             .safeAreaInset(edge: .bottom, spacing: 0) {
                                 NavigationLink {
-                                    StartView(controller: controller, library: library, showHistory: showHistory)
+                                    StartView(
+                                        controller: controller, library: library, showHistory: showHistory,
+                                        showManOverboard: showManOverboard)
                                 } label: {
                                     Label("New session", systemImage: "record.circle")
                                         .frame(maxWidth: .infinity, minHeight: 44)
@@ -86,22 +96,63 @@ private struct RecordView: View {
                             }
                             .navigationTitle("Man Overboard")
                             .navigationBarTitleDisplayMode(.inline)
-                            .onAppear { manOverboard.setOwnUpdates(true, owner: "record") }
-                            .onDisappear { manOverboard.setOwnUpdates(false, owner: "record") }
                     } else if WatchWorkoutMirror.shared.isAttached {
-                        WatchWorkoutStatus(snapshot: nil, connected: true)
-                            .padding()
-                            .navigationTitle("On Watch")
+                        VStack(spacing: 16) {
+                            WatchWorkoutStatus(snapshot: nil, connected: true)
+                            PhoneManOverboardControl(show: showManOverboard)
+                        }
+                        .padding()
+                        .navigationTitle("On Watch")
                     } else {
-                        StartView(controller: controller, library: library, showHistory: showHistory)
+                        StartView(
+                            controller: controller, library: library, showHistory: showHistory,
+                            showManOverboard: showManOverboard)
                     }
                 case .starting, .stopping:
                     ProgressView()
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 case .recording(_, let startedAt, let sport):
-                    LiveView(recorder: controller.recorder, startedAt: startedAt, sport: sport, library: library)
+                    LiveView(
+                        recorder: controller.recorder, startedAt: startedAt, sport: sport, library: library,
+                        showManOverboard: showManOverboard)
                 }
             }
+        }
+        .sheet(isPresented: $showingManOverboard) {
+            NavigationStack {
+                ManOverboardScreen(
+                    manOverboard: manOverboard,
+                    sport: controller.countdown?.sport ?? controller.watchWorkout?.sport ?? controller.sport ?? .sailing,
+                    points: controller.recorder.isRecording ? controller.recorder.trackPoints : []
+                )
+                .navigationTitle("Man Overboard")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Done") { showingManOverboard = false }
+                            .accessibilityIdentifier("mob.done")
+                    }
+                }
+            }
+        }
+        // A new mark or press, from any MOB control or from the watch, shows the way
+        // back at once; clearing it closes the sheet.
+        .onChange(of: manOverboard.mark?.identity) { old, new in
+            if let new, new != old, !showsManOverboardInline { showingManOverboard = true }
+        }
+        .onChange(of: manOverboard.awaitingFixSince) { _, pressed in
+            if pressed != nil, !showsManOverboardInline { showingManOverboard = true }
+        }
+        .onChange(of: manOverboard.isActive) { _, active in
+            if !active { showingManOverboard = false }
+        }
+        .onChange(of: showsManOverboardInline) { _, inline in
+            if inline { showingManOverboard = false }
+        }
+        // With no local recording feeding positions (a countdown, a mirrored watch
+        // session, or none), guidance uses ManOverboard's own location updates.
+        .onChange(of: manOverboard.isActive && !controller.recorder.isRecording, initial: true) { _, needed in
+            manOverboard.setOwnUpdates(needed, owner: "record")
         }
     }
 }
@@ -112,6 +163,7 @@ private struct StartView: View {
     let controller: SessionController
     let library: SessionLibrary
     let showHistory: () -> Void
+    let showManOverboard: () -> Void
     @State private var store = SettingsStore.shared
     @State private var settingsSport: Sport?
     /// The sport just hidden by a swipe, while its Undo toast shows.
@@ -138,6 +190,12 @@ private struct StartView: View {
             if let lastConfirmed = WatchWorkoutMirror.shared.lastConfirmed {
                 WatchWorkoutStatus(snapshot: lastConfirmed, connected: false)
             }
+
+            // MOB before any session too: someone can fall in while getting under way.
+            PhoneManOverboardControl(show: showManOverboard)
+                .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
+                .listRowSeparator(.hidden)
+                .listRowBackground(Color.clear)
 
             Section {
                 ForEach(sports, id: \.self) { sport in
@@ -394,6 +452,7 @@ private struct HiddenSportToast: View {
 private struct PhoneCountdownView: View {
     let controller: SessionController
     let countdown: SessionController.Countdown
+    let showManOverboard: () -> Void
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 0.25)) { _ in
@@ -462,6 +521,7 @@ private struct PhoneCountdownView: View {
                 }
                 .font(.headline)
                 .labelStyle(.titleAndIcon)
+                PhoneManOverboardControl(show: showManOverboard)
             }
             .padding()
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -479,14 +539,18 @@ private struct LiveView: View {
     let sport: Sport
     let library: SessionLibrary
     @State private var banner: SessionRecorder.DistanceAlertEvent?
+    let showManOverboard: () -> Void
     @State private var manOverboard = ManOverboard.shared
-    @State private var showingManOverboard = false
     @ScaledMetric(relativeTo: .largeTitle) private var primarySize = 64.0
 
     /// The sport's first screen, read once when the session opens.
     private let first: LiveScreen
 
-    init(recorder: SessionRecorder, startedAt: Date, sport: Sport, library: SessionLibrary) {
+    init(
+        recorder: SessionRecorder, startedAt: Date, sport: Sport, library: SessionLibrary,
+        showManOverboard: @escaping () -> Void
+    ) {
+        self.showManOverboard = showManOverboard
         self.recorder = recorder
         self.startedAt = startedAt
         self.sport = sport
@@ -495,7 +559,8 @@ private struct LiveView: View {
         first = UserSettings.settings(for: sport).firstScreen
     }
 
-    init(watchWorkout: WorkoutMirrorSnapshot, library: SessionLibrary) {
+    init(watchWorkout: WorkoutMirrorSnapshot, library: SessionLibrary, showManOverboard: @escaping () -> Void) {
+        self.showManOverboard = showManOverboard
         recorder = nil
         startedAt = nil
         self.library = library
@@ -517,8 +582,8 @@ private struct LiveView: View {
                 } else {
                     localStatus(readings)
                 }
-                if manOverboard.mark != nil {
-                    ManOverboardCard(manOverboard: manOverboard, sport: sport) { showingManOverboard = true }
+                if manOverboard.isActive {
+                    ManOverboardCard(manOverboard: manOverboard, sport: sport, open: showManOverboard)
                 }
 
                 if let recorder, let startedAt {
@@ -556,7 +621,14 @@ private struct LiveView: View {
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if let recorder {
-                LiveControls(recorder: recorder, sport: sport, display: display) { showingManOverboard = true }
+                LiveControls(recorder: recorder, sport: sport, display: display, showManOverboard: showManOverboard)
+            } else {
+                // The watch owns a mirrored recording, but MOB still works from here.
+                PhoneManOverboardControl(show: showManOverboard)
+                    .padding(.horizontal)
+                    .padding(.top, 12)
+                    .padding(.bottom, 8)
+                    .background(.background)
             }
         }
         .toolbar(.hidden, for: .tabBar)
@@ -572,29 +644,6 @@ private struct LiveView: View {
             }
         }
         .animation(.snappy, value: banner)
-        // A new mark, from the controls or from the watch, shows the way back at once.
-        .onChange(of: manOverboard.mark) { old, new in
-            if let new, new != old { showingManOverboard = true }
-            if new == nil { showingManOverboard = false }
-        }
-        .sheet(isPresented: $showingManOverboard) {
-            NavigationStack {
-                ManOverboardScreen(manOverboard: manOverboard, sport: sport, points: recorder?.trackPoints ?? [])
-                    .navigationTitle("Man Overboard")
-                    .navigationBarTitleDisplayMode(.inline)
-                    .toolbar {
-                        ToolbarItem(placement: .confirmationAction) {
-                            Button("Done") { showingManOverboard = false }
-                                .accessibilityIdentifier("mob.done")
-                        }
-                    }
-            }
-        }
-        // A mirrored watch session feeds this phone no positions: guidance needs its own.
-        .onChange(of: manOverboard.mark != nil, initial: true) { _, hasMark in
-            manOverboard.setOwnUpdates(hasMark && recorder == nil, owner: "live")
-        }
-        .onDisappear { manOverboard.setOwnUpdates(false, owner: "live") }
         .onChange(of: recorder?.distanceAlert) { _, alert in
             guard let alert else { return }
             Haptics.play(.distanceAlert)
@@ -895,7 +944,6 @@ private struct LiveControls: View {
     let display: LiveDisplay
     let showManOverboard: () -> Void
     @State private var saving = false
-    @State private var manOverboard = ManOverboard.shared
 
     var body: some View {
         Group {
@@ -962,12 +1010,7 @@ private struct LiveControls: View {
     }
 
     private var manOverboardButton: some View {
-        ManOverboardButton(
-            hasMark: manOverboard.mark != nil,
-            mark: {
-                if SessionController.shared.markManOverboard() { showManOverboard() }
-            },
-            show: showManOverboard)
+        PhoneManOverboardControl(show: showManOverboard)
     }
 
     private func recordingActionLabel(_ title: String, systemImage: String) -> some View {

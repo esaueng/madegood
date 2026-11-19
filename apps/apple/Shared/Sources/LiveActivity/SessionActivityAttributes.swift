@@ -17,6 +17,15 @@
             /// Man-overboard guidance ("120 m · 245°", or "Waiting for GPS") while a mark is
             /// set, else nil. Optional, so states from earlier builds still decode.
             var manOverboard: String? = nil
+            /// Whether `manOverboard` is distance and bearing from a fresh position (it
+            /// expires with the content's stale date) rather than a waiting message.
+            var manOverboardHasGuidance: Bool? = nil
+
+            /// No mark, a mark waiting for a position, or a mark with guidance: a change
+            /// between these goes out at once.
+            var manOverboardKind: Int {
+                manOverboard == nil ? 0 : manOverboardHasGuidance == true ? 2 : 1
+            }
         }
 
         var sportName: String

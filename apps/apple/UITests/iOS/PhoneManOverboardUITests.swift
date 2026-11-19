@@ -53,8 +53,10 @@ final class PhoneManOverboardUITests: XCTestCase {
                 "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryL", "-app.appearance", "light",
             ], resetSettings: false)
         XCTAssertTrue(element("mob.screen", in: relaunched).waitForExistence(timeout: 15))
-        // The demo build uses no real location, so with no session there is no position.
-        XCTAssertTrue(relaunched.staticTexts["mob.waiting"].exists)
+        // With no session, guidance comes from the phone's own location (in the demo
+        // build, a still boat at the demo origin), pointing from north.
+        XCTAssertTrue(relaunched.staticTexts["mob.distance"].waitForExistence(timeout: 10))
+        waitForLabel(relaunched.staticTexts["mob.arrowMode"], "Arrow points from north")
         XCTAssertTrue(relaunched.buttons["mob.newSession"].exists)
         attachScreenshot("4 relaunched")
 
@@ -101,6 +103,62 @@ final class PhoneManOverboardUITests: XCTestCase {
         clearMark(app)
         XCTAssertTrue(app.buttons["control.pause"].waitForExistence(timeout: 10))
         XCTAssertFalse(app.buttons["mob.card"].exists)
+    }
+
+    /// MOB during a countdown, before any local recording, marks from the phone's own
+    /// location; after cancelling, the mark fills the Record tab. Then MOB from the start
+    /// screen itself.
+    func testMarkDuringACountdownAndFromTheStartScreen() {
+        let app = launchDemoApp(extraArguments: ["-settings.countdown.kayak", "1", "-app.appearance", "light"])
+        let kayak = app.buttons["sport.kayak"]
+        XCTAssertTrue(kayak.waitForExistence(timeout: 15))
+        scrollTo(kayak, in: app)
+        kayak.tap()
+        XCTAssertTrue(element("countdown.time", in: app).waitForExistence(timeout: 10))
+        let mob = element("control.mob", in: app)
+        XCTAssertTrue(mob.waitForExistence(timeout: 5))
+        attachScreenshot("9 countdown with MOB")
+        mob.press(forDuration: 1.2)
+        XCTAssertTrue(app.staticTexts["mob.distance"].waitForExistence(timeout: 10))
+        attachScreenshot("10 marked during countdown")
+        app.buttons["mob.done"].tap()
+
+        app.buttons["countdown.cancel"].tap()
+        XCTAssertTrue(app.buttons["mob.newSession"].waitForExistence(timeout: 10))
+        clearMark(app)
+        XCTAssertTrue(kayak.waitForExistence(timeout: 10))
+
+        let startMOB = element("control.mob", in: app)
+        XCTAssertTrue(startMOB.waitForExistence(timeout: 5))
+        attachScreenshot("11 start screen with MOB")
+        startMOB.press(forDuration: 1.2)
+        XCTAssertTrue(app.staticTexts["mob.distance"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["mob.newSession"].exists)
+        clearMark(app)
+        XCTAssertTrue(kayak.waitForExistence(timeout: 10))
+    }
+
+    /// MOB during a mirrored watch session, with no local recording: the phone marks from
+    /// its own location and keeps showing the watch's session.
+    func testMarkDuringAMirroredWatchSession() {
+        let app = launchDemoApp(extraArguments: ["-demoWatchMirror", "-app.appearance", "dark"])
+        startKayak(app, waitForSpeed: false)
+        endSession(app)
+        let watchStatus = element("status.watchWorkout", in: app)
+        XCTAssertTrue(watchStatus.waitForExistence(timeout: 15))
+        XCTAssertFalse(app.buttons["control.pause"].exists)
+        let mob = element("control.mob", in: app)
+        XCTAssertTrue(mob.waitForExistence(timeout: 5))
+        attachScreenshot("12 mirrored session with MOB")
+        mob.press(forDuration: 1.2)
+        XCTAssertTrue(app.staticTexts["mob.distance"].waitForExistence(timeout: 10))
+        attachScreenshot("13 marked during mirrored session")
+        app.buttons["mob.done"].tap()
+        XCTAssertTrue(app.buttons["mob.card"].waitForExistence(timeout: 5))
+        XCTAssertTrue(watchStatus.exists)
+        app.buttons["mob.card"].tap()
+        clearMark(app)
+        XCTAssertTrue(app.buttons["mob.card"].waitForNonExistence(timeout: 10))
     }
 
     private func startKayak(_ app: XCUIApplication, waitForSpeed: Bool = true) {

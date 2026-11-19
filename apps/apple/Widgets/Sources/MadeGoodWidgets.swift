@@ -41,7 +41,7 @@ struct SessionLiveActivity: Widget {
                             Text(context.state.distance).font(.title3.monospacedDigit())
                         }
                         if let mob = context.state.manOverboard {
-                            ManOverboardLine(text: mob)
+                            ManOverboardLine(text: mob, isStale: context.isStale)
                         }
                     }
                 }
@@ -70,7 +70,7 @@ private struct LockScreenView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             if let mob = context.state.manOverboard {
-                ManOverboardLine(text: mob)
+                ManOverboardLine(text: mob, isStale: context.isStale)
             }
             metrics
         }
@@ -108,16 +108,21 @@ private struct LockScreenView: View {
 /// The man-overboard mark: distance and true bearing back to it, in red.
 private struct ManOverboardLine: View {
     let text: String
+    /// Past the content's stale date: the app has stopped updating, so the distance and
+    /// bearing are no longer shown.
+    let isStale: Bool
+
+    private var shown: String { isStale ? "position stale" : text }
 
     var body: some View {
         Label {
-            Text("MOB · \(text)").monospacedDigit()
+            Text("MOB · \(shown)").monospacedDigit()
         } icon: {
             Image(systemName: "figure.wave")
         }
         .font(.subheadline.weight(.bold))
         .foregroundStyle(.red)
-        .accessibilityLabel("Man overboard, \(text)")
+        .accessibilityLabel("Man overboard, \(shown)")
     }
 }
 

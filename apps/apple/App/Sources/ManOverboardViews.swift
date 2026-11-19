@@ -59,6 +59,17 @@ struct ManOverboardScreen: View {
     @ViewBuilder
     private func guidanceView(display: LiveDisplay) -> some View {
         VStack(spacing: 8) {
+            // How far to trust the mark comes first: an old or late fix is not where
+            // MOB was pressed.
+            if let mark = manOverboard.mark, let note = ManOverboardNotes.markQuality(mark) {
+                Label(note, systemImage: "exclamationmark.triangle.fill")
+                    .font(.headline)
+                    .foregroundStyle(.black)
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.orange, in: .rect(cornerRadius: 12))
+                    .accessibilityIdentifier("mob.markQuality")
+            }
             if let guidance = manOverboard.guidance() {
                 Image(systemName: "location.north.fill")
                     .font(.system(size: min(arrowSize, 180)))
@@ -83,9 +94,13 @@ struct ManOverboardScreen: View {
                     .font(.system(size: 56))
                     .foregroundStyle(.red)
                     .accessibilityHidden(true)
-                Text("Waiting for GPS")
-                    .font(.title3.weight(.semibold))
-                    .accessibilityIdentifier("mob.waiting")
+                Text(
+                    ManOverboardNotes.waiting(
+                        positionAge: manOverboard.positionAge(), hasMark: manOverboard.mark != nil)
+                )
+                .font(.title3.weight(.semibold))
+                .multilineTextAlignment(.center)
+                .accessibilityIdentifier("mob.waiting")
                 Text("The way back shows once there is a position from the last 10 seconds.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
@@ -95,14 +110,11 @@ struct ManOverboardScreen: View {
                 Text("Marked \(mark.markedAt, style: .relative) ago")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
-                if mark.positionAge > ManOverboard.freshFor {
-                    Label(
-                        "Marked from a fix \(Formatting.duration(mark.positionAge)) old",
-                        systemImage: "exclamationmark.triangle"
-                    )
-                    .font(.footnote)
-                    .foregroundStyle(.orange)
-                }
+            } else if let pressed = manOverboard.awaitingFixSince {
+                Text("Pressed \(pressed, style: .relative) ago; marks the first position")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
             }
         }
         .frame(maxWidth: .infinity)
@@ -148,7 +160,14 @@ struct ManOverboardCard: View {
                             )
                             .font(.subheadline.weight(.semibold).monospacedDigit())
                         } else {
-                            Text("Waiting for GPS").font(.subheadline)
+                            Text(
+                                ManOverboardNotes.waiting(
+                                    positionAge: manOverboard.positionAge(), hasMark: manOverboard.mark != nil)
+                            )
+                            .font(.subheadline)
+                        }
+                        if let mark = manOverboard.mark, let note = ManOverboardNotes.markQuality(mark) {
+                            Text(note).font(.footnote.weight(.semibold))
                         }
                     }
                     Spacer(minLength: 0)
@@ -222,6 +241,8 @@ struct ManOverboardButton: View {
 
     private func label(title: String, systemImage: String) -> some View {
         Label(title, systemImage: systemImage)
+            // A List (the start screen) would otherwise show the icon alone.
+            .labelStyle(.titleAndIcon)
             .font(.title3.weight(.heavy))
             .lineLimit(1)
             .fixedSize()
@@ -232,7 +253,8 @@ struct ManOverboardButton: View {
     }
 }
 
-/// The mark, the session's track and the current position. Display only; not a chart.
+/// The mark, the session's track and the current position. Display only, like the live
+/// map: an interactive map in the scrolling screen caught the swipes meant to scroll it.
 struct ManOverboardMap: View {
     let mark: ManOverboard.Mark
     var points: [SessionRecorder.TrackPoint] = []
@@ -240,7 +262,7 @@ struct ManOverboardMap: View {
     var body: some View {
         let coordinates = points.map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
         let markCoordinate = CLLocationCoordinate2D(latitude: mark.latitude, longitude: mark.longitude)
-        Map(initialPosition: .automatic, interactionModes: [.pan, .zoom]) {
+        Map(initialPosition: .automatic, interactionModes: []) {
             if coordinates.count > 1 {
                 MapPolyline(coordinates: coordinates).stroke(Color.accentColor, lineWidth: 4)
             }
@@ -262,5 +284,23 @@ struct NotForNavigationLabel: View {
             .background(.regularMaterial, in: .capsule)
             .padding(8)
             .accessibilityIdentifier("label.notForNavigation")
+    }
+}
+
+/// The MOB control wired to the session controller, for every screen that shows a
+/// session, a countdown or the start of one. Marking works with or without a local
+/// recording (`SessionController.markManOverboard`).
+struct PhoneManOverboardControl: View {
+    let show: () -> Void
+    @State private var manOverboard = ManOverboard.shared
+
+    var body: some View {
+        ManOverboardButton(
+            hasMark: manOverboard.isActive,
+            mark: {
+                SessionController.shared.markManOverboard()
+                show()
+            },
+            show: show)
     }
 }

@@ -54,8 +54,8 @@ struct WorkoutMirrorSnapshot: Codable, Equatable, Sendable {
     let sport: Sport
     let sentAt: Date
     let readings: LiveReadings
-    /// The watch's man-overboard mark, if one is set. Optional and outside the version:
-    /// older watch apps leave it out, and older phone apps ignore it.
+    /// The watch's man-overboard mark, if one is set, with its ID. Optional and outside
+    /// the version: older watch apps leave it out, and older phone apps ignore it.
     var manOverboard: ManOverboard.Mark? = nil
 
     func age(at date: Date) -> TimeInterval {

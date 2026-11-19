@@ -29,7 +29,7 @@ struct WatchContentView: View {
                 CountdownView(controller: controller, countdown: countdown)
             } else {
                 switch recorder.state {
-                case .idle where manOverboard.mark != nil:
+                case .idle where manOverboard.isActive:
                     // An active mark outlives the session (and relaunches) until cleared.
                     ManOverboardPage(
                         manOverboard: manOverboard, sport: controller.sport ?? .sailing,
@@ -405,7 +405,7 @@ private struct SessionPages: View {
 
     var body: some View {
         TabView(selection: $page) {
-            if manOverboard.mark != nil {
+            if manOverboard.isActive {
                 ManOverboardPage(manOverboard: manOverboard, sport: sport).tag(Page.manOverboard)
             }
             ControlsPage(recorder: recorder) { page = .manOverboard }.tag(Page.controls)
@@ -432,9 +432,12 @@ private struct SessionPages: View {
         .animation(.snappy, value: banner)
         // A new mark from anywhere (the controls or the Action button), including one that
         // replaces an earlier mark, shows the way back.
-        .onChange(of: manOverboard.mark) { old, new in
+        .onChange(of: manOverboard.mark?.identity) { old, new in
             // Wait a turn: the page only exists once the mark has redrawn the pages.
             if let new, new != old { Task { @MainActor in page = .manOverboard } }
+        }
+        .onChange(of: manOverboard.awaitingFixSince) { _, pressed in
+            if pressed != nil { Task { @MainActor in page = .manOverboard } }
         }
         .onChange(of: recorder.distanceAlert) { _, alert in
             guard let alert else { return }
@@ -716,9 +719,8 @@ private struct ControlsPage: View {
             }
             GridRow {
                 ControlButton(title: "MOB", symbol: "figure.wave", tint: .red) {
-                    recorder.markManOverboard()
-                    WKInterfaceDevice.current().play(.notification)
-                    if ManOverboard.shared.mark != nil { showManOverboard() }
+                    SessionController.shared.markManOverboard()
+                    showManOverboard()
                 }
                 ControlButton(title: "Lock", symbol: "drop.fill", tint: .cyan) {
                     // Water lock ignores taps until the user turns the Digital Crown.
@@ -773,14 +775,18 @@ struct ManOverboardPage: View {
                     } else {
                         Image(systemName: "location.slash").font(.title).foregroundStyle(.red)
                         Text("Man overboard").font(.headline).foregroundStyle(.red)
-                        Text("Waiting for GPS").font(.footnote).foregroundStyle(.secondary)
+                        Text(
+                            ManOverboardNotes.waiting(
+                                positionAge: manOverboard.positionAge(), hasMark: manOverboard.mark != nil))
+                            .font(.footnote).foregroundStyle(.secondary)
                             .accessibilityIdentifier("mob.waiting")
                     }
                     if let mark = manOverboard.mark {
-                        if mark.positionAge > ManOverboard.freshFor {
-                            Text("Marked from a fix \(Formatting.duration(mark.positionAge)) old")
-                                .font(.footnote)
+                        if let note = ManOverboardNotes.markQuality(mark) {
+                            Text(note)
+                                .font(.footnote.weight(.semibold))
                                 .foregroundStyle(.orange)
+                                .accessibilityIdentifier("mob.markQuality")
                         }
                         Text(mark.markedAt, style: .relative).font(.footnote).foregroundStyle(.secondary)
                     }

@@ -392,16 +392,14 @@ final class SessionRecorder {
 
     func lap() { userEvent(.lap) }
 
-    /// Marks man-overboard (PLAN §5) at the latest position in `ManOverboard`, and
-    /// records a `mob` event with that position and how old it was.
-    /// Returns whether a position was marked (false before the first fix).
-    @discardableResult
-    func markManOverboard() -> Bool {
-        guard isRecording else { return false }
+    /// Records a man-overboard press (PLAN §5, `SessionController.markManOverboard`) as a
+    /// `mob` event with the marked position and how old it was, or without a position
+    /// when the press is still waiting for the first fix.
+    func recordManOverboard(_ result: ManOverboard.MarkResult) {
+        guard isRecording else { return }
         let now = Date()
-        let mark = ManOverboard.shared.markNow(at: now)
         var data: [String: JSONValue]?
-        if let mark {
+        if case .marked(let mark) = result {
             data = [
                 "lat": .number(mark.latitude), "lon": .number(mark.longitude),
                 "positionAge": .number((mark.positionAge * 10).rounded() / 10),
@@ -409,7 +407,6 @@ final class SessionRecorder {
         }
         writers[.events]?.append(RawFormat.EventLine(ts: now.timeIntervalSince1970, type: .mob, data: data))
         ingest(.event(SessionEvent(t: now.timeIntervalSince1970 - startUnix, type: .mob, data: data)))
-        return mark != nil
     }
 
     func pause() { userEvent(.pause) }
