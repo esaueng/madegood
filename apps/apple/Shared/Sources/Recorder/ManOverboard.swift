@@ -56,10 +56,11 @@ final class ManOverboard {
                     bytes[(index * 8 + byte) % 16] ^= UInt8(truncatingIfNeeded: part >> (byte * 8))
                 }
             }
-            return UUID(uuid: (
-                bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
-                bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]
-            ))
+            return UUID(
+                uuid: (
+                    bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+                    bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]
+                ))
         }
 
         /// Whether the marked position was older than a fresh one when MOB was pressed.
@@ -156,14 +157,17 @@ final class ManOverboard {
         #if DEBUG
             // UI tests start without a mark left by an earlier test.
             if ProcessInfo.processInfo.arguments.contains("-resetManOverboard") {
-                for key in [Key.mark, Key.cleared, Key.adopted, Key.awaitingSince] { defaults.removeObject(forKey: key) }
+                for key in [Key.mark, Key.cleared, Key.adopted, Key.awaitingSince] {
+                    defaults.removeObject(forKey: key)
+                }
             }
         #endif
         let decoder = JSONDecoder()
         mark = defaults.data(forKey: Key.mark).flatMap { try? decoder.decode(Mark.self, from: $0) }
         clearedIDs = defaults.data(forKey: Key.cleared).flatMap { try? decoder.decode([UUID].self, from: $0) } ?? []
         adopted = defaults.data(forKey: Key.adopted).flatMap { try? decoder.decode(Adopted.self, from: $0) }
-        awaitingFixSince = (defaults.object(forKey: Key.awaitingSince) as? Double).map(Date.init(timeIntervalSince1970:))
+        // Stored as a Date, not seconds since 1970, so it reads back exactly.
+        awaitingFixSince = defaults.object(forKey: Key.awaitingSince) as? Date
     }
 
     /// Fed by the recorder with every accepted fix, and by this object's own updates. A
@@ -346,7 +350,7 @@ final class ManOverboard {
     private func setAwaiting(_ date: Date?) {
         awaitingFixSince = date
         if let date {
-            defaults.set(date.timeIntervalSince1970, forKey: Key.awaitingSince)
+            defaults.set(date, forKey: Key.awaitingSince)
         } else {
             defaults.removeObject(forKey: Key.awaitingSince)
         }
