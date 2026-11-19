@@ -213,7 +213,10 @@ retry. Removing a zone that does not exist changes nothing.
 is retried after 30 s, 1, 2, 4 and 8 minutes. After 5 retries the message moves to
 `madegood-postprocess-dlq`, which has no consumer: inspect it in the dashboard (Queues
 › madegood-postprocess-dlq) and, once the cause is fixed, either re-upload the track
-or send the message body back to `madegood-postprocess`. Messages that can never
+or send the message body back to `madegood-postprocess`. A dead letter holds only IDs (session,
+account, revision, track ETag); Cloudflare deletes it when the queue's message retention
+ends (4 days by default; the privacy policy relies on that, so do not raise it without
+updating the policy). Messages that can never
 succeed (an invalid track, a malformed message) are acknowledged, not retried.
 
 **Without a queue.** Preview versions cannot set queue consumers, so `env.preview` has

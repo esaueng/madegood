@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import {
   Code,
   Download,
@@ -298,6 +298,10 @@ function Footer() {
         <a href={GITHUB_URL} className={cn("underline underline-offset-2", linkFocus)}>
           GitHub
         </a>
+        .{" "}
+        <Link to="/privacy" className={cn("underline underline-offset-2", linkFocus)}>
+          Privacy
+        </Link>
       </p>
       <ApiStatus />
     </footer>

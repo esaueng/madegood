@@ -645,3 +645,35 @@ it("captures first receipt before asynchronous ownership and persistence work", 
   expect(await (await voyage.ingest([fix])).json()).toEqual({ receipts });
   expect(await snapshot(slug)).toEqual(unavailable);
 });
+
+describe("an expired live link", () => {
+  it("deletes its positions when it expires, without being stopped", async () => {
+    const voyage = await setup();
+    const time = clock();
+    const result = await voyage.share({ action: "issue", delayS: 0, expiresInS: 60 });
+    expect(result.status).toBe(200);
+    const { grantGeneration } = (await result.json()) as { grantGeneration: number };
+    time.at(1);
+    expect(
+      (
+        await postJson(
+          `${voyage.path}/positions`,
+          { grantGeneration, positions: [position(time.start + 1, 0.1)] },
+          voyage.headers,
+        )
+      ).status,
+    ).toBe(200);
+    const count = () =>
+      runInDurableObject(
+        voyage.stub,
+        (_, state) =>
+          state.storage.sql.exec<{ n: number }>("SELECT count(*) AS n FROM positions").one().n,
+      );
+    expect(await count()).toBe(1);
+
+    // The expiry alarm.
+    time.at(61_000);
+    expect(await runDurableObjectAlarm(voyage.stub)).toBe(true);
+    expect(await count()).toBe(0);
+  });
+});

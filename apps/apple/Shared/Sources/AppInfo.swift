@@ -10,4 +10,14 @@ enum AppInfo {
         let build = info?["CFBundleVersion"] as? String ?? "0"
         return "\(marketing) (\(build))"
     }
+
+    /// `<MadeGoodSiteURL>/privacy` (Config/MadeGood.xcconfig), or nil when the build names no
+    /// HTTPS site. Only the iPhone app's Info.plist sets the key.
+    static var privacyPolicyURL: URL? {
+        guard let value = Bundle.main.object(forInfoDictionaryKey: "MadeGoodSiteURL") as? String,
+            let site = URL(string: value.trimmingCharacters(in: .whitespaces)), site.scheme == "https",
+            site.host() != nil
+        else { return nil }
+        return site.appending(path: "privacy")
+    }
 }

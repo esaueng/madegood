@@ -102,6 +102,12 @@ struct SettingsView: View {
                     Link(destination: URL(string: "https://github.com/esaueng/madegood")!) {
                         Label("Source code", systemImage: "chevron.left.forwardslash.chevron.right")
                     }
+                    if let privacy = AppInfo.privacyPolicyURL {
+                        Link(destination: privacy) {
+                            Label("Privacy Policy", systemImage: "hand.raised")
+                        }
+                        .accessibilityIdentifier("settings.privacyPolicy")
+                    }
                     Label("Routes and charts are not for navigation.", systemImage: "exclamationmark.triangle")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
