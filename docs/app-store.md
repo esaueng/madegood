@@ -57,6 +57,13 @@ identifiers (docs/metrics.md). It answers the request in real time and is not li
 the user. Proposed: not declared as collected (it is not retained for the developer),
 but described in the privacy policy. Confirm.
 
+**Local conditions.** Off until the user taps Show on the start screen (or turns on
+Settings > Weather > Local Conditions). Then, while the start screen is open and at
+most every 15 minutes, the phone sends Open-Meteo's forecast API its position rounded
+to 0.1° (about 10 km), again with no account, key, cookies or identifiers. The
+position is not stored; the last answer is kept on the phone. It uses the existing
+When In Use location permission, whose iPhone prompt now mentions local conditions.
+
 **Data shared publicly.** A session is private by default. The owner can make it
 unlisted or public; then the website shows its track (with privacy zones cut out),
 stats and title to anyone with the link. This is user-initiated sharing, not

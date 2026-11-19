@@ -85,12 +85,14 @@ private struct RecordView: View {
 }
 
 /// Sport cards like the watch's: tap one to start (through its countdown), or its gear
-/// for that sport's settings. Most recently used first.
+/// for that sport's settings. Most recently used first until the user drags them into
+/// their own order. Local conditions sit above them once turned on.
 private struct StartView: View {
     let controller: SessionController
     let library: SessionLibrary
     let showHistory: () -> Void
     @State private var store = SettingsStore.shared
+    @State private var weather = LocalWeather.shared
     @State private var settingsSport: Sport?
     /// The sport just hidden by a swipe, while its Undo toast shows.
     @State private var hiddenSport: Sport?
@@ -109,9 +111,16 @@ private struct StartView: View {
         let sports = store.startList(extraUse: latest.mapValues { $0.startedAt.timeIntervalSince1970 })
         List {
             StartHeader()
-                .listRowInsets(EdgeInsets(top: 8, leading: 4, bottom: 4, trailing: 0))
+                .listRowInsets(EdgeInsets(top: 0, leading: 4, bottom: 2, trailing: 0))
                 .listRowSeparator(.hidden)
                 .listRowBackground(Color.clear)
+
+            if weather.isEnabled {
+                WeatherCard(weather: weather, sports: sports)
+                    .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
+            }
 
             if let lastConfirmed = WatchWorkoutMirror.shared.lastConfirmed {
                 WatchWorkoutStatus(snapshot: lastConfirmed, connected: false)
@@ -135,6 +144,20 @@ private struct StartView: View {
                         }
                     }
                 }
+                // Long-press and drag a card to reorder; the order sticks from then on.
+                .onMove { from, to in
+                    var moved = sports
+                    moved.move(fromOffsets: from, toOffset: to)
+                    store.reorderStartList(current: sports, to: moved)
+                }
+            }
+
+            // The one-time offer sits under the sports so it never pushes them down.
+            if weather.choice == nil {
+                WeatherCard(weather: weather, sports: sports)
+                    .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
             }
 
             if let error = controller.recorder.lastError {
@@ -178,11 +201,12 @@ private struct StartView: View {
         }
         .listStyle(.insetGrouped)
         .scrollContentBackground(.hidden)
+        .refreshable { if weather.isEnabled { await weather.refresh(force: true) } }
         .listSectionSpacing(12)
         // The cards and Recent are about one screen tall: when they fit, don't let the
         // list rubber-band; when they don't, it scrolls just the overflow.
         .scrollBounceBehavior(.basedOnSize)
-        // The (empty) bar already clears the status bar; drop the grouped list's extra top
+        // The safe area already clears the status bar; drop the grouped list's extra top
         // margin so the header sits just under the bar.
         .contentMargins(.top, 0, for: .scrollContent)
         .background { StartBackground() }
@@ -200,11 +224,12 @@ private struct StartView: View {
             if !Task.isCancelled { hiddenSport = nil }
         }
         // The header row stands in for the title; the title stays for the Back button.
-        // The bar stays (empty) so rows soften under the status bar as they scroll
-        // instead of running into the clock and the Dynamic Island.
+        // No bar, so the header sits just under the status bar; rows soften under the
+        // clock and the Dynamic Island as they scroll.
         .navigationTitle(AppInfo.name)
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar(removing: .title)
+        .toolbar(.hidden, for: .navigationBar)
+        .scrollEdgeEffectStyle(.soft, for: .top)
         .navigationDestination(for: SessionLibrary.Item.self) { item in
             SessionDetailView(item: item, library: library)
         }
@@ -252,18 +277,18 @@ private struct StartView: View {
 /// The logo and a two-tone wordmark over today's date, in place of a plain large title.
 private struct StartHeader: View {
     var body: some View {
-        HStack(spacing: 12) {
-            LogoMark(size: 46)
+        HStack(spacing: 10) {
+            LogoMark(size: 36)
             VStack(alignment: .leading, spacing: 0) {
                 (Text("Made").foregroundStyle(.primary) + Text("Good").foregroundStyle(Color.accentColor))
-                    .font(.largeTitle.weight(.bold))
+                    .font(.title2.weight(.bold))
                     .fontDesign(.rounded)
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
                 // Ticks so the date rolls over at midnight while the screen stays open.
                 TimelineView(.everyMinute) { context in
                     Text(context.date, format: .dateTime.weekday(.wide).month(.wide).day())
-                        .font(.subheadline.weight(.medium))
+                        .font(.footnote.weight(.medium))
                         .foregroundStyle(.secondary)
                 }
             }
