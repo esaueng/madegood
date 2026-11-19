@@ -9,3 +9,8 @@ DEVELOPMENT_TEAM = ABCDE12345
 // Forks: use a reverse-DNS prefix you control. The watch app becomes
 // $(BUNDLE_ID_PREFIX).watchkitapp automatically.
 // BUNDLE_ID_PREFIX = com.example.madegood
+
+// The MadeGood API for account sync (Settings > Account). `$()` keeps xcconfig from
+// reading `//` as a comment. A simulator can use the local Worker (`pnpm -C web dev`):
+// MADEGOOD_API_URL = http:/$()/127.0.0.1:5173/api
+// MADEGOOD_API_URL = https:/$()/madegood.example.com/api

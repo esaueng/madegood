@@ -25,6 +25,20 @@ internal protocol APIProtocol: Sendable {
     /// - Remark: HTTP `POST /auth/refresh`.
     /// - Remark: Generated from `#/paths//auth/refresh/post`.
     func post_sol_auth_sol_refresh(_ input: Operations.post_sol_auth_sol_refresh.Input) async throws -> Operations.post_sol_auth_sol_refresh.Output
+    /// Create or replace a session's metadata and summary
+    ///
+    /// Idempotent: the ID is generated on the device, so retrying an upload is safe. A new session takes the user's default visibility.
+    ///
+    /// - Remark: HTTP `PUT /sessions/{id}`.
+    /// - Remark: Generated from `#/paths//sessions/{id}/put(putSession)`.
+    func putSession(_ input: Operations.putSession.Input) async throws -> Operations.putSession.Output
+    /// Upload a session's track file
+    ///
+    /// The body is the gzipped track v1 file (docs/formats.md), sent as `application/gzip` with no Content-Encoding, at most 8388608 bytes. PUT the session's metadata first. Repeating the upload replaces the file.
+    ///
+    /// - Remark: HTTP `PUT /sessions/{id}/track`.
+    /// - Remark: Generated from `#/paths//sessions/{id}/track/put(putSessionTrack)`.
+    func putSessionTrack(_ input: Operations.putSessionTrack.Input) async throws -> Operations.putSessionTrack.Output
     /// Accept a batch of active voyage fixes
     ///
     /// - Remark: HTTP `POST /voyages/{voyageId}/positions`.
@@ -87,6 +101,40 @@ extension APIProtocol {
         body: Operations.post_sol_auth_sol_refresh.Input.Body
     ) async throws -> Operations.post_sol_auth_sol_refresh.Output {
         try await post_sol_auth_sol_refresh(Operations.post_sol_auth_sol_refresh.Input(
+            headers: headers,
+            body: body
+        ))
+    }
+    /// Create or replace a session's metadata and summary
+    ///
+    /// Idempotent: the ID is generated on the device, so retrying an upload is safe. A new session takes the user's default visibility.
+    ///
+    /// - Remark: HTTP `PUT /sessions/{id}`.
+    /// - Remark: Generated from `#/paths//sessions/{id}/put(putSession)`.
+    internal func putSession(
+        path: Operations.putSession.Input.Path,
+        headers: Operations.putSession.Input.Headers = .init(),
+        body: Operations.putSession.Input.Body
+    ) async throws -> Operations.putSession.Output {
+        try await putSession(Operations.putSession.Input(
+            path: path,
+            headers: headers,
+            body: body
+        ))
+    }
+    /// Upload a session's track file
+    ///
+    /// The body is the gzipped track v1 file (docs/formats.md), sent as `application/gzip` with no Content-Encoding, at most 8388608 bytes. PUT the session's metadata first. Repeating the upload replaces the file.
+    ///
+    /// - Remark: HTTP `PUT /sessions/{id}/track`.
+    /// - Remark: Generated from `#/paths//sessions/{id}/track/put(putSessionTrack)`.
+    internal func putSessionTrack(
+        path: Operations.putSessionTrack.Input.Path,
+        headers: Operations.putSessionTrack.Input.Headers = .init(),
+        body: Operations.putSessionTrack.Input.Body
+    ) async throws -> Operations.putSessionTrack.Output {
+        try await putSessionTrack(Operations.putSessionTrack.Input(
+            path: path,
             headers: headers,
             body: body
         ))
@@ -405,6 +453,329 @@ internal enum Components {
             }
             internal enum CodingKeys: String, CodingKey {
                 case refreshToken
+            }
+        }
+        /// - Remark: Generated from `#/components/schemas/Session`.
+        internal struct Session: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/Session/id`.
+            internal var id: Swift.String
+            /// - Remark: Generated from `#/components/schemas/Session/sport`.
+            internal enum sportPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                case sailing = "sailing"
+                case windsurfing = "windsurfing"
+                case motorboating = "motorboating"
+                case kayak = "kayak"
+                case canoe = "canoe"
+                case sup = "sup"
+            }
+            /// - Remark: Generated from `#/components/schemas/Session/sport`.
+            internal var sport: Components.Schemas.Session.sportPayload
+            /// - Remark: Generated from `#/components/schemas/Session/title`.
+            internal var title: Swift.String?
+            /// - Remark: Generated from `#/components/schemas/Session/notes`.
+            internal var notes: Swift.String?
+            /// - Remark: Generated from `#/components/schemas/Session/visibility`.
+            internal enum visibilityPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                case _private = "private"
+                case unlisted = "unlisted"
+                case _public = "public"
+            }
+            /// - Remark: Generated from `#/components/schemas/Session/visibility`.
+            internal var visibility: Components.Schemas.Session.visibilityPayload
+            /// - Remark: Generated from `#/components/schemas/Session/startedAt`.
+            internal var startedAt: Foundation.Date
+            /// - Remark: Generated from `#/components/schemas/Session/endedAt`.
+            internal var endedAt: Foundation.Date?
+            /// - Remark: Generated from `#/components/schemas/Session/durationS`.
+            internal var durationS: Swift.Double?
+            /// - Remark: Generated from `#/components/schemas/Session/movingS`.
+            internal var movingS: Swift.Double?
+            /// - Remark: Generated from `#/components/schemas/Session/distanceM`.
+            internal var distanceM: Swift.Double?
+            /// - Remark: Generated from `#/components/schemas/Session/maxSpeedMps`.
+            internal var maxSpeedMps: Swift.Double?
+            /// - Remark: Generated from `#/components/schemas/Session/avgSpeedMps`.
+            internal var avgSpeedMps: Swift.Double?
+            /// - Remark: Generated from `#/components/schemas/Session/summary`.
+            internal struct summaryPayload: Codable, Hashable, Sendable {
+                /// A container of undocumented properties.
+                internal var additionalProperties: [String: OpenAPIRuntime.OpenAPIValueContainer]
+                /// Creates a new `summaryPayload`.
+                ///
+                /// - Parameters:
+                ///   - additionalProperties: A container of undocumented properties.
+                internal init(additionalProperties: [String: OpenAPIRuntime.OpenAPIValueContainer] = .init()) {
+                    self.additionalProperties = additionalProperties
+                }
+                internal init(from decoder: any Decoder) throws {
+                    additionalProperties = try decoder.decodeAdditionalProperties(knownKeys: [])
+                }
+                internal func encode(to encoder: any Encoder) throws {
+                    try encoder.encodeAdditionalProperties(additionalProperties)
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/Session/summary`.
+            internal var summary: Components.Schemas.Session.summaryPayload?
+            /// - Remark: Generated from `#/components/schemas/Session/analyzerVersion`.
+            internal var analyzerVersion: Swift.String?
+            /// Whether a track file has been uploaded.
+            ///
+            /// - Remark: Generated from `#/components/schemas/Session/hasTrack`.
+            internal var hasTrack: Swift.Bool
+            /// Whether the caller owns the session.
+            ///
+            /// - Remark: Generated from `#/components/schemas/Session/isOwner`.
+            internal var isOwner: Swift.Bool
+            /// - Remark: Generated from `#/components/schemas/Session/createdAt`.
+            internal var createdAt: Foundation.Date
+            /// - Remark: Generated from `#/components/schemas/Session/updatedAt`.
+            internal var updatedAt: Foundation.Date
+            /// Creates a new `Session`.
+            ///
+            /// - Parameters:
+            ///   - id:
+            ///   - sport:
+            ///   - title:
+            ///   - notes:
+            ///   - visibility:
+            ///   - startedAt:
+            ///   - endedAt:
+            ///   - durationS:
+            ///   - movingS:
+            ///   - distanceM:
+            ///   - maxSpeedMps:
+            ///   - avgSpeedMps:
+            ///   - summary:
+            ///   - analyzerVersion:
+            ///   - hasTrack: Whether a track file has been uploaded.
+            ///   - isOwner: Whether the caller owns the session.
+            ///   - createdAt:
+            ///   - updatedAt:
+            internal init(
+                id: Swift.String,
+                sport: Components.Schemas.Session.sportPayload,
+                title: Swift.String? = nil,
+                notes: Swift.String? = nil,
+                visibility: Components.Schemas.Session.visibilityPayload,
+                startedAt: Foundation.Date,
+                endedAt: Foundation.Date? = nil,
+                durationS: Swift.Double? = nil,
+                movingS: Swift.Double? = nil,
+                distanceM: Swift.Double? = nil,
+                maxSpeedMps: Swift.Double? = nil,
+                avgSpeedMps: Swift.Double? = nil,
+                summary: Components.Schemas.Session.summaryPayload? = nil,
+                analyzerVersion: Swift.String? = nil,
+                hasTrack: Swift.Bool,
+                isOwner: Swift.Bool,
+                createdAt: Foundation.Date,
+                updatedAt: Foundation.Date
+            ) {
+                self.id = id
+                self.sport = sport
+                self.title = title
+                self.notes = notes
+                self.visibility = visibility
+                self.startedAt = startedAt
+                self.endedAt = endedAt
+                self.durationS = durationS
+                self.movingS = movingS
+                self.distanceM = distanceM
+                self.maxSpeedMps = maxSpeedMps
+                self.avgSpeedMps = avgSpeedMps
+                self.summary = summary
+                self.analyzerVersion = analyzerVersion
+                self.hasTrack = hasTrack
+                self.isOwner = isOwner
+                self.createdAt = createdAt
+                self.updatedAt = updatedAt
+            }
+            internal enum CodingKeys: String, CodingKey {
+                case id
+                case sport
+                case title
+                case notes
+                case visibility
+                case startedAt
+                case endedAt
+                case durationS
+                case movingS
+                case distanceM
+                case maxSpeedMps
+                case avgSpeedMps
+                case summary
+                case analyzerVersion
+                case hasTrack
+                case isOwner
+                case createdAt
+                case updatedAt
+            }
+        }
+        /// A session's metadata and analysis summary, as the device computed them. SI units. Every PUT replaces all of these fields; omitted ones become null. Title, notes and visibility are not changed here (PATCH them).
+        ///
+        /// - Remark: Generated from `#/components/schemas/PutSessionRequest`.
+        internal struct PutSessionRequest: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/PutSessionRequest/sport`.
+            internal enum sportPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                case sailing = "sailing"
+                case windsurfing = "windsurfing"
+                case motorboating = "motorboating"
+                case kayak = "kayak"
+                case canoe = "canoe"
+                case sup = "sup"
+            }
+            /// - Remark: Generated from `#/components/schemas/PutSessionRequest/sport`.
+            internal var sport: Components.Schemas.PutSessionRequest.sportPayload
+            /// - Remark: Generated from `#/components/schemas/PutSessionRequest/startedAt`.
+            internal var startedAt: Foundation.Date
+            /// - Remark: Generated from `#/components/schemas/PutSessionRequest/endedAt`.
+            internal var endedAt: Foundation.Date?
+            /// Elapsed time, s.
+            ///
+            /// - Remark: Generated from `#/components/schemas/PutSessionRequest/durationS`.
+            internal var durationS: Swift.Double?
+            /// Moving time, s.
+            ///
+            /// - Remark: Generated from `#/components/schemas/PutSessionRequest/movingS`.
+            internal var movingS: Swift.Double?
+            /// - Remark: Generated from `#/components/schemas/PutSessionRequest/distanceM`.
+            internal var distanceM: Swift.Double?
+            /// Best 2 s window, m/s.
+            ///
+            /// - Remark: Generated from `#/components/schemas/PutSessionRequest/maxSpeedMps`.
+            internal var maxSpeedMps: Swift.Double?
+            /// Distance / moving time.
+            ///
+            /// - Remark: Generated from `#/components/schemas/PutSessionRequest/avgSpeedMps`.
+            internal var avgSpeedMps: Swift.Double?
+            /// The track v1 summary (docs/metrics.md). At most 64 KiB.
+            ///
+            /// - Remark: Generated from `#/components/schemas/PutSessionRequest/summary`.
+            internal struct summaryPayload: Codable, Hashable, Sendable {
+                /// A container of undocumented properties.
+                internal var additionalProperties: [String: OpenAPIRuntime.OpenAPIValueContainer]
+                /// Creates a new `summaryPayload`.
+                ///
+                /// - Parameters:
+                ///   - additionalProperties: A container of undocumented properties.
+                internal init(additionalProperties: [String: OpenAPIRuntime.OpenAPIValueContainer] = .init()) {
+                    self.additionalProperties = additionalProperties
+                }
+                internal init(from decoder: any Decoder) throws {
+                    additionalProperties = try decoder.decodeAdditionalProperties(knownKeys: [])
+                }
+                internal func encode(to encoder: any Encoder) throws {
+                    try encoder.encodeAdditionalProperties(additionalProperties)
+                }
+            }
+            /// The track v1 summary (docs/metrics.md). At most 64 KiB.
+            ///
+            /// - Remark: Generated from `#/components/schemas/PutSessionRequest/summary`.
+            internal var summary: Components.Schemas.PutSessionRequest.summaryPayload?
+            /// - Remark: Generated from `#/components/schemas/PutSessionRequest/analyzerVersion`.
+            internal var analyzerVersion: Swift.String?
+            /// Creates a new `PutSessionRequest`.
+            ///
+            /// - Parameters:
+            ///   - sport:
+            ///   - startedAt:
+            ///   - endedAt:
+            ///   - durationS: Elapsed time, s.
+            ///   - movingS: Moving time, s.
+            ///   - distanceM:
+            ///   - maxSpeedMps: Best 2 s window, m/s.
+            ///   - avgSpeedMps: Distance / moving time.
+            ///   - summary: The track v1 summary (docs/metrics.md). At most 64 KiB.
+            ///   - analyzerVersion:
+            internal init(
+                sport: Components.Schemas.PutSessionRequest.sportPayload,
+                startedAt: Foundation.Date,
+                endedAt: Foundation.Date? = nil,
+                durationS: Swift.Double? = nil,
+                movingS: Swift.Double? = nil,
+                distanceM: Swift.Double? = nil,
+                maxSpeedMps: Swift.Double? = nil,
+                avgSpeedMps: Swift.Double? = nil,
+                summary: Components.Schemas.PutSessionRequest.summaryPayload? = nil,
+                analyzerVersion: Swift.String? = nil
+            ) {
+                self.sport = sport
+                self.startedAt = startedAt
+                self.endedAt = endedAt
+                self.durationS = durationS
+                self.movingS = movingS
+                self.distanceM = distanceM
+                self.maxSpeedMps = maxSpeedMps
+                self.avgSpeedMps = avgSpeedMps
+                self.summary = summary
+                self.analyzerVersion = analyzerVersion
+            }
+            internal enum CodingKeys: String, CodingKey {
+                case sport
+                case startedAt
+                case endedAt
+                case durationS
+                case movingS
+                case distanceM
+                case maxSpeedMps
+                case avgSpeedMps
+                case summary
+                case analyzerVersion
+            }
+            internal init(from decoder: any Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                self.sport = try container.decode(
+                    Components.Schemas.PutSessionRequest.sportPayload.self,
+                    forKey: .sport
+                )
+                self.startedAt = try container.decode(
+                    Foundation.Date.self,
+                    forKey: .startedAt
+                )
+                self.endedAt = try container.decodeIfPresent(
+                    Foundation.Date.self,
+                    forKey: .endedAt
+                )
+                self.durationS = try container.decodeIfPresent(
+                    Swift.Double.self,
+                    forKey: .durationS
+                )
+                self.movingS = try container.decodeIfPresent(
+                    Swift.Double.self,
+                    forKey: .movingS
+                )
+                self.distanceM = try container.decodeIfPresent(
+                    Swift.Double.self,
+                    forKey: .distanceM
+                )
+                self.maxSpeedMps = try container.decodeIfPresent(
+                    Swift.Double.self,
+                    forKey: .maxSpeedMps
+                )
+                self.avgSpeedMps = try container.decodeIfPresent(
+                    Swift.Double.self,
+                    forKey: .avgSpeedMps
+                )
+                self.summary = try container.decodeIfPresent(
+                    Components.Schemas.PutSessionRequest.summaryPayload.self,
+                    forKey: .summary
+                )
+                self.analyzerVersion = try container.decodeIfPresent(
+                    Swift.String.self,
+                    forKey: .analyzerVersion
+                )
+                try decoder.ensureNoAdditionalProperties(knownKeys: [
+                    "sport",
+                    "startedAt",
+                    "endedAt",
+                    "durationS",
+                    "movingS",
+                    "distanceM",
+                    "maxSpeedMps",
+                    "avgSpeedMps",
+                    "summary",
+                    "analyzerVersion"
+                ])
             }
         }
         /// - Remark: Generated from `#/components/schemas/VoyagePositionReceipts`.
@@ -1781,6 +2152,731 @@ internal enum Operations {
                     default:
                         try throwUnexpectedResponseStatus(
                             expectedStatus: "unauthorized",
+                            response: self
+                        )
+                    }
+                }
+            }
+            /// Undocumented response.
+            ///
+            /// A response with a code that is not documented in the OpenAPI document.
+            case undocumented(statusCode: Swift.Int, OpenAPIRuntime.UndocumentedPayload)
+        }
+        internal enum AcceptableContentType: AcceptableProtocol {
+            case json
+            case other(Swift.String)
+            internal init?(rawValue: Swift.String) {
+                switch rawValue.lowercased() {
+                case "application/json":
+                    self = .json
+                default:
+                    self = .other(rawValue)
+                }
+            }
+            internal var rawValue: Swift.String {
+                switch self {
+                case let .other(string):
+                    return string
+                case .json:
+                    return "application/json"
+                }
+            }
+            internal static var allCases: [Self] {
+                [
+                    .json
+                ]
+            }
+        }
+    }
+    /// Create or replace a session's metadata and summary
+    ///
+    /// Idempotent: the ID is generated on the device, so retrying an upload is safe. A new session takes the user's default visibility.
+    ///
+    /// - Remark: HTTP `PUT /sessions/{id}`.
+    /// - Remark: Generated from `#/paths//sessions/{id}/put(putSession)`.
+    internal enum putSession {
+        internal static let id: Swift.String = "putSession"
+        internal struct Input: Sendable, Hashable {
+            /// - Remark: Generated from `#/paths/sessions/{id}/PUT/path`.
+            internal struct Path: Sendable, Hashable {
+                /// The device-generated session UUID. Either case; stored lowercase.
+                ///
+                /// - Remark: Generated from `#/paths/sessions/{id}/PUT/path/id`.
+                internal var id: Swift.String
+                /// Creates a new `Path`.
+                ///
+                /// - Parameters:
+                ///   - id: The device-generated session UUID. Either case; stored lowercase.
+                internal init(id: Swift.String) {
+                    self.id = id
+                }
+            }
+            internal var path: Operations.putSession.Input.Path
+            /// - Remark: Generated from `#/paths/sessions/{id}/PUT/header`.
+            internal struct Headers: Sendable, Hashable {
+                internal var accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.putSession.AcceptableContentType>]
+                /// Creates a new `Headers`.
+                ///
+                /// - Parameters:
+                ///   - accept:
+                internal init(accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.putSession.AcceptableContentType>] = .defaultValues()) {
+                    self.accept = accept
+                }
+            }
+            internal var headers: Operations.putSession.Input.Headers
+            /// - Remark: Generated from `#/paths/sessions/{id}/PUT/requestBody`.
+            internal enum Body: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/sessions/{id}/PUT/requestBody/content/application\/json`.
+                case json(Components.Schemas.PutSessionRequest)
+            }
+            internal var body: Operations.putSession.Input.Body
+            /// Creates a new `Input`.
+            ///
+            /// - Parameters:
+            ///   - path:
+            ///   - headers:
+            ///   - body:
+            internal init(
+                path: Operations.putSession.Input.Path,
+                headers: Operations.putSession.Input.Headers = .init(),
+                body: Operations.putSession.Input.Body
+            ) {
+                self.path = path
+                self.headers = headers
+                self.body = body
+            }
+        }
+        internal enum Output: Sendable, Hashable {
+            internal struct Ok: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/sessions/{id}/PUT/responses/200/content`.
+                internal enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/sessions/{id}/PUT/responses/200/content/application\/json`.
+                    case json(Components.Schemas.Session)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    internal var json: Components.Schemas.Session {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                internal var body: Operations.putSession.Output.Ok.Body
+                /// Creates a new `Ok`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                internal init(body: Operations.putSession.Output.Ok.Body) {
+                    self.body = body
+                }
+            }
+            /// The session was updated.
+            ///
+            /// - Remark: Generated from `#/paths//sessions/{id}/put(putSession)/responses/200`.
+            ///
+            /// HTTP response code: `200 ok`.
+            case ok(Operations.putSession.Output.Ok)
+            /// The associated value of the enum case if `self` is `.ok`.
+            ///
+            /// - Throws: An error if `self` is not `.ok`.
+            /// - SeeAlso: `.ok`.
+            internal var ok: Operations.putSession.Output.Ok {
+                get throws {
+                    switch self {
+                    case let .ok(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "ok",
+                            response: self
+                        )
+                    }
+                }
+            }
+            internal struct Created: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/sessions/{id}/PUT/responses/201/content`.
+                internal enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/sessions/{id}/PUT/responses/201/content/application\/json`.
+                    case json(Components.Schemas.Session)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    internal var json: Components.Schemas.Session {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                internal var body: Operations.putSession.Output.Created.Body
+                /// Creates a new `Created`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                internal init(body: Operations.putSession.Output.Created.Body) {
+                    self.body = body
+                }
+            }
+            /// The session was created.
+            ///
+            /// - Remark: Generated from `#/paths//sessions/{id}/put(putSession)/responses/201`.
+            ///
+            /// HTTP response code: `201 created`.
+            case created(Operations.putSession.Output.Created)
+            /// The associated value of the enum case if `self` is `.created`.
+            ///
+            /// - Throws: An error if `self` is not `.created`.
+            /// - SeeAlso: `.created`.
+            internal var created: Operations.putSession.Output.Created {
+                get throws {
+                    switch self {
+                    case let .created(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "created",
+                            response: self
+                        )
+                    }
+                }
+            }
+            internal struct BadRequest: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/sessions/{id}/PUT/responses/400/content`.
+                internal enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/sessions/{id}/PUT/responses/400/content/application\/json`.
+                    case json(Components.Schemas._Error)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    internal var json: Components.Schemas._Error {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                internal var body: Operations.putSession.Output.BadRequest.Body
+                /// Creates a new `BadRequest`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                internal init(body: Operations.putSession.Output.BadRequest.Body) {
+                    self.body = body
+                }
+            }
+            /// The ID or body is invalid.
+            ///
+            /// - Remark: Generated from `#/paths//sessions/{id}/put(putSession)/responses/400`.
+            ///
+            /// HTTP response code: `400 badRequest`.
+            case badRequest(Operations.putSession.Output.BadRequest)
+            /// The associated value of the enum case if `self` is `.badRequest`.
+            ///
+            /// - Throws: An error if `self` is not `.badRequest`.
+            /// - SeeAlso: `.badRequest`.
+            internal var badRequest: Operations.putSession.Output.BadRequest {
+                get throws {
+                    switch self {
+                    case let .badRequest(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "badRequest",
+                            response: self
+                        )
+                    }
+                }
+            }
+            internal struct Unauthorized: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/sessions/{id}/PUT/responses/401/content`.
+                internal enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/sessions/{id}/PUT/responses/401/content/application\/json`.
+                    case json(Components.Schemas._Error)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    internal var json: Components.Schemas._Error {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                internal var body: Operations.putSession.Output.Unauthorized.Body
+                /// Creates a new `Unauthorized`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                internal init(body: Operations.putSession.Output.Unauthorized.Body) {
+                    self.body = body
+                }
+            }
+            /// Missing or invalid access token, or the account no longer exists.
+            ///
+            /// - Remark: Generated from `#/paths//sessions/{id}/put(putSession)/responses/401`.
+            ///
+            /// HTTP response code: `401 unauthorized`.
+            case unauthorized(Operations.putSession.Output.Unauthorized)
+            /// The associated value of the enum case if `self` is `.unauthorized`.
+            ///
+            /// - Throws: An error if `self` is not `.unauthorized`.
+            /// - SeeAlso: `.unauthorized`.
+            internal var unauthorized: Operations.putSession.Output.Unauthorized {
+                get throws {
+                    switch self {
+                    case let .unauthorized(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "unauthorized",
+                            response: self
+                        )
+                    }
+                }
+            }
+            internal struct Conflict: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/sessions/{id}/PUT/responses/409/content`.
+                internal enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/sessions/{id}/PUT/responses/409/content/application\/json`.
+                    case json(Components.Schemas._Error)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    internal var json: Components.Schemas._Error {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                internal var body: Operations.putSession.Output.Conflict.Body
+                /// Creates a new `Conflict`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                internal init(body: Operations.putSession.Output.Conflict.Body) {
+                    self.body = body
+                }
+            }
+            /// Another account has a session with this ID (`session_id_taken`).
+            ///
+            /// - Remark: Generated from `#/paths//sessions/{id}/put(putSession)/responses/409`.
+            ///
+            /// HTTP response code: `409 conflict`.
+            case conflict(Operations.putSession.Output.Conflict)
+            /// The associated value of the enum case if `self` is `.conflict`.
+            ///
+            /// - Throws: An error if `self` is not `.conflict`.
+            /// - SeeAlso: `.conflict`.
+            internal var conflict: Operations.putSession.Output.Conflict {
+                get throws {
+                    switch self {
+                    case let .conflict(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "conflict",
+                            response: self
+                        )
+                    }
+                }
+            }
+            /// Undocumented response.
+            ///
+            /// A response with a code that is not documented in the OpenAPI document.
+            case undocumented(statusCode: Swift.Int, OpenAPIRuntime.UndocumentedPayload)
+        }
+        internal enum AcceptableContentType: AcceptableProtocol {
+            case json
+            case other(Swift.String)
+            internal init?(rawValue: Swift.String) {
+                switch rawValue.lowercased() {
+                case "application/json":
+                    self = .json
+                default:
+                    self = .other(rawValue)
+                }
+            }
+            internal var rawValue: Swift.String {
+                switch self {
+                case let .other(string):
+                    return string
+                case .json:
+                    return "application/json"
+                }
+            }
+            internal static var allCases: [Self] {
+                [
+                    .json
+                ]
+            }
+        }
+    }
+    /// Upload a session's track file
+    ///
+    /// The body is the gzipped track v1 file (docs/formats.md), sent as `application/gzip` with no Content-Encoding, at most 8388608 bytes. PUT the session's metadata first. Repeating the upload replaces the file.
+    ///
+    /// - Remark: HTTP `PUT /sessions/{id}/track`.
+    /// - Remark: Generated from `#/paths//sessions/{id}/track/put(putSessionTrack)`.
+    internal enum putSessionTrack {
+        internal static let id: Swift.String = "putSessionTrack"
+        internal struct Input: Sendable, Hashable {
+            /// - Remark: Generated from `#/paths/sessions/{id}/track/PUT/path`.
+            internal struct Path: Sendable, Hashable {
+                /// The device-generated session UUID. Either case; stored lowercase.
+                ///
+                /// - Remark: Generated from `#/paths/sessions/{id}/track/PUT/path/id`.
+                internal var id: Swift.String
+                /// Creates a new `Path`.
+                ///
+                /// - Parameters:
+                ///   - id: The device-generated session UUID. Either case; stored lowercase.
+                internal init(id: Swift.String) {
+                    self.id = id
+                }
+            }
+            internal var path: Operations.putSessionTrack.Input.Path
+            /// - Remark: Generated from `#/paths/sessions/{id}/track/PUT/header`.
+            internal struct Headers: Sendable, Hashable {
+                internal var accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.putSessionTrack.AcceptableContentType>]
+                /// Creates a new `Headers`.
+                ///
+                /// - Parameters:
+                ///   - accept:
+                internal init(accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.putSessionTrack.AcceptableContentType>] = .defaultValues()) {
+                    self.accept = accept
+                }
+            }
+            internal var headers: Operations.putSessionTrack.Input.Headers
+            /// - Remark: Generated from `#/paths/sessions/{id}/track/PUT/requestBody`.
+            internal enum Body: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/sessions/{id}/track/PUT/requestBody/content/application\/gzip`.
+                case application_gzip(OpenAPIRuntime.HTTPBody)
+            }
+            internal var body: Operations.putSessionTrack.Input.Body
+            /// Creates a new `Input`.
+            ///
+            /// - Parameters:
+            ///   - path:
+            ///   - headers:
+            ///   - body:
+            internal init(
+                path: Operations.putSessionTrack.Input.Path,
+                headers: Operations.putSessionTrack.Input.Headers = .init(),
+                body: Operations.putSessionTrack.Input.Body
+            ) {
+                self.path = path
+                self.headers = headers
+                self.body = body
+            }
+        }
+        internal enum Output: Sendable, Hashable {
+            internal struct NoContent: Sendable, Hashable {
+                /// Creates a new `NoContent`.
+                internal init() {}
+            }
+            /// The track is stored.
+            ///
+            /// - Remark: Generated from `#/paths//sessions/{id}/track/put(putSessionTrack)/responses/204`.
+            ///
+            /// HTTP response code: `204 noContent`.
+            case noContent(Operations.putSessionTrack.Output.NoContent)
+            /// The track is stored.
+            ///
+            /// - Remark: Generated from `#/paths//sessions/{id}/track/put(putSessionTrack)/responses/204`.
+            ///
+            /// HTTP response code: `204 noContent`.
+            internal static var noContent: Self {
+                .noContent(.init())
+            }
+            /// The associated value of the enum case if `self` is `.noContent`.
+            ///
+            /// - Throws: An error if `self` is not `.noContent`.
+            /// - SeeAlso: `.noContent`.
+            internal var noContent: Operations.putSessionTrack.Output.NoContent {
+                get throws {
+                    switch self {
+                    case let .noContent(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "noContent",
+                            response: self
+                        )
+                    }
+                }
+            }
+            internal struct BadRequest: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/sessions/{id}/track/PUT/responses/400/content`.
+                internal enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/sessions/{id}/track/PUT/responses/400/content/application\/json`.
+                    case json(Components.Schemas._Error)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    internal var json: Components.Schemas._Error {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                internal var body: Operations.putSessionTrack.Output.BadRequest.Body
+                /// Creates a new `BadRequest`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                internal init(body: Operations.putSessionTrack.Output.BadRequest.Body) {
+                    self.body = body
+                }
+            }
+            /// The ID is invalid, or the body is not a gzipped track (`invalid_track`).
+            ///
+            /// - Remark: Generated from `#/paths//sessions/{id}/track/put(putSessionTrack)/responses/400`.
+            ///
+            /// HTTP response code: `400 badRequest`.
+            case badRequest(Operations.putSessionTrack.Output.BadRequest)
+            /// The associated value of the enum case if `self` is `.badRequest`.
+            ///
+            /// - Throws: An error if `self` is not `.badRequest`.
+            /// - SeeAlso: `.badRequest`.
+            internal var badRequest: Operations.putSessionTrack.Output.BadRequest {
+                get throws {
+                    switch self {
+                    case let .badRequest(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "badRequest",
+                            response: self
+                        )
+                    }
+                }
+            }
+            internal struct Unauthorized: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/sessions/{id}/track/PUT/responses/401/content`.
+                internal enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/sessions/{id}/track/PUT/responses/401/content/application\/json`.
+                    case json(Components.Schemas._Error)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    internal var json: Components.Schemas._Error {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                internal var body: Operations.putSessionTrack.Output.Unauthorized.Body
+                /// Creates a new `Unauthorized`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                internal init(body: Operations.putSessionTrack.Output.Unauthorized.Body) {
+                    self.body = body
+                }
+            }
+            /// Missing or invalid access token.
+            ///
+            /// - Remark: Generated from `#/paths//sessions/{id}/track/put(putSessionTrack)/responses/401`.
+            ///
+            /// HTTP response code: `401 unauthorized`.
+            case unauthorized(Operations.putSessionTrack.Output.Unauthorized)
+            /// The associated value of the enum case if `self` is `.unauthorized`.
+            ///
+            /// - Throws: An error if `self` is not `.unauthorized`.
+            /// - SeeAlso: `.unauthorized`.
+            internal var unauthorized: Operations.putSessionTrack.Output.Unauthorized {
+                get throws {
+                    switch self {
+                    case let .unauthorized(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "unauthorized",
+                            response: self
+                        )
+                    }
+                }
+            }
+            internal struct NotFound: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/sessions/{id}/track/PUT/responses/404/content`.
+                internal enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/sessions/{id}/track/PUT/responses/404/content/application\/json`.
+                    case json(Components.Schemas._Error)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    internal var json: Components.Schemas._Error {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                internal var body: Operations.putSessionTrack.Output.NotFound.Body
+                /// Creates a new `NotFound`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                internal init(body: Operations.putSessionTrack.Output.NotFound.Body) {
+                    self.body = body
+                }
+            }
+            /// The caller has no session with this ID; PUT its metadata first.
+            ///
+            /// - Remark: Generated from `#/paths//sessions/{id}/track/put(putSessionTrack)/responses/404`.
+            ///
+            /// HTTP response code: `404 notFound`.
+            case notFound(Operations.putSessionTrack.Output.NotFound)
+            /// The associated value of the enum case if `self` is `.notFound`.
+            ///
+            /// - Throws: An error if `self` is not `.notFound`.
+            /// - SeeAlso: `.notFound`.
+            internal var notFound: Operations.putSessionTrack.Output.NotFound {
+                get throws {
+                    switch self {
+                    case let .notFound(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "notFound",
+                            response: self
+                        )
+                    }
+                }
+            }
+            internal struct ContentTooLarge: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/sessions/{id}/track/PUT/responses/413/content`.
+                internal enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/sessions/{id}/track/PUT/responses/413/content/application\/json`.
+                    case json(Components.Schemas._Error)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    internal var json: Components.Schemas._Error {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                internal var body: Operations.putSessionTrack.Output.ContentTooLarge.Body
+                /// Creates a new `ContentTooLarge`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                internal init(body: Operations.putSessionTrack.Output.ContentTooLarge.Body) {
+                    self.body = body
+                }
+            }
+            /// The body is larger than 8388608 bytes.
+            ///
+            /// - Remark: Generated from `#/paths//sessions/{id}/track/put(putSessionTrack)/responses/413`.
+            ///
+            /// HTTP response code: `413 contentTooLarge`.
+            case contentTooLarge(Operations.putSessionTrack.Output.ContentTooLarge)
+            /// The associated value of the enum case if `self` is `.contentTooLarge`.
+            ///
+            /// - Throws: An error if `self` is not `.contentTooLarge`.
+            /// - SeeAlso: `.contentTooLarge`.
+            internal var contentTooLarge: Operations.putSessionTrack.Output.ContentTooLarge {
+                get throws {
+                    switch self {
+                    case let .contentTooLarge(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "contentTooLarge",
+                            response: self
+                        )
+                    }
+                }
+            }
+            internal struct UnsupportedMediaType: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/sessions/{id}/track/PUT/responses/415/content`.
+                internal enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/sessions/{id}/track/PUT/responses/415/content/application\/json`.
+                    case json(Components.Schemas._Error)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    internal var json: Components.Schemas._Error {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                internal var body: Operations.putSessionTrack.Output.UnsupportedMediaType.Body
+                /// Creates a new `UnsupportedMediaType`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                internal init(body: Operations.putSessionTrack.Output.UnsupportedMediaType.Body) {
+                    self.body = body
+                }
+            }
+            /// The body is not sent as application/gzip.
+            ///
+            /// - Remark: Generated from `#/paths//sessions/{id}/track/put(putSessionTrack)/responses/415`.
+            ///
+            /// HTTP response code: `415 unsupportedMediaType`.
+            case unsupportedMediaType(Operations.putSessionTrack.Output.UnsupportedMediaType)
+            /// The associated value of the enum case if `self` is `.unsupportedMediaType`.
+            ///
+            /// - Throws: An error if `self` is not `.unsupportedMediaType`.
+            /// - SeeAlso: `.unsupportedMediaType`.
+            internal var unsupportedMediaType: Operations.putSessionTrack.Output.UnsupportedMediaType {
+                get throws {
+                    switch self {
+                    case let .unsupportedMediaType(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "unsupportedMediaType",
                             response: self
                         )
                     }

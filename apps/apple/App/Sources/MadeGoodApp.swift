@@ -5,6 +5,7 @@ struct MadeGoodApp: App {
     @UIApplicationDelegateAdaptor(VoyageSyncAppDelegate.self) private var voyageDelegate
     @Environment(\.scenePhase) private var scenePhase
     private let voyageSync = DemoOffWater.storage == nil ? PrivateVoyageSync.shared : nil
+    private let sessionSync = DemoOffWater.storage == nil ? SessionSync.shared : nil
     @State private var demoLibrary = SessionLibrary()
     private let demoSeedFailed: Bool
 
@@ -39,9 +40,17 @@ struct MadeGoodApp: App {
                 } else {
                     ContentView()
                         .environment(voyageSync)
+                        .environment(sessionSync)
                         .task(id: voyageSync?.account.binding) { await voyageSync?.accountDidChange() }
+                        .task(id: sessionSync?.account.binding) {
+                            sessionSync?.start()
+                            await sessionSync?.accountDidChange()
+                        }
                         .onChange(of: scenePhase) { _, phase in
-                            if phase == .active { voyageSync?.kick() }
+                            if phase == .active {
+                                voyageSync?.kick()
+                                sessionSync?.kick()
+                            }
                         }
                 }
             }

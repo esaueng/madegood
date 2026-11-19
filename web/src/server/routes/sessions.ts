@@ -278,6 +278,7 @@ const canView = (session: Session, viewerId: string | null) =>
 const listRoute = createRoute({
   method: "get",
   path: "/sessions",
+  operationId: "listSessions",
   summary: "The signed-in user's sessions, newest first",
   tags: ["sessions"],
   security,
@@ -307,6 +308,7 @@ const listRoute = createRoute({
 const putRoute = createRoute({
   method: "put",
   path: "/sessions/{id}",
+  operationId: "putSession",
   summary: "Create or replace a session's metadata and summary",
   description:
     "Idempotent: the ID is generated on the device, so retrying an upload is safe. A new " +
@@ -336,6 +338,7 @@ const putRoute = createRoute({
 const getRoute = createRoute({
   method: "get",
   path: "/sessions/{id}",
+  operationId: "getSession",
   summary: "A session",
   description:
     "The owner always sees it. Anyone else, signed in or not, sees only public and " +
@@ -355,6 +358,7 @@ const getRoute = createRoute({
 const putTrackRoute = createRoute({
   method: "put",
   path: "/sessions/{id}/track",
+  operationId: "putSessionTrack",
   summary: "Upload a session's track file",
   description:
     `The body is the gzipped track v1 file (docs/formats.md), sent as \`${TRACK_CONTENT_TYPE}\` ` +
@@ -383,6 +387,7 @@ const putTrackRoute = createRoute({
 const getTrackRoute = createRoute({
   method: "get",
   path: "/sessions/{id}/track",
+  operationId: "getSessionTrack",
   summary: "Download a session's track file",
   description:
     `The gzipped track v1 file as \`${TRACK_CONTENT_TYPE}\`. Visibility works as for the ` +
@@ -407,6 +412,7 @@ const getTrackRoute = createRoute({
 const patchRoute = createRoute({
   method: "patch",
   path: "/sessions/{id}",
+  operationId: "updateSession",
   summary: "Change a session's title, notes or visibility",
   tags: ["sessions"],
   security,
@@ -429,6 +435,7 @@ const patchRoute = createRoute({
 const deleteRoute = createRoute({
   method: "delete",
   path: "/sessions/{id}",
+  operationId: "deleteSession",
   summary: "Delete a session and its track",
   description: "Idempotent: deleting a session the caller does not have also returns 204.",
   tags: ["sessions"],

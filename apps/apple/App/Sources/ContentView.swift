@@ -8,6 +8,7 @@ struct ContentView: View {
     @State private var library = SessionLibrary()
     @State private var voyageRecorder = VoyageRecorder.shared
     @State private var tab = AppTab.record
+    @Environment(SessionSync.self) private var sessionSync: SessionSync?
 
     enum AppTab: Hashable { case record, voyages, history, settings }
 
@@ -34,6 +35,8 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: RecordingTransfer.didReceiveFile)) { _ in
             library.reload()
         }
+        // New, finished and deleted recordings reach the upload queue.
+        .onChange(of: library.items.map(\.entry)) { sessionSync?.recordingsChanged() }
         #if DEBUG
             .onChange(of: controller.recorder.isRecording) { _, isRecording in
                 if isRecording { WatchWorkoutMirror.shared.seedDemoIfRequested() }

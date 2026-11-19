@@ -134,6 +134,14 @@ final class VoyageSyncAppDelegate: VoyageLaunchDelegate {
         _ application: UIApplication, handleEventsForBackgroundURLSession identifier: String,
         completionHandler: @escaping () -> Void
     ) {
+        if identifier == VoyageURLSession.sessionTrackIdentifier {
+            guard DemoOffWater.storage == nil, let sync = SessionSync.shared else {
+                completionHandler()
+                return
+            }
+            sync.reconnect(completion: completionHandler)
+            return
+        }
         guard DemoOffWater.storage == nil, let sync = PrivateVoyageSync.shared else {
             completionHandler()
             return

@@ -215,6 +215,9 @@ struct SessionRow: View {
             .foregroundStyle(Color.accentColor)
             .frame(width: 36, height: 36)
             .background(Color.accentColor.opacity(0.12), in: .circle)
+            .overlay(alignment: .bottomTrailing) {
+                SessionSyncBadge(sessionID: item.entry.meta?.sessionId).offset(x: 6, y: 4)
+            }
             VStack(alignment: .leading, spacing: 2) {
                 Text(sport?.displayName ?? "Receiving…").font(.body.weight(.semibold)).fontDesign(.rounded)
                 if item.summary?.isTrimmed == true {

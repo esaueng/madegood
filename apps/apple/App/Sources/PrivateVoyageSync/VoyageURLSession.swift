@@ -2,13 +2,22 @@ import Foundation
 
 /// Keep the upload task attached when iOS suspends the app. Acknowledgements are
 /// journalled by the outbox, so a completion lost at process exit can be replayed.
+/// Session sync (SessionSync) uses its own instance under `sessionTrackIdentifier`.
 @MainActor
-final class VoyageURLSession: NSObject, VoyageTransport, URLSessionTaskDelegate {
+final class VoyageURLSession: NSObject, SessionSyncTransport, URLSessionTaskDelegate {
     static let identifier = (Bundle.main.bundleIdentifier ?? "app.madegood") + ".private-voyage-track"
+    static let sessionTrackIdentifier = (Bundle.main.bundleIdentifier ?? "app.madegood") + ".session-track"
+
+    /// The background session's identifier.
+    let backgroundIdentifier: String
+
+    init(backgroundIdentifier: String = VoyageURLSession.identifier) {
+        self.backgroundIdentifier = backgroundIdentifier
+    }
 
     private lazy var foreground = URLSession(configuration: .ephemeral, delegate: self, delegateQueue: .main)
     private lazy var background: URLSession = {
-        let config = URLSessionConfiguration.background(withIdentifier: Self.identifier)
+        let config = URLSessionConfiguration.background(withIdentifier: backgroundIdentifier)
         config.httpShouldSetCookies = false
         config.sessionSendsLaunchEvents = true
         return URLSession(configuration: config, delegate: self, delegateQueue: .main)
@@ -25,6 +34,10 @@ final class VoyageURLSession: NSObject, VoyageTransport, URLSessionTaskDelegate 
     }
 
     func upload(_ request: URLRequest, file: URL, key: VoyageUploadKey) async throws -> HTTPURLResponse {
+        try await upload(request, file: file, taskDescription: key.taskDescription)
+    }
+
+    func upload(_ request: URLRequest, file: URL, taskDescription: String) async throws -> HTTPURLResponse {
         inspectingTasks = true
         let existing = await background.allTasks
         inspectingTasks = false
@@ -33,11 +46,11 @@ final class VoyageURLSession: NSObject, VoyageTransport, URLSessionTaskDelegate 
         try Task.checkCancellation()
 
         let match = existing.first {
-            $0.taskDescription == key.taskDescription && $0.originalRequest?.url == request.url
+            $0.taskDescription == taskDescription && $0.originalRequest?.url == request.url
         }
         if let match, let result = finished[match.taskIdentifier] { return try result.get() }
         let task = match ?? background.uploadTask(with: request, fromFile: file)
-        task.taskDescription = key.taskDescription
+        task.taskDescription = taskDescription
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 waiters[task.taskIdentifier] = continuation

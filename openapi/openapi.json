@@ -1296,6 +1296,7 @@
     },
     "/sessions": {
       "get": {
+        "operationId": "listSessions",
         "summary": "The signed-in user's sessions, newest first",
         "tags": [
           "sessions"
@@ -1364,6 +1365,7 @@
     },
     "/sessions/{id}": {
       "put": {
+        "operationId": "putSession",
         "summary": "Create or replace a session's metadata and summary",
         "description": "Idempotent: the ID is generated on the device, so retrying an upload is safe. A new session takes the user's default visibility.",
         "tags": [
@@ -1452,6 +1454,7 @@
         }
       },
       "get": {
+        "operationId": "getSession",
         "summary": "A session",
         "description": "The owner always sees it. Anyone else, signed in or not, sees only public and unlisted sessions; a private one is reported as not found.",
         "tags": [
@@ -1521,6 +1524,7 @@
         }
       },
       "patch": {
+        "operationId": "updateSession",
         "summary": "Change a session's title, notes or visibility",
         "tags": [
           "sessions"
@@ -1598,6 +1602,7 @@
         }
       },
       "delete": {
+        "operationId": "deleteSession",
         "summary": "Delete a session and its track",
         "description": "Idempotent: deleting a session the caller does not have also returns 204.",
         "tags": [
@@ -1651,6 +1656,7 @@
     },
     "/sessions/{id}/track": {
       "put": {
+        "operationId": "putSessionTrack",
         "summary": "Upload a session's track file",
         "description": "The body is the gzipped track v1 file (docs/formats.md), sent as `application/gzip` with no Content-Encoding, at most 8388608 bytes. PUT the session's metadata first. Repeating the upload replaces the file.",
         "tags": [
@@ -1743,6 +1749,7 @@
         }
       },
       "get": {
+        "operationId": "getSessionTrack",
         "summary": "Download a session's track file",
         "description": "The gzipped track v1 file as `application/gzip`. Visibility works as for the session. Privacy zones are not cut out yet, so while the owner has any privacy zone, only the owner can download the track; others get 403.",
         "tags": [

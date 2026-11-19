@@ -1,7 +1,8 @@
 // swift-tools-version: 6.2
 import PackageDescription
 
-// Compile the sync core and its synthetic tests without requiring an iOS simulator.
+// Compile the sync cores (private Voyage sync and session upload) and their synthetic
+// tests without requiring an iOS simulator.
 let package = Package(
     name: "MadeGoodPrivateVoyageSync",
     platforms: [.macOS(.v15), .iOS("26.0")],
@@ -19,8 +20,10 @@ let package = Package(
                 .product(name: "HTTPTypes", package: "swift-http-types"),
                 .product(name: "HTTPTypesFoundation", package: "swift-http-types"),
             ],
-            path: "App/Sources/PrivateVoyageSync/Core"
+            path: "App/Sources",
+            sources: ["PrivateVoyageSync/Core", "SessionSync/Core"]
         ),
         .testTarget(name: "PrivateVoyageSyncTests", dependencies: ["PrivateVoyageSync", "WaterKit"]),
+        .testTarget(name: "SessionSyncTests", dependencies: ["PrivateVoyageSync", "WaterKit"]),
     ]
 )
