@@ -27,10 +27,10 @@ final class PrivacyManifestTests: XCTestCase {
                 // Settings, sync preferences (UserDefaults, @AppStorage).
                 "NSPrivacyAccessedAPICategoryUserDefaults": ["CA92.1"],
                 // ProcessInfo.systemUptime. 35F9.1: elapsed time that stays on the device (session
-                // timer, man-overboard age, live stroke rate). 8FFB.1: the recording's clock
-                // anchor in meta.json, which turns motion timestamps (time since boot) into
-                // absolute times and leaves the device with the recording (watch to phone,
-                // raw export) (docs/formats.md, "Clock").
+                // timer, man-overboard age, live stroke rate). 8FFB.1: absolute timestamps
+                // calculated from it (motion samples and clock anchors on the session's
+                // monotonic clock), which leave the device with a recording; the boot-time
+                // reading itself never does (raw recording v2, docs/formats.md, #87).
                 "NSPrivacyAccessedAPICategorySystemBootTime": ["35F9.1", "8FFB.1"],
                 // Modification dates of the app's own recording files (RawSessionReader.revision).
                 "NSPrivacyAccessedAPICategoryFileTimestamp": ["C617.1"],

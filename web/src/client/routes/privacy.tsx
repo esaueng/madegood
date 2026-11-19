@@ -124,10 +124,12 @@ function Privacy() {
           <a href="https://open-meteo.com" className={link}>
             Open-Meteo
           </a>{" "}
-          for the wind during it, automatically. It sends one position, the center of the session's
-          area with your privacy zones already cut out, rounded to 0.1° (about 11 km), and the UTC
-          dates the session spans. No account, session ID, track or time of day is sent. Private
-          sessions never cause a request. The answer is stored with the session.
+          for the wind during it, automatically. It uses only what others can see of the track, with
+          your privacy zones cut out: one position, the center of that visible area, rounded to 0.1°
+          (about 11 km), and the UTC dates the visible part spans. No account, session ID, track or
+          time of day is sent. Private sessions never cause a request, and neither does a shared
+          session whose whole track lies inside your privacy zones. The answer is stored with the
+          session.
         </p>
         <p>
           The raw motion data the watch records stays on your devices. Your data is used only to
@@ -153,8 +155,9 @@ function Privacy() {
             positions (at most 10,000), kept in a Cloudflare Durable Object. Anyone with the live
             link can follow the boat, delayed by up to a day if you choose and with your privacy
             zones hidden; the link expires after at most 7 days. Pausing hides the position at once,
-            and stopping (or starting a new link) deletes the stored positions. Deleting your
-            account deletes them too.
+            and stopping (or starting a new link) deletes the stored positions. A link that expires
+            without being stopped has its positions deleted when it expires. Deleting your account
+            deletes them too.
           </li>
         </ul>
       </Section>
