@@ -31,6 +31,7 @@ export const errorCodes = [
   "postprocess_unavailable",
   "track_replaced",
   "export_in_progress",
+  "export_too_large",
   "export_not_ready",
   "rate_limited",
 ] as const;

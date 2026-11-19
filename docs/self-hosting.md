@@ -52,6 +52,7 @@ pnpm exec wrangler d1 create madegood
 pnpm exec wrangler r2 bucket create madegood-tracks
 pnpm exec wrangler queues create madegood-postprocess
 pnpm exec wrangler queues create madegood-postprocess-dlq
+pnpm exec wrangler queues create madegood-exports
 ```
 
 Put the printed `database_id` into `web/wrangler.jsonc` **in your deployment copy
@@ -229,6 +230,32 @@ shared. Each request to
 No account, session ID, track, title or API key is sent. Open-Meteo's free API is for
 non-commercial use; a commercial deployment needs its own Open-Meteo plan. Wind is a
 model value for the area, shown as such, and not for navigation.
+
+## Account export
+
+Settings → Export all my data on the website runs a background job
+(`src/server/lib/export-job.ts`):
+
+- `POST /api/me/exports` freezes a snapshot (every session's ID, upload revision, track
+  key and ETag; every voyage and leg) as JSON in R2 under the user's prefix
+  (`users/<id>/exports/<export>/snapshot.json`) and records the job in D1 (`export_jobs`).
+  One export runs at a time per user, three may start per day.
+- Each message on `madegood-exports` (batch size 1) builds one ZIP part into an R2
+  multipart upload: documents first (sessions in files of 250, looked up by the frozen
+  IDs), then tracks by their frozen key and ETag. A part stops at 500 MiB, 400 items or
+  700 storage calls, then queues the next step. A track replaced since the snapshot is
+  exported at its current version (noted in `manifest.json`); one that is gone is listed
+  in `errors.json`.
+- The last step writes part 1 (README, account, privacy zones, manifest, errors) and marks
+  the job ready for 7 days.
+- The cron sweep deletes expired parts, re-sends the step of a job untouched for 30
+  minutes (a lost message), and fails a job still unfinished after 12 hours. Rows of
+  expired and failed jobs go after 30 days.
+- Without the `EXPORTS` binding (previews), steps run after the response with `waitUntil`
+  for up to 20 s, and the sweep continues the rest, so large exports are slow there.
+- Account deletion removes the export objects with the rest of the user's prefix, and the
+  job rows with the user; a step for an account that is gone or being deleted stops and
+  deletes what it wrote.
 
 ## Apple setup
 

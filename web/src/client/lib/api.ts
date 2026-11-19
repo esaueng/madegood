@@ -189,39 +189,31 @@ export async function signOut(): Promise<void> {
   await fetch("/api/auth/web/signout", { method: "POST", credentials: "same-origin" });
 }
 
-export type ExportPart = {
-  part: number;
-  /** Path under /api. */
-  url: string;
-  filename: string;
-  contents: "account" | "tracks";
-  tracks: number;
-  bytes: number;
-};
-export type ExportManifest = {
+export type AccountExport = {
+  id: string;
+  status: "queued" | "building" | "ready" | "failed" | "expired";
   createdAt: string;
-  trackCount: number;
-  trackBytes: number;
-  parts: ExportPart[];
+  expiresAt: string | null;
+  progress: { done: number; total: number };
+  /** Set once ready; `url` is a path under /api. */
+  parts: { part: number; bytes: number; url: string }[];
+  error: string | null;
 };
 
-/** The export's parts (GET /api/me/export). Each part is a separate ZIP download. */
-export const fetchExportManifest = () => apiJson<ExportManifest>("/me/export");
+/** The newest export, if any (GET /api/me/exports). */
+export const fetchLatestExport = () =>
+  apiJson<{ exports: AccountExport[] }>("/me/exports").then((r) => r.exports[0] ?? null);
 
-/**
- * Checks that a part can be downloaded (signed in, cookies fresh, tracks unchanged since the
- * manifest) with a HEAD request, then lets the browser download it, streaming to disk.
- */
-export async function downloadExportPart(part: ExportPart): Promise<void> {
-  const response = await apiFetch(part.url, { method: "HEAD" });
-  if (!response.ok) {
-    throw new ApiError(
-      response.status,
-      response.status === 409 ? "export_changed" : undefined,
-      `Export failed: ${response.status}`,
-    );
+/** Starts an export (POST /api/me/exports); a running one is returned instead (409). */
+export async function startExport(): Promise<AccountExport> {
+  const response = await apiFetch("/me/exports", { method: "POST" });
+  if (response.status === 409) {
+    const body = (await response.json()) as { message?: string };
+    if (body.message)
+      return apiJson<AccountExport>(`/me/exports/${encodeURIComponent(body.message)}`);
   }
-  window.location.assign(`/api${part.url}`);
+  if (!response.ok) throw await failure(response);
+  return response.json() as Promise<AccountExport>;
 }
 
 /** Full-page navigation to Apple's sign-in, returning to `next` afterwards. */

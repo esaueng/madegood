@@ -146,13 +146,14 @@ session.
 - **All recordings (iPhone):** Settings → Your Data → Export All Recordings zips every
   recording folder on the phone and opens the share sheet. Export files are deleted when
   the share sheet finishes, and any left over are deleted at launch.
-- **Account-wide export (website):** Settings → Export all my data lists the parts from
-  `GET /api/me/export`, each a ZIP download. The account part holds `account.json`
-  (profile, settings, Apple user identifier), `sessions.json`, `privacy-zones.json` and
-  `voyages.json`, written page by page from D1. Track parts hold at most 200 track files
-  as uploaded (about 256 MiB planned, 512 MiB at most), read with their listed ETag so a
-  replaced track is exported at its current revision; a file a part cannot include is
-  listed in its `errors.json`. Accounts with more than 20,000 track files are refused.
+- **Account-wide export (website):** Settings → Export all my data starts a background
+  job (`POST /api/me/exports`). It freezes the list of sessions and voyages, then builds
+  ZIP parts in R2 (at most 500 MiB each): session and voyage documents, then every track
+  as uploaded. Part 1 holds `README.txt`, `account.json` (profile, settings, Apple user
+  identifier), `privacy-zones.json`, `manifest.json` (every part and file) and, if needed,
+  `errors.json` (files that could not be included, with the reason). The page shows
+  progress, then a download link per part; the parts are deleted after 7 days. One
+  export at a time, three a day.
 
 ## Review notes (draft)
 

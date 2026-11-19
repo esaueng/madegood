@@ -47,7 +47,11 @@
   // that fails max_retries times lands in the dead-letter queue, which has no consumer:
   // inspect or replay it from the dashboard.
   "queues": {
-    "producers": [{ "binding": "POSTPROCESS", "queue": "madegood-postprocess" }],
+    "producers": [
+      { "binding": "POSTPROCESS", "queue": "madegood-postprocess" },
+      // Account exports (src/server/lib/export-job.ts): one ZIP part per message.
+      { "binding": "EXPORTS", "queue": "madegood-exports" }
+    ],
     "consumers": [
       {
         "queue": "madegood-postprocess",
@@ -55,10 +59,19 @@
         "max_batch_timeout": 5,
         "max_retries": 5,
         "dead_letter_queue": "madegood-postprocess-dlq"
+      },
+      {
+        // One part per invocation keeps each step inside a Worker's subrequest and CPU
+        // limits. No dead-letter queue: the scheduled sweep resumes or fails a stuck job.
+        "queue": "madegood-exports",
+        "max_batch_size": 1,
+        "max_batch_timeout": 1,
+        "max_retries": 3
       }
     ]
   },
-  // Sweep for privacy zone changes whose reprocessing could not be queued (postprocess.ts).
+  // Sweep for privacy zone changes whose reprocessing could not be queued (postprocess.ts),
+  // and for account exports to expire, resume or fail (export-job.ts).
   "triggers": { "crons": ["*/30 * * * *"] },
   "env": {
     // Per-PR previews use their own database and bucket, never production data.

@@ -9,11 +9,11 @@ import {
   ApiError,
   addZone,
   deleteZone,
-  downloadExportPart,
-  fetchExportManifest,
+  fetchLatestExport,
   fetchZones,
   type Me,
   signInUrl,
+  startExport,
   type Units,
   updateMe,
   type Visibility,
@@ -213,84 +213,98 @@ const formatBytes = (bytes: number) =>
     ? `${Math.max(1, Math.round(bytes / 1024))} KB`
     : `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 
+const exportQueryKey = ["me", "export"] as const;
+
 function ExportData() {
-  const manifest = useMutation({ mutationFn: fetchExportManifest });
-  const [downloaded, setDownloaded] = useState<Set<number>>(new Set());
-  const download = useMutation({
-    mutationFn: downloadExportPart,
-    onSuccess: (_, part) => setDownloaded((done) => new Set(done).add(part.part)),
+  const queryClient = useQueryClient();
+  const latest = useQuery({
+    queryKey: exportQueryKey,
+    queryFn: fetchLatestExport,
+    // Poll while it builds; afterwards now and then, which also keeps the session cookies
+    // fresh for the plain download links.
+    refetchInterval: (query) => {
+      const status = query.state.data?.status;
+      return status === "queued" || status === "building" ? 2_000 : 5 * 60_000;
+    },
   });
-  const changed = download.error instanceof ApiError && download.error.status === 409;
-  const tooLarge = manifest.error instanceof ApiError && manifest.error.status === 413;
-  const parts = manifest.data?.parts ?? [];
-  let trackStart = 0;
+  const start = useMutation({
+    mutationFn: startExport,
+    onSuccess: (job) => queryClient.setQueryData(exportQueryKey, job),
+  });
+  const job = latest.data ?? null;
+  const running = job?.status === "queued" || job?.status === "building";
+  const percent =
+    job && job.progress.total > 0 ? Math.floor((100 * job.progress.done) / job.progress.total) : 0;
+  const limited = start.error instanceof ApiError && start.error.status === 429;
   return (
     <section className="grid gap-3" aria-labelledby="export-data">
       <h2 id="export-data" className="text-lg font-semibold">
         Export your data
       </h2>
       <p className="max-w-prose text-sm text-muted-foreground">
-        Download ZIP files with your profile, settings, privacy zones, every session's details and
-        every track file as you uploaded it. Track files contain precise locations and times. Large
-        accounts come in several parts; download each one.
+        Get ZIP files with your profile, settings, privacy zones, every session's details and every
+        track file as you uploaded it. Track files contain precise locations and times. Preparing a
+        large account takes a few minutes; the files are kept for 7 days.
       </p>
-      <div>
-        <Button
-          variant="outline"
-          disabled={manifest.isPending}
-          onClick={() => {
-            setDownloaded(new Set());
-            download.reset();
-            manifest.mutate();
-          }}
-        >
-          <Download /> {manifest.isPending ? "Preparing…" : "Export all my data"}
-        </Button>
-      </div>
-      {manifest.isError && (
+      {running ? (
+        <p className="text-sm" role="status" aria-live="polite">
+          Preparing… {percent}%
+        </p>
+      ) : (
+        <div>
+          <Button variant="outline" disabled={start.isPending} onClick={() => start.mutate()}>
+            <Download />{" "}
+            {start.isPending
+              ? "Starting…"
+              : job?.status === "failed" || job?.status === "expired"
+                ? "Start again"
+                : job?.status === "ready"
+                  ? "Export again"
+                  : "Export all my data"}
+          </Button>
+        </div>
+      )}
+      {job?.status === "failed" && (
         <p className="text-sm text-red-600" role="alert">
-          {tooLarge
-            ? "Your account holds too many tracks to export at once. Download sessions one at a time from the iPhone app instead."
+          The last export could not be finished{job.error ? `: ${job.error}` : "."}
+        </p>
+      )}
+      {job?.status === "expired" && (
+        <p className="text-sm text-muted-foreground">The last export's files have expired.</p>
+      )}
+      {start.isError && (
+        <p className="text-sm text-red-600" role="alert">
+          {limited
+            ? "You have started several exports today. Try again tomorrow."
             : "Could not start the export. Try again."}
         </p>
       )}
-      {parts.length > 0 && (
-        <ol className="grid gap-2" aria-label="Export parts">
-          {parts.map((part) => {
-            const label =
-              part.contents === "account"
-                ? "Account and session details"
-                : `Tracks ${trackStart + 1}–${trackStart + part.tracks}`;
-            trackStart += part.tracks;
-            return (
-              <li
-                key={part.part}
-                className="flex flex-wrap items-center justify-between gap-2 rounded-xl border bg-card px-4 py-2 text-sm"
+      {job?.status === "ready" && (
+        <ol className="grid gap-2" aria-label="Export files">
+          {job.parts.map((part) => (
+            <li
+              key={part.part}
+              className="flex flex-wrap items-center justify-between gap-2 rounded-xl border bg-card px-4 py-2 text-sm"
+            >
+              <span>
+                Part {part.part} of {job.parts.length}
+                {part.part === 1 ? " (start here: list of all files)" : ""}
+                <span className="text-muted-foreground"> · {formatBytes(part.bytes)}</span>
+              </span>
+              <a
+                className={buttonVariants({ size: "sm", variant: "outline" })}
+                href={`/api${part.url}`}
+                download
               >
-                <span>
-                  Part {part.part} of {parts.length}: {label}
-                  {part.contents === "tracks" && (
-                    <span className="text-muted-foreground"> · {formatBytes(part.bytes)}</span>
-                  )}
-                </span>
-                <Button
-                  size="sm"
-                  variant={downloaded.has(part.part) ? "ghost" : "outline"}
-                  disabled={download.isPending}
-                  onClick={() => download.mutate(part)}
-                >
-                  <Download /> {downloaded.has(part.part) ? "Download again" : "Download"}
-                </Button>
-              </li>
-            );
-          })}
+                <Download /> Download part {part.part}
+              </a>
+            </li>
+          ))}
         </ol>
       )}
-      {download.isError && (
-        <p className="text-sm text-red-600" role="alert">
-          {changed
-            ? "Your sessions changed since the export started. Click Export all my data again."
-            : "Could not download this part. Try again."}
+      {job?.status === "ready" && job.expiresAt && (
+        <p className="text-xs text-muted-foreground">
+          Available until {new Date(job.expiresAt).toLocaleDateString()}.
         </p>
       )}
     </section>
