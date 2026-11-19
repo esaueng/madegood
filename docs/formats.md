@@ -326,6 +326,26 @@ offers evidence. See the [local validation commands](off-water-suggestions.md#lo
 
 ---
 
+## Settings sync snapshot
+
+The phone and watch apps send each other their per-sport settings as a flat dictionary
+(the WatchConnectivity application context), built and applied by WaterKit's
+`SettingsSync`. It carries the stored `settings.<field>.<sport>` values that differ from
+their defaults, `settings.revision` and `settings.revisionDevice` (the receiver keeps
+whichever (revision, device) is higher), and `settings.knownKeys`: every per-sport key
+the sender's build knows.
+
+The two apps can run different builds. Applying a newer snapshot overwrites or removes
+only the keys in its `settings.knownKeys`; every other key keeps its local value, so an
+edit on an older build never wipes a setting only a newer build understands. A snapshot
+without `settings.knownKeys` comes from a build before it and is treated as knowing the
+first per-sport fields (`speedUnit`, `distanceUnit`, `firstScreen`, `autoPause`,
+`saveWorkout`, `distanceAlert`, `countdown`, `hidden`) for every sport, plus any
+per-sport key it carries. Adding a setting therefore needs no version bump; its key is
+listed automatically.
+
+---
+
 ## Privacy
 
 Both formats contain precise locations and times. Before a recording goes into

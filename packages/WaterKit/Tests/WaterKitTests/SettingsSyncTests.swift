@@ -225,7 +225,182 @@ import Testing
         #expect(
             Set(device.snapshot.keys) == [
                 SportSettings.Key.firstScreen(.sailing), SettingsSync.Key.revision, SettingsSync.Key.revisionDevice,
+                SettingsSync.Key.knownKeys,
             ])
         #expect(device.snapshot[SettingsSync.Key.revisionDevice] as? String == device.id)
+        #expect(device.snapshot[SettingsSync.Key.knownKeys] as? [String] == SportSettings.Key.allSports)
+    }
+}
+
+/// Devices running different builds: a newer build's keys survive edits on an older one.
+@Suite struct SettingsSyncMixedBuildTests {
+    typealias Device = SettingsSyncTests.Device
+
+    /// A build from before `knownKeys` (PR #39): its snapshot carries only the keys it knows
+    /// and no key list, and it applies a newer snapshot by writing every key it knows and
+    /// removing those the snapshot lacks.
+    final class OlderBuild {
+        let id = "older-\(Int.random(in: 0..<1_000_000))"
+        var values: [String: Any] = [:]
+        let known = SettingsSync.legacyKnownKeys
+
+        func read(_ key: String) -> Any? { values[key] }
+        func write(_ key: String, _ value: Any?) { values[key] = value }
+
+        var snapshot: [String: Any] {
+            values.filter {
+                known.contains($0.key) || $0.key == SettingsSync.Key.revision
+                    || $0.key == SettingsSync.Key.revisionDevice
+            }
+        }
+
+        func edit(_ key: String, _ value: Any?, at now: Double) {
+            write(key, value)
+            SettingsSync.stampLocalChange(now: now, device: id, reading: read, writing: write)
+        }
+
+        /// The shipped apply, minus revision handling the tests do not need: it is newer.
+        func receive(_ remote: [String: Any]) {
+            for key in known { write(key, remote[key]) }
+            write(SettingsSync.Key.revision, remote[SettingsSync.Key.revision])
+            write(SettingsSync.Key.revisionDevice, remote[SettingsSync.Key.revisionDevice])
+        }
+    }
+
+    /// Older → newer: an edit on the older build applies its keys (including removing one it
+    /// knows and lacks) and leaves the Action button and fuel settings alone.
+    @Test func olderBuildEditKeepsNewerKeys() {
+        let newer = Device()
+        newer.edit(.motorboating, at: 100) {
+            $0.actionButton = .manOverboard
+            $0.fuelBurnRate = 30
+            $0.idleFuelBurnRate = 4
+            $0.fuelUnit = .usGallons
+            $0.distanceAlert = 2
+        }
+        let older = OlderBuild()
+        older.receive(newer.snapshot)
+        #expect(older.values[SportSettings.Key.distanceAlert(.motorboating)] as? Double == 2)
+
+        older.edit(SportSettings.Key.countdown(.motorboating), 5, at: 200)
+        older.edit(SportSettings.Key.distanceAlert(.motorboating), nil, at: 300)
+        #expect(older.snapshot[SettingsSync.Key.knownKeys] == nil)
+        #expect(newer.receive(older.snapshot) == .applied)
+
+        let settings = newer.settings(.motorboating)
+        #expect(settings.countdownMinutes == 5)
+        #expect(settings.distanceAlert == nil)
+        #expect(settings.actionButton == .manOverboard)
+        #expect(settings.fuelBurnRate == 30)
+        #expect(settings.idleFuelBurnRate == 4)
+        #expect(settings.fuelUnit == .usGallons)
+        #expect(newer.revision == 300_000)
+    }
+
+    /// A list-less snapshot that carries a newer key (a build with the Action button but no
+    /// list) applies it; one it lacks keeps the local value.
+    @Test func listlessSnapshotAppliesTheNewerKeysItCarries() {
+        let device = Device()
+        device.edit(.sailing, at: 100) {
+            $0.actionButton = .mark
+            $0.fuelBurnRate = 10
+        }
+        let remote: [String: Any] = [
+            SportSettings.Key.actionButton(.sailing): "manOverboard",
+            SettingsSync.Key.revision: 200_000, SettingsSync.Key.revisionDevice: "other",
+        ]
+        #expect(device.receive(remote) == .applied)
+        #expect(device.settings(.sailing).actionButton == .manOverboard)
+        #expect(device.settings(.sailing).fuelBurnRate == 10)
+    }
+
+    /// Newer → older: the older build still reads the values it knows from a snapshot with a
+    /// key list, and the newer keys come back intact after the round trip.
+    @Test func newerSnapshotStillWorksOnAnOlderBuild() {
+        let newer = Device()
+        newer.edit(.kayak, at: 100) {
+            $0.speedUnit = .milesPerHour
+            $0.countdownMinutes = 3
+            $0.actionButton = .mark
+        }
+        let older = OlderBuild()
+        older.receive(newer.snapshot)
+        let seen = SportSettings(sport: .kayak, reading: older.read)
+        #expect(seen.speedUnit == .milesPerHour)
+        #expect(seen.countdownMinutes == 3)
+        #expect(older.values[SportSettings.Key.actionButton(.kayak)] == nil)
+        #expect(older.values[SettingsSync.Key.knownKeys] == nil)
+
+        // The older build's own reply (same revision) changes nothing on the newer one.
+        #expect(newer.receive(older.snapshot) == .unchanged)
+        #expect(newer.settings(.kayak).actionButton == .mark)
+    }
+
+    /// Both new: a key list covers every key, so a return to a default propagates, and a key
+    /// the sender lists but this build does not know is ignored.
+    @Test func bothNewBuildsSyncEveryKey() {
+        let phone = Device()
+        let watch = Device()
+        phone.edit(.windsurfing, at: 100) {
+            $0.actionButton = .mark
+            $0.fuelBurnRate = 12
+        }
+        #expect(watch.receive(phone.snapshot) == .applied)
+        #expect(watch.settings(.windsurfing).actionButton == .mark)
+
+        watch.edit(.windsurfing, at: 200) {
+            $0.actionButton = .lap
+            $0.fuelBurnRate = nil
+        }
+        var snapshot = watch.snapshot
+        snapshot[SettingsSync.Key.knownKeys] = SportSettings.Key.allSports + ["settings.future.windsurfing"]
+        snapshot["settings.future.windsurfing"] = 1
+        #expect(phone.receive(snapshot) == .applied)
+        #expect(phone.settings(.windsurfing) == watch.settings(.windsurfing))
+        #expect(phone.values[SportSettings.Key.actionButton(.windsurfing)] == nil)
+        #expect(phone.values["settings.future.windsurfing"] == nil)
+    }
+
+    /// A newer build's list without a key this build knows leaves that key's local value.
+    @Test func keysTheSenderDoesNotListKeepLocalValues() {
+        let device = Device()
+        device.edit(.canoe, at: 100) { $0.actionButton = .manOverboard }
+        let remote: [String: Any] = [
+            SettingsSync.Key.knownKeys: [SportSettings.Key.countdown(.canoe)],
+            SportSettings.Key.countdown(.canoe): 1,
+            SettingsSync.Key.revision: 200_000, SettingsSync.Key.revisionDevice: "other",
+        ]
+        #expect(device.receive(remote) == .applied)
+        #expect(device.settings(.canoe).countdownMinutes == 1)
+        #expect(device.settings(.canoe).actionButton == .manOverboard)
+    }
+
+    /// Revision ties still pick the same winner on both sides whatever the builds.
+    @Test func tieBreaksAreUnchangedAcrossBuilds() {
+        let newer = Device(id: "b-newer")
+        let older = OlderBuild()
+        newer.edit(.sup, at: 100) { $0.countdownMinutes = 1 }
+        older.values[SportSettings.Key.countdown(.sup)] = 3
+        older.values[SettingsSync.Key.revision] = newer.revision
+        older.values[SettingsSync.Key.revisionDevice] = "a-older"
+        // (revision, "b-newer") beats (revision, "a-older"): the newer build keeps its state.
+        #expect(newer.receive(older.snapshot) == .keptLocalNewer)
+        #expect(newer.settings(.sup).countdownMinutes == 1)
+
+        older.values[SettingsSync.Key.revisionDevice] = "c-older"
+        #expect(newer.receive(older.snapshot) == .applied)
+        #expect(newer.settings(.sup).countdownMinutes == 3)
+        #expect(newer.receive(older.snapshot) == .unchanged)
+    }
+
+    /// The assumed legacy set is exactly the first per-sport fields, for every sport.
+    @Test func legacyKnownKeysAreTheFirstPerSportFields() {
+        let keys = SettingsSync.legacyKnownKeys
+        #expect(keys.count == 8 * Sport.allCases.count)
+        #expect(keys.contains(SportSettings.Key.hidden(.sup)))
+        #expect(!keys.contains(SportSettings.Key.actionButton(.sailing)))
+        #expect(!keys.contains(SportSettings.Key.fuelBurn(.motorboating)))
+        #expect(!keys.contains(SportSettings.Key.fuelIdleBurn(.motorboating)))
+        #expect(!keys.contains(SportSettings.Key.fuelUnit(.motorboating)))
     }
 }

@@ -181,8 +181,10 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
 
     // Each device sends its whole settings snapshot as its application context (only the
     // latest is delivered). The receiver keeps whichever carries the higher revision
-    // (`SettingsSync`) and answers an older one with its own, so both converge. Applying
-    // runs on the main actor, like local edits, so the two never interleave.
+    // (`SettingsSync`) and answers an older one with its own, so both converge. A snapshot
+    // lists the keys its sender's build knows, and applying it touches only those, so the
+    // two apps can run different builds without losing each other's newer settings.
+    // Applying runs on the main actor, like local edits, so the two never interleave.
 
     #if os(iOS)
         /// Resends settings when the watch app is installed (or the pairing changes): an

@@ -17,6 +17,13 @@
 /// values always has a revision: saving assigns one, and `assignMissingRevision` gives
 /// one to values that predate revisions (migrated from older builds).
 ///
+/// The two devices can run different builds, and a newer build may store keys an older one
+/// does not know. Each snapshot therefore lists the per-sport keys its sender knows
+/// (`Key.knownKeys`), and applying a snapshot overwrites or removes only those keys; every
+/// other key keeps its local value. So an edit on an older build never wipes a value only
+/// a newer build understands. A snapshot without the list (from a build before it) is
+/// treated as knowing `legacyKnownKeys` plus every per-sport key it carries.
+///
 /// Storage is reached through closures, like `SportSettings`, so this is pure and testable.
 public enum SettingsSync {
     public enum Key {
@@ -24,15 +31,42 @@ public enum SettingsSync {
         public static let revision = "settings.revision"
         /// The ID of the device that made `revision`, in the snapshot it sends.
         public static let revisionDevice = "settings.revisionDevice"
+        /// The per-sport keys the sender knows (an array of strings), in the snapshot it
+        /// sends. Built from the code, never stored.
+        public static let knownKeys = "settings.knownKeys"
         /// Device-local: the highest revision seen from either device. Never sent.
         public static let highestSeen = "settings.revisionSeen"
         /// Device-local: this device's stable random ID, made once. Never sent on its own.
         public static let deviceID = "settings.deviceID"
     }
 
-    /// Every key a snapshot carries.
+    /// Every stored key a snapshot carries. It also carries `Key.knownKeys`, which is not stored.
     public static var snapshotKeys: [String] {
         SportSettings.Key.allSports + [Key.revision, Key.revisionDevice]
+    }
+
+    /// The per-sport keys a snapshot without `Key.knownKeys` is assumed to know: those of the
+    /// first per-sport settings (PR #39): speed and distance unit, first screen, auto-pause,
+    /// save workout, distance alert, countdown and hidden, for every sport. Builds that also
+    /// know the Action button (#58) or the fuel estimate (#60) but send no list are covered
+    /// for each such key they carry; one they leave at its default (absent) keeps the local
+    /// value.
+    public static var legacyKnownKeys: Set<String> {
+        typealias K = SportSettings.Key
+        return Set(
+            Sport.allCases.flatMap { sport in
+                [
+                    K.speedUnit(sport), K.distanceUnit(sport), K.firstScreen(sport), K.autoPause(sport),
+                    K.saveWorkout(sport), K.distanceAlert(sport), K.countdown(sport), K.hidden(sport),
+                ]
+            })
+    }
+
+    /// The per-sport keys the sender of `remote` knows.
+    static func keysKnown(by remote: [String: Any]) -> Set<String> {
+        if let listed = remote[Key.knownKeys] as? [Any] { return Set(listed.compactMap { $0 as? String }) }
+        let all = Set(SportSettings.Key.allSports)
+        return legacyKnownKeys.union(remote.keys.filter(all.contains))
     }
 
     /// A state's position in the order both devices agree on.
@@ -92,13 +126,15 @@ public enum SettingsSync {
         case unchanged
     }
 
-    /// Applies `remote` if its (revision, device) is higher than this device's. Keys it lacks are
-    /// removed, so "Automatic" stays automatic. Older builds' global units in `remote` are
+    /// Applies `remote` if its (revision, device) is higher than this device's. Keys its sender
+    /// knows but `remote` lacks are removed, so "Automatic" stays automatic; keys its sender
+    /// does not know keep their local values. Older builds' global units in `remote` are
     /// migrated first. Always raises "highest seen" to the remote revision.
     public static func apply(
         remote: [String: Any], reading value: (String) -> Any?, writing set: (String, Any?) -> Void
     ) -> Outcome {
         var remote = remote
+        let known = keysKnown(by: remote)
         SportSettings.migrateLegacyUnits(reading: { remote[$0] }, writing: { remote[$0] = $1 })
         let theirs = revision(remote[Key.revision])
         let ours = revision(value(Key.revision))
@@ -116,7 +152,7 @@ public enum SettingsSync {
             if theirStamp == ourStamp { return .unchanged }
             if theirStamp < ourStamp { return .keptLocalNewer }
         }
-        for key in SportSettings.Key.allSports {
+        for key in SportSettings.Key.allSports where known.contains(key) {
             set(key, remote[key])
         }
         set(Key.revision, theirs)
@@ -124,11 +160,14 @@ public enum SettingsSync {
         return .applied
     }
 
-    /// This device's snapshot to send.
+    /// This device's snapshot to send: its stored values, its revision, and the per-sport
+    /// keys it knows.
     public static func snapshot(reading value: (String) -> Any?) -> [String: Any] {
-        snapshotKeys.reduce(into: [:]) { result, key in
+        var result: [String: Any] = snapshotKeys.reduce(into: [:]) { result, key in
             if let stored = value(key) { result[key] = stored }
         }
+        result[Key.knownKeys] = SportSettings.Key.allSports
+        return result
     }
 
     /// A stored revision; nil when missing or not a positive number.
