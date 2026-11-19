@@ -803,12 +803,17 @@ sessionRoutes.openapi(putTrackRoute, async (c) => {
   const stored = await storeTrack(db, c.env.TRACKS, { id, userId, revision, key, bytes }).catch(
     async (error: unknown): Promise<never> => {
       if (!(error instanceof AfterCommit)) {
-        await discardUpload(db, c.env.TRACKS, key).catch(() => {});
+        await discardUpload(db, c.env.TRACKS, key, userId).catch(() => {});
       }
       throw error;
     },
   );
   if (stored.kind === "expired") {
+    // Collected before it could attach, possibly before the put landed: delete this
+    // upload's own object (best effort; recorded again if that fails).
+    await discardUpload(db, c.env.TRACKS, key, userId).catch((error) =>
+      console.warn("Could not delete an expired upload now; it stays recorded.", error),
+    );
     return apiError(
       c,
       503,
@@ -825,7 +830,7 @@ sessionRoutes.openapi(putTrackRoute, async (c) => {
       await collectUserGarbage(db, c.env.TRACKS, userId);
     } else {
       // Never attached: only this upload's own object goes.
-      await discardUpload(db, c.env.TRACKS, key);
+      await discardUpload(db, c.env.TRACKS, key, userId);
     }
     if (!(await accountActive(db, userId))) {
       return apiError(c, 401, "unauthorized", "The account no longer exists.");

@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 import { drizzle } from "drizzle-orm/d1";
 import { describe, expect, it } from "vitest";
-import { collectR2Garbage } from "../src/server/lib/r2-garbage";
+import { CLAIM_LEASE_MS, collectR2Garbage } from "../src/server/lib/r2-garbage";
 import { replaceSessionMetadata } from "../src/server/lib/session-upload";
 import { api, bearer, deleteMe, type SignIn, signIn } from "./apple";
 
@@ -704,6 +704,35 @@ const putTrackAt = (token: string, id: string, revision: number, body: BodyInit)
 const trackFor = (id: string, revision: number) =>
   gzip(trackJson(id).replace('"summary":{}', `"summary":{"revision":${revision}}`));
 
+describe("last review of #78: an expired upload", () => {
+  it("deletes its own object before answering upload_expired", async () => {
+    const owner = await signIn();
+    const id = crypto.randomUUID();
+    expect((await putSessionAt(owner.accessToken, id, 1)).status).toBe(201);
+    // Every record of this session's uploads is collected at once, as if the upload had
+    // taken past the grace and the collector (and the final prefix sweep) ran before the put.
+    const trigger = `lost_${id.replaceAll("-", "")}`;
+    await env.DB.prepare(
+      `CREATE TRIGGER ${trigger} AFTER INSERT ON pending_r2_deletes
+       WHEN NEW.key LIKE '%/sessions/${id}/%'
+       BEGIN DELETE FROM pending_r2_deletes WHERE key = NEW.key; END`,
+    ).run();
+    try {
+      const response = await putTrackAt(owner.accessToken, id, 1, await trackFor(id, 1));
+      expect(response.status).toBe(503);
+      expect(await response.json()).toMatchObject({ error: "upload_expired" });
+    } finally {
+      await env.DB.prepare(`DROP TRIGGER ${trigger}`).run();
+    }
+    const prefix = `users/${owner.user.id}/sessions/${id}/`;
+    expect((await env.TRACKS.list({ prefix })).objects).toEqual([]);
+    expect(await rowKey(id)).toBeNull();
+    // The app retries under a new key, which attaches.
+    expect((await putTrackAt(owner.accessToken, id, 1, await trackFor(id, 1))).status).toBe(204);
+    expect((await env.TRACKS.list({ prefix })).objects).toHaveLength(1);
+  });
+});
+
 describe("upload revisions", () => {
   it("rejects a PUT older than the stored revision", async () => {
     const owner = await signIn();
@@ -915,6 +944,12 @@ describe("concurrent metadata PUTs", () => {
       .first();
     expect(recorded).not.toBeNull();
 
+    // The failed delete keeps its claim (claims are one-way); the next collector takes the
+    // key over once the claim lapses.
+    expect(await collectR2Garbage(drizzle(env.DB), env.TRACKS, { userId: owner.user.id })).toBe(0);
+    await env.DB.prepare("update pending_r2_deletes set claimed_at = claimed_at - ? where key = ?")
+      .bind(CLAIM_LEASE_MS + 1, old)
+      .run();
     expect(await collectR2Garbage(drizzle(env.DB), env.TRACKS, { userId: owner.user.id })).toBe(1);
     expect(await env.TRACKS.head(old)).toBeNull();
   });

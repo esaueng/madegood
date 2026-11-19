@@ -11,7 +11,12 @@ import {
   sweepAccountDeletions,
 } from "../src/server/lib/account-deletion";
 import { processMessage } from "../src/server/lib/postprocess";
-import { claimAndDelete, collectR2Garbage, UPLOAD_GRACE_MS } from "../src/server/lib/r2-garbage";
+import {
+  CLAIM_LEASE_MS,
+  claimAndDelete,
+  collectR2Garbage,
+  UPLOAD_GRACE_MS,
+} from "../src/server/lib/r2-garbage";
 import {
   AfterCommit,
   discardUpload,
@@ -87,6 +92,14 @@ async function sessionWithKey(userId: string, key: string, revision = 1) {
   return { id, key: key.replace("<id>", id) };
 }
 
+/** Lets every ledger claim lapse, as if a collector's lease ran out (claims are one-way). */
+const lapseClaims = () =>
+  env.DB.prepare(
+    "update pending_r2_deletes set claimed_at = claimed_at - ? where claim is not null",
+  )
+    .bind(CLAIM_LEASE_MS + 1)
+    .run();
+
 describe("finding 1: no track key is lost to a concurrent detach", () => {
   it("records a detached out-of-prefix key in the batch, so deletion still finds it", async () => {
     const owner = await signIn();
@@ -106,7 +119,9 @@ describe("finding 1: no track key is lost to a concurrent detach", () => {
     expect(await env.TRACKS.head(legacy.key)).not.toBeNull();
     expect(await pending(owner.user.id)).toEqual([legacy.key]);
 
-    // The deletion pass never sees the key in a row, but the ledger has it.
+    // The deletion pass never sees the key in a row, but the ledger has it (claimed by the
+    // failed delete, so taken over once that claim lapses).
+    await lapseClaims();
     expect(await requestAccountDeletion(env.DB, owner.user.id)).toBe(true);
     await runAccountDeletion(env, owner.user.id);
     expect(await env.TRACKS.head(legacy.key)).toBeNull();
@@ -168,7 +183,7 @@ describe("finding 2: an upload's cleanup only ever deletes its own object", () =
       ),
     ).rejects.toThrow("synthetic D1 failure");
     // What the route does on a failure: discard its own key.
-    await discardUpload(db(), env.TRACKS, keyA);
+    await discardUpload(db(), env.TRACKS, keyA, owner.user.id);
     expect(await env.TRACKS.head(keyA)).toBeNull();
     expect(await env.TRACKS.head(keyB)).not.toBeNull();
     const row = await one<{ k: string }>("select track_key as k from sessions where id = ?", id);
@@ -337,8 +352,9 @@ describe("finding 4: deletions finish without a cron, and failing ones back off"
     );
     errors.mockRestore();
     warn.mockRestore();
-    // Once storage works again it completes.
+    // Once storage works again it completes (after the failed deletes' claims lapse).
     await sql("update users set deletion_next_at = null where id = ?", stuck.user.id);
+    await lapseClaims();
     expect((await sweepAccountDeletions(env, Date.now(), 1)).done).toBe(1);
   });
 });
@@ -407,7 +423,7 @@ describe("extra review of #78", () => {
     expect(await rowKey(id)).toBe(key);
     expect(await env.TRACKS.head(key)).not.toBeNull();
     // Even a discard after an ambiguous failure deletes nothing: the record is gone.
-    expect(await discardUpload(db(), env.TRACKS, key)).toBe(false);
+    await discardUpload(db(), env.TRACKS, key, owner.user.id);
     expect(await env.TRACKS.head(key)).not.toBeNull();
   });
 
@@ -522,5 +538,140 @@ describe("extra review of #78", () => {
       fields,
     });
     expect((await env.TRACKS.list({ prefix })).objects).toHaveLength(0);
+  });
+});
+
+describe("last review of #78", () => {
+  const rowKey = async (id: string) =>
+    (await one<{ k: string | null }>("select track_key as k from sessions where id = ?", id))?.k ??
+    null;
+  const bytes = new Uint8Array([0x1f, 0x8b, 2]);
+
+  /** env.TRACKS whose `delete` deletes, then reports a failure anyway. */
+  const lyingBucket = () =>
+    new Proxy(env.TRACKS, {
+      get(target, property) {
+        if (property === "delete") {
+          return async (keys: string | string[]) => {
+            await target.delete(keys);
+            throw new Error("synthetic R2 failure after deleting");
+          };
+        }
+        const value = Reflect.get(target, property);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as R2Bucket;
+
+  it("1: a key whose delete reported failure stays claimed, so a paused upload cannot attach it", async () => {
+    const owner = await signIn();
+    const id = crypto.randomUUID();
+    await insertSession(db(), { id, userId: owner.user.id, revision: 0, fields });
+    const first = trackKey(userPrefix(owner.user.id), id, 0);
+    const stored = await storeTrack(db(), env.TRACKS, {
+      id,
+      userId: owner.user.id,
+      revision: 0,
+      key: first,
+      bytes,
+    });
+    expect(stored.kind).toBe("attached");
+
+    const second = trackKey(userPrefix(owner.user.id), id, 0);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const result = await storeTrack(
+      db(),
+      env.TRACKS,
+      { id, userId: owner.user.id, revision: 0, key: second, bytes },
+      {
+        afterPut: async () => {
+          // The upload pauses past the grace; a collector deletes its object, and R2 says
+          // the delete failed although it went through.
+          await sql(
+            "update pending_r2_deletes set created_at = ? where key = ?",
+            Date.now() - UPLOAD_GRACE_MS - 1000,
+            second,
+          );
+          await expect(
+            collectR2Garbage(db(), lyingBucket(), {
+              userId: owner.user.id,
+              before: Date.now() - UPLOAD_GRACE_MS,
+            }),
+          ).rejects.toThrow("synthetic R2 failure");
+        },
+      },
+    );
+    warn.mockRestore();
+    // The upload resumes: its record is still claimed, so it does not attach the missing
+    // object, and the previous track stays attached and stored.
+    expect(result.kind).toBe("expired");
+    expect(await env.TRACKS.head(second)).toBeNull();
+    expect(await rowKey(id)).toBe(first);
+    expect(await env.TRACKS.head(first)).not.toBeNull();
+    const record = await one<{ claim: string | null }>(
+      "select claim from pending_r2_deletes where key = ?",
+      second,
+    );
+    expect(record?.claim).not.toBeNull();
+    // Once the claim lapses a collector retries the (idempotent) delete and clears it.
+    await lapseClaims();
+    expect(await collectR2Garbage(db(), env.TRACKS, { userId: owner.user.id })).toBe(1);
+    expect(await pending(owner.user.id)).toEqual([]);
+    expect(await env.TRACKS.head(first)).not.toBeNull();
+  });
+
+  it("2: an upload that lost its record deletes its own object, or records it again", async () => {
+    const owner = await signIn();
+    const id = crypto.randomUUID();
+    await insertSession(db(), { id, userId: owner.user.id, revision: 0, fields });
+    const key = trackKey(userPrefix(owner.user.id), id, 0);
+    const lostRecord = {
+      afterPut: async () => {
+        // Collected (and the prefix swept) before this put landed: no record is left.
+        await sql("delete from pending_r2_deletes where key = ?", key);
+      },
+    };
+    const input = { id, userId: owner.user.id, revision: 0, key, bytes };
+    expect((await storeTrack(db(), env.TRACKS, input, lostRecord)).kind).toBe("expired");
+    expect(await env.TRACKS.head(key)).not.toBeNull();
+    await discardUpload(db(), env.TRACKS, key, owner.user.id);
+    expect(await env.TRACKS.head(key)).toBeNull();
+    expect(await pending(owner.user.id)).toEqual([]);
+
+    // The delete fails, and the account is gone by then: the key is recorded again, and the
+    // cron's collection (all users, past the upload grace) deletes it.
+    const again = trackKey(userPrefix(owner.user.id), id, 0);
+    const input2 = { ...input, key: again };
+    const lost2 = {
+      afterPut: async () => void (await sql("delete from pending_r2_deletes where key = ?", again)),
+    };
+    expect((await storeTrack(db(), env.TRACKS, input2, lost2)).kind).toBe("expired");
+    await sql("delete from users where id = ?", owner.user.id);
+    await expect(
+      discardUpload(
+        db(),
+        flakyBucket(() => true),
+        again,
+        owner.user.id,
+      ),
+    ).rejects.toThrow("synthetic R2 failure");
+    expect(await pending(owner.user.id)).toEqual([again]);
+    await collectR2Garbage(db(), env.TRACKS, { before: Date.now() - UPLOAD_GRACE_MS });
+    expect(await env.TRACKS.head(again)).toBeNull();
+    expect(await pending(owner.user.id)).toEqual([]);
+
+    // A key a row names is never deleted, even with its record gone.
+    const named = await signIn();
+    const sid = crypto.randomUUID();
+    await insertSession(db(), { id: sid, userId: named.user.id, revision: 0, fields });
+    const attached = trackKey(userPrefix(named.user.id), sid, 0);
+    await storeTrack(db(), env.TRACKS, {
+      id: sid,
+      userId: named.user.id,
+      revision: 0,
+      key: attached,
+      bytes,
+    });
+    await discardUpload(db(), env.TRACKS, attached, named.user.id);
+    expect(await env.TRACKS.head(attached)).not.toBeNull();
   });
 });

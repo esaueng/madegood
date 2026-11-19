@@ -351,8 +351,35 @@ export async function recordLegacyLeftovers(
   }
 }
 
-/** Deletes an upload's own object that did not attach (and its record). */
-export const discardUpload = (db: Db, bucket: R2Bucket, key: string) => discardKey(db, bucket, key);
+/**
+ * Deletes an upload's own object that did not attach (and its record). If the record is
+ * already gone or claimed by a collector, that collector may have deleted the key before
+ * this upload's put landed, so the object is deleted directly unless a row names it (the
+ * key is unique to this upload, and its attach is over). If that delete fails, the key is
+ * recorded again: the ledger does not depend on the account row, and the cron collects it
+ * even after the account is gone.
+ */
+export async function discardUpload(
+  db: Db,
+  bucket: R2Bucket,
+  key: string,
+  userId: string,
+): Promise<void> {
+  if (await discardKey(db, bucket, key)) return;
+  const [named] = await db
+    .select({ id: sessions.id })
+    .from(sessions)
+    .where(eq(sessions.trackKey, key))
+    .limit(1);
+  if (named) return;
+  try {
+    await bucket.delete(key);
+  } catch (error) {
+    // Past the upload grace: nothing will attach it.
+    await recordKey(db.$client, key, userId, Date.now() - UPLOAD_GRACE_MS - 1).run();
+    throw error;
+  }
+}
 
 /** Whether the account exists and is not being deleted (lib/account-deletion.ts). */
 export async function accountActive(db: Db, userId: string): Promise<boolean> {

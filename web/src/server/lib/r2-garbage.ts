@@ -11,6 +11,11 @@ import { pendingR2Deletes } from "../db/schema";
 //
 // Collecting deletes the objects first, then their rows: a failure leaves the rows for the
 // next collection. Deleting a key that is already gone is harmless.
+//
+// A claim is one-way: once a row is claimed it is never unclaimed, so a key a collector has
+// started deleting can never attach afterwards (R2 may delete an object and still report a
+// failure). A claim that lapses is only taken over by the next collector, which retries the
+// delete.
 
 type Db = ReturnType<typeof drizzle>;
 
@@ -61,8 +66,8 @@ export const CLAIM_LEASE_MS = 10 * 60 * 1000;
  * takes the rows nobody holds (or whose claim lapsed), and only the objects of rows this
  * call won are deleted, then those rows. An upload attaches its key only while its row is
  * unclaimed (session-upload.ts), so no collector can delete an object that is attached, or
- * becomes attached. Returns the keys deleted. On an R2 failure the claimed rows stay and
- * are handed back (or, if even that fails, taken again once the claim lapses).
+ * becomes attached. Returns the keys deleted. On an R2 failure the rows stay claimed (the
+ * object may be gone already), and a collector retries once the claim lapses.
  */
 export async function claimAndDelete(
   d1: D1Database,
@@ -90,17 +95,8 @@ export async function claimAndDelete(
     won.push(...results.map((r) => r.key));
   }
   if (won.length === 0) return [];
-  try {
-    for (let i = 0; i < won.length; i += 1000) await bucket.delete(won.slice(i, i + 1000));
-  } catch (error) {
-    // Hand the keys back so the next collection takes them without waiting for the lease.
-    await d1
-      .prepare("UPDATE pending_r2_deletes SET claim = NULL, claimed_at = NULL WHERE claim = ?")
-      .bind(claim)
-      .run()
-      .catch(() => {});
-    throw error;
-  }
+  // Never handed back on failure: see the claim rule above.
+  for (let i = 0; i < won.length; i += 1000) await bucket.delete(won.slice(i, i + 1000));
   for (let i = 0; i < won.length; i += 90) {
     const chunk = won.slice(i, i + 90);
     await d1

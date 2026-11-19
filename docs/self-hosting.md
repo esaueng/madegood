@@ -303,7 +303,11 @@ to `scripts/testflight` as a build setting.
   upload records its key before writing it (and unrecords it when it attaches). Every
   deletion first claims the record with a conditional update and deletes the object only
   if it won; an upload attaches only while its record is unclaimed (else it answers 503
-  `upload_expired` and the app uploads again), so no cleanup can delete an attached object. Detached
+  `upload_expired` and the app uploads again), so no cleanup can delete an attached object.
+  A claim is never released: if R2 reports a failed delete (it may have deleted anyway),
+  the record stays claimed and a collector retries once the 10-minute claim lapses. An
+  upload that did not attach deletes its own object before answering; if that fails, its
+  key is recorded again (the ledger does not depend on the account row). Detached
   tracks are deleted at once; recorded uploads that never attached are collected after 15
   minutes by later uploads of the user and by the cron trigger. Fixed-key tracks from
   before per-upload keys (`track.v1.gz`, `track.v1.r<revision>.gz`) that a failed cleanup
