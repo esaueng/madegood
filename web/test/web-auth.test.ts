@@ -231,9 +231,11 @@ describe("POST /api/auth/web/refresh and /signout", () => {
   it("refuses a refresh without a cookie", async () => {
     const response = await api("/auth/web/refresh", {
       method: "POST",
-      headers: { origin: ORIGIN },
+      headers: { origin: ORIGIN, cookie: "mg_web=1" },
     });
     expect(response.status).toBe(401);
+    // A leftover hint is cleared, so the site stops retrying (found on the #63 preview).
+    expect(cookies(response).values.get("mg_web")).toBe("");
   });
 });
 

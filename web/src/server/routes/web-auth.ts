@@ -146,7 +146,11 @@ webAuth.post("/auth/web/refresh", async (c) => {
   c.header("Cache-Control", "no-store");
   if (!sameOrigin(c)) return apiError(c, 403, "forbidden", "Requests must come from this site.");
   const token = refreshCookie(c);
-  if (!token) return apiError(c, 401, "invalid_refresh_token", "Not signed in.");
+  if (!token) {
+    // Clear the script-readable hint too, or the site would retry the refresh forever.
+    clearSessionCookies(c);
+    return apiError(c, 401, "invalid_refresh_token", "Not signed in.");
+  }
   const db = drizzle(c.env.DB);
   const result = await rotateRefreshToken(db, token);
   if (!result.ok) {
