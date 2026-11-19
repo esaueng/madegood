@@ -1,76 +1,50 @@
-/// Syncs per-sport settings between two devices (the phone and the watch). Each device
-/// sends its whole snapshot; the receiver keeps whichever state carries the higher
-/// revision.
+/// Syncs per-sport settings between two devices (the phone and the watch) with a
+/// last-writer-wins version per setting. Each per-sport key carries its own stamp: the
+/// revision and device of the edit that last set it. A local edit stamps only the keys it
+/// changes, and a return to the default is a stamped write like any other (the value is
+/// removed, the stamp stays). Applying the other device's snapshot takes each key whose
+/// stamp is newer than ours and keeps every other key, so edits to different settings on
+/// the two devices both survive, whichever arrives first.
 ///
 /// Revisions are a hybrid logical clock in milliseconds: a new local revision is
 /// `max(now, highest revision seen + 1)`, and every revision received raises "highest
 /// seen". So a revision never goes backwards when a clock is corrected, and an edit made
-/// after seeing another device's state always wins over it.
+/// after seeing another device's state always wins over it. Two devices can still reach the
+/// same revision (independent offline edits after a clock correction), so stamps compare as
+/// (revision, device ID): both devices pick the same winner, and equal stamps are a no-op.
 ///
-/// Two devices can still reach the same revision (independent offline edits after a
-/// clock correction). Each revision is therefore stamped with the ID of the device that
-/// made it, and states compare as (revision, device ID): both devices pick the same
-/// winner, and an identical pair is a no-op, so replies cannot loop.
-///
-/// A snapshot without a revision comes from a device that never had settings of its own
-/// (a fresh install). It never replaces or removes anything. A device that has stored
-/// values always has a revision: saving assigns one, and `assignMissingRevision` gives
-/// one to values that predate revisions (migrated from older builds).
-///
-/// The two devices can run different builds, and a newer build may store keys an older one
-/// does not know. Each snapshot therefore lists the per-sport keys its sender knows
-/// (`Key.knownKeys`), and applying a snapshot overwrites or removes only those keys; every
-/// other key keeps its local value. So an edit on an older build never wipes a value only
-/// a newer build understands. A snapshot without the list (from a build before it) is
-/// treated as knowing `legacyKnownKeys` plus every per-sport key it carries.
+/// Builds before per-setting versions send one revision for the whole snapshot and apply a
+/// newer snapshot by writing every key they know. A snapshot from such a build stamps each
+/// key it knows (`legacyKnownKeys` plus any per-sport key it carries) with its revision. It
+/// wins those keys only when it is newer than every stamp here, because that build takes
+/// our whole state whenever ours is newer; anything else would leave the two devices
+/// different. Every snapshot also carries those builds' fields: the values and, as the
+/// revision, the newest stamp here.
 ///
 /// Storage is reached through closures, like `SportSettings`, so this is pure and testable.
 public enum SettingsSync {
     public enum Key {
-        /// The revision of this device's settings, in the snapshot it sends.
+        /// The stamp of every per-sport key that has one: a dictionary from key to
+        /// `[revision, device]`. Stored on each device and sent in its snapshot.
+        public static let stamps = "settings.stamps"
+        /// Builds before per-setting versions: the revision of the whole snapshot. Sent as
+        /// the newest stamp; stored only by those builds (migrated, then removed).
         public static let revision = "settings.revision"
-        /// The ID of the device that made `revision`, in the snapshot it sends.
+        /// Builds before per-setting versions: the ID of the device that made `revision`.
         public static let revisionDevice = "settings.revisionDevice"
-        /// The per-sport keys the sender knows (an array of strings), in the snapshot it
-        /// sends. Built from the code, never stored.
-        public static let knownKeys = "settings.knownKeys"
         /// Device-local: the highest revision seen from either device. Never sent.
         public static let highestSeen = "settings.revisionSeen"
         /// Device-local: this device's stable random ID, made once. Never sent on its own.
         public static let deviceID = "settings.deviceID"
     }
 
-    /// Every stored key a snapshot carries. It also carries `Key.knownKeys`, which is not stored.
-    public static var snapshotKeys: [String] {
-        SportSettings.Key.allSports + [Key.revision, Key.revisionDevice]
+    /// Every stored key that belongs to synced settings, for resets.
+    public static var storedKeys: [String] {
+        SportSettings.Key.allSports + [Key.stamps, Key.revision, Key.revisionDevice]
     }
 
-    /// The per-sport keys a snapshot without `Key.knownKeys` is assumed to know: those of the
-    /// first per-sport settings (PR #39): speed and distance unit, first screen, auto-pause,
-    /// save workout, distance alert, countdown and hidden, for every sport. Builds that also
-    /// know the Action button (#58) or the fuel estimate (#60) but send no list are covered
-    /// for each such key they carry; one they leave at its default (absent) keeps the local
-    /// value.
-    public static var legacyKnownKeys: Set<String> {
-        typealias K = SportSettings.Key
-        return Set(
-            Sport.allCases.flatMap { sport in
-                [
-                    K.speedUnit(sport), K.distanceUnit(sport), K.firstScreen(sport), K.autoPause(sport),
-                    K.saveWorkout(sport), K.distanceAlert(sport), K.countdown(sport), K.hidden(sport),
-                ]
-            })
-    }
-
-    /// The per-sport keys the sender of `remote` knows.
-    static func keysKnown(by remote: [String: Any]) -> Set<String> {
-        if let listed = remote[Key.knownKeys] as? [Any] { return Set(listed.compactMap { $0 as? String }) }
-        let all = Set(SportSettings.Key.allSports)
-        return legacyKnownKeys.union(remote.keys.filter(all.contains))
-    }
-
-    /// A state's position in the order both devices agree on.
-    public struct Stamp: Comparable, Sendable {
+    /// A setting's position in the order both devices agree on.
+    public struct Stamp: Comparable, Hashable, Sendable {
         public var revision: Int64
         public var device: String
 
@@ -84,125 +58,168 @@ public enum SettingsSync {
         }
     }
 
+    /// What applying a snapshot from the other device did.
+    public struct Outcome: Equatable, Sendable {
+        /// A value here changed.
+        public var changed: Bool
+        /// This device holds a setting newer than the snapshot's: send ours back.
+        public var replyNeeded: Bool
+
+        public init(changed: Bool, replyNeeded: Bool) {
+            self.changed = changed
+            self.replyNeeded = replyNeeded
+        }
+
+        public static let unchanged = Outcome(changed: false, replyNeeded: false)
+        public static let applied = Outcome(changed: true, replyNeeded: false)
+        public static let keptLocalNewer = Outcome(changed: false, replyNeeded: true)
+        public static let appliedAndKeptLocalNewer = Outcome(changed: true, replyNeeded: true)
+    }
+
+    /// The per-sport keys a snapshot without stamps is assumed to know: those of the first
+    /// per-sport settings (PR #39): speed and distance unit, first screen, auto-pause, save
+    /// workout, distance alert, countdown and hidden, for every sport. Builds that also know
+    /// the Action button (#58) or the fuel estimate (#60) are covered for each such key they
+    /// carry; one they leave at its default is not sent, so it is not applied.
+    public static var legacyKnownKeys: Set<String> {
+        typealias K = SportSettings.Key
+        return Set(
+            Sport.allCases.flatMap { sport in
+                [
+                    K.speedUnit(sport), K.distanceUnit(sport), K.firstScreen(sport), K.autoPause(sport),
+                    K.saveWorkout(sport), K.distanceAlert(sport), K.countdown(sport), K.hidden(sport),
+                ]
+            })
+    }
+
     /// The next revision for a local change at `now` (unix time, s).
     public static func nextRevision(now: Double, highestSeen: Int64) -> Int64 {
         let millis = now.isFinite ? Int64(max(0, now * 1000).rounded(.down)) : 0
         return max(millis, highestSeen + 1)
     }
 
-    /// Stamps a local change made by `device` (this device's ID): call after writing the
-    /// new values.
-    public static func stampLocalChange(
-        now: Double, device: String, reading value: (String) -> Any?, writing set: (String, Any?) -> Void
+    // MARK: Local changes
+
+    /// Stores a sport's settings as a local edit by `device` (this device's ID) at `now`:
+    /// every key whose value changes gets one new stamp. Keys left as they were keep theirs.
+    public static func save(
+        _ settings: SportSettings, for sport: Sport, now: Double, device: String,
+        reading value: (String) -> Any?, writing set: (String, Any?) -> Void
     ) {
-        let seen = max(revision(value(Key.highestSeen)) ?? 0, revision(value(Key.revision)) ?? 0)
-        let next = nextRevision(now: now, highestSeen: seen)
-        set(Key.revision, next)
-        set(Key.revisionDevice, device)
-        set(Key.highestSeen, next)
+        let keys = SportSettings.Key.all(sport)
+        let before = keys.map { value($0) }
+        settings.write(sport: sport, to: set)
+        let changed = zip(keys, before).filter { !sameValue($0.1, value($0.0)) }.map(\.0)
+        guard !changed.isEmpty else { return }
+        var stamps = storedStamps(value)
+        let seen = max(revision(value(Key.highestSeen)) ?? 0, stamps.values.map(\.revision).max() ?? 0)
+        let stamp = Stamp(revision: nextRevision(now: now, highestSeen: seen), device: device)
+        for key in changed { stamps[key] = stamp }
+        set(Key.stamps, encode(stamps))
+        set(Key.highestSeen, stamp.revision)
     }
 
-    /// Gives a revision to stored values that have none (settings from an older build),
-    /// so a fresh device's empty state cannot replace them. Does nothing when there are
-    /// no values or they already have a revision. Returns whether it assigned one.
+    /// Gives stamps to settings stored by a build before per-setting versions. Their
+    /// revision (or, for values from before revisions, a new one at `now`) stamps every key
+    /// that build knew, values and defaults alike, plus any newer key it stored. Does
+    /// nothing once stamps exist. Returns whether it stamped anything.
     @discardableResult
-    public static func assignMissingRevision(
+    public static func migrateToKeyStamps(
         now: Double, device: String, reading value: (String) -> Any?, writing set: (String, Any?) -> Void
     ) -> Bool {
-        guard revision(value(Key.revision)) == nil,
-            SportSettings.Key.allSports.contains(where: { value($0) != nil })
-        else { return false }
-        stampLocalChange(now: now, device: device, reading: value, writing: set)
-        return true
+        guard value(Key.stamps) == nil else { return false }
+        let stored = SportSettings.Key.allSports.filter { value($0) != nil }
+        let seen = revision(value(Key.highestSeen)) ?? 0
+        var stamp: Stamp?
+        if let legacy = revision(value(Key.revision)) {
+            stamp = Stamp(revision: legacy, device: value(Key.revisionDevice) as? String ?? device)
+        } else if !stored.isEmpty {
+            stamp = Stamp(revision: nextRevision(now: now, highestSeen: seen), device: device)
+        }
+        var stamps: [String: Stamp] = [:]
+        if let stamp {
+            for key in legacyKnownKeys.union(stored) { stamps[key] = stamp }
+            if stamp.revision > seen { set(Key.highestSeen, stamp.revision) }
+        }
+        set(Key.stamps, encode(stamps))
+        set(Key.revision, nil)
+        set(Key.revisionDevice, nil)
+        return stamp != nil
     }
 
-    /// What to do with a snapshot from the other device.
-    public enum Outcome: Equatable, Sendable {
-        /// It was newer: its values replaced this device's.
-        case applied
-        /// It was newer and its values were applied, but this device kept values for keys
-        /// its sender does not know, under a new local revision: send this device's state
-        /// back so the other side has it once its build knows those keys.
-        case merged
-        /// This device's state is newer: send it back so the other side catches up.
-        case keptLocalNewer
-        /// The same (revision, device), or neither side has anything: nothing to do.
-        case unchanged
-    }
+    // MARK: Sync
 
-    /// Applies `remote` if its (revision, device) is higher than this device's. Keys its sender
-    /// knows but `remote` lacks are removed, so "Automatic" stays automatic; keys its sender
-    /// does not know keep their local values. Older builds' global units in `remote` are
-    /// migrated first. Always raises "highest seen" to the remote revision.
-    ///
-    /// When a kept value is set (stored values always differ from their default), adopting
-    /// the sender's stamp would leave the two devices with equal stamps but different
-    /// state: once the sender upgrades and learns the key, neither would apply the other,
-    /// and the sender's next edit would erase the value. So the result is stamped as a
-    /// local change by `device` at `now`, newer than the sender's, and the outcome is
-    /// `.merged`: send it back. An older build ignores the keys it does not know, so this
-    /// settles after one round trip.
-    ///
-    /// An older build that adopts that stamp drops the keys it does not know, so after it
-    /// upgrades both devices hold the same stamp with different values. Equal stamps whose
-    /// values differ for keys the sender knows are therefore settled by the stamp's author
-    /// (`device` made it): the author keeps its state and sends it back
-    /// (`.keptLocalNewer`); the other device applies the author's state.
-    public static func apply(
-        remote: [String: Any], now: Double, device: String, reading value: (String) -> Any?,
-        writing set: (String, Any?) -> Void
-    ) -> Outcome {
-        var remote = remote
-        let known = keysKnown(by: remote)
-        SportSettings.migrateLegacyUnits(reading: { remote[$0] }, writing: { remote[$0] = $1 })
-        let theirs = revision(remote[Key.revision])
-        let ours = revision(value(Key.revision))
-        if let theirs {
-            let seen = revision(value(Key.highestSeen)) ?? 0
-            if theirs > seen { set(Key.highestSeen, theirs) }
-        }
-        let ourStamp = ours.map { Stamp(revision: $0, device: value(Key.revisionDevice) as? String ?? "") }
-        guard let theirs else {
-            // No revision (a device that never had settings) never wins.
-            return ourStamp == nil ? .unchanged : .keptLocalNewer
-        }
-        let theirStamp = Stamp(revision: theirs, device: remote[Key.revisionDevice] as? String ?? "")
-        if let ourStamp {
-            if theirStamp < ourStamp { return .keptLocalNewer }
-            if theirStamp == ourStamp {
-                let differs = SportSettings.Key.allSports.contains {
-                    known.contains($0) && !sameValue(remote[$0], value($0))
-                }
-                guard differs else { return .unchanged }
-                if ourStamp.device == device { return .keptLocalNewer }
-            }
-        }
-        var keptLocalValue = false
-        for key in SportSettings.Key.allSports {
-            if known.contains(key) {
-                set(key, remote[key])
-            } else if value(key) != nil {
-                keptLocalValue = true
-            }
-        }
-        if keptLocalValue {
-            stampLocalChange(now: now, device: device, reading: value, writing: set)
-            return .merged
-        }
-        set(Key.revision, theirs)
-        set(Key.revisionDevice, theirStamp.device)
-        return .applied
-    }
-
-    /// This device's snapshot to send: its stored values, its revision, and the per-sport
-    /// keys it knows.
+    /// This device's snapshot to send: its stored values and their stamps, plus, for builds
+    /// before per-setting versions, the newest stamp as the snapshot's revision.
     public static func snapshot(reading value: (String) -> Any?) -> [String: Any] {
-        var result: [String: Any] = snapshotKeys.reduce(into: [:]) { result, key in
+        var result: [String: Any] = [:]
+        for key in SportSettings.Key.allSports {
             if let stored = value(key) { result[key] = stored }
         }
-        result[Key.knownKeys] = SportSettings.Key.allSports
+        let stamps = storedStamps(value)
+        result[Key.stamps] = encode(stamps)
+        if let newest = stamps.values.max() {
+            result[Key.revision] = newest.revision
+            result[Key.revisionDevice] = newest.device
+        }
         return result
     }
+
+    /// Applies a snapshot from the other device: each setting whose stamp is newer than
+    /// ours is taken, every other setting is kept. Always raises "highest seen".
+    public static func apply(
+        remote: [String: Any], reading value: (String) -> Any?, writing set: (String, Any?) -> Void
+    ) -> Outcome {
+        var remote = remote
+        SportSettings.migrateLegacyUnits(reading: { remote[$0] }, writing: { remote[$0] = $1 })
+        var stamps = storedStamps(value)
+        let theirs: [String: Stamp]
+        let isLegacy = remote[Key.stamps] == nil
+        if isLegacy {
+            // One revision for every key the older build knows.
+            guard let legacy = revision(remote[Key.revision]) else {
+                // No revision (a device that never had settings) never wins.
+                return stamps.isEmpty ? .unchanged : .keptLocalNewer
+            }
+            let stamp = Stamp(revision: legacy, device: remote[Key.revisionDevice] as? String ?? "")
+            raiseHighestSeen(stamp.revision, reading: value, writing: set)
+            // That build takes our whole state whenever ours is newer, so it wins only when
+            // it is newer than everything here.
+            if let newest = stamps.values.max(), stamp <= newest {
+                return stamp == newest ? .unchanged : .keptLocalNewer
+            }
+            let all = Set(SportSettings.Key.allSports)
+            let known = legacyKnownKeys.union(remote.keys.filter(all.contains))
+            theirs = Dictionary(uniqueKeysWithValues: known.map { ($0, stamp) })
+        } else {
+            theirs = decode(remote[Key.stamps])
+            if let newest = theirs.values.map(\.revision).max() {
+                raiseHighestSeen(newest, reading: value, writing: set)
+            }
+        }
+
+        var changed = false
+        var stampsChanged = false
+        for key in SportSettings.Key.allSports {
+            guard let stamp = theirs[key], stamps[key].map({ stamp > $0 }) ?? true else { continue }
+            if !sameValue(value(key), remote[key]) {
+                set(key, remote[key])
+                changed = true
+            }
+            stamps[key] = stamp
+            stampsChanged = true
+        }
+        if stampsChanged { set(Key.stamps, encode(stamps)) }
+
+        // Reply when this device holds a setting newer than the one received, or one the
+        // sender has no stamp for. An older build that won above was newer than everything
+        // here, so it needs nothing back.
+        let replyNeeded =
+            !isLegacy && stamps.contains { key, stamp in theirs[key].map { stamp > $0 } ?? true }
+        return Outcome(changed: changed, replyNeeded: replyNeeded)
+    }
+
+    // MARK: Values and stamps
 
     /// Whether two stored values are the same setting. Values may arrive as numbers, Bools
     /// or strings of different types after a round trip through the platform's store.
@@ -219,6 +236,35 @@ public enum SettingsSync {
         }
         if let x = scalar(a), let y = scalar(b) { return x == y }
         return false
+    }
+
+    /// This device's stored stamps.
+    static func storedStamps(_ value: (String) -> Any?) -> [String: Stamp] {
+        decode(value(Key.stamps))
+    }
+
+    /// Stamps from a stored or received dictionary; malformed entries are skipped.
+    static func decode(_ raw: Any?) -> [String: Stamp] {
+        guard let entries = raw as? [String: Any] else { return [:] }
+        var stamps: [String: Stamp] = [:]
+        for (key, entry) in entries {
+            guard let pair = entry as? [Any], pair.count == 2, let revision = revision(pair[0]),
+                let device = pair[1] as? String
+            else { continue }
+            stamps[key] = Stamp(revision: revision, device: device)
+        }
+        return stamps
+    }
+
+    /// Stamps as a property-list dictionary, for storage and WatchConnectivity.
+    static func encode(_ stamps: [String: Stamp]) -> [String: Any] {
+        stamps.mapValues { [$0.revision, $0.device] as [Any] }
+    }
+
+    private static func raiseHighestSeen(
+        _ revision: Int64, reading value: (String) -> Any?, writing set: (String, Any?) -> Void
+    ) {
+        if revision > (Self.revision(value(Key.highestSeen)) ?? 0) { set(Key.highestSeen, revision) }
     }
 
     /// A stored revision; nil when missing or not a positive number.

@@ -2,8 +2,9 @@ import Testing
 
 @testable import WaterKit
 
-/// Regression tests from the PR #39 review: two-way settings sync.
+/// Two-way settings sync with a version per setting (PR #39 reviews, PR #62 reviews).
 @Suite struct SettingsSyncTests {
+    /// A device running a build with per-setting versions.
     final class Device {
         let id: String
         var values: [String: Any] = [:]
@@ -15,237 +16,45 @@ import Testing
         func read(_ key: String) -> Any? { values[key] }
         func write(_ key: String, _ value: Any?) { values[key] = value }
 
-        var revision: Int64? { SettingsSync.revision(values[SettingsSync.Key.revision]) }
+        var stamps: [String: SettingsSync.Stamp] { SettingsSync.storedStamps(read) }
+        func stamp(_ key: String) -> SettingsSync.Stamp? { stamps[key] }
         var snapshot: [String: Any] { SettingsSync.snapshot(reading: read) }
+        var highestSeen: Int64? { SettingsSync.revision(values[SettingsSync.Key.highestSeen]) }
 
         /// A local edit, as `UserSettings.save` does it.
         func edit(_ sport: Sport, at now: Double, _ change: (inout SportSettings) -> Void) {
             var settings = SportSettings(sport: sport, reading: read)
             change(&settings)
-            settings.write(sport: sport, to: write)
-            SettingsSync.stampLocalChange(now: now, device: id, reading: read, writing: write)
+            SettingsSync.save(settings, for: sport, now: now, device: id, reading: read, writing: write)
         }
 
-        func receive(_ snapshot: [String: Any], at now: Double = 0) -> SettingsSync.Outcome {
-            SettingsSync.apply(remote: snapshot, now: now, device: id, reading: read, writing: write)
+        func receive(_ snapshot: [String: Any]) -> SettingsSync.Outcome {
+            SettingsSync.apply(remote: snapshot, reading: read, writing: write)
         }
 
         func settings(_ sport: Sport) -> SportSettings { SportSettings(sport: sport, reading: read) }
     }
 
-    /// Finding 1: an upgraded device's migrated settings survived a freshly installed
-    /// companion's empty snapshot only by luck of timestamps; now they always do.
-    @Test func freshCompanionNeverWipesMigratedSettings() {
-        let upgraded = Device()
-        upgraded.values[SportSettings.Key.legacySpeedUnit] = "mph"
-        upgraded.values[SportSettings.Key.autoPause(.kayak)] = false
-        SportSettings.migrateLegacyUnits(reading: upgraded.read, writing: upgraded.write)
-        #expect(
-            SettingsSync.assignMissingRevision(
-                now: 1_000, device: upgraded.id, reading: upgraded.read, writing: upgraded.write))
-        #expect(upgraded.revision == 1_000_000)
-
-        let fresh = Device()
-        // Nothing to assign on an empty device.
-        #expect(
-            !SettingsSync.assignMissingRevision(now: 2_000, device: fresh.id, reading: fresh.read, writing: fresh.write)
-        )
-        // The fresh device's empty snapshot (no revision) changes nothing and asks for ours.
-        #expect(upgraded.receive(fresh.snapshot) == .keptLocalNewer)
-        #expect(upgraded.settings(.sailing).speedUnit == .milesPerHour)
-        #expect(!upgraded.settings(.kayak).autoPause)
-
-        // Ours reaches the fresh device.
-        #expect(fresh.receive(upgraded.snapshot) == .applied)
-        #expect(fresh.settings(.sailing).speedUnit == .milesPerHour)
-        #expect(!fresh.settings(.kayak).autoPause)
-    }
-
-    /// An empty snapshot even with a zero or junk revision never removes values.
-    @Test func snapshotWithoutARevisionNeverRemovesValues() {
-        let device = Device()
-        device.edit(.sup, at: 500) { $0.countdownMinutes = 3 }
-        for junk: Any in [0, -5, "abc", Double.nan] {
-            #expect(device.receive([SettingsSync.Key.revision: junk]) == .keptLocalNewer)
-            #expect(device.settings(.sup).countdownMinutes == 3)
-        }
-        // A device with no values and no revision ignores an empty snapshot too.
-        let empty = Device()
-        #expect(empty.receive([:]) == .unchanged)
-        #expect(empty.values.isEmpty)
-    }
-
-    /// Values from before revisions that already have one keep it.
-    @Test func assignsOnlyWhenMissing() {
-        let device = Device()
-        device.edit(.canoe, at: 10) { $0.isHidden = true }
-        let revision = device.revision
-        #expect(
-            !SettingsSync.assignMissingRevision(now: 99, device: device.id, reading: device.read, writing: device.write)
-        )
-        #expect(device.revision == revision)
-    }
-
-    /// Finding 3: a device whose clock ran ahead and was then corrected still produces
-    /// revisions that beat the state it has seen, so its next edit is not lost.
-    @Test func revisionsSurviveAClockCorrection() {
-        let phone = Device()
-        let watch = Device()
-        // The watch's clock is an hour ahead when it edits.
-        watch.edit(.sailing, at: 10_000 + 3_600) { $0.countdownMinutes = 5 }
-        #expect(phone.receive(watch.snapshot) == .applied)
-
-        // The phone edits later, by real time, with a correct clock.
-        phone.edit(.sailing, at: 10_060) { $0.countdownMinutes = 1 }
-        #expect((phone.revision ?? 0) > (watch.revision ?? 0))
-        #expect(watch.receive(phone.snapshot) == .applied)
-        #expect(watch.settings(.sailing).countdownMinutes == 1)
-
-        // The watch's clock is corrected (now behind its old revisions); its next edit
-        // still wins.
-        watch.edit(.sailing, at: 10_120) { $0.countdownMinutes = 3 }
-        #expect(phone.receive(watch.snapshot) == .applied)
-        #expect(phone.settings(.sailing).countdownMinutes == 3)
-    }
-
-    @Test func nextRevisionIsMonotonic() {
-        #expect(SettingsSync.nextRevision(now: 2, highestSeen: 0) == 2_000)
-        #expect(SettingsSync.nextRevision(now: 2, highestSeen: 5_000) == 5_001)
-        #expect(SettingsSync.nextRevision(now: .nan, highestSeen: 7) == 8)
-    }
-
-    /// An accepted revision from a clock that ran ahead raises the floor for later edits.
-    @Test func acceptedRevisionRaisesTheFloor() {
-        let device = Device()
-        device.edit(.kayak, at: 100) { $0.autoPause = false }
-        let ahead: [String: Any] = [SettingsSync.Key.revision: Int64(50_000_000), SettingsSync.Key.revisionDevice: "x"]
-        #expect(device.receive(ahead) == .applied)
-        device.edit(.kayak, at: 100) { $0.autoPause = false }
-        #expect(device.revision == 50_000_001)
-    }
-
-    /// Review re-check: a rejected (older) snapshot changes neither the values nor the
-    /// revisions, and the next local edit continues from this device's own revision.
-    @Test func rejectedRevisionChangesNothing() {
-        let device = Device()
-        device.edit(.kayak, at: 100_000) { $0.distanceAlert = 2 }
-        let before = device.values.count
-        let revision = device.revision
-        let older: [String: Any] = [
-            SettingsSync.Key.revision: Int64(50_000_000), SettingsSync.Key.revisionDevice: "zzz",
-            SportSettings.Key.distanceAlert(.kayak): 5.0,
-        ]
-        #expect(device.receive(older) == .keptLocalNewer)
-        #expect(device.settings(.kayak).distanceAlert == 2)
-        #expect(device.revision == revision)
-        #expect(device.values.count == before)
-        #expect(SettingsSync.revision(device.values[SettingsSync.Key.highestSeen]) == revision)
-        device.edit(.kayak, at: 1) { $0.distanceAlert = 1 }  // clock far behind
-        #expect(device.revision == (revision ?? 0) + 1)
-    }
-
-    /// Review re-check: two devices that reach the same revision with different settings
-    /// converge on the same winner, the higher device ID, and stop replying.
-    @Test func equalRevisionsConvergeOnOneWinner() {
-        let a = Device(id: "A")
-        let b = Device(id: "B")
-        // Both saw revision R from a clock that ran ahead, then edited offline.
-        let ahead: [String: Any] = [SettingsSync.Key.revision: Int64(9_000_000), SettingsSync.Key.revisionDevice: "C"]
-        #expect(a.receive(ahead) == .applied)
-        #expect(b.receive(ahead) == .applied)
-        a.edit(.sailing, at: 10) { $0.countdownMinutes = 1 }
-        b.edit(.sailing, at: 10) { $0.countdownMinutes = 5 }
-        #expect(a.revision == 9_000_001)
-        #expect(a.revision == b.revision)
-
-        // Messages cross: each side gets the other's snapshot.
-        let fromA = a.snapshot
-        let fromB = b.snapshot
-        #expect(a.receive(fromB) == .applied)  // B wins the tie on both sides
-        #expect(b.receive(fromA) == .keptLocalNewer)  // B replies with its own...
-        #expect(a.receive(b.snapshot) == .unchanged)  // ...which A already has: no loop
-        #expect(a.settings(.sailing).countdownMinutes == 5)
-        #expect(b.settings(.sailing).countdownMinutes == 5)
-        // A's reply after applying (the phone re-pushes) is a no-op at B.
-        #expect(b.receive(a.snapshot) == .unchanged)
-    }
-
-    /// The order is lexicographic: revision first, then device ID.
-    @Test func stampsCompareRevisionThenDevice() {
-        typealias Stamp = SettingsSync.Stamp
-        #expect(Stamp(revision: 2, device: "A") > Stamp(revision: 1, device: "Z"))
-        #expect(Stamp(revision: 2, device: "B") > Stamp(revision: 2, device: "A"))
-        #expect(Stamp(revision: 2, device: "A") == Stamp(revision: 2, device: "A"))
-    }
-
-    /// Finding 4 (and the receiver's half of it): an edit made while the other device was
-    /// unreachable arrives later and wins over older state; an older snapshot arriving
-    /// late is rejected and answered with ours.
-    @Test func newerStateWinsWhicheverArrivesFirst() {
-        let phone = Device()
-        let watch = Device()
-        phone.edit(.kayak, at: 100) { $0.speedUnit = .knots }
-        let oldPhone = phone.snapshot
-        watch.edit(.kayak, at: 200) { $0.speedUnit = .milesPerHour }  // before activation
-
-        #expect(phone.receive(watch.snapshot) == .applied)
-        #expect(phone.settings(.kayak).speedUnit == .milesPerHour)
-        #expect(watch.receive(oldPhone) == .keptLocalNewer)
-        #expect(watch.settings(.kayak).speedUnit == .milesPerHour)
-        // Converged: the same revision both ways is a no-op, so pushes do not loop.
-        #expect(watch.receive(phone.snapshot) == .unchanged)
-        #expect(phone.receive(watch.snapshot) == .unchanged)
-    }
-
-    /// A deliberate return to defaults has a revision, so it does propagate.
-    @Test func aRevisedResetToDefaultsPropagates() {
-        let phone = Device()
-        let watch = Device()
-        phone.edit(.sup, at: 100) { $0.distanceAlert = 1 }
-        #expect(watch.receive(phone.snapshot) == .applied)
-        phone.edit(.sup, at: 200) { $0 = .standard(for: .sup) }
-        #expect(watch.receive(phone.snapshot) == .applied)
-        #expect(watch.settings(.sup) == .standard(for: .sup))
-    }
-
-    /// A snapshot from an older build carries global units; they are migrated, not lost.
-    @Test func migratesLegacyUnitsInARemoteSnapshot() {
-        let watch = Device()
-        let remote: [String: Any] = [SportSettings.Key.legacyDistanceUnit: "mi", SettingsSync.Key.revision: 5_000]
-        #expect(watch.receive(remote) == .applied)
-        #expect(watch.settings(.canoe).distanceUnit == .statuteMiles)
-        #expect(watch.values[SportSettings.Key.legacyDistanceUnit] == nil)
-    }
-
-    /// The snapshot never carries the device-local "highest seen".
-    @Test func snapshotCarriesOnlySettingsAndRevision() {
-        let device = Device()
-        device.edit(.sailing, at: 1) { $0.firstScreen = .map }
-        device.values["history.lastUsed.sailing"] = 1.0
-        #expect(
-            Set(device.snapshot.keys) == [
-                SportSettings.Key.firstScreen(.sailing), SettingsSync.Key.revision, SettingsSync.Key.revisionDevice,
-                SettingsSync.Key.knownKeys,
-            ])
-        #expect(device.snapshot[SettingsSync.Key.revisionDevice] as? String == device.id)
-        #expect(device.snapshot[SettingsSync.Key.knownKeys] as? [String] == SportSettings.Key.allSports)
-    }
-}
-
-/// Devices running different builds: a newer build's keys survive edits on an older one.
-@Suite struct SettingsSyncMixedBuildTests {
-    typealias Device = SettingsSyncTests.Device
-
-    /// A build from before `knownKeys` (PR #39): its snapshot carries only the keys it knows
-    /// and no key list, and it applies a newer snapshot by writing every key it knows and
-    /// removing those the snapshot lacks.
-    final class OlderBuild {
-        let id = "older-\(Int.random(in: 0..<1_000_000))"
+    /// A shipped build before per-setting versions: one revision for the whole state; its
+    /// snapshot carries the keys it knows and that revision; a newer snapshot replaces
+    /// every key it knows.
+    final class LegacyBuild {
+        let id: String
         var values: [String: Any] = [:]
-        let known = SettingsSync.legacyKnownKeys
+        let known: Set<String>
+
+        init(id: String = "legacy-\(Int.random(in: 0..<1_000_000))", alsoKnows: [String] = []) {
+            self.id = id
+            known = SettingsSync.legacyKnownKeys.union(alsoKnows)
+        }
 
         func read(_ key: String) -> Any? { values[key] }
         func write(_ key: String, _ value: Any?) { values[key] = value }
+
+        var revision: Int64? { SettingsSync.revision(values[SettingsSync.Key.revision]) }
+        var stamp: SettingsSync.Stamp? {
+            revision.map { .init(revision: $0, device: values[SettingsSync.Key.revisionDevice] as? String ?? "") }
+        }
 
         var snapshot: [String: Any] {
             values.filter {
@@ -254,207 +63,402 @@ import Testing
             }
         }
 
+        /// A local edit: write the value, then stamp the whole state.
         func edit(_ key: String, _ value: Any?, at now: Double) {
             write(key, value)
-            SettingsSync.stampLocalChange(now: now, device: id, reading: read, writing: write)
+            let seen = max(
+                SettingsSync.revision(values[SettingsSync.Key.highestSeen]) ?? 0, revision ?? 0)
+            let next = SettingsSync.nextRevision(now: now, highestSeen: seen)
+            values[SettingsSync.Key.revision] = next
+            values[SettingsSync.Key.revisionDevice] = id
+            values[SettingsSync.Key.highestSeen] = next
         }
 
-        /// The shipped apply, minus revision handling the tests do not need: it is newer.
-        func receive(_ remote: [String: Any]) {
+        /// The shipped apply: a newer (revision, device) replaces every key it knows.
+        @discardableResult
+        func receive(_ remote: [String: Any]) -> Bool {
+            guard let theirs = SettingsSync.revision(remote[SettingsSync.Key.revision]) else { return false }
+            let theirStamp = SettingsSync.Stamp(
+                revision: theirs, device: remote[SettingsSync.Key.revisionDevice] as? String ?? "")
+            if theirs > SettingsSync.revision(values[SettingsSync.Key.highestSeen]) ?? 0 {
+                values[SettingsSync.Key.highestSeen] = theirs
+            }
+            if let stamp, theirStamp <= stamp { return false }
             for key in known { write(key, remote[key]) }
-            write(SettingsSync.Key.revision, remote[SettingsSync.Key.revision])
-            write(SettingsSync.Key.revisionDevice, remote[SettingsSync.Key.revisionDevice])
+            values[SettingsSync.Key.revision] = theirs
+            values[SettingsSync.Key.revisionDevice] = theirStamp.device
+            return true
+        }
+
+        func settings(_ sport: Sport) -> SportSettings { SportSettings(sport: sport, reading: read) }
+
+        /// The same device after installing a build with per-setting versions.
+        func upgraded(at now: Double) -> Device {
+            let device = Device(id: id)
+            device.values = values
+            SettingsSync.migrateToKeyStamps(now: now, device: id, reading: device.read, writing: device.write)
+            return device
         }
     }
 
-    /// Older → newer: an edit on the older build applies its keys (including removing one it
-    /// knows and lacks) and leaves the Action button and fuel settings alone.
-    @Test func olderBuildEditKeepsNewerKeys() {
-        let newer = Device()
-        newer.edit(.motorboating, at: 100) {
+    // MARK: Local edits and migration
+
+    /// An edit stamps only the settings it changes; saving the same values stamps nothing.
+    @Test func anEditStampsOnlyWhatChanged() {
+        let device = Device(id: "d")
+        device.edit(.sailing, at: 10) {
+            $0.countdownMinutes = 5
+            $0.actionButton = .mark
+        }
+        device.edit(.sailing, at: 20) { $0.countdownMinutes = 3 }
+        #expect(device.stamp(SportSettings.Key.countdown(.sailing)) == .init(revision: 20_000, device: "d"))
+        #expect(device.stamp(SportSettings.Key.actionButton(.sailing)) == .init(revision: 10_000, device: "d"))
+        #expect(device.stamps.count == 2)
+
+        device.edit(.sailing, at: 30) { _ in }
+        #expect(device.stamps.count == 2)
+        #expect(device.highestSeen == 20_000)
+    }
+
+    /// Returning to the default is a stamped write: the value goes, the stamp stays.
+    @Test func resetToDefaultIsAStampedWrite() {
+        let device = Device(id: "d")
+        device.edit(.sup, at: 10) { $0.distanceAlert = 1 }
+        device.edit(.sup, at: 20) { $0 = .standard(for: .sup) }
+        #expect(device.values[SportSettings.Key.distanceAlert(.sup)] == nil)
+        #expect(device.stamp(SportSettings.Key.distanceAlert(.sup)) == .init(revision: 20_000, device: "d"))
+    }
+
+    /// Settings from a build with one revision get that revision as every known key's
+    /// stamp, defaults included, and the old fields go.
+    @Test func migrationStampsWithTheSnapshotRevision() {
+        let legacy = LegacyBuild(id: "w", alsoKnows: [SportSettings.Key.actionButton(.kayak)])
+        legacy.edit(SportSettings.Key.actionButton(.kayak), "mark", at: 7)
+        let device = legacy.upgraded(at: 100)
+        let stamp = SettingsSync.Stamp(revision: 7_000, device: "w")
+        #expect(device.stamp(SportSettings.Key.actionButton(.kayak)) == stamp)
+        #expect(device.stamp(SportSettings.Key.countdown(.canoe)) == stamp)  // a default
+        #expect(device.stamp(SportSettings.Key.fuelBurn(.motorboating)) == nil)  // unknown, unset
+        #expect(device.values[SettingsSync.Key.revision] == nil)
+        #expect(device.values[SettingsSync.Key.revisionDevice] == nil)
+        // Once is enough.
+        #expect(!SettingsSync.migrateToKeyStamps(now: 200, device: "w", reading: device.read, writing: device.write))
+        #expect(device.stamp(SportSettings.Key.actionButton(.kayak)) == stamp)
+    }
+
+    /// Finding 1 of #39: values from before revisions get a stamp, so a freshly installed
+    /// companion's empty snapshot cannot replace them.
+    @Test func freshCompanionNeverWipesMigratedSettings() {
+        let upgraded = Device()
+        upgraded.values[SportSettings.Key.legacySpeedUnit] = "mph"
+        upgraded.values[SportSettings.Key.autoPause(.kayak)] = false
+        SportSettings.migrateLegacyUnits(reading: upgraded.read, writing: upgraded.write)
+        #expect(
+            SettingsSync.migrateToKeyStamps(
+                now: 1_000, device: upgraded.id, reading: upgraded.read, writing: upgraded.write))
+        #expect(upgraded.stamp(SportSettings.Key.autoPause(.kayak))?.revision == 1_000_000)
+
+        let fresh = Device()
+        #expect(
+            !SettingsSync.migrateToKeyStamps(now: 2_000, device: fresh.id, reading: fresh.read, writing: fresh.write))
+        #expect(upgraded.receive(fresh.snapshot) == .keptLocalNewer)
+        #expect(upgraded.settings(.sailing).speedUnit == .milesPerHour)
+
+        #expect(fresh.receive(upgraded.snapshot) == .applied)
+        #expect(fresh.settings(.sailing).speedUnit == .milesPerHour)
+        #expect(!fresh.settings(.kayak).autoPause)
+    }
+
+    /// An old-format snapshot with no or junk revision never changes anything.
+    @Test func snapshotWithoutARevisionNeverRemovesValues() {
+        let device = Device()
+        device.edit(.sup, at: 500) { $0.countdownMinutes = 3 }
+        for junk: Any in [0, -5, "abc", Double.nan] {
+            #expect(device.receive([SettingsSync.Key.revision: junk]) == .keptLocalNewer)
+            #expect(device.settings(.sup).countdownMinutes == 3)
+        }
+        let empty = Device()
+        #expect(empty.receive([:]) == .unchanged)
+        #expect(empty.values.isEmpty)
+    }
+
+    // MARK: Clocks and ties
+
+    @Test func nextRevisionIsMonotonic() {
+        #expect(SettingsSync.nextRevision(now: 2, highestSeen: 0) == 2_000)
+        #expect(SettingsSync.nextRevision(now: 2, highestSeen: 5_000) == 5_001)
+        #expect(SettingsSync.nextRevision(now: .nan, highestSeen: 7) == 8)
+    }
+
+    @Test func stampsCompareRevisionThenDevice() {
+        typealias Stamp = SettingsSync.Stamp
+        #expect(Stamp(revision: 2, device: "A") > Stamp(revision: 1, device: "Z"))
+        #expect(Stamp(revision: 2, device: "B") > Stamp(revision: 2, device: "A"))
+        #expect(Stamp(revision: 2, device: "A") == Stamp(revision: 2, device: "A"))
+    }
+
+    /// A device whose clock ran ahead and was then corrected still makes edits that beat
+    /// what it has seen.
+    @Test func revisionsSurviveAClockCorrection() {
+        let phone = Device()
+        let watch = Device()
+        watch.edit(.sailing, at: 10_000 + 3_600) { $0.countdownMinutes = 5 }  // clock an hour ahead
+        #expect(phone.receive(watch.snapshot) == .applied)
+        phone.edit(.sailing, at: 10_060) { $0.countdownMinutes = 1 }
+        #expect(watch.receive(phone.snapshot) == .applied)
+        #expect(watch.settings(.sailing).countdownMinutes == 1)
+        watch.edit(.sailing, at: 10_120) { $0.countdownMinutes = 3 }  // clock corrected
+        #expect(phone.receive(watch.snapshot) == .applied)
+        #expect(phone.settings(.sailing).countdownMinutes == 3)
+    }
+
+    /// A received stamp from a clock that ran ahead raises the floor for later edits.
+    @Test func acceptedRevisionRaisesTheFloor() {
+        let ahead = Device(id: "x")
+        ahead.edit(.kayak, at: 50_000) { $0.autoPause = false }
+        let device = Device()
+        #expect(device.receive(ahead.snapshot) == .applied)
+        device.edit(.kayak, at: 100) { $0.countdownMinutes = 1 }
+        #expect(device.stamp(SportSettings.Key.countdown(.kayak))?.revision == 50_000_001)
+    }
+
+    /// Two edits of one setting at the same revision: both devices pick the higher device
+    /// ID and stop replying.
+    @Test func equalRevisionsConvergeOnOneWinner() {
+        let a = Device(id: "A")
+        let b = Device(id: "B")
+        let ahead = Device(id: "C")
+        ahead.edit(.sailing, at: 9_000) { $0.firstScreen = .map }
+        #expect(a.receive(ahead.snapshot) == .applied)
+        #expect(b.receive(ahead.snapshot) == .applied)
+        a.edit(.sailing, at: 10) { $0.countdownMinutes = 1 }
+        b.edit(.sailing, at: 10) { $0.countdownMinutes = 5 }
+
+        let fromA = a.snapshot
+        let fromB = b.snapshot
+        #expect(a.receive(fromB) == .applied)
+        #expect(b.receive(fromA) == .keptLocalNewer)
+        #expect(a.receive(b.snapshot) == .unchanged)
+        #expect(b.receive(a.snapshot) == .unchanged)
+        #expect(a.settings(.sailing).countdownMinutes == 5)
+        #expect(b.settings(.sailing).countdownMinutes == 5)
+    }
+
+    // MARK: Between new builds
+
+    /// A newer edit wins whichever arrives first; an older snapshot arriving late is
+    /// answered with ours.
+    @Test func newerStateWinsWhicheverArrivesFirst() {
+        let phone = Device()
+        let watch = Device()
+        phone.edit(.kayak, at: 100) { $0.speedUnit = .knots }
+        let oldPhone = phone.snapshot
+        watch.edit(.kayak, at: 200) { $0.speedUnit = .milesPerHour }
+        #expect(phone.receive(watch.snapshot) == .applied)
+        #expect(watch.receive(oldPhone) == .keptLocalNewer)
+        #expect(watch.settings(.kayak).speedUnit == .milesPerHour)
+        #expect(watch.receive(phone.snapshot) == .unchanged)
+        #expect(phone.receive(watch.snapshot) == .unchanged)
+    }
+
+    /// Crossing edits of different settings both survive on both devices.
+    @Test func crossingEditsOfDifferentSettingsBothSurvive() {
+        let phone = Device(id: "phone")
+        let watch = Device(id: "watch")
+        phone.edit(.sailing, at: 100) { $0.actionButton = .mark }
+        watch.edit(.sailing, at: 101) { $0.countdownMinutes = 5 }
+        let fromPhone = phone.snapshot
+        let fromWatch = watch.snapshot
+        #expect(phone.receive(fromWatch) == .appliedAndKeptLocalNewer)
+        #expect(watch.receive(fromPhone) == .appliedAndKeptLocalNewer)
+        // The replies change nothing more and ask for nothing more.
+        #expect(watch.receive(phone.snapshot) == .unchanged)
+        #expect(phone.receive(watch.snapshot) == .unchanged)
+        for device in [phone, watch] {
+            #expect(device.settings(.sailing).actionButton == .mark)
+            #expect(device.settings(.sailing).countdownMinutes == 5)
+        }
+    }
+
+    /// A deliberate reset to the default propagates between new builds.
+    @Test func resetToDefaultPropagatesBetweenNewBuilds() {
+        let phone = Device()
+        let watch = Device()
+        phone.edit(.sup, at: 100) {
+            $0.distanceAlert = 1
+            $0.actionButton = .manOverboard
+        }
+        #expect(watch.receive(phone.snapshot) == .applied)
+        phone.edit(.sup, at: 200) { $0 = .standard(for: .sup) }
+        #expect(watch.receive(phone.snapshot) == .applied)
+        #expect(watch.settings(.sup) == .standard(for: .sup))
+        #expect(watch.values[SportSettings.Key.actionButton(.sup)] == nil)
+    }
+
+    /// Clock skew between new builds: an edit on a phone whose clock runs ahead does not
+    /// override a later edit of another setting on the watch.
+    @Test func clockSkewOnlyOrdersEditsOfTheSameSetting() {
+        let phone = Device(id: "phone")
+        let watch = Device(id: "watch")
+        phone.edit(.sailing, at: 11.5) { $0.actionButton = .mark }  // clock ahead
+        watch.edit(.sailing, at: 11.2) { $0.countdownMinutes = 3 }  // later, clock behind
+        #expect(watch.receive(phone.snapshot) == .appliedAndKeptLocalNewer)
+        #expect(phone.receive(watch.snapshot) == .applied)
+        for device in [phone, watch] {
+            #expect(device.settings(.sailing).countdownMinutes == 3)
+            #expect(device.settings(.sailing).actionButton == .mark)
+        }
+    }
+
+    /// WatchConnectivity delivers only the latest application context; skipping earlier
+    /// ones loses nothing, because every snapshot carries the full state and stamps.
+    @Test func onlyTheLatestOfCoalescedSnapshotsIsNeeded() {
+        let phone = Device(id: "phone")
+        let watch = Device(id: "watch")
+        phone.edit(.canoe, at: 10) { $0.countdownMinutes = 1 }
+        _ = phone.snapshot  // never delivered
+        phone.edit(.canoe, at: 20) { $0.actionButton = .mark }
+        _ = phone.snapshot  // never delivered
+        phone.edit(.canoe, at: 30) { $0.countdownMinutes = 0 }
+        watch.edit(.canoe, at: 25) { $0.distanceAlert = 2 }
+        #expect(watch.receive(phone.snapshot) == .appliedAndKeptLocalNewer)
+        #expect(phone.receive(watch.snapshot) == .applied)
+        for device in [phone, watch] {
+            #expect(device.settings(.canoe).countdownMinutes == 0)
+            #expect(device.settings(.canoe).actionButton == .mark)
+            #expect(device.settings(.canoe).distanceAlert == 2)
+        }
+    }
+
+    // MARK: With shipped builds
+
+    /// Legacy → new: an edit on the older build applies the keys it knows (including a
+    /// removal) and leaves the Action button and fuel settings alone.
+    @Test func legacyEditKeepsNewerKeys() {
+        let phone = Device(id: "phone")
+        phone.edit(.motorboating, at: 100) {
             $0.actionButton = .manOverboard
             $0.fuelBurnRate = 30
-            $0.idleFuelBurnRate = 4
             $0.fuelUnit = .usGallons
             $0.distanceAlert = 2
         }
-        let older = OlderBuild()
-        older.receive(newer.snapshot)
-        #expect(older.values[SportSettings.Key.distanceAlert(.motorboating)] as? Double == 2)
+        let watch = LegacyBuild(id: "watch")
+        #expect(watch.receive(phone.snapshot))
+        #expect(watch.values[SportSettings.Key.distanceAlert(.motorboating)] as? Double == 2)
 
-        older.edit(SportSettings.Key.countdown(.motorboating), 5, at: 200)
-        older.edit(SportSettings.Key.distanceAlert(.motorboating), nil, at: 300)
-        #expect(older.snapshot[SettingsSync.Key.knownKeys] == nil)
-        #expect(newer.receive(older.snapshot, at: 301) == .merged)
-
-        let settings = newer.settings(.motorboating)
+        watch.edit(SportSettings.Key.countdown(.motorboating), 5, at: 200)
+        watch.edit(SportSettings.Key.distanceAlert(.motorboating), nil, at: 300)
+        #expect(phone.receive(watch.snapshot) == .applied)
+        let settings = phone.settings(.motorboating)
         #expect(settings.countdownMinutes == 5)
         #expect(settings.distanceAlert == nil)
         #expect(settings.actionButton == .manOverboard)
         #expect(settings.fuelBurnRate == 30)
-        #expect(settings.idleFuelBurnRate == 4)
         #expect(settings.fuelUnit == .usGallons)
-        // Kept values the older build lacks, so the merged state is a newer local revision.
-        #expect(newer.revision == 301_000)
-        #expect(newer.values[SettingsSync.Key.revisionDevice] as? String == newer.id)
+        // Our newest stamp is now the older build's own, so it ignores our snapshot.
+        #expect(phone.snapshot[SettingsSync.Key.revision] as? Int64 == 300_000)
+        #expect(!watch.receive(phone.snapshot))
     }
 
-    /// Review of #62: the merge after an older build's edit survives that build's upgrade
-    /// and a later edit on it.
-    @Test func keptValuesSurviveTheOlderBuildsUpgrade() {
+    /// New → legacy: the older build reads the values it knows, and the newer keys come
+    /// back intact after the round trip.
+    @Test func newSnapshotStillWorksOnALegacyBuild() {
         let phone = Device(id: "phone")
-        let older = OlderBuild()
-        phone.edit(.sailing, at: 10) { $0.actionButton = .mark }
-        older.receive(phone.snapshot)
-
-        // The older watch edits the countdown; the phone keeps Mark under a newer revision
-        // of its own and sends it back. The older build applies it, minus the Action button.
-        older.edit(SportSettings.Key.countdown(.sailing), 3, at: 11)
-        #expect(phone.receive(older.snapshot, at: 11.5) == .merged)
-        #expect(phone.revision == 11_500)
-        older.receive(phone.snapshot)
-        #expect(older.values[SportSettings.Key.actionButton(.sailing)] == nil)
-        #expect(SettingsSync.revision(older.values[SettingsSync.Key.revision]) == 11_500)
-
-        // The watch upgrades: same stamp, but it lacks Mark. The phone made that stamp, so
-        // it answers with its state, and the watch takes it.
-        let watch = Device(id: older.id)
-        watch.values = older.values
-        #expect(phone.receive(watch.snapshot) == .keptLocalNewer)
-        #expect(watch.receive(phone.snapshot) == .applied)
-        #expect(watch.settings(.sailing).actionButton == .mark)
-        #expect(watch.receive(phone.snapshot) == .unchanged)
-        #expect(phone.receive(watch.snapshot) == .unchanged)
-
-        // A later unrelated edit on the watch keeps Mark on both.
-        watch.edit(.sailing, at: 20) { $0.countdownMinutes = 5 }
-        #expect(phone.receive(watch.snapshot) == .applied)
-        #expect(phone.settings(.sailing).actionButton == .mark)
-        #expect(phone.settings(.sailing).countdownMinutes == 5)
-    }
-
-    /// Equal stamps with different values: only the stamp's author keeps its state, so the
-    /// two devices never trade states back and forth.
-    @Test func equalStampsWithDifferentValuesFollowTheAuthor() {
-        let author = Device(id: "author")
-        let other = Device(id: "other")
-        author.edit(.kayak, at: 50) { $0.actionButton = .mark }
-        other.values = author.values
-        other.values[SportSettings.Key.actionButton(.kayak)] = nil
-        #expect(author.receive(other.snapshot) == .keptLocalNewer)
-        #expect(author.settings(.kayak).actionButton == .mark)
-        #expect(other.receive(author.snapshot) == .applied)
-        #expect(other.settings(.kayak).actionButton == .mark)
-        #expect(author.receive(other.snapshot) == .unchanged)
-    }
-
-    /// A number that comes back as another numeric type is the same value.
-    @Test func sameValueToleratesStoreTypes() {
-        #expect(SettingsSync.sameValue(5, 5.0))
-        #expect(SettingsSync.sameValue(true, true))
-        #expect(SettingsSync.sameValue("mark", "mark"))
-        #expect(!SettingsSync.sameValue("mark", nil))
-        #expect(!SettingsSync.sameValue("1", 1))
-        #expect(!SettingsSync.sameValue(2, 3))
-    }
-
-    /// A list-less snapshot that carries a newer key (a build with the Action button but no
-    /// list) applies it; one it lacks keeps the local value.
-    @Test func listlessSnapshotAppliesTheNewerKeysItCarries() {
-        let device = Device()
-        device.edit(.sailing, at: 100) {
-            $0.actionButton = .mark
-            $0.fuelBurnRate = 10
-        }
-        let remote: [String: Any] = [
-            SportSettings.Key.actionButton(.sailing): "manOverboard",
-            SettingsSync.Key.revision: 200_000, SettingsSync.Key.revisionDevice: "other",
-        ]
-        #expect(device.receive(remote) == .merged)
-        #expect(device.settings(.sailing).actionButton == .manOverboard)
-        #expect(device.settings(.sailing).fuelBurnRate == 10)
-    }
-
-    /// Newer → older: the older build still reads the values it knows from a snapshot with a
-    /// key list, and the newer keys come back intact after the round trip.
-    @Test func newerSnapshotStillWorksOnAnOlderBuild() {
-        let newer = Device()
-        newer.edit(.kayak, at: 100) {
+        phone.edit(.kayak, at: 100) {
             $0.speedUnit = .milesPerHour
             $0.countdownMinutes = 3
             $0.actionButton = .mark
         }
-        let older = OlderBuild()
-        older.receive(newer.snapshot)
-        let seen = SportSettings(sport: .kayak, reading: older.read)
-        #expect(seen.speedUnit == .milesPerHour)
-        #expect(seen.countdownMinutes == 3)
-        #expect(older.values[SportSettings.Key.actionButton(.kayak)] == nil)
-        #expect(older.values[SettingsSync.Key.knownKeys] == nil)
-
-        // The older build's own reply (same revision) changes nothing on the newer one.
-        #expect(newer.receive(older.snapshot) == .unchanged)
-        #expect(newer.settings(.kayak).actionButton == .mark)
+        let watch = LegacyBuild(id: "watch")
+        #expect(watch.receive(phone.snapshot))
+        #expect(watch.settings(.kayak).speedUnit == .milesPerHour)
+        #expect(watch.settings(.kayak).countdownMinutes == 3)
+        #expect(watch.values[SportSettings.Key.actionButton(.kayak)] == nil)
+        #expect(phone.receive(watch.snapshot) == .unchanged)
+        #expect(phone.settings(.kayak).actionButton == .mark)
     }
 
-    /// Both new: a key list covers every key, so a return to a default propagates, and a key
-    /// the sender lists but this build does not know is ignored.
-    @Test func bothNewBuildsSyncEveryKey() {
-        let phone = Device()
-        let watch = Device()
-        phone.edit(.windsurfing, at: 100) {
-            $0.actionButton = .mark
-            $0.fuelBurnRate = 12
-        }
+    /// A legacy snapshot older than our newest stamp would lose on the older build too,
+    /// so it is not applied here either; we answer and both end on the same state.
+    @Test func olderLegacySnapshotLosesAndBothConverge() {
+        let phone = Device(id: "phone")
+        let watch = LegacyBuild(id: "watch")
+        phone.edit(.sailing, at: 11.5) { $0.actionButton = .mark }  // phone clock ahead
+        watch.edit(SportSettings.Key.countdown(.sailing), 3, at: 11.2)  // before seeing it
+        let fromWatch = watch.snapshot
+        #expect(watch.receive(phone.snapshot))  // the older build takes our whole state
+        #expect(phone.receive(fromWatch) == .keptLocalNewer)
+        #expect(watch.settings(.sailing).countdownMinutes == phone.settings(.sailing).countdownMinutes)
+        #expect(phone.settings(.sailing).actionButton == .mark)
+    }
+
+    /// Re-check finding 1: a later legacy edit is never overwritten by a stamp the phone
+    /// made up, because the phone makes none when it applies.
+    @Test func laterLegacyEditsAlwaysApply() {
+        let phone = Device(id: "phone")
+        let watch = LegacyBuild(id: "watch")
+        phone.edit(.sailing, at: 10) { $0.actionButton = .mark }
+        #expect(watch.receive(phone.snapshot))
+        watch.edit(SportSettings.Key.countdown(.sailing), 3, at: 11)
+        #expect(phone.receive(watch.snapshot) == .applied)
+        #expect(!watch.receive(phone.snapshot))  // nothing newer to take
+        watch.edit(SportSettings.Key.countdown(.sailing), 5, at: 11.2)
+        #expect(phone.receive(watch.snapshot) == .applied)
+        #expect(phone.settings(.sailing).countdownMinutes == 5)
+        #expect(phone.settings(.sailing).actionButton == .mark)
+    }
+
+    /// First review finding and re-check finding 2: the watch upgrades, its activation
+    /// snapshot is coalesced away, and its first edit (a different setting) neither
+    /// clears the phone's Action button nor keeps the watch from getting it.
+    @Test func keptValuesSurviveTheLegacyBuildsUpgrade() {
+        let phone = Device(id: "phone")
+        let legacy = LegacyBuild(id: "watch")
+        phone.edit(.sailing, at: 10) { $0.actionButton = .mark }
+        #expect(legacy.receive(phone.snapshot))
+        legacy.edit(SportSettings.Key.countdown(.sailing), 3, at: 11)
+        #expect(phone.receive(legacy.snapshot) == .applied)
+        #expect(!legacy.receive(phone.snapshot))
+        #expect(legacy.values[SportSettings.Key.actionButton(.sailing)] == nil)
+
+        let watch = legacy.upgraded(at: 12)
+        _ = watch.snapshot  // activation snapshot, coalesced away
+        watch.edit(.sailing, at: 20) { $0.countdownMinutes = 5 }
+        #expect(watch.stamp(SportSettings.Key.actionButton(.sailing)) == nil)
+        #expect(phone.receive(watch.snapshot) == .appliedAndKeptLocalNewer)
+        #expect(phone.settings(.sailing).actionButton == .mark)
+        #expect(phone.settings(.sailing).countdownMinutes == 5)
         #expect(watch.receive(phone.snapshot) == .applied)
-        #expect(watch.settings(.windsurfing).actionButton == .mark)
+        #expect(watch.settings(.sailing).actionButton == .mark)
+        #expect(watch.receive(phone.snapshot) == .unchanged)
+        #expect(phone.receive(watch.snapshot) == .unchanged)
+    }
 
-        watch.edit(.windsurfing, at: 200) {
-            $0.actionButton = .lap
-            $0.fuelBurnRate = nil
+    /// A legacy snapshot that carries a newer key (a build with the Action button) applies
+    /// it; a newer key it lacks keeps the local value.
+    @Test func legacySnapshotAppliesTheNewerKeysItCarries() {
+        let phone = Device(id: "phone")
+        phone.edit(.sailing, at: 100) {
+            $0.actionButton = .mark
+            $0.fuelBurnRate = 10
         }
-        var snapshot = watch.snapshot
-        snapshot[SettingsSync.Key.knownKeys] = SportSettings.Key.allSports + ["settings.future.windsurfing"]
-        snapshot["settings.future.windsurfing"] = 1
-        #expect(phone.receive(snapshot) == .applied)
-        #expect(phone.settings(.windsurfing) == watch.settings(.windsurfing))
-        #expect(phone.values[SportSettings.Key.actionButton(.windsurfing)] == nil)
-        #expect(phone.values["settings.future.windsurfing"] == nil)
+        let watch = LegacyBuild(id: "watch", alsoKnows: [SportSettings.Key.actionButton(.sailing)])
+        #expect(watch.receive(phone.snapshot))
+        watch.edit(SportSettings.Key.actionButton(.sailing), "manOverboard", at: 200)
+        #expect(phone.receive(watch.snapshot) == .applied)
+        #expect(phone.settings(.sailing).actionButton == .manOverboard)
+        #expect(phone.settings(.sailing).fuelBurnRate == 10)
     }
 
-    /// A newer build's list without a key this build knows leaves that key's local value.
-    @Test func keysTheSenderDoesNotListKeepLocalValues() {
-        let device = Device()
-        device.edit(.canoe, at: 100) { $0.actionButton = .manOverboard }
-        let remote: [String: Any] = [
-            SettingsSync.Key.knownKeys: [SportSettings.Key.countdown(.canoe)],
-            SportSettings.Key.countdown(.canoe): 1,
-            SettingsSync.Key.revision: 200_000, SettingsSync.Key.revisionDevice: "other",
-        ]
-        #expect(device.receive(remote) == .merged)
-        #expect(device.settings(.canoe).countdownMinutes == 1)
-        #expect(device.settings(.canoe).actionButton == .manOverboard)
+    /// An older build's global units in its snapshot are migrated, not lost.
+    @Test func migratesLegacyUnitsInARemoteSnapshot() {
+        let watch = Device()
+        let remote: [String: Any] = [SportSettings.Key.legacyDistanceUnit: "mi", SettingsSync.Key.revision: 5_000]
+        #expect(watch.receive(remote) == .applied)
+        #expect(watch.settings(.canoe).distanceUnit == .statuteMiles)
+        #expect(watch.values[SportSettings.Key.legacyDistanceUnit] == nil)
     }
 
-    /// Revision ties still pick the same winner on both sides whatever the builds.
-    @Test func tieBreaksAreUnchangedAcrossBuilds() {
-        let newer = Device(id: "b-newer")
-        let older = OlderBuild()
-        newer.edit(.sup, at: 100) { $0.countdownMinutes = 1 }
-        older.values[SportSettings.Key.countdown(.sup)] = 3
-        older.values[SettingsSync.Key.revision] = newer.revision
-        older.values[SettingsSync.Key.revisionDevice] = "a-older"
-        // (revision, "b-newer") beats (revision, "a-older"): the newer build keeps its state.
-        #expect(newer.receive(older.snapshot) == .keptLocalNewer)
-        #expect(newer.settings(.sup).countdownMinutes == 1)
-
-        older.values[SettingsSync.Key.revisionDevice] = "c-older"
-        #expect(newer.receive(older.snapshot) == .applied)
-        #expect(newer.settings(.sup).countdownMinutes == 3)
-        #expect(newer.receive(older.snapshot) == .unchanged)
-    }
-
-    /// The assumed legacy set is exactly the first per-sport fields, for every sport.
     @Test func legacyKnownKeysAreTheFirstPerSportFields() {
         let keys = SettingsSync.legacyKnownKeys
         #expect(keys.count == 8 * Sport.allCases.count)
@@ -463,5 +467,51 @@ import Testing
         #expect(!keys.contains(SportSettings.Key.fuelBurn(.motorboating)))
         #expect(!keys.contains(SportSettings.Key.fuelIdleBurn(.motorboating)))
         #expect(!keys.contains(SportSettings.Key.fuelUnit(.motorboating)))
+    }
+
+    // MARK: Format
+
+    /// A snapshot carries values, stamps and the old builds' revision; never "highest seen"
+    /// or history.
+    @Test func snapshotCarriesSettingsStampsAndTheNewestRevision() {
+        let device = Device(id: "d")
+        device.edit(.sailing, at: 1) { $0.firstScreen = .map }
+        device.edit(.sailing, at: 2) { $0.firstScreen = .speed }  // back to the default
+        device.edit(.kayak, at: 3) { $0.countdownMinutes = 1 }
+        device.values["history.lastUsed.sailing"] = 1.0
+        let snapshot = device.snapshot
+        #expect(
+            Set(snapshot.keys) == [
+                SportSettings.Key.countdown(.kayak), SettingsSync.Key.stamps, SettingsSync.Key.revision,
+                SettingsSync.Key.revisionDevice,
+            ])
+        #expect(snapshot[SettingsSync.Key.revision] as? Int64 == 3_000)
+        #expect(snapshot[SettingsSync.Key.revisionDevice] as? String == "d")
+        let stamps = SettingsSync.decode(snapshot[SettingsSync.Key.stamps])
+        #expect(stamps[SportSettings.Key.firstScreen(.sailing)] == .init(revision: 2_000, device: "d"))
+        #expect(stamps.count == 2)
+    }
+
+    /// Stamps survive a round trip through property-list types and skip junk.
+    @Test func stampsDecodeTolerantly() {
+        let raw: [String: Any] = [
+            "settings.countdown.sup": [Double(5_000), "d"] as [Any],
+            "settings.hidden.sup": ["x", "d"] as [Any],
+            "settings.firstScreen.sup": "junk",
+        ]
+        #expect(SettingsSync.decode(raw) == ["settings.countdown.sup": .init(revision: 5_000, device: "d")])
+        #expect(SettingsSync.decode(nil).isEmpty)
+    }
+
+    /// A number that comes back as another numeric type is the same value.
+    @Test func sameValueToleratesStoreTypes() {
+        #expect(SettingsSync.sameValue(5, 5.0))
+        #expect(SettingsSync.sameValue(Int64(5), 5))
+        #expect(SettingsSync.sameValue(true, true))
+        #expect(SettingsSync.sameValue("mark", "mark"))
+        #expect(SettingsSync.sameValue(nil, nil))
+        #expect(!SettingsSync.sameValue("mark", nil))
+        #expect(!SettingsSync.sameValue("1", 1))
+        #expect(!SettingsSync.sameValue(2, 3))
     }
 }

@@ -180,10 +180,11 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
     // MARK: Settings (both ways)
 
     // Each device sends its whole settings snapshot as its application context (only the
-    // latest is delivered). The receiver keeps whichever carries the higher revision
-    // (`SettingsSync`) and answers an older one with its own, so both converge. A snapshot
-    // lists the keys its sender's build knows, and applying it touches only those, so the
-    // two apps can run different builds without losing each other's newer settings.
+    // latest is delivered). Every setting carries its own stamp; the receiver takes each
+    // setting whose stamp is newer (`SettingsSync`) and answers with its own snapshot when
+    // it holds something newer, so both converge. Settings the sender does not send are
+    // left alone, so the two apps can run different builds without losing each other's
+    // newer settings.
     // Applying runs on the main actor, like local edits, so the two never interleave.
 
     #if os(iOS)
@@ -237,22 +238,16 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
         DispatchQueue.main.async {
             MainActor.assumeIsolated {
                 var push = alwaysPush
-                switch snapshot.value.map({ UserSettings.apply($0) }) {
-                case .applied:
-                    NotificationCenter.default.post(name: UserSettings.didChangeRemotely, object: nil)
-                    #if os(iOS)
-                        // Keep the phone's outgoing context current, for a watch app
-                        // reinstalled later.
-                        push = true
-                    #endif
-                case .merged:
-                    // Kept values the other build does not know, under a newer revision.
-                    NotificationCenter.default.post(name: UserSettings.didChangeRemotely, object: nil)
-                    push = true
-                case .keptLocalNewer:
-                    push = true
-                case .unchanged, nil:
-                    break
+                if let outcome = snapshot.value.map(UserSettings.apply) {
+                    if outcome.changed {
+                        NotificationCenter.default.post(name: UserSettings.didChangeRemotely, object: nil)
+                        #if os(iOS)
+                            // Keep the phone's outgoing context current, for a watch app
+                            // reinstalled later.
+                            push = true
+                        #endif
+                    }
+                    if outcome.replyNeeded { push = true }
                 }
                 if push { self.pushSettings() }
             }

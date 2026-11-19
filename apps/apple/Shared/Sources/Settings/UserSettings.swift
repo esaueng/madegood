@@ -33,12 +33,11 @@ enum UserSettings {
         SportSettings(sport: sport) { defaults.object(forKey: $0) }
     }
 
-    /// Stores a sport's settings and gives them a new revision.
+    /// Stores a sport's settings and stamps each changed setting with a new revision.
     @MainActor
     static func save(_ settings: SportSettings, for sport: Sport, at date: Date = Date()) {
-        settings.write(sport: sport, to: write)
-        SettingsSync.stampLocalChange(
-            now: date.timeIntervalSince1970, device: deviceID, reading: read, writing: write)
+        SettingsSync.save(
+            settings, for: sport, now: date.timeIntervalSince1970, device: deviceID, reading: read, writing: write)
     }
 
     static func display(for sport: Sport) -> LiveDisplay {
@@ -66,7 +65,7 @@ enum UserSettings {
 
     // MARK: Sync
 
-    /// This device's per-sport settings and their revision, to send to the other device.
+    /// This device's per-sport settings and their stamps, to send to the other device.
     /// Main actor only, so it never mixes values from before a save with the revision
     /// from after it.
     @MainActor
@@ -74,20 +73,20 @@ enum UserSettings {
         SettingsSync.snapshot(reading: read)
     }
 
-    /// Applies settings from the other device if their revision is newer (`SettingsSync`).
+    /// Applies each setting from the other device whose stamp is newer (`SettingsSync`).
     @MainActor
-    static func apply(_ snapshot: [String: Any], at date: Date = Date()) -> SettingsSync.Outcome {
-        SettingsSync.apply(
-            remote: snapshot, now: date.timeIntervalSince1970, device: deviceID, reading: read, writing: write)
+    static func apply(_ snapshot: [String: Any]) -> SettingsSync.Outcome {
+        SettingsSync.apply(remote: snapshot, reading: read, writing: write)
     }
 
-    /// Moves settings from older builds to the current keys and gives values without a
-    /// revision one, so a fresh companion's empty settings never replace them. Run at
-    /// launch, before syncing.
+    /// Moves settings from older builds to the current keys and gives them per-setting
+    /// stamps (from their snapshot revision, or a new one for values from before
+    /// revisions), so a fresh companion's empty settings never replace them. Run at launch,
+    /// before syncing.
     @MainActor
     static func migrate(now: Date = Date()) {
         SportSettings.migrateLegacyUnits(reading: read, writing: write)
-        SettingsSync.assignMissingRevision(
+        SettingsSync.migrateToKeyStamps(
             now: now.timeIntervalSince1970, device: deviceID, reading: read, writing: write)
         for key in [Key.legacyWatchLastSport, Key.legacyPhoneSport] {
             if let raw = defaults.string(forKey: key), let sport = Sport(rawValue: raw),
@@ -151,7 +150,7 @@ enum UserSettings {
     static func resetIfRequested() {
         #if DEBUG
             guard ProcessInfo.processInfo.arguments.contains("-resetSettings") else { return }
-            var keys = SettingsSync.snapshotKeys + [SettingsSync.Key.highestSeen, Key.appearance]
+            var keys = SettingsSync.storedKeys + [SettingsSync.Key.highestSeen, Key.appearance]
             for sport in Sport.allCases {
                 keys += [Key.lastUsed(sport), Key.lastDistance(sport), Key.lastDate(sport)]
             }
