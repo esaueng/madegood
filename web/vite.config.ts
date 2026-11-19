@@ -17,6 +17,8 @@ export default defineConfig({
     tailwindcss(),
     cloudflare(),
   ],
+  // MapLibre alone is about 1 MB; it loads lazily on the session page only.
+  build: { chunkSizeWarningLimit: 1100 },
   resolve: {
     alias: { "@": path.resolve(import.meta.dirname, "src/client") },
   },

@@ -187,9 +187,9 @@ function isCoordinate({ lat, lon }: Coordinate): boolean {
 const radians = (degrees: number) => (degrees * Math.PI) / 180;
 // Match WaterKit's spherical model. Pad the boundary for floating-point rounding.
 const EARTH_RADIUS_M = 6_371_008.8;
-const ZONE_MARGIN_M = 0.001;
+export const ZONE_MARGIN_M = 0.001;
 
-function distanceM(a: Coordinate, b: Coordinate): number {
+export function distanceM(a: Coordinate, b: Coordinate): number {
   const latA = radians(a.lat);
   const latB = radians(b.lat);
   const lonDelta = radians(b.lon - a.lon);

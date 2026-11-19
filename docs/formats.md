@@ -205,6 +205,32 @@ returns it the same way. The server stores the bytes unchanged; on upload it che
 the gzip header and that the file starts a JSON object, so clients must send a valid
 track v1 whose `sessionId` matches the URL.
 
+### Shared copies
+
+`GET` returns the stored file only to the session's owner. Anyone else who may see the
+session (public or unlisted) gets a shared copy built by the server, still a valid
+track v1:
+
+- GPS fixes inside the owner's privacy zones are removed, and only the columns
+  `t lat lon spd crs hacc` are kept.
+- A `privacyGap` event (`{"t": …, "type": "privacyGap", "data": {"index": …}}`) marks
+  the first fix after removed fixes, and any kept fix whose line from the fix before it
+  might pass through a zone. `index` is that fix's position in the shared GPS columns;
+  readers must not draw a line from the fix before it. Match by index, not by `t`: fixes
+  on both sides of a zone can share a timestamp.
+- "Might pass through" covers any line a reader may draw between the two fixes: the
+  great circle, or any path monotonic in latitude and in longitude the short way round
+  (such as a straight line on a Mercator map, or linear interpolation in degrees). Readers
+  must take the short way round across ±180°.
+- Fixes beyond Web Mercator's latitude limit (±85.0511°) are left out, with a gap, since
+  maps clamp them to their edge and would draw a line the check never covered. Readers
+  must draw shared lines without simplification (MapLibre: `tolerance: 0`).
+- Shared copies are built only for tracks up to 8 MiB inflated and 500,000 fixes; above
+  that, others get 422 `track_too_large` and only the owner can download the track.
+- `hr` is empty. Events are limited to `start`, `stop`, `pause`, `resume`, `lap`, `tack`
+  and `gybe`, with no `data` except a numeric `durationS` on maneuvers.
+- `summary` holds only the numbers the API shares with other viewers.
+
 ---
 
 ## GPX export
@@ -332,3 +358,7 @@ Both formats contain precise locations and times. Before a recording goes into
 `fixtures/` or an issue, run `scripts/anonymize-track` on it. It moves positions to
 a fake origin, keeping distances and bearings; shifts every timestamp to a fixed
 date; and replaces the session ID. See `fixtures/README.md`.
+
+The website's maps load tiles from OpenStreetMap (and OpenSeaMap when seamarks are on),
+so those tile servers see the area being viewed and the viewer's IP address, as with any
+tile map; the iPhone's maps do the same with Apple Maps.

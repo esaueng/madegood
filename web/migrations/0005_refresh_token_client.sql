@@ -1,0 +1,1 @@
+ALTER TABLE `refresh_tokens` ADD `client` text DEFAULT 'app' NOT NULL;
