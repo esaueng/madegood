@@ -131,14 +131,25 @@ fork:
 - Each push to `main` that touches `web/` builds, creates the post-processing queues
   if they are missing, applies migrations, then deploys production.
 
+**One public address.** Set `CANONICAL_ORIGIN` in `web/wrangler.jsonc` (production `vars`)
+and `VITE_CANONICAL_ORIGIN` in the production build step of `.github/workflows/deploy.yml` to
+your custom domain (for example `https://madegood.example`). Pages on any other host, such as
+the `workers.dev` address, move there; `/api` answers on every host. With a custom domain you can
+also turn the production `workers.dev` address off (`"workers_dev": false` in `wrangler.jsonc`,
+as this repository does) — then point the deploy workflow's health check at your domain. Register that domain and `https://<domain>/api/auth/web/apple/callback` on the
+Sign in with Apple Services ID, and point `MADEGOOD_API_URL` at `https://<domain>/api`.
+
 Set in the repository (Settings → Secrets and variables → Actions):
 
 | Name | Kind | Value |
 |---|---|---|
 | `CLOUDFLARE_API_TOKEN` | secret | An API token with Workers Scripts, D1 and Queues edit on the account (plus R2 edit if the workflow should create buckets; it does not today) |
-| `CLOUDFLARE_ACCOUNT_ID` | variable | Your account ID |
-| `D1_DATABASE_ID` | variable | The `madegood` database's ID |
-| `D1_PREVIEW_DATABASE_ID` | variable | The `madegood-preview` database's ID |
+| `CLOUDFLARE_ACCOUNT_ID` | secret | Your account ID |
+| `D1_DATABASE_ID` | secret | The `madegood` database's ID |
+| `D1_PREVIEW_DATABASE_ID` | secret | The `madegood-preview` database's ID |
+
+The IDs aren't credentials, but they're secrets rather than variables so GitHub masks them
+in the public workflow logs (Cloudflare's CI guides store `CLOUDFLARE_ACCOUNT_ID` the same way).
 
 `scripts/cloudflare-config` writes the IDs into the runner's copy of `wrangler.jsonc`;
 the repository keeps the placeholders. Set the `JWT_SIGNING_KEY` secret on both Workers

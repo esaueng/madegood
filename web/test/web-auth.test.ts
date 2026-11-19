@@ -87,7 +87,7 @@ describe("web sign-in with Apple", () => {
 
   it("signs in on the callback and sets HttpOnly session cookies", async () => {
     const { response, access, refresh } = await webSignIn();
-    expect(response.headers.get("location")).toBe(`${ORIGIN}/app`);
+    expect(response.headers.get("location")).toBe(`${ORIGIN}/sessions`);
     const raw = cookies(response).raw.join("\n");
     expect(raw).toMatch(/mg_at=[^;]+;.*Path=\/api;.*HttpOnly/);
     expect(raw).toMatch(/mg_rt=[^;]+;.*Path=\/api\/auth\/web;.*HttpOnly.*SameSite=Strict/);
@@ -106,9 +106,9 @@ describe("web sign-in with Apple", () => {
   it("returns to a same-site path, never another site", async () => {
     for (const [next, expected] of [
       ["/s/abc?x=1", "/s/abc?x=1"],
-      ["//evil.example", "/app"],
-      ["https://evil.example/", "/app"],
-      ["/\\evil.example", "/app"],
+      ["//evil.example", "/sessions"],
+      ["https://evil.example/", "/sessions"],
+      ["/\\evil.example", "/sessions"],
     ]) {
       const started = await start(next);
       const url = new URL(started.headers.get("location") ?? "");

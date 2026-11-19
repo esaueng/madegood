@@ -32,7 +32,7 @@ struct SportBadge: View {
                 .resizable()
                 .scaledToFit()
                 .frame(width: diameter * 0.73, height: diameter * 0.73)
-                .foregroundStyle(Theme.cream)
+                .foregroundStyle(Theme.pearl)
                 .frame(width: diameter, height: diameter)
                 .background(Color.accentColor.opacity(dimmed ? 0.4 : 1), in: .circle)
         }

@@ -26,12 +26,12 @@ struct WindArrow: View {
             if resolved {
                 Image(systemName: "arrow.down")
                     .font(.system(size: size * 0.45, weight: .bold))
-                    .foregroundStyle(Theme.brightTeal)
+                    .foregroundStyle(Theme.brightPetrol)
                     .offset(y: -size * 0.12)
                     .rotationEffect(.degrees(relative))
             } else {
                 Capsule()
-                    .fill(Theme.brightTeal)
+                    .fill(Theme.brightPetrol)
                     .frame(width: size * 0.07, height: size * 0.66)
                     .rotationEffect(.degrees(relative))
             }

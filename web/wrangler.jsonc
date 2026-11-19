@@ -6,6 +6,10 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "madegood",
   "main": "./src/server/index.ts",
+  // Production serves only its custom domain (CANONICAL_ORIGIN); the workers.dev address is off.
+  // Preview versions keep their *-madegood.<subdomain>.workers.dev URLs.
+  "workers_dev": false,
+  "preview_urls": true,
   "compatibility_date": "2026-10-01",
   "compatibility_flags": ["nodejs_compat"],
   "observability": { "enabled": true },
@@ -25,10 +29,13 @@
   // Production web sign-in uses the Services ID app.madegood.web (return URL
   // https://<production host>/api/auth/web/apple/callback). Previews stay off: their
   // per-PR hosts aren't registered return URLs.
+  // CANONICAL_ORIGIN: the one public address. Pages (and the SPA, via
+  // VITE_CANONICAL_ORIGIN at build time) on any other host move there; /api answers on all.
   "vars": {
     "APP_VERSION": "0.1.0",
     "APPLE_AUDIENCES": "app.madegood",
-    "APPLE_WEB_CLIENT_ID": "app.madegood.web"
+    "APPLE_WEB_CLIENT_ID": "app.madegood.web",
+    "CANONICAL_ORIGIN": "https://madegood.app"
   },
   "d1_databases": [
     {
@@ -76,11 +83,13 @@
   "env": {
     // Per-PR previews use their own database and bucket, never production data.
     "preview": {
+      "workers_dev": true,
       "name": "madegood-preview",
       "vars": {
         "APP_VERSION": "0.1.0-preview",
         "APPLE_AUDIENCES": "app.madegood",
-        "APPLE_WEB_CLIENT_ID": ""
+        "APPLE_WEB_CLIENT_ID": "",
+        "CANONICAL_ORIGIN": ""
       },
       "d1_databases": [
         {
