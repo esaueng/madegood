@@ -379,6 +379,37 @@ describe("visibility", () => {
     }
   });
 
+  // Review of #63: shared session pages must not chart the owner's heart rate.
+  it("gives others the track without heart rate, marks or free-form event data", async () => {
+    const owner = await signIn();
+    const other = await signIn();
+    const id = crypto.randomUUID();
+    expect((await putSession(owner.accessToken, id)).status).toBe(201);
+    const withHr = {
+      ...JSON.parse(trackJson(id)),
+      hr: { t: [0, 1], bpm: [120, 125] },
+      events: [
+        { t: 0.5, type: "mark", data: { lat: 0.0001, lon: 0.0002 } },
+        { t: 1, type: "tack", data: { durationS: 6, note: "x" } },
+      ],
+    };
+    expect((await putTrack(owner.accessToken, id, await gzip(JSON.stringify(withHr)))).status).toBe(
+      204,
+    );
+    expect((await patchSession(owner.accessToken, id, { visibility: "public" })).status).toBe(200);
+
+    for (const token of [other.accessToken, null]) {
+      const shared = JSON.parse(await gunzip(await (await getTrack(token, id)).arrayBuffer()));
+      expect(shared.hr).toEqual({ t: [], bpm: [] });
+      expect(shared.events).toEqual([{ t: 1, type: "tack", data: { durationS: 6 } }]);
+      expect(shared.gps.lat).toEqual([0.0001, 0.00011]);
+    }
+    const mine = JSON.parse(
+      await gunzip(await (await getTrack(owner.accessToken, id)).arrayBuffer()),
+    );
+    expect(mine.hr.bpm).toEqual([120, 125]);
+  });
+
   // Regression test from review of #37: a coordinate in the summary must not reach anyone
   // but the owner.
   it("shows others only the shared summary numbers, never positions or heart rate", async () => {
@@ -390,6 +421,7 @@ describe("visibility", () => {
       movingTime: 3300,
       elapsed: 3600,
       maxSpeed10s: 2.4,
+      best500m: 2.2,
       heartRateMax: 150,
       start: { lat: 0.0001, lon: 0.0002 },
       laps: [
@@ -408,15 +440,17 @@ describe("visibility", () => {
         movingTime: 3300,
         elapsed: 3600,
         maxSpeed10s: 2.4,
+        best500m: 2.2,
         laps: [{ start: 0, end: 600, distance: 1000, movingTime: 590, auto: true }],
       });
     }
   });
 
-  it("withholds tracks from others while the owner has a privacy zone", async () => {
+  it("gives others a privacy-trimmed copy of the track, and the owner the file as uploaded", async () => {
     const owner = await signIn();
     const other = await signIn();
     const id = await sessionWithTrack(owner, "public");
+    // The test track's fixes are about 25 m from 0,0.
     await env.DB.prepare(
       "insert into privacy_zones (id, user_id, lat, lon, radius_m) values (?, ?, 0, 0, 200)",
     )
@@ -426,10 +460,13 @@ describe("visibility", () => {
     for (const token of [other.accessToken, null]) {
       expect((await getSession(token, id)).status).toBe(200);
       const track = await getTrack(token, id);
-      expect(track.status).toBe(403);
-      expect(await track.json()).toMatchObject({ error: "forbidden" });
+      expect(track.status).toBe(200);
+      const shared = JSON.parse(await gunzip(await track.arrayBuffer()));
+      expect(shared.gps.t).toEqual([]);
+      expect(shared.gps.lat).toEqual([]);
     }
-    expect((await getTrack(owner.accessToken, id)).status).toBe(200);
+    const mine = await getTrack(owner.accessToken, id);
+    expect(JSON.parse(await gunzip(await mine.arrayBuffer()))).toEqual(JSON.parse(trackJson(id)));
   });
 
   it("returns 404 for a session without a track", async () => {

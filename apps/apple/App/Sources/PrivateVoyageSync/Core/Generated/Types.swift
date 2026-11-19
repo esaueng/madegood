@@ -369,6 +369,8 @@ internal enum Components {
                 case unsupported_media_type = "unsupported_media_type"
                 case payload_too_large = "payload_too_large"
                 case invalid_track = "invalid_track"
+                case track_too_large = "track_too_large"
+                case zone_limit = "zone_limit"
                 case _internal = "internal"
                 case session_deleted = "session_deleted"
                 case stale_revision = "stale_revision"

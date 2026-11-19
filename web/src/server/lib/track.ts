@@ -21,6 +21,43 @@ export const TRACK_SPORTS = [
   "sup",
 ] as const;
 
+/**
+ * Largest inflated track the server parses to build a shared (privacy-filtered) copy:
+ * 8 MiB, about 45 hours at 1 Hz (about 50 bytes a fix). Parsing materializes the whole
+ * document, then the copy and its JSON are built beside it, so the cap keeps all of that
+ * well inside a Worker's 128 MiB. session-privacy.ts also caps the fix count. The owner
+ * still downloads any stored track; others get 422 `track_too_large` above either cap.
+ */
+export const SHARED_TRACK_MAX_INFLATED_BYTES = 8 * 1024 * 1024;
+
+export class TrackTooLarge extends Error {}
+
+/**
+ * Inflates a gzipped track stream and parses its JSON without a second full-size buffer,
+ * failing with TrackTooLarge once the inflated bytes pass `limit`.
+ */
+export async function parseGzippedJson(
+  body: ReadableStream<Uint8Array>,
+  limit: number,
+): Promise<unknown> {
+  let size = 0;
+  const capped = body.pipeThrough(new DecompressionStream("gzip")).pipeThrough(
+    new TransformStream<Uint8Array, Uint8Array>({
+      transform(chunk, controller) {
+        size += chunk.byteLength;
+        if (size > limit) controller.error(new TrackTooLarge());
+        else controller.enqueue(chunk);
+      },
+    }),
+  );
+  try {
+    return await new Response(capped).json();
+  } catch (err) {
+    if (size > limit) throw new TrackTooLarge();
+    throw err;
+  }
+}
+
 /** Bound memory for the private leg endpoint, which validates the complete JSON. */
 const LEG_TRACK_MAX_INFLATED_BYTES = 16 * 1024 * 1024;
 

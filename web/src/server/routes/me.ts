@@ -1,5 +1,5 @@
 import { createRoute, z } from "@hono/zod-openapi";
-import { and, eq, isNotNull } from "drizzle-orm";
+import { and, eq, isNotNull, isNull, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
 import { type AuthEnv, requireAuth } from "../auth/middleware";
 import {
@@ -14,6 +14,7 @@ import { sessions, users } from "../db/schema";
 import { apiError, errorResponse } from "../lib/errors";
 import { createRouter } from "../lib/router";
 import { deletePrefix, userPrefix } from "../lib/storage";
+import { TRACK_SPORTS } from "../lib/track";
 import { purgeAccountVoyages } from "../live/registry";
 
 const security = [{ bearerAuth: [] }];
@@ -89,6 +90,31 @@ const deleteRoute = createRoute({
   },
 });
 
+const SportTotals = z.object({
+  sessions: z.number().int(),
+  distanceM: z.number().openapi({ description: "Sum of known distances, m." }),
+  movingS: z.number().openapi({ description: "Sum of known moving times, s." }),
+  durationS: z.number().openapi({ description: "Sum of known elapsed times, s." }),
+});
+
+const MeStats = SportTotals.extend({
+  bySport: z.array(SportTotals.extend({ sport: z.enum(TRACK_SPORTS) })),
+}).openapi("MeStats");
+
+const statsRoute = createRoute({
+  method: "get",
+  path: "/me/stats",
+  summary: "Totals over the signed-in user's sessions",
+  description: "Counts and sums over every session the user has, overall and per sport.",
+  tags: ["account"],
+  security,
+  middleware: [requireAuth] as const,
+  responses: {
+    200: { description: "The totals.", content: { "application/json": { schema: MeStats } } },
+    401: errorResponse("Missing or invalid access token."),
+  },
+});
+
 const unknownUser = (c: Parameters<typeof apiError>[0]) =>
   apiError(c, 401, "unauthorized", "The account no longer exists.");
 
@@ -160,4 +186,27 @@ me.openapi(deleteRoute, async (c) => {
     if (result.status === "rejected") throw result.reason;
   }
   return c.body(null, 204);
+});
+
+me.openapi(statsRoute, async (c) => {
+  const rows = await drizzle(c.env.DB)
+    .select({
+      sport: sessions.sport,
+      sessions: sql<number>`count(*)`,
+      distanceM: sql<number>`coalesce(sum(${sessions.distanceM}), 0)`,
+      movingS: sql<number>`coalesce(sum(${sessions.movingS}), 0)`,
+      durationS: sql<number>`coalesce(sum(${sessions.durationS}), 0)`,
+    })
+    .from(sessions)
+    .where(and(eq(sessions.userId, c.var.userId), isNull(sessions.deletedAt)))
+    .groupBy(sessions.sport)
+    .orderBy(sessions.sport);
+  const total = { sessions: 0, distanceM: 0, movingS: 0, durationS: 0 };
+  for (const row of rows) {
+    total.sessions += row.sessions;
+    total.distanceM += row.distanceM;
+    total.movingS += row.movingS;
+    total.durationS += row.durationS;
+  }
+  return c.json({ ...total, bySport: rows }, 200);
 });
