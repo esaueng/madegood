@@ -37,7 +37,7 @@ final class LiveStrokesTests: XCTestCase {
     /// uptime; the wall clock is not an input.
     func testRateUsesUptimeNotTheWallClock() throws {
         let clock = Uptime()
-        let strokes = LiveStrokes(sport: .sup, startUptime: startUptime, uptime: clock.read)
+        let strokes = LiveStrokes(sport: .sup, startMono: startUptime, now: clock.read)
         feed(motion(seconds: 60), to: strokes, clock: clock)
         let rate = try XCTUnwrap(strokes.snapshot().strokeRate)
         XCTAssertEqual(rate, 60, accuracy: 2)
@@ -50,7 +50,7 @@ final class LiveStrokesTests: XCTestCase {
     /// Finding 2: strokes during a manual pause are not counted.
     func testManualPauseStopsCounting() {
         let clock = Uptime()
-        let strokes = LiveStrokes(sport: .sup, startUptime: startUptime, uptime: clock.read)
+        let strokes = LiveStrokes(sport: .sup, startMono: startUptime, now: clock.read)
         let samples = motion(seconds: 90)
         feed(samples.filter { $0.t < 30 }, to: strokes, clock: clock)
         strokes.userEvent(.pause)

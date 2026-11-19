@@ -1,14 +1,19 @@
 import Foundation
 
-/// Writes a `RawSession` as a raw recording v1 folder (docs/formats.md), with a single
-/// clock anchor taken from `meta.clock`. Used by the anonymizer and by tests; the
-/// recorder app writes streams incrementally with `RawFormat.line(_:)` instead.
+/// Writes a `RawSession` as a raw recording folder of the current version (docs/formats.md):
+/// every timestamp absolute, motion on the monotonic clock, and the session's clock
+/// anchors after the start in `clock.ndjson`. Used by the anonymizer, and by tests; the recorder app writes streams
+/// incrementally with `RawFormat.line(_:)` instead. Events are written in session-time
+/// order, so the recorded order of events around a wall-clock correction is not kept; to
+/// convert a recording exactly, use `RawFormatConversion`.
 public enum RawSessionWriter {
     public static func write(_ session: RawSession, to folder: URL, gzip: Bool = true) throws {
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        let meta = session.meta
+        var meta = session.meta
+        meta.version = RawFormat.version
         let start = meta.startedAt
-        let uptimeAtStart = meta.clock.uptime - (meta.clock.unix - start)
+        // On the current version the monotonic clock equals the wall clock at the start.
+        let monoShift = start - session.monotonicStart
 
         try RawFormat.encodeMeta(meta).write(to: folder.appendingPathComponent(RawFormat.metaFileName))
 
@@ -24,7 +29,7 @@ public enum RawSessionWriter {
             .motion,
             session.motion.map { sample in
                 RawFormat.MotionLine(
-                    ts: uptimeAtStart + sample.t, userAcceleration: sample.userAcceleration, gravity: sample.gravity,
+                    ts: sample.monotonic.map { $0 + monoShift } ?? start + sample.t, userAcceleration: sample.userAcceleration, gravity: sample.gravity,
                     rotationRate: sample.rotationRate, attitude: sample.attitude)
             }, folder: folder, gzip: gzip)
         try writeStream(
@@ -35,6 +40,13 @@ public enum RawSessionWriter {
             session.heading.map {
                 RawFormat.HeadingLine(ts: start + $0.t, mag: $0.magnetic, trueHeading: $0.trueHeading, acc: $0.accuracy)
             }, folder: folder, gzip: gzip)
+        // Corrections only when motion carries its monotonic time: samples made in memory
+        // place motion by `t`, which already includes any correction.
+        let keepsMonotonic = session.motion.allSatisfy { $0.monotonic != nil }
+        let anchors = (keepsMonotonic ? session.clockAnchors : [])
+            .map { RawFormat.ClockAnchor(unix: $0.unix, mono: $0.mono + monoShift) }
+            .filter { !($0.unix == start && $0.mono == start) }
+        try writeStream(.clock, anchors, folder: folder, gzip: gzip)
         try writeStream(
             .events, session.events.map { RawFormat.EventLine(ts: start + $0.t, type: $0.type, data: $0.data) },
             folder: folder, gzip: gzip)

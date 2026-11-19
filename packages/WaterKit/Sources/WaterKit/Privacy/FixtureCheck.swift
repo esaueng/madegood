@@ -29,16 +29,30 @@ public enum FixtureCheck {
             problems.append("unexpected file \(name)")
         }
 
+        var version = RawFormat.version
         if let data = try? Data(contentsOf: folder.appendingPathComponent(RawFormat.metaFileName)) {
-            problems += unknownFields(in: data, allowed: metaFields, context: RawFormat.metaFileName)
+            let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            version = (object?["version"] as? Int) ?? RawFormat.version
+            problems += unknownFields(
+                in: data, allowed: version == 1 ? metaFieldsV1 : metaFields, context: RawFormat.metaFileName)
+            if version == 1 {
+                // Version 1 stored device uptime: only the synthetic anchor may be published.
+                let clock = object?["clock"] as? [String: Any]
+                if clock?["unix"] as? Double != Anonymizer.fakeStart
+                    || clock?["uptime"] as? Double != Anonymizer.fakeUptime
+                {
+                    problems.append(
+                        "meta.json clock is not the synthetic anchor (\(Anonymizer.fakeStart), \(Anonymizer.fakeUptime))")
+                }
+            }
         }
         if names.contains(labelsFileName) {
             problems += labelsProblems(folder.appendingPathComponent(labelsFileName))
         }
         for stream in RawFormat.Stream.allCases {
             for name in [stream.fileName, stream.gzippedFileName] where names.contains(name) {
-                problems += checkLines(
-                    of: folder.appendingPathComponent(name), allowed: streamFields[stream] ?? [], context: name)
+                let allowed = version == 1 && stream == .clock ? ["unix", "uptime"] : streamFields[stream] ?? []
+                problems += checkLines(of: folder.appendingPathComponent(name), allowed: allowed, context: name)
             }
         }
 
@@ -80,12 +94,10 @@ public enum FixtureCheck {
     /// Problems found in a decoded raw session; empty when it passes.
     public static func problems(in session: RawSession) -> [String] {
         var problems = common(gps: session.gps, events: session.events, startedAt: session.meta.startedAt)
-        let anchor = RawFormat.ClockAnchor(unix: Anonymizer.fakeStart, uptime: Anonymizer.fakeUptime)
-        if session.meta.clock != anchor {
-            problems.append("meta.json clock is not the synthetic anchor (\(anchor.unix), \(anchor.uptime))")
-        }
-        if session.clockAnchors.count > 1 {
-            problems.append("clock.ndjson has extra anchors; anonymized recordings have only the meta.json anchor")
+        let start = RawFormat.ClockAnchor(unix: Anonymizer.fakeStart, mono: Anonymizer.fakeStart)
+        if session.clockAnchors != [start] || session.monotonicStart != Anonymizer.fakeStart {
+            problems.append(
+                "the clock is not the synthetic one; anonymized recordings have only the start anchor")
         }
         var end = session.meta.endedAt.map { $0 - session.meta.startedAt }
         if let value = end, value < 0 || value > maxDuration {
@@ -160,10 +172,11 @@ public enum FixtureCheck {
 
     static let labelsFileName = "labels.json"
     static let metaFields = Set<String>([
-        "format", "version", "sessionId", "sport", "startedAt", "endedAt", "clock", "device", "app",
-        "requestedRates", "clock.unix", "clock.uptime", "device.kind", "device.model", "device.os",
-        "app.version", "app.build",
+        "format", "version", "sessionId", "sport", "startedAt", "endedAt", "device", "app",
+        "requestedRates", "device.kind", "device.model", "device.os", "app.version", "app.build",
     ]).union(RawFormat.Stream.allCases.map { "requestedRates.\($0.rawValue)" })
+    /// Version 1 also had the clock anchor in `meta.json`.
+    static let metaFieldsV1 = metaFields.union(["clock", "clock.unix", "clock.uptime"])
     static let labelsFields: Set<String> = ["v", "sport", "source", "description", "license", "truth"]
     static let streamFields: [RawFormat.Stream: Set<String>] = [
         .gps: ["ts", "lat", "lon", "alt", "hacc", "vacc", "spd", "spdacc", "crs", "crsacc"],
@@ -171,7 +184,7 @@ public enum FixtureCheck {
         .hr: ["ts", "bpm"],
         .heading: ["ts", "mag", "true", "acc"],
         .events: ["ts", "type", "data"],
-        .clock: ["unix", "uptime"],
+        .clock: ["unix", "mono"],
     ]
     static let trackFields: Set<String> = [
         "v", "sessionId", "sport", "startedAt", "gps", "hr", "events", "summary", "analyzerVersion",

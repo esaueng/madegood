@@ -105,9 +105,10 @@ import Testing
         let otherTemp = try TempFolder()
         defer { withExtendedLifetime(otherTemp) {} }
         let other = try Self.anonymizedFolder(in: otherTemp)
-        try Self.replace(
-            in: other.appendingPathComponent("meta.json"), #""unix" : 946728000"#, with: #""unix" : 1809165600"#)
-        #expect(FixtureCheck.problems(inFolder: other).contains { $0.contains("synthetic anchor") })
+        // A clock anchor would tie the fake timeline to a real wall-clock time.
+        try Data(#"{"unix":1809165600,"mono":946728100}"#.utf8 + [0x0A])
+            .write(to: other.appendingPathComponent(RawFormat.Stream.clock.fileName))
+        #expect(FixtureCheck.problems(inFolder: other).contains { $0.contains("synthetic") })
     }
 
     @Test func labelsMustMatchTheSchemaAllTheWayDown() throws {

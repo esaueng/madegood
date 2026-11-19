@@ -95,7 +95,6 @@ enum DemoHistory {
                 ] + extraEvents).sorted { $0.t < $1.t }
             let meta = RawFormat.Meta(
                 sessionId: sessionId, sport: sport, startedAt: start, endedAt: start + duration,
-                clock: RawFormat.ClockAnchor(unix: start, uptime: 1_000),
                 device: RawFormat.Device(kind: "watch", model: "Demo", os: "watchOS"),
                 app: RawFormat.App(version: AppInfo.version, build: "demo"))
             var wrist: [MotionSample] = []

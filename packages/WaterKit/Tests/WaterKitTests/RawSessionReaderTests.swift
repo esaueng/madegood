@@ -3,6 +3,9 @@ import Testing
 
 @testable import WaterKit
 
+/// Reading recordings. These folders are written in version 1 (device uptime in
+/// `meta.clock`, motion and clock lines), so they also cover the old-version reader;
+/// RawFormatVersionTests covers version 2.
 @Suite struct RawSessionReaderTests {
     static let startUnix = 1_809_165_600.0
     static let startUptime = 5_000.0
@@ -13,10 +16,14 @@ import Testing
             sport: .kayak,
             startedAt: startUnix,
             endedAt: endedAt,
-            clock: RawFormat.ClockAnchor(unix: startUnix, uptime: startUptime),
             device: RawFormat.Device(kind: "watch", model: "Watch7,5", os: "watchOS 26.1"),
             app: RawFormat.App(version: "0.1.0", build: "1"),
             requestedRates: ["motion": 100, "gps": 1])
+    }
+
+    /// `meta.json` of version 1, with its device-uptime anchor at the start.
+    static func encodeV1(_ meta: RawFormat.Meta) throws -> Data {
+        try RawFormat.V1.encodeMeta(meta, clock: RawFormat.V1.ClockAnchor(unix: startUnix, uptime: startUptime))
     }
 
     static func motionLine(uptime: Double, ax: Double = 0) -> RawFormat.MotionLine {
@@ -49,7 +56,7 @@ import Testing
 
     @Test func canSkipTheMotionStream() throws {
         let folder = try TempFolder()
-        try folder.write(RawFormat.metaFileName, RawFormat.encodeMeta(Self.meta()))
+        try folder.write(RawFormat.metaFileName, Self.encodeV1(Self.meta()))
         try folder.write(
             "gps.ndjson", lines([RawFormat.GPSLine(ts: Self.startUnix + 1, lat: 0.0001, lon: 0.0002, hacc: 4)]))
         try folder.write(
@@ -63,7 +70,7 @@ import Testing
 
     @Test func readsAllStreamsOntoTheSessionTimeline() throws {
         let folder = try TempFolder()
-        try folder.write(RawFormat.metaFileName, RawFormat.encodeMeta(Self.meta()))
+        try folder.write(RawFormat.metaFileName, Self.encodeV1(Self.meta()))
         try folder.write(
             "gps.ndjson",
             lines([
@@ -98,7 +105,8 @@ import Testing
         #expect(session.gps[0].speed == 1.5)
         #expect(session.gps[1].speed == nil)
         #expect(session.motion.count == 2)
-        #expect(abs(session.motion[0].t - 0.01) < 1e-9)
+        // Converted to absolute monotonic time: about 0.2 µs resolution at today's times.
+        #expect(abs(session.motion[0].t - 0.01) < 1e-6)
         #expect(session.motion[1].userAcceleration.x == 2)
         #expect(session.hr.map(\.t) == [3])
         #expect(session.heading.first?.trueHeading == 12)
@@ -113,12 +121,12 @@ import Testing
 
     @Test func laterClockAnchorsCorrectMotionTimes() throws {
         let folder = try TempFolder()
-        try folder.write(RawFormat.metaFileName, RawFormat.encodeMeta(Self.meta()))
+        try folder.write(RawFormat.metaFileName, Self.encodeV1(Self.meta()))
         // At uptime +60 s the wall clock was found to be 0.5 s ahead of the first anchor.
         try folder.write(
             "clock.ndjson",
             lines([
-                RawFormat.ClockAnchor(unix: Self.startUnix + 60.5, uptime: Self.startUptime + 60)
+                RawFormat.V1.ClockAnchor(unix: Self.startUnix + 60.5, uptime: Self.startUptime + 60)
             ]))
         try folder.write(
             "motion.ndjson",
@@ -134,7 +142,7 @@ import Testing
 
     @Test func toleratesTruncatedAndInvalidLines() throws {
         let folder = try TempFolder()
-        try folder.write(RawFormat.metaFileName, RawFormat.encodeMeta(Self.meta(endedAt: nil)))
+        try folder.write(RawFormat.metaFileName, Self.encodeV1(Self.meta(endedAt: nil)))
         var gps = try lines([
             RawFormat.GPSLine(ts: Self.startUnix + 1, lat: 0, lon: 0),
             RawFormat.GPSLine(ts: Self.startUnix + 2, lat: 0, lon: 0),
@@ -155,7 +163,7 @@ import Testing
 
     @Test func readsTheCompletePartOfATruncatedGzipStream() throws {
         let folder = try TempFolder()
-        try folder.write(RawFormat.metaFileName, RawFormat.encodeMeta(Self.meta()))
+        try folder.write(RawFormat.metaFileName, Self.encodeV1(Self.meta()))
         // The recorder appends one gzip member per flush; the last flush was cut off.
         let flush1 = try Gzip.compress(
             lines((0..<50).map { Self.motionLine(uptime: Self.startUptime + Double($0) / 100) }))
@@ -171,7 +179,7 @@ import Testing
 
     @Test func aDamagedStreamDoesNotHideTheOthers() throws {
         let folder = try TempFolder()
-        try folder.write(RawFormat.metaFileName, RawFormat.encodeMeta(Self.meta()))
+        try folder.write(RawFormat.metaFileName, Self.encodeV1(Self.meta()))
         try folder.write("gps.ndjson", lines([RawFormat.GPSLine(ts: Self.startUnix + 1, lat: 0, lon: 0)]))
         // The first motion flush was cut off after one byte of its gzip header.
         try folder.write("motion.ndjson.gz", Data([0x1f]))
@@ -189,7 +197,7 @@ import Testing
 
     @Test func missingStreamsAreEmpty() throws {
         let folder = try TempFolder()
-        try folder.write(RawFormat.metaFileName, RawFormat.encodeMeta(Self.meta()))
+        try folder.write(RawFormat.metaFileName, Self.encodeV1(Self.meta()))
         let session = try RawSessionReader.read(folder: folder.url)
         #expect(session.gps.isEmpty && session.motion.isEmpty && session.hr.isEmpty)
         #expect(session.issues.isEmpty)
@@ -200,11 +208,11 @@ import Testing
         #expect(throws: RawSessionReader.Error.self) { try RawSessionReader.read(folder: empty.url) }
 
         let future = try TempFolder()
-        try future.write(RawFormat.metaFileName, Data(#"{"format":"madegood-raw","version":2}"#.utf8))
+        try future.write(RawFormat.metaFileName, Data(#"{"format":"madegood-raw","version":3}"#.utf8))
         #expect {
             try RawSessionReader.read(folder: future.url)
         } throws: { error in
-            if case RawSessionReader.Error.unsupportedVersion(2) = error { true } else { false }
+            if case RawSessionReader.Error.unsupportedVersion(3) = error { true } else { false }
         }
 
         let foreign = try TempFolder()
@@ -216,7 +224,7 @@ import Testing
         }
 
         let both = try TempFolder()
-        try both.write(RawFormat.metaFileName, RawFormat.encodeMeta(Self.meta()))
+        try both.write(RawFormat.metaFileName, Self.encodeV1(Self.meta()))
         try both.write("hr.ndjson", Data())
         try both.write("hr.ndjson.gz", Data())
         #expect {
@@ -230,7 +238,9 @@ import Testing
         let data = try RawFormat.encodeMeta(Self.meta())
         let text = String(decoding: data, as: UTF8.self)
         #expect(text.contains("\"format\" : \"madegood-raw\""))
+        #expect(text.contains("\"version\" : 2"))
         #expect(!text.lowercased().contains("name"))
+        #expect(!text.contains("uptime") && !text.contains("clock"))
         let decoded = try JSONDecoder().decode(RawFormat.Meta.self, from: data)
         #expect(decoded == Self.meta())
     }

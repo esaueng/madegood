@@ -37,7 +37,6 @@ enum DemoOffWater {
             let start = Date().timeIntervalSince1970
             let meta = RawFormat.Meta(
                 sessionId: sessionID, sport: .kayak, startedAt: start, endedAt: start + duration,
-                clock: RawFormat.ClockAnchor(unix: start, uptime: 1_000),
                 device: RawFormat.Device(kind: "phone", model: "Synthetic Boundary Demo", os: "iOS"),
                 app: RawFormat.App(version: AppInfo.version, build: "demo"))
             let gps = (0...Int(duration)).map { second in

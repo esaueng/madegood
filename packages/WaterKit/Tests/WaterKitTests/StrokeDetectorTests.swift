@@ -309,9 +309,9 @@ import Testing
                 t: Double(second), latitude: 10, longitude: -30 + Double(second) * 2 / 109_600,
                 horizontalAccuracy: 5, speed: 2, course: 90)
         }
-        let anchor = RawFormat.ClockAnchor(unix: 946_684_800, uptime: 100)
+        let startUnix = 946_684_800.0
         let meta = RawFormat.Meta(
-            sessionId: UUID(), sport: .sup, startedAt: anchor.unix, endedAt: anchor.unix + 121, clock: anchor,
+            sessionId: UUID(), sport: .sup, startedAt: startUnix, endedAt: startUnix + 121,
             device: .init(kind: "watch", model: "Watch0,0", os: "watchOS 26.0"), app: .init(version: "0", build: "0"),
             requestedRates: [:])
         let session = RawSession(meta: meta, gps: fixes, motion: output.samples)
@@ -327,10 +327,10 @@ import Testing
         var simulator = PaddleMotionSimulator(sport: .canoe, segments: [Segment(duration: 60, strokeRate: 50)])
         simulator.seed = 43
         let output = simulator.generate()
-        let anchor = RawFormat.ClockAnchor(unix: 946_684_800, uptime: 100)
+        let startUnix = 946_684_800.0
         func session(_ sport: Sport) -> RawSession {
             let meta = RawFormat.Meta(
-                sessionId: UUID(), sport: sport, startedAt: anchor.unix, clock: anchor,
+                sessionId: UUID(), sport: sport, startedAt: startUnix,
                 device: .init(kind: "watch", model: "Watch0,0", os: "watchOS 26.0"),
                 app: .init(version: "0", build: "0"))
             return RawSession(meta: meta, motion: output.samples)

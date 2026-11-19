@@ -488,7 +488,6 @@ struct SyntheticCourse {
         let endTime = (fixes.last?.t ?? 0) + 1
         let meta = RawFormat.Meta(
             sessionId: UUID(), sport: sport, startedAt: start, endedAt: start + endTime,
-            clock: RawFormat.ClockAnchor(unix: start, uptime: 1_000),
             device: RawFormat.Device(kind: "watch", model: "Synthetic", os: "watchOS"),
             app: RawFormat.App(version: "1.0", build: "test"))
         return RawSession(

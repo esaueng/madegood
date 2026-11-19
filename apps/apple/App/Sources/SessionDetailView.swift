@@ -588,7 +588,7 @@ struct SessionDetailView: View {
 
     private func exportZip() {
         isPlaying = false
-        if let url = try? ZipExport.zip(folder: item.entry.folder) { share = ShareFile(url: url) }
+        if let url = try? ZipExport.zipRecording(folder: item.entry.folder) { share = ShareFile(url: url) }
     }
 }
 

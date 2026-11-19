@@ -92,21 +92,21 @@ public struct MotionSample: Sendable, Hashable, Codable {
     public var rotationRate: Vector3
     /// Attitude relative to the reference frame at the start of updates.
     public var attitude: Quaternion
-    /// The sensor's own timestamp (device uptime, s) when read from a recording. Unlike `t`,
-    /// it never jumps with a wall-clock correction, so analysis that needs a monotonic clock
-    /// (strokes) uses it. Nil for samples made in memory.
-    public var uptime: Double?
+    /// The sample's time on the session's monotonic clock (absolute, Unix s) when read from
+    /// a recording. Unlike `t`, it never jumps with a wall-clock correction, so analysis
+    /// that needs a monotonic clock (strokes) uses it. Nil for samples made in memory.
+    public var monotonic: Double?
 
     public init(
         t: Double, userAcceleration: Vector3, gravity: Vector3, rotationRate: Vector3,
-        attitude: Quaternion, uptime: Double? = nil
+        attitude: Quaternion, monotonic: Double? = nil
     ) {
         self.t = t
         self.userAcceleration = userAcceleration
         self.gravity = gravity
         self.rotationRate = rotationRate
         self.attitude = attitude
-        self.uptime = uptime
+        self.monotonic = monotonic
     }
 }
 

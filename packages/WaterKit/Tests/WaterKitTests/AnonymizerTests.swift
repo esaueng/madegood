@@ -24,7 +24,6 @@ import Testing
         }
         let meta = RawFormat.Meta(
             sessionId: UUID(), sport: .sailing, startedAt: startUnix, endedAt: startUnix + t,
-            clock: RawFormat.ClockAnchor(unix: startUnix, uptime: 52_000),
             device: RawFormat.Device(kind: "phone", model: "iPhone18,1", os: "iOS 26.1"),
             app: RawFormat.App(version: "0.1.0", build: "7"))
         let motion = (0..<300).map { i in
@@ -43,7 +42,10 @@ import Testing
         return RawSession(
             meta: meta, gps: fixes, motion: motion, hr: [HRSample(t: 5, bpm: 120)],
             heading: [HeadingSample(t: 1, magnetic: 40, trueHeading: 45, accuracy: 5)], events: events,
-            clockAnchors: [meta.clock, RawFormat.ClockAnchor(unix: startUnix + 61, uptime: 52_060)], issues: [])
+            clockAnchors: [
+                RawFormat.ClockAnchor(unix: startUnix, mono: startUnix),
+                RawFormat.ClockAnchor(unix: startUnix + 61, mono: startUnix + 60),
+            ], issues: [])
     }
 
     static let places: [(name: String, lat: Double, lon: Double)] = [
@@ -106,9 +108,10 @@ import Testing
         #expect(anonymized.meta.sessionId == id)
         #expect(anonymized.meta.startedAt == Anonymizer.fakeStart)
         #expect(anonymized.meta.endedAt == Anonymizer.fakeStart + 2_000)
-        #expect(
-            anonymized.meta.clock == RawFormat.ClockAnchor(unix: Anonymizer.fakeStart, uptime: Anonymizer.fakeUptime))
-        #expect(anonymized.clockAnchors.count == 1)
+        #expect(anonymized.meta.version == RawFormat.version)
+        #expect(anonymized.clockAnchors == [RawFormat.ClockAnchor(unix: Anonymizer.fakeStart, mono: Anonymizer.fakeStart)])
+        #expect(anonymized.monotonicStart == Anonymizer.fakeStart)
+        #expect(anonymized.motion.allSatisfy { $0.monotonic == nil })
         #expect(anonymized.gps.allSatisfy { $0.altitude == nil && $0.verticalAccuracy == nil })
         #expect(anonymized.meta.device == original.meta.device)
 
@@ -129,7 +132,8 @@ import Testing
         #expect(FixtureCheck.problems(in: reread) == [])
         #expect(FixtureCheck.problems(inFolder: output) == [])
         #expect(reread.gps.count == anonymized.gps.count)
-        #expect(zip(reread.motion, anonymized.motion).allSatisfy { abs($0.t - $1.t) < 1e-9 })
+        // Motion is stored as absolute Unix seconds: about 0.2 µs resolution at today's times.
+        #expect(zip(reread.motion, anonymized.motion).allSatisfy { abs($0.t - $1.t) < 1e-6 })
         #expect(reread.events.map(\.data) == anonymized.events.map(\.data))
         let files = try FileManager.default.contentsOfDirectory(atPath: output.path).sorted()
         #expect(
