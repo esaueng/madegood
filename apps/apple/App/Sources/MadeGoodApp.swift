@@ -10,6 +10,8 @@ struct MadeGoodApp: App {
     private let demoSeedFailed: Bool
 
     init() {
+        // Share sheets from an earlier run are gone; so is any need for their files.
+        ExportFiles.removeAll()
         #if DEBUG
             VoyageRecorder.forgetTestLibraryIfRequested()
         #endif

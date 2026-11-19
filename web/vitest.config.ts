@@ -20,6 +20,7 @@ export default defineConfig(async () => {
               maxRetries: 5,
               deadLetterQueue: "madegood-postprocess-dlq",
             },
+            "madegood-exports": { maxBatchSize: 1, maxBatchTimeout: 0, maxRetries: 3 },
           },
           bindings: {
             TEST_MIGRATIONS: migrations,

@@ -62,6 +62,9 @@ let project = Project(
             bundleId: "$(BUNDLE_ID_PREFIX)",
             deploymentTargets: iOSTarget,
             infoPlist: plist(versionKeys, usageKeys, [
+                // The iPhone also shows local conditions on its start screen.
+                "NSLocationWhenInUseUsageDescription":
+                    "MadeGood records your track, speed, and course while you are on the water, and shows the conditions where you are.",
                 "UILaunchScreen": [:],
                 "UIRequiredDeviceCapabilities": ["arm64"],
                 "UISupportedInterfaceOrientations": ["UIInterfaceOrientationPortrait"],

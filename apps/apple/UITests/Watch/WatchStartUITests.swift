@@ -151,17 +151,21 @@ final class WatchStartUITests: XCTestCase {
         action.tap()
         XCTAssertTrue(app.staticTexts["mob.distance"].waitForExistence(timeout: 10))
         attachScreenshot("action button man overboard")
-        // Regression check from review: a press while a mark exists moves it and shows the
-        // way back again, even from another page. MOB is page 1, so metrics is page 3.
+        // Regression check from review: a press while a mark exists adds a second mark (the
+        // first is kept, never discarded) and shows the way back again, even from another
+        // page. MOB is page 1, so metrics is page 3.
         goToPage(3, app)
         XCTAssertTrue(app.staticTexts["metric.speed"].waitForExistence(timeout: 10))
         action.tap()
         XCTAssertTrue(app.staticTexts["mob.distance"].waitForExistence(timeout: 10))
         // The MOB page comes first, so the controls are page 2.
         endWatchSession(app, controlsPage: 2)
-        // The mark outlives the session; clear it so later tests start on the sport cards.
+        // The marks outlive the session; clear both (the target, then the earlier one) so
+        // later tests start on the sport cards.
         let clear = app.buttons["mob.clear"]
         XCTAssertTrue(clear.waitForExistence(timeout: 10))
+        clear.tap()
+        XCTAssertTrue(clear.waitForExistence(timeout: 10), "the first mark is still there")
         clear.tap()
         XCTAssertTrue(app.buttons["sport.kayak"].waitForExistence(timeout: 10))
     }

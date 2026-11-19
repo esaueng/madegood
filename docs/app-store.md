@@ -19,7 +19,7 @@ get a rejection.
 | 4 | **No privacy manifest** (`PrivacyInfo.xcprivacy`). The app uses `UserDefaults` (settings and sync state) and file APIs. | Apps that use required-reason APIs must declare a reason in a privacy manifest. |
 | 5 | **TestFlight builds have no sync.** `MADEGOOD_API_URL` is empty in `apps/apple/Config/MadeGood.xcconfig`, and CI has no `Local.xcconfig`. | Reviewers would see "Account sync isn't set up in this build." The label answers below assume sync is on; if it ships off, most of the "collected" rows go away. |
 | 6 | **Health permission strings.** `NSHealthUpdateUsageDescription` says the app "runs a workout session" but not that it saves workouts, routes and heart rate to Health. `NSMotionUsageDescription` mentions detecting maneuvers, which use GPS, not motion. | Reviewers check that purpose strings describe what the app actually does (5.1.1(i)). Suggested wording is in [HealthKit](#healthkit). |
-| 7 | **No full data export.** PLAN §7 lists `GET /api/me/export`; it does not exist yet. Per-session export does (below). | Not an App Store requirement, but the privacy policy should not promise it until it ships. |
+| 7 | ~~No full data export.~~ Done: `GET /api/me/export` (website Settings → Export all my data) and iPhone Settings → Your Data → Export All Recordings. | Not an App Store requirement; the privacy policy can now describe it. |
 
 ## Privacy nutrition label
 
@@ -56,6 +56,13 @@ session's detail, the phone sends Open-Meteo the selection's mean position round
 identifiers (docs/metrics.md). It answers the request in real time and is not linked to
 the user. Proposed: not declared as collected (it is not retained for the developer),
 but described in the privacy policy. Confirm.
+
+**Local conditions.** Off until the user taps Show on the start screen (or turns on
+Settings > Weather > Local Conditions). Then, while the start screen is open and at
+most every 15 minutes, the phone sends Open-Meteo's forecast API its position rounded
+to 0.1° (about 10 km), again with no account, key, cookies or identifiers. The
+position is not stored; the last answer is kept on the phone. It uses the existing
+When In Use location permission, whose iPhone prompt now mentions local conditions.
 
 **Data shared publicly.** A session is private by default. The owner can make it
 unlisted or public; then the website shows its track (with privacy zones cut out),
@@ -143,7 +150,19 @@ session.
 - **Apple Health:** saved workouts and routes are exportable through Health.
 - **Files app:** recordings live in the app's Documents folder, visible in Files
   (`UIFileSharingEnabled`).
-- **Account-wide export:** not built (item 7).
+- **All recordings (iPhone):** Settings → Your Data → Export All Recordings zips every
+  recording folder on the phone and opens the share sheet. Export files are deleted when
+  the share sheet finishes, and any left over are deleted at launch.
+- **Account-wide export (website):** Settings → Export all my data starts a background
+  job (`POST /api/me/exports`). It freezes the list of sessions and voyages, then builds
+  ZIP parts in R2 (at most 500 MiB each): session and voyage documents, then every track
+  as uploaded. Part 1 holds `README.txt`, `account.json` (profile, settings, Apple user
+  identifier), `privacy-zones.json`, `manifest.json` (every part and file) and, if needed,
+  `errors.json` (files that could not be included, with the reason; a session document
+  over 256 KiB is one). The page shows progress, then a download link per part and, if
+  anything was left out, how many items and a pointer to `errors.json`, which the README
+  also names at the top; the parts are deleted after 7 days. One
+  export at a time, three a day.
 
 ## Review notes (draft)
 

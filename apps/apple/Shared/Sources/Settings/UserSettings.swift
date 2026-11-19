@@ -20,6 +20,13 @@ enum UserSettings {
         static let legacyPhoneSport = "recorder.sport"
         /// iPhone only, device-local: System, Light or Dark (`Appearance`).
         static let appearance = "app.appearance"
+        /// iPhone only, device-local: the start screen's sports in the order the user
+        /// dragged them (raw values); absent for most recently used first.
+        static let startOrder = "start.order"
+        /// iPhone only, device-local: whether the start screen shows local conditions.
+        static let localWeather = "weather.enabled"
+        /// iPhone only, device-local: the last conditions fetched, for a quick first draw.
+        static let lastWeather = "weather.last"
     }
 
     /// Posted on the main queue when settings arrive from the other device.
@@ -116,6 +123,19 @@ enum UserSettings {
         if let value { defaults.set(value, forKey: key) } else { defaults.removeObject(forKey: key) }
     }
 
+    // MARK: Device-local start order
+
+    /// The order the user dragged the start screen into, or nil for most recent first.
+    static var startOrder: [Sport]? {
+        get {
+            (defaults.array(forKey: Key.startOrder) as? [String]).map { $0.compactMap(Sport.init(rawValue:)) }
+        }
+        set {
+            if let newValue { defaults.set(newValue.map(\.rawValue), forKey: Key.startOrder) }
+            else { defaults.removeObject(forKey: Key.startOrder) }
+        }
+    }
+
     // MARK: Device-local history
 
     struct LastSession: Equatable {
@@ -151,7 +171,10 @@ enum UserSettings {
     static func resetIfRequested() {
         #if DEBUG
             guard ProcessInfo.processInfo.arguments.contains("-resetSettings") else { return }
-            var keys = SettingsSync.storedKeys + [SettingsSync.Key.highestSeen, Key.appearance]
+            var keys =
+                SettingsSync.storedKeys + [
+                    SettingsSync.Key.highestSeen, Key.appearance, Key.startOrder, Key.localWeather, Key.lastWeather,
+                ]
             for sport in Sport.allCases {
                 keys += [Key.lastUsed(sport), Key.lastDistance(sport), Key.lastDate(sport)]
             }
