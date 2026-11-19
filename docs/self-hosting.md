@@ -15,7 +15,7 @@ account IDs, resource IDs, team IDs or secrets (AGENTS.md).
 | Step | Where | Section |
 |---|---|---|
 | 1. Run it locally | your machine | [Local development](#local-development) |
-| 2. Create D1 and R2 | Cloudflare | [Cloudflare resources](#cloudflare-resources) |
+| 2. Create D1, R2 and the queues | Cloudflare | [Cloudflare resources](#cloudflare-resources) |
 | 3. Set the JWT secret | Cloudflare | [Secrets and settings](#secrets-and-settings) |
 | 4. Apply migrations and deploy | Cloudflare | [Deploying](#deploying) |
 | 5. Optional: deploy from GitHub Actions | GitHub | [Deploying from GitHub Actions](#deploying-from-github-actions) |
@@ -50,6 +50,8 @@ cd web
 pnpm exec wrangler login
 pnpm exec wrangler d1 create madegood
 pnpm exec wrangler r2 bucket create madegood-tracks
+pnpm exec wrangler queues create madegood-postprocess
+pnpm exec wrangler queues create madegood-postprocess-dlq
 ```
 
 Put the printed `database_id` into `web/wrangler.jsonc` **in your deployment copy
@@ -62,7 +64,8 @@ is created by the first `wrangler deploy`, from the `migrations` block in
 `VOYAGE_LIVE_LOCAL=1` (local development only for now).
 
 For a separate preview environment (`env.preview` in `wrangler.jsonc`), create
-`madegood-preview` and `madegood-tracks-preview` the same way. Previews never touch
+`madegood-preview` and `madegood-tracks-preview` the same way; previews use no queue
+([Upload post-processing](#upload-post-processing)). Previews never touch
 production data.
 
 ## Secrets and settings
@@ -124,14 +127,14 @@ fork:
   which `deploy-cleanup.yml` deletes when the PR closes; previews share the preview R2
   bucket. Preview versions cannot apply Durable Object migrations, so the preview
   environment has no Durable Object bindings.
-- Each push to `main` that touches `web/` builds, applies migrations, then deploys
-  production.
+- Each push to `main` that touches `web/` builds, creates the post-processing queues
+  if they are missing, applies migrations, then deploys production.
 
 Set in the repository (Settings → Secrets and variables → Actions):
 
 | Name | Kind | Value |
 |---|---|---|
-| `CLOUDFLARE_API_TOKEN` | secret | An API token with Workers Scripts edit and D1 edit on the account (plus R2 edit if the workflow should create buckets; it does not today) |
+| `CLOUDFLARE_API_TOKEN` | secret | An API token with Workers Scripts, D1 and Queues edit on the account (plus R2 edit if the workflow should create buckets; it does not today) |
 | `CLOUDFLARE_ACCOUNT_ID` | variable | Your account ID |
 | `D1_DATABASE_ID` | variable | The `madegood` database's ID |
 | `D1_PREVIEW_DATABASE_ID` | variable | The `madegood-preview` database's ID |
@@ -145,7 +148,8 @@ once by hand (above); the workflow does not manage secrets.
 - The schema lives in `web/src/server/db/schema.ts` (Drizzle).
 - `pnpm -C web db:generate` writes a new SQL file to `web/migrations/`, the folder
   `wrangler d1 migrations apply` reads. Never edit a migration that has been applied;
-  add a new one.
+  add a new one. That includes migrations only a PR preview has applied: preview
+  databases record them as done and skip a rewritten file.
 - Migrations are applied with Wrangler only. The tests apply the same files.
 - Production applies migrations just before deploying the new code, so the version
   already running must keep working with the new schema. Change the schema in steps:
@@ -153,6 +157,78 @@ once by hand (above); the workflow does not manage secrets.
   or rename old ones in a later release (contract).
 - After changing API routes, run `scripts/generate-openapi` and commit
   `openapi/openapi.json`; the Swift client is generated from it.
+
+## Upload post-processing
+
+After a track upload (`PUT /api/sessions/:id/track`) the Worker sends a message to the
+`madegood-postprocess` queue (binding `POSTPROCESS`), and the same Worker consumes it
+(`src/server/lib/postprocess.ts`). The consumer reads the stored track and saves:
+
+- the bounding box of the whole track and a 5-character start geohash (owner only);
+- the bounding box of the fixes others may see, with privacy zones cut out exactly as
+  in the shared track, which is all anyone else ever gets;
+- the first and last GPS fix times: the whole track's for the owner, and separately
+  the first and last fix others may see, which is all they get;
+- for public and unlisted sessions only, hourly modelled wind from Open-Meteo.
+
+The session's `processing` field reports `pending`, `done`, `too_large` or `invalid`.
+Tracks above the shared-track caps (8 MiB inflated or 500,000 fixes) are `too_large`
+and get no derived data. Tracks uploaded before post-processing existed report `none`
+until they are uploaded again.
+
+**Idempotency.** Each message names the session, its upload revision and the stored
+track's ETag. Every write requires the row to still hold that exact track, so duplicate
+deliveries, older revisions, replaced tracks and deleted sessions are dropped. After
+attaching a track, the upload reads the stored object back and moves the row to its
+ETag if a concurrent upload of the same revision replaced it, so the row always names
+the object R2 holds and the queued message is for those bytes. An upload whose bytes
+were replaced that way answers 412 `track_replaced`, never success, so the client sends
+it again. A new upload or a newer revision clears the derived data at once.
+
+**Privacy zones.** Every zone change bumps the owner's `users.zones_version` in the same
+D1 batch and clears the public bounds, times and wind. Public data (wind included)
+records the version it was cut at, is written only while that version is still
+current, and is served only while it matches, so nothing computed without a zone is
+shown once the zone exists. The change then queues one `user` message, which requeues
+that user's sessions 50 at a time (follow-up messages carry a cursor), and records it
+in `users.zones_queued_version`. If that message cannot be queued, the change stays
+marked pending: the user's next track upload or zone change queues it, and a cron
+sweep (`triggers.crons`, every 30 minutes) queues any that are left. Adding a zone that
+cannot be queued is undone and answers 503; removing one answers 503 but needs no
+retry. Removing a zone that does not exist changes nothing.
+
+**Retries and dead letters.** A failure (D1, R2, an Open-Meteo outage or rate limit)
+is retried after 30 s, 1, 2, 4 and 8 minutes. After 5 retries the message moves to
+`madegood-postprocess-dlq`, which has no consumer: inspect it in the dashboard (Queues
+› madegood-postprocess-dlq) and, once the cause is fixed, either re-upload the track
+or send the message body back to `madegood-postprocess`. Messages that can never
+succeed (an invalid track, a malformed message) are acknowledged, not retried.
+
+**Without a queue.** Preview versions cannot set queue consumers, so `env.preview` has
+no queue. Without the `POSTPROCESS` binding the Worker processes each upload right after
+responding (`waitUntil`): one attempt, no retries, no dead letters, and a zone change
+reprocesses at most 20 sessions (a `waitUntil` gets about 30 s). The others show no
+public data until their next upload or zone change. A self-hosted copy can drop the
+`queues` block the same way.
+
+### What is sent to Open-Meteo
+
+Wind is fetched only while a session is public or unlisted; private sessions never
+cause a request (sharing a session later queues the lookup). Visibility is read again
+right before each request, and the answer is stored only if the session is still
+shared. Each request to
+`api.open-meteo.com` (sessions that ended within 60 days) or `archive-api.open-meteo.com`
+(older ones) carries only:
+
+- one position: the center of the session's **public** bounds, rounded to 0.1°
+  (about 11 km), so no point inside a privacy zone shapes it;
+- the UTC calendar dates of the first and last fix others may see (no time of day);
+- the fixed variables `wind_speed_10m,wind_direction_10m,wind_gusts_10m` with
+  `wind_speed_unit=ms`, `timeformat=unixtime`, `timezone=GMT`.
+
+No account, session ID, track, title or API key is sent. Open-Meteo's free API is for
+non-commercial use; a commercial deployment needs its own Open-Meteo plan. Wind is a
+model value for the area, shown as such, and not for navigation.
 
 ## Apple setup
 
@@ -201,8 +277,9 @@ to `scripts/testflight` as a build setting.
 ## Data and deletion
 
 - D1 holds users (Apple's user identifier, a handle, an optional display name, units,
-  default visibility), hashed refresh tokens, session metadata and summaries, and
-  privacy zones. R2 holds each session's gzipped track v1 under the user's prefix.
+  default visibility), hashed refresh tokens, session metadata and summaries, data
+  derived from tracks (bounds, fix times, wind; see
+  [Upload post-processing](#upload-post-processing)), and privacy zones. R2 holds each session's gzipped track v1 under the user's prefix.
 - `DELETE /api/me` deletes the user's rows and every R2 object under their prefix.
 - Workers observability is on in `wrangler.jsonc` (`observability.enabled`), so
   Cloudflare keeps request logs for your account; turn it off there if you do not want

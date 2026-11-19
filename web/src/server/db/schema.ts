@@ -32,6 +32,17 @@ export const users = sqliteTable(
       .default("private"),
     createdAt: timestamp("created_at").notNull().default(sql`(unixepoch('subsec') * 1000)`),
     deletedAt: timestamp("deleted_at"),
+    /**
+     * Bumped in the same D1 batch as every privacy zone change. Public derived data
+     * (sessions.public_*) is served only while it was computed at the current version.
+     */
+    zonesVersion: integer("zones_version").notNull().default(0),
+    /**
+     * The zones_version whose reprocessing was last queued. Behind zones_version means a
+     * zone change still has to requeue the user's sessions: the next zone change, track
+     * upload or the scheduled sweep (lib/postprocess.ts) does it.
+     */
+    zonesQueuedVersion: integer("zones_queued_version").notNull().default(0),
   },
   (table) => [
     uniqueIndex("users_apple_sub_unique").on(table.appleSub),
@@ -117,6 +128,30 @@ export const sessions = sqliteTable(
      */
     uploadRevision: integer("upload_revision").notNull().default(0),
     windJson: text("wind_json"),
+    // Post-processing (lib/postprocess.ts). `trackEtag` is the attached track object's
+    // ETag; the derived columns below belong to it once `processedEtag` equals it. Every
+    // track upload and newer revision clears them, so they never describe another track.
+    trackEtag: text("track_etag"),
+    processedEtag: text("processed_etag"),
+    /** `done`, `too_large` or `invalid` for `processedEtag`; null while pending. */
+    postprocessStatus: text("postprocess_status", { enum: ["done", "too_large", "invalid"] }),
+    /** First and last valid GPS fix, epoch ms. Owner only. */
+    trackStartedAt: timestamp("track_started_at"),
+    trackEndedAt: timestamp("track_ended_at"),
+    /**
+     * Bounding box of the fixes others may see (privacy zones and fixes beyond the map
+     * cut out, as in the shared track). min/max_lat/lon above cover the whole track and
+     * are the owner's only. West > east when a box crosses the antimeridian.
+     */
+    publicMinLat: real("public_min_lat"),
+    publicMinLon: real("public_min_lon"),
+    publicMaxLat: real("public_max_lat"),
+    publicMaxLon: real("public_max_lon"),
+    /** First and last fix others may see (zones applied), epoch ms. */
+    publicTrackStartedAt: timestamp("public_track_started_at"),
+    publicTrackEndedAt: timestamp("public_track_ended_at"),
+    /** users.zones_version the public_* columns were computed with; null when not computed. */
+    publicZonesVersion: integer("public_zones_version"),
     createdAt: timestamp("created_at").notNull().default(sql`(unixepoch('subsec') * 1000)`),
     updatedAt: timestamp("updated_at").notNull().default(sql`(unixepoch('subsec') * 1000)`),
     deletedAt: timestamp("deleted_at"),

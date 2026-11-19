@@ -50,6 +50,20 @@
       "when": 1795051792868,
       "tag": "0006_session_revisions_tombstones",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1795074219873,
+      "tag": "0007_session_postprocessing",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1795078051750,
+      "tag": "0008_public_zones_version",
+      "breakpoints": true
     }
   ]
 }

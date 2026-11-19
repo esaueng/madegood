@@ -184,13 +184,15 @@ jobs:
             ${{ runner.temp }}/MadeGood.xcresult
           retention-days: 7
 
-  # 25-30 minutes of macOS time, so not on pull requests and not part of `CI`.
+  # 45-60 minutes of macOS time (the iPhone step alone, build included, passed 35 minutes
+  # once the motorboat and paddling tests landed), so not on pull requests and not part of
+  # `CI`.
   apple-ui-tests:
     name: iOS + watchOS UI tests
     needs: changes
     if: needs.changes.outputs.apple == 'true' && contains(fromJSON('["push", "workflow_dispatch"]'), github.event_name)
     runs-on: macos-26
-    timeout-minutes: 45
+    timeout-minutes: 90
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
       TUIST_DISABLE_ANALYTICS: "1"
@@ -243,7 +245,7 @@ jobs:
             -destination "id=${{ steps.sims.outputs.iphone }}" -only-testing:MadeGoodUITests \
             -derivedDataPath "$RUNNER_TEMP/DerivedData" -resultBundlePath "$RUNNER_TEMP/iPhoneUITests.xcresult" \
             CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual \
-            | grep -E '(error|warning):|Test Case|\*\* TEST'
+            | grep --line-buffered -E '(error|warning):|Test Case|\*\* TEST'
 
       # One retry absorbs the watch simulator's occasional failed launch; a test still has
       # to pass on its own run.
@@ -258,7 +260,7 @@ jobs:
             -retry-tests-on-failure -test-iterations 2 \
             -derivedDataPath "$RUNNER_TEMP/DerivedData" -resultBundlePath "$RUNNER_TEMP/WatchUITests.xcresult" \
             CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual \
-            | grep -E '(error|warning):|Test Case|\*\* TEST'
+            | grep --line-buffered -E '(error|warning):|Test Case|\*\* TEST'
 
       # Screenshots for reviewing UI changes (synthetic demo data only).
       - name: Upload test results and screenshots

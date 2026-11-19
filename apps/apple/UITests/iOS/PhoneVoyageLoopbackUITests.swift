@@ -27,7 +27,8 @@ final class PhoneVoyageLoopbackUITests: XCTestCase {
             "MADEGOOD_TEST_VOYAGE_ACCOUNT": account,
             "MADEGOOD_TEST_VOYAGES": UUID().uuidString,
         ]
-        app.launch()
+        resetLocationPermission(app)
+        launchFresh(app)
         defer {
             XCUIDevice.shared.location = nil
             app.terminate()

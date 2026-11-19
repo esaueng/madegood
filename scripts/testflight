@@ -17,6 +17,8 @@
 #                                  from apps/apple/Config/MadeGood.xcconfig plus the number
 #                                  of commits in HEAD's history (0.1.39), so each merge to
 #                                  main ships a higher version
+#   MADEGOOD_API_URL               API root for session sync (https://…/api); without it
+#                                  the build shows sync as not set up
 #   UPLOAD=0                       export an .ipa instead of uploading it
 #   WORK_DIR                       where the archive and logs go
 #
@@ -58,6 +60,17 @@ auth=(
 
 cd "$root/apps/apple"
 
+api=()
+if [ -n "${MADEGOOD_API_URL:-}" ]; then
+  case "$MADEGOOD_API_URL" in
+    https://*) api=(MADEGOOD_API_URL="$MADEGOOD_API_URL") ;;
+    *) echo "MADEGOOD_API_URL must start with https://" >&2; exit 1 ;;
+  esac
+  echo "Session sync: configured"
+else
+  echo "Session sync: not configured (MADEGOOD_API_URL unset)"
+fi
+
 echo "Archiving version $MARKETING_VERSION ($BUILD_NUMBER)"
 xcodebuild archive \
   -workspace MadeGood.xcworkspace \
@@ -69,6 +82,7 @@ xcodebuild archive \
   DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
   MARKETING_VERSION="$MARKETING_VERSION" \
   CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
+  ${api[@]+"${api[@]}"} \
   > "$work/archive.log" 2>&1 || true
 grep -E '(error|warning):|\*\* ARCHIVE' "$work/archive.log" || true
 if ! grep -q '\*\* ARCHIVE SUCCEEDED \*\*' "$work/archive.log"; then
