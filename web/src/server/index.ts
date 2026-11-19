@@ -5,18 +5,31 @@ export { VoyageLive } from "./live/voyage-live";
 
 const app = createApp();
 
-/** Page requests the Worker sees (/s/*, /v/*) on another host move to CANONICAL_ORIGIN.
- * The API keeps answering on every host: older app builds sync to the workers.dev address,
- * and a redirect would turn their uploads into GETs. */
+/** Page requests the Worker sees (/s/*, /v/*) and the web sign-in entry point on another
+ * host move to CANONICAL_ORIGIN, so Apple gets the registered return URL and cookies land on
+ * the canonical host. The rest of the API keeps answering on every host: older app builds sync
+ * to the workers.dev address, and a redirect would turn their uploads into GETs. Local hosts
+ * (wrangler dev) are left alone. */
+const SIGN_IN_ENTRY = "/api/auth/web/apple";
+const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
 export function canonicalRedirect(
   request: Request,
   canonical: string | undefined,
 ): Response | null {
   if (!canonical || (request.method !== "GET" && request.method !== "HEAD")) return null;
   const url = new URL(request.url);
-  if (url.origin === canonical || url.pathname === "/api" || url.pathname.startsWith("/api/"))
-    return null;
-  return Response.redirect(`${canonical}${url.pathname}${url.search}`, 301);
+  if (url.origin === canonical || LOCAL_HOSTS.has(url.hostname)) return null;
+  const isApi = url.pathname === "/api" || url.pathname.startsWith("/api/");
+  if (isApi && url.pathname !== SIGN_IN_ENTRY) return null;
+  // Not cacheable: /v/* query strings carry share credentials that can be revoked.
+  return new Response(null, {
+    status: 301,
+    headers: {
+      Location: `${canonical}${url.pathname}${url.search}`,
+      "Cache-Control": "private, no-store",
+    },
+  });
 }
 
 export default {
