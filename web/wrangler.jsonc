@@ -10,9 +10,11 @@
   "compatibility_flags": ["nodejs_compat"],
   "observability": { "enabled": true },
   "assets": {
+    "binding": "ASSETS",
     "not_found_handling": "single-page-application",
-    // API routes always reach the Worker, never the SPA fallback.
-    "run_worker_first": ["/api/*", "/v/*"]
+    // API routes always reach the Worker, never the SPA fallback. /s/* gets Open Graph
+    // tags injected into the SPA shell (src/server/routes/session-preview.ts).
+    "run_worker_first": ["/api/*", "/v/*", "/s/*"]
   },
   // APPLE_AUDIENCES: comma-separated Sign in with Apple audiences (the iOS bundle ID; the
   // web Services ID joins later). APPLE_WEB_CLIENT_ID: the Services ID for Sign in with Apple

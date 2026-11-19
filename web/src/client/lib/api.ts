@@ -140,3 +140,21 @@ export async function signOut(): Promise<void> {
 
 /** Full-page navigation to Apple's sign-in, returning to `next` afterwards. */
 export const signInUrl = (next: string) => `/api/auth/web/apple?next=${encodeURIComponent(next)}`;
+
+export type PrivacyZone = { id: string; lat: number; lon: number; radiusM: number };
+
+export const fetchZones = () =>
+  apiJson<{ zones: PrivacyZone[] }>("/me/privacy-zones").then((r) => r.zones);
+
+export const addZone = (zone: Omit<PrivacyZone, "id">) =>
+  apiJson<PrivacyZone>("/me/privacy-zones", jsonInit("POST", zone));
+
+export async function deleteZone(id: string): Promise<void> {
+  const response = await apiFetch(`/me/privacy-zones/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+  if (!response.ok) throw await failure(response);
+}
+
+export const updateMe = (changes: Partial<Pick<Me, "units" | "defaultVisibility">>) =>
+  apiJson<Me>("/me", jsonInit("PATCH", changes));

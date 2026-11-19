@@ -6,12 +6,14 @@ import { optionalAuth, requireAuth } from "../auth/middleware";
 import { privacyZones, type Session, sessions, users } from "../db/schema";
 import { apiError, errorResponse } from "../lib/errors";
 import { createRouter } from "../lib/router";
+import { shareTrack } from "../lib/session-privacy";
 import { deletePrefix, userPrefix } from "../lib/storage";
 import {
   checkTrack,
   readBody,
   TRACK_CONTENT_TYPE,
   TRACK_MAX_BYTES,
+  TRACK_MAX_INFLATED_BYTES,
   TRACK_SPORTS,
   trackKey,
 } from "../lib/track";
@@ -393,8 +395,10 @@ const getTrackRoute = createRoute({
   summary: "Download a session's track file",
   description:
     `The gzipped track v1 file as \`${TRACK_CONTENT_TYPE}\`. Visibility works as for the ` +
-    "session. Privacy zones are not cut out yet, so while the owner has any privacy zone, " +
-    "only the owner can download the track; others get 403.",
+    "session. The owner gets the file as uploaded. Everyone else gets a shared copy: fixes " +
+    "inside the owner's privacy zones removed, a `privacyGap` event wherever the line must " +
+    "break, no heart rate, only start/stop/pause/resume/lap/tack/gybe events, and the shared " +
+    "summary.",
   tags: ["sessions"],
   security: optionalSecurity,
   middleware: [optionalAuth] as const,
@@ -406,7 +410,6 @@ const getTrackRoute = createRoute({
     },
     400: errorResponse("The ID is not a UUID."),
     401: errorResponse("An access token was sent but is invalid."),
-    403: errorResponse("The owner has privacy zones, which are not applied to tracks yet."),
     404: errorResponse("No such session or track, or the caller may not see it."),
   },
 });
@@ -603,21 +606,46 @@ sessionRoutes.openapi(getTrackRoute, async (c) => {
   const session = await findSession(db, id);
   if (!session || !canView(session, viewerId)) return notFound(c);
 
-  if (session.userId !== viewerId) {
-    // Privacy zones are not cut out of tracks yet. Until they are, never hand a track to
-    // anyone but its owner while the owner has a zone.
-    const [zone] = await db
-      .select({ id: privacyZones.id })
-      .from(privacyZones)
-      .where(eq(privacyZones.userId, session.userId))
-      .limit(1);
-    if (zone) {
-      return apiError(c, 403, "forbidden", "This track is only available to its owner.");
-    }
-  }
-
   const object = session.trackKey ? await c.env.TRACKS.get(session.trackKey) : null;
   if (!object) return apiError(c, 404, "not_found", "This session has no track.");
+
+  if (session.userId !== viewerId) {
+    // Everyone but the owner gets the shared projection: privacy zones cut out, no heart
+    // rate, no marks (lib/session-privacy.ts). Read the zones first; a failure is a 500,
+    // never the unfiltered track.
+    const zones = await db
+      .select({ lat: privacyZones.lat, lon: privacyZones.lon, radiusM: privacyZones.radiusM })
+      .from(privacyZones)
+      .where(eq(privacyZones.userId, session.userId));
+    const inflated = await readBody(
+      object.body.pipeThrough(new DecompressionStream("gzip")),
+      TRACK_MAX_INFLATED_BYTES,
+    ).catch(() => null);
+    let shared: Record<string, unknown> | null = null;
+    try {
+      shared = inflated
+        ? shareTrack(
+            JSON.parse(new TextDecoder().decode(inflated)),
+            zones,
+            viewSummary(session, viewerId),
+          )
+        : null;
+    } catch {
+      shared = null;
+    }
+    if (!shared) return apiError(c, 404, "not_found", "This session's track is not available.");
+    const gzipped = await new Response(
+      new Blob([JSON.stringify(shared)]).stream().pipeThrough(new CompressionStream("gzip")),
+    ).arrayBuffer();
+    return new Response(gzipped, {
+      headers: {
+        "content-type": TRACK_CONTENT_TYPE,
+        "content-length": String(gzipped.byteLength),
+        "cache-control": "private, no-cache",
+      },
+    });
+  }
+
   return new Response(object.body, {
     headers: {
       "content-type": TRACK_CONTENT_TYPE,

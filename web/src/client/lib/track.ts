@@ -77,12 +77,17 @@ export function parseTrack(json: unknown): Track {
   };
 }
 
-/** Splits at time gaps over SEGMENT_GAP_S and at the first fix after a resume that follows a pause. */
+/**
+ * Splits at time gaps over SEGMENT_GAP_S, at the first fix after a resume that follows a
+ * pause, and at the first fix at or after a `privacyGap` event.
+ */
 export function segmentsOf(fixes: Fix[], events: TrackEvent[]): [number, number][] {
   const breaks: number[] = [];
   let paused = false;
   for (const event of events) {
-    if (isPause(event.type)) paused = true;
+    // Shared tracks mark where fixes were cut out for privacy: never draw across it.
+    if (event.type === "privacyGap") breaks.push(event.t);
+    else if (isPause(event.type)) paused = true;
     else if (isResume(event.type) && paused) {
       paused = false;
       breaks.push(event.t);

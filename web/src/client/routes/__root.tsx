@@ -41,6 +41,13 @@ function Account() {
       >
         Dashboard
       </Link>
+      <Link
+        to="/app/settings"
+        className="rounded-md px-2 py-1 text-sm hover:bg-accent"
+        activeProps={{ className: "font-semibold" }}
+      >
+        Settings
+      </Link>
       <Button
         size="sm"
         variant="ghost"
@@ -61,7 +68,8 @@ function RootLayout() {
       <header className="mx-auto flex max-w-5xl items-center justify-between gap-3 px-4 py-4">
         <Link to="/" className="flex items-center gap-2 font-semibold">
           <img src="/favicon.svg" alt="" className="size-7 rounded-md" />
-          MadeGood
+          {/* The account links need the room on phones; the logo keeps its accessible name. */}
+          <span className="max-[400px]:sr-only">MadeGood</span>
         </Link>
         <Account />
       </header>

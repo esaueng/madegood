@@ -58,6 +58,12 @@ describe("segmentsOf", () => {
       [3, 6],
       [6, 7],
     ]);
+    // A privacy gap breaks the line even one second apart.
+    expect(segmentsOf(fixes, [{ t: 1, type: "privacyGap" }])).toEqual([
+      [0, 1],
+      [1, 3],
+      [3, 7],
+    ]);
   });
 });
 

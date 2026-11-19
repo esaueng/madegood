@@ -13,7 +13,7 @@ const OSM_ATTRIBUTION =
 const SEAMARK_ATTRIBUTION =
   'Seamarks © <a href="https://www.openseamap.org" target="_blank" rel="noreferrer">OpenSeaMap</a> contributors';
 
-const mapStyle = (seamarks: boolean): StyleSpecification => ({
+export const mapStyle = (seamarks: boolean): StyleSpecification => ({
   version: 8,
   sources: {
     osm: {

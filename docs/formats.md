@@ -205,6 +205,21 @@ returns it the same way. The server stores the bytes unchanged; on upload it che
 the gzip header and that the file starts a JSON object, so clients must send a valid
 track v1 whose `sessionId` matches the URL.
 
+### Shared copies
+
+`GET` returns the stored file only to the session's owner. Anyone else who may see the
+session (public or unlisted) gets a shared copy built by the server, still a valid
+track v1:
+
+- GPS fixes inside the owner's privacy zones are removed, and only the columns
+  `t lat lon spd crs hacc` are kept.
+- A `privacyGap` event (`{"t": …, "type": "privacyGap"}`) sits at the time of the first
+  fix after removed fixes, and between two kept fixes whose connecting arc might pass
+  through a zone. Readers must not draw a line across it.
+- `hr` is empty. Events are limited to `start`, `stop`, `pause`, `resume`, `lap`, `tack`
+  and `gybe`, with no `data` except a numeric `durationS` on maneuvers.
+- `summary` holds only the numbers the API shares with other viewers.
+
 ---
 
 ## GPX export
