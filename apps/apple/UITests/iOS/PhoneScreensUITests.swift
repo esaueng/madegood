@@ -23,6 +23,11 @@ final class PhoneScreensUITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["start.header"].exists)
         attachScreenshot("\(appearance) record")
 
+        // Scrolled partway: rows soften under the status bar instead of running into it.
+        let start = app.cells.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: 0, dy: -120)))
+        attachScreenshot("\(appearance) record scrolled")
+
         // "See All" beside Recent opens History.
         let seeAll = app.buttons["recent.seeAll"]
         for _ in 0..<3 where !seeAll.isHittable { app.swipeUp() }
