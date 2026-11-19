@@ -32,6 +32,7 @@ import {
   positionAt,
   speedScaleMax,
   type Track,
+  TrackTooLargeError,
   trackForViewer,
 } from "@/lib/track";
 
@@ -58,6 +59,7 @@ function SessionPage() {
   const track = useQuery({
     queryKey: ["session", id, "track"],
     queryFn: () => fetchTrack(apiFetch, id),
+    retry: (count, error) => !(error instanceof TrackTooLargeError) && count < 2,
     enabled: session.data?.hasTrack === true,
     staleTime: Number.POSITIVE_INFINITY,
   });
@@ -104,7 +106,11 @@ function SessionPage() {
           <Replay source={track.data} isOwner={s.isOwner} units={units} />
         ) : (
           <p className="rounded-xl border border-dashed p-6 text-center text-muted-foreground">
-            {track.isError ? "The track could not be loaded." : "The track is not available."}
+            {track.error instanceof TrackTooLargeError
+              ? "This track is too long to show to anyone but its owner."
+              : track.isError
+                ? "The track could not be loaded."
+                : "The track is not available."}
           </p>
         )
       ) : (

@@ -1,7 +1,14 @@
 // Track v1 (docs/formats.md) for the session page: decoding, segments, replay lookups and
 // the speed-colored map geometry. Pure functions, so tests run them without a browser.
 
-export type Fix = { t: number; lat: number; lon: number; spd: number | null };
+export type Fix = {
+  t: number;
+  lat: number;
+  lon: number;
+  spd: number | null;
+  /** No line may join this fix to the one before it (a shared track's privacy gap). */
+  breakBefore?: boolean;
+};
 export type HeartRate = { t: number; bpm: number };
 export type TrackEvent = { t: number; type: string; data?: Record<string, unknown> | null };
 
@@ -38,13 +45,24 @@ export function parseTrack(json: unknown): Track {
   const lat = column(gps, "lat");
   const lon = column(gps, "lon");
   const spd = column(gps, "spd");
+  // Privacy gaps name the stored index of the fix after them (docs/formats.md), so equal
+  // timestamps on both sides of a zone cannot hide the break.
+  const breakIndexes = new Set<number>();
+  for (const event of Array.isArray(doc.events) ? doc.events : []) {
+    const index = (event as TrackEvent | null)?.data?.index;
+    if ((event as TrackEvent | null)?.type === "privacyGap" && finite(index)) {
+      breakIndexes.add(index);
+    }
+  }
   const fixes: Fix[] = [];
   for (let i = 0; i < t.length; i++) {
     const [ti, la, lo, sp] = [t[i], lat[i], lon[i], spd[i]];
     if (!finite(ti) || !finite(la) || !finite(lo) || Math.abs(la) > 90 || Math.abs(lo) > 180) {
       continue;
     }
-    fixes.push({ t: ti, lat: la, lon: lo, spd: finite(sp) && sp >= 0 ? sp : null });
+    const fix: Fix = { t: ti, lat: la, lon: lo, spd: finite(sp) && sp >= 0 ? sp : null };
+    if (breakIndexes.has(i)) fix.breakBefore = true;
+    fixes.push(fix);
   }
   // Stable sort: equal times keep their stored order (docs/formats.md).
   fixes.sort((a, b) => a.t - b.t);
@@ -79,15 +97,13 @@ export function parseTrack(json: unknown): Track {
 
 /**
  * Splits at time gaps over SEGMENT_GAP_S, at the first fix after a resume that follows a
- * pause, and at the first fix at or after a `privacyGap` event.
+ * pause, and before every fix marked `breakBefore` (privacy gaps, matched by index).
  */
 export function segmentsOf(fixes: Fix[], events: TrackEvent[]): [number, number][] {
   const breaks: number[] = [];
   let paused = false;
   for (const event of events) {
-    // Shared tracks mark where fixes were cut out for privacy: never draw across it.
-    if (event.type === "privacyGap") breaks.push(event.t);
-    else if (isPause(event.type)) paused = true;
+    if (isPause(event.type)) paused = true;
     else if (isResume(event.type) && paused) {
       paused = false;
       breaks.push(event.t);
@@ -98,7 +114,8 @@ export function segmentsOf(fixes: Fix[], events: TrackEvent[]): [number, number]
   let nextBreak = 0;
   const t = (i: number) => (fixes[i] as Fix).t;
   for (let i = 1; i <= fixes.length; i++) {
-    let split = i === fixes.length || t(i) - t(i - 1) > SEGMENT_GAP_S;
+    let split =
+      i === fixes.length || t(i) - t(i - 1) > SEGMENT_GAP_S || fixes[i]?.breakBefore === true;
     while (i < fixes.length && nextBreak < breaks.length && (breaks[nextBreak] as number) <= t(i)) {
       if ((breaks[nextBreak] as number) > t(i - 1)) split = true;
       nextBreak++;
@@ -110,6 +127,12 @@ export function segmentsOf(fixes: Fix[], events: TrackEvent[]): [number, number]
   }
   return segments;
 }
+
+/** Longitude change from `a` to `b` the short way round, degrees in [-180, 180). */
+export const lonDelta = (a: number, b: number) => ((((b - a) % 360) + 540) % 360) - 180;
+
+/** A longitude in [-180, 180). */
+export const wrapLon = (lon: number) => ((((lon + 180) % 360) + 360) % 360) - 180;
 
 /** Index of the last fix at or before `t`, or -1. Binary search over sorted times. */
 export function fixIndexAt(fixes: Fix[], t: number): number {
@@ -137,7 +160,9 @@ export function positionAt(track: Track, t: number): Fix | null {
   if (!b || b.t === a.t) return t - a.t <= SEGMENT_GAP_S ? a : null;
   const k = Math.min(1, Math.max(0, (t - a.t) / (b.t - a.t)));
   const spd = a.spd !== null && b.spd !== null ? a.spd + (b.spd - a.spd) * k : (a.spd ?? b.spd);
-  return { t, lat: a.lat + (b.lat - a.lat) * k, lon: a.lon + (b.lon - a.lon) * k, spd };
+  // The short way round, as the map draws it and the server checks it.
+  const lon = wrapLon(a.lon + lonDelta(a.lon, b.lon) * k);
+  return { t, lat: a.lat + (b.lat - a.lat) * k, lon, spd };
 }
 
 /** The latest heart rate reading at or before `t` (within a minute), or null. */
@@ -199,7 +224,11 @@ export function speedLines(track: Track, maxSpeed: number) {
         };
         features.push(current);
       }
-      current.geometry.coordinates.push([b.lon, b.lat]);
+      // Continue past ±180° instead of jumping back across the map: the line takes the
+      // short way round, matching the server's crossing check.
+      const coordinates = current.geometry.coordinates;
+      const last = coordinates.at(-1) as [number, number];
+      coordinates.push([last[0] + lonDelta(a.lon, b.lon), b.lat]);
     }
   }
   return { type: "FeatureCollection" as const, features };
@@ -234,6 +263,9 @@ export function thin<T>(items: T[], max: number): T[] {
 
 export const MANEUVER_TYPES = new Set(["tack", "gybe"]);
 
+/** The server will not filter a track this large for anyone but its owner. */
+export class TrackTooLargeError extends Error {}
+
 /** Downloads and inflates a session's track. Null when it has none or it is withheld. */
 export async function fetchTrack(
   fetcher: (path: string) => Promise<Response>,
@@ -241,6 +273,7 @@ export async function fetchTrack(
 ): Promise<Track | null> {
   const response = await fetcher(`/sessions/${encodeURIComponent(id)}/track`);
   if (response.status === 404 || response.status === 403) return null;
+  if (response.status === 422) throw new TrackTooLargeError();
   if (!response.ok || !response.body) throw new Error(`Track download failed: ${response.status}`);
   const text = await new Response(
     response.body.pipeThrough(new DecompressionStream("gzip")),

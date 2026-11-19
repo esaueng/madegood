@@ -10,11 +10,13 @@ import { shareTrack } from "../lib/session-privacy";
 import { deletePrefix, userPrefix } from "../lib/storage";
 import {
   checkTrack,
+  parseGzippedJson,
   readBody,
+  SHARED_TRACK_MAX_INFLATED_BYTES,
   TRACK_CONTENT_TYPE,
   TRACK_MAX_BYTES,
-  TRACK_MAX_INFLATED_BYTES,
   TRACK_SPORTS,
+  TrackTooLarge,
   trackKey,
 } from "../lib/track";
 
@@ -411,6 +413,10 @@ const getTrackRoute = createRoute({
     400: errorResponse("The ID is not a UUID."),
     401: errorResponse("An access token was sent but is invalid."),
     404: errorResponse("No such session or track, or the caller may not see it."),
+    422: errorResponse(
+      `The track inflates to more than ${SHARED_TRACK_MAX_INFLATED_BYTES} bytes, too large to ` +
+        "filter for a viewer other than the owner (`track_too_large`).",
+    ),
   },
 });
 
@@ -617,20 +623,19 @@ sessionRoutes.openapi(getTrackRoute, async (c) => {
       .select({ lat: privacyZones.lat, lon: privacyZones.lon, radiusM: privacyZones.radiusM })
       .from(privacyZones)
       .where(eq(privacyZones.userId, session.userId));
-    const inflated = await readBody(
-      object.body.pipeThrough(new DecompressionStream("gzip")),
-      TRACK_MAX_INFLATED_BYTES,
-    ).catch(() => null);
     let shared: Record<string, unknown> | null = null;
     try {
-      shared = inflated
-        ? shareTrack(
-            JSON.parse(new TextDecoder().decode(inflated)),
-            zones,
-            viewSummary(session, viewerId),
-          )
-        : null;
-    } catch {
+      const parsed = await parseGzippedJson(object.body, SHARED_TRACK_MAX_INFLATED_BYTES);
+      shared = shareTrack(parsed, zones, viewSummary(session, viewerId));
+    } catch (err) {
+      if (err instanceof TrackTooLarge) {
+        return apiError(
+          c,
+          422,
+          "track_too_large",
+          `Tracks over ${SHARED_TRACK_MAX_INFLATED_BYTES} bytes inflated are shown to their owner only.`,
+        );
+      }
       shared = null;
     }
     if (!shared) return apiError(c, 404, "not_found", "This session's track is not available.");

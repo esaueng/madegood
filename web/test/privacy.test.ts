@@ -1,6 +1,13 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
-import { PRIVACY_GAP_EVENT, shareTrack } from "../src/server/lib/session-privacy";
+import { parseTrack, positionAt, speedLines } from "../src/client/lib/track";
+import {
+  arcClearsZones,
+  drawnLengthBoundM,
+  PRIVACY_GAP_EVENT,
+  shareTrack,
+} from "../src/server/lib/session-privacy";
+import { SHARED_TRACK_MAX_INFLATED_BYTES } from "../src/server/lib/track";
 import { MAX_ZONES } from "../src/server/routes/privacy-zones";
 import { injectPreview, sessionPreviewPage } from "../src/server/routes/session-preview";
 import { api, bearer, type SignIn, signIn } from "./apple";
@@ -126,7 +133,9 @@ describe("privacy zone API", () => {
         (await addZone(owner.accessToken, { lat: i / 100, lon: 0, radiusM: 100 })).status,
       ).toBe(201);
     }
-    expect((await addZone(owner.accessToken, { lat: 0, lon: 0, radiusM: 100 })).status).toBe(400);
+    const full = await addZone(owner.accessToken, { lat: 0, lon: 0, radiusM: 100 });
+    expect(full.status).toBe(409);
+    expect(await full.json()).toMatchObject({ error: "zone_limit" });
     expect((await api("/me/privacy-zones")).status).toBe(401);
   });
 });
@@ -160,7 +169,7 @@ describe("shareTrack", () => {
     };
     const shared = shareTrack(track, [zone], null) ?? {};
     expect((shared.gps as { t: number[] }).t).toEqual([0, 1, 2]);
-    expect(shared.events).toEqual([{ t: 1, type: PRIVACY_GAP_EVENT }]);
+    expect(shared.events).toEqual([{ t: 1, type: PRIVACY_GAP_EVENT, data: { index: 1 } }]);
     expect(shareTrack(track, [], null)?.events).toEqual([]);
   });
 
@@ -185,6 +194,88 @@ describe("shareTrack", () => {
   it("rejects documents that are not track v1", () => {
     expect(shareTrack({ v: 2, gps: {} }, [], null)).toBeNull();
     expect(shareTrack("x", [], null)).toBeNull();
+  });
+});
+
+describe("review of #64", () => {
+  const gpsTrack = (t: number[], lat: number[], lon: number[]) => ({
+    v: 1,
+    gps: { t, lat, lon, spd: t.map(() => 1), crs: t.map(() => 0), hacc: t.map(() => 4) },
+    events: [],
+  });
+
+  // Finding 2: fixes on both sides of a zone with the same timestamp.
+  it("marks gaps by index, so equal timestamps cannot join a line across a zone", () => {
+    const m = DEG_PER_M;
+    const track = gpsTrack(
+      [0, 5, 5, 5, 9],
+      [-300 * m, -250 * m, 0, 250 * m, 300 * m],
+      [0, 0, 0, 0, 0],
+    );
+    const shared = shareTrack(track, [{ lat: 0, lon: 0, radiusM: 100 }], null) ?? {};
+    expect((shared.gps as { t: number[] }).t).toEqual([0, 5, 5, 9]);
+    expect(shared.events).toEqual([{ t: 5, type: PRIVACY_GAP_EVENT, data: { index: 2 } }]);
+
+    // The website reads the gap by index and draws no line from fix 1 to fix 2.
+    const parsed = parseTrack(shared);
+    expect(parsed.segments).toEqual([
+      [0, 2],
+      [2, 4],
+    ]);
+    const lines = speedLines(parsed, 1).features.map((f) => f.geometry.coordinates.length);
+    expect(lines.reduce((a, b) => a + b, 0)).toBe(4);
+  });
+
+  // Finding 3: the server's check must cover the line the website draws.
+  it("bounds the drawn line, not only the great circle", () => {
+    // A 1 m zone on the straight Mercator line between two fixes at 60°N, which the great
+    // circle passes north of: the great-circle-only check called it clear.
+    const a = { lat: 60, lon: 0 };
+    const b = { lat: 60, lon: 2 };
+    expect(arcClearsZones(a, b, [{ lat: 60, lon: 1, radiusM: 1 }])).toBe(false);
+    // Across the antimeridian the bound is the short way round, about 111 m, not the globe.
+    const east = { lat: 0, lon: 179.9995 };
+    const west = { lat: 0, lon: -179.9995 };
+    expect(drawnLengthBoundM(east, west)).toBeLessThan(112);
+    expect(arcClearsZones(east, west, [{ lat: 0, lon: 0, radiusM: 1000 }])).toBe(true);
+    expect(arcClearsZones(east, west, [{ lat: 0, lon: 180, radiusM: 10 }])).toBe(false);
+  });
+
+  it("replays and draws across the antimeridian the short way round", () => {
+    const parsed = parseTrack(gpsTrack([0, 2], [0, 0], [179.9995, -179.9995]));
+    const mid = positionAt(parsed, 1);
+    expect(Math.abs(mid?.lon ?? 0)).toBeCloseTo(180, 6);
+    const [line] = speedLines(parsed, 1).features;
+    const [x0, x1] = (line?.geometry.coordinates ?? []).map(([lon]) => lon);
+    expect(x0).toBe(179.9995);
+    expect(x1).toBeCloseTo(180.0005, 6);
+  });
+
+  // Finding 4: a shared copy is built only for tracks the Worker can parse safely.
+  it("refuses to filter a track over the shared size cap, with a clear error", async () => {
+    const owner = await signIn();
+    const pad = "x".repeat(SHARED_TRACK_MAX_INFLATED_BYTES);
+    const id = await publicSession(owner, (sessionId) => ({ ...lineTrack(sessionId), pad }));
+    const response = await api(`/sessions/${id}/track`);
+    expect(response.status).toBe(422);
+    expect(await response.json()).toMatchObject({ error: "track_too_large" });
+    // The owner still downloads the stored file.
+    expect(
+      (await api(`/sessions/${id}/track`, { headers: bearer(owner.accessToken) })).status,
+    ).toBe(200);
+  });
+
+  // Finding 5: concurrent creates must not pass the cap.
+  it("enforces the zone cap atomically", async () => {
+    const owner = await signIn();
+    const responses = await Promise.all(
+      Array.from({ length: MAX_ZONES + 5 }, (_, i) =>
+        addZone(owner.accessToken, { lat: i / 100, lon: 0, radiusM: 100 }),
+      ),
+    );
+    const statuses = responses.map((r) => r.status);
+    expect(statuses.filter((s) => s === 201)).toHaveLength(MAX_ZONES);
+    expect(statuses.filter((s) => s === 409)).toHaveLength(5);
   });
 });
 

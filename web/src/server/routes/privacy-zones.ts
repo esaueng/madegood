@@ -1,5 +1,5 @@
 import { createRoute, z } from "@hono/zod-openapi";
-import { and, count, eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
 import { type AuthEnv, requireAuth } from "../auth/middleware";
 import { type PrivacyZone, privacyZones, users } from "../db/schema";
@@ -84,8 +84,9 @@ const createZoneRoute = createRoute({
       description: "The new zone.",
       content: { "application/json": { schema: ZoneBody } },
     },
-    400: errorResponse(`The body is invalid, or the user already has ${MAX_ZONES} zones.`),
+    400: errorResponse("The body is invalid."),
     401: errorResponse("Missing or invalid access token, or the account no longer exists."),
+    409: errorResponse(`The user already has ${MAX_ZONES} zones (\`zone_limit\`).`),
   },
 });
 
@@ -120,18 +121,18 @@ export const privacyZoneRoutes = createRouter<AuthEnv>()
     const db = drizzle(c.env.DB);
     const [user] = await db.select({ id: users.id }).from(users).where(eq(users.id, userId));
     if (!user) return apiError(c, 401, "unauthorized", "The account no longer exists.");
-    const [existing] = await db
-      .select({ n: count() })
-      .from(privacyZones)
-      .where(eq(privacyZones.userId, userId));
-    if ((existing?.n ?? 0) >= MAX_ZONES) {
-      return apiError(c, 400, "invalid_request", `At most ${MAX_ZONES} privacy zones.`);
+    // One statement, so concurrent requests cannot both pass the cap.
+    const zone = await c.env.DB.prepare(
+      `INSERT INTO privacy_zones (id, user_id, lat, lon, radius_m)
+       SELECT ?, ?, ?, ?, ?
+       WHERE (SELECT count(*) FROM privacy_zones WHERE user_id = ?) < ?
+       RETURNING id, user_id AS userId, lat, lon, radius_m AS radiusM`,
+    )
+      .bind(crypto.randomUUID(), userId, body.lat, body.lon, body.radiusM, userId, MAX_ZONES)
+      .first<PrivacyZone>();
+    if (!zone) {
+      return apiError(c, 409, "zone_limit", `At most ${MAX_ZONES} privacy zones.`);
     }
-    const [zone] = await db
-      .insert(privacyZones)
-      .values({ id: crypto.randomUUID(), userId, ...body })
-      .returning();
-    if (!zone) throw new Error("privacy zone insert returned no row");
     return c.json(toBody(zone), 201);
   })
   .openapi(deleteZoneRoute, async (c) => {

@@ -213,9 +213,17 @@ track v1:
 
 - GPS fixes inside the owner's privacy zones are removed, and only the columns
   `t lat lon spd crs hacc` are kept.
-- A `privacyGap` event (`{"t": …, "type": "privacyGap"}`) sits at the time of the first
-  fix after removed fixes, and between two kept fixes whose connecting arc might pass
-  through a zone. Readers must not draw a line across it.
+- A `privacyGap` event (`{"t": …, "type": "privacyGap", "data": {"index": …}}`) marks
+  the first fix after removed fixes, and any kept fix whose line from the fix before it
+  might pass through a zone. `index` is that fix's position in the shared GPS columns;
+  readers must not draw a line from the fix before it. Match by index, not by `t`: fixes
+  on both sides of a zone can share a timestamp.
+- "Might pass through" covers any line a reader may draw between the two fixes: the
+  great circle, or any path monotonic in latitude and in longitude the short way round
+  (such as a straight line on a Mercator map, or linear interpolation in degrees). Readers
+  must take the short way round across ±180°.
+- Shared copies are built only for tracks up to 16 MiB inflated; above that, others get
+  422 `track_too_large` and only the owner can download the track.
 - `hr` is empty. Events are limited to `start`, `stop`, `pause`, `resume`, `lap`, `tack`
   and `gybe`, with no `data` except a numeric `durationS` on maneuvers.
 - `summary` holds only the numbers the API shares with other viewers.

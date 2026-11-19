@@ -18,7 +18,8 @@ const SHARED_EVENTS: Record<string, readonly string[]> = {
 
 /**
  * Added to shared tracks before the first fix after hidden fixes, or between two fixes
- * whose connecting arc might pass through a zone. Readers must not draw a line across it.
+ * whose connecting line might pass through a zone. `data.index` is that fix's index in the
+ * shared GPS columns; readers must not draw a line from the fix before it.
  */
 export const PRIVACY_GAP_EVENT = "privacyGap";
 
@@ -32,17 +33,43 @@ type Fix = { t: number; lat: number; lon: number; spd: unknown; crs: unknown; ha
 export const insideZone = (fix: { lat: number; lon: number }, zones: readonly Zone[]) =>
   zones.some((zone) => distanceM(zone, fix) <= zone.radiusM + ZONE_MARGIN_M);
 
+const EARTH_RADIUS_M = 6_371_008.8;
+const radians = (degrees: number) => (degrees * Math.PI) / 180;
+
+/** Longitude change from `a` to `b` the short way round, degrees in [-180, 180). */
+export const lonDelta = (a: number, b: number) => ((((b - a) % 360) + 540) % 360) - 180;
+
 /**
- * Whether the shortest arc from `a` to `b` provably stays outside every zone: if it entered
- * one, the two distances to the center would sum to at most the arc length plus two radii
- * (triangle inequality), as in voyage sharing. Near misses count as possible crossings.
+ * An upper bound on the length of any line a viewer may draw between `a` and `b`: the
+ * great-circle arc, or any path that moves monotonically in latitude and in longitude the
+ * short way round (a straight line on a Mercator map, or linear interpolation in degrees,
+ * as the website does). Such a path is at most R·(|Δφ| + cos φ*·|Δλ|), where φ* is the
+ * latitude in the box nearest the equator.
+ */
+export function drawnLengthBoundM(
+  a: { lat: number; lon: number },
+  b: { lat: number; lon: number },
+) {
+  const dLat = Math.abs(radians(b.lat - a.lat));
+  const dLon = Math.abs(radians(lonDelta(a.lon, b.lon)));
+  const nearestEquator =
+    Math.sign(a.lat) !== Math.sign(b.lat) ? 0 : Math.min(Math.abs(a.lat), Math.abs(b.lat));
+  const boxPath = EARTH_RADIUS_M * (dLat + Math.cos(radians(nearestEquator)) * dLon);
+  return Math.max(distanceM(a, b), boxPath);
+}
+
+/**
+ * Whether every line a viewer may draw from `a` to `b` provably stays outside every zone.
+ * A path of length P through a point within r of a zone center has d(z,a) + d(z,b) at most
+ * P + 2r (triangle inequality), so the pair is joined only when the sum is larger, with P
+ * from drawnLengthBoundM. Near misses count as possible crossings.
  */
 export const arcClearsZones = (
   a: { lat: number; lon: number },
   b: { lat: number; lon: number },
   zones: readonly Zone[],
 ) => {
-  const length = distanceM(a, b);
+  const length = drawnLengthBoundM(a, b);
   return zones.every(
     (zone) => distanceM(zone, a) + distanceM(zone, b) > length + 2 * (zone.radiusM + ZONE_MARGIN_M),
   );
@@ -92,7 +119,9 @@ export function shareTrack(
     crs: [] as unknown[],
     hacc: [] as unknown[],
   };
-  const gaps: number[] = [];
+  // Gaps are marked by the index of the first fix after them in the shared columns, never
+  // by time alone: fixes on both sides of a zone can share a timestamp.
+  const gaps: { t: number; index: number }[] = [];
   let previous: Fix | null = null;
   let hiddenSincePrevious = false;
   for (const fix of fixes) {
@@ -101,7 +130,7 @@ export function shareTrack(
       continue;
     }
     if (previous && (hiddenSincePrevious || !arcClearsZones(previous, fix, zones))) {
-      gaps.push(fix.t);
+      gaps.push({ t: fix.t, index: out.t.length });
     }
     out.t.push(fix.t);
     out.lat.push(fix.lat);
@@ -129,7 +158,9 @@ export function shareTrack(
         : { t: event.t, type: event.type },
     );
   }
-  for (const gap of gaps) events.push({ t: gap, type: PRIVACY_GAP_EVENT });
+  for (const gap of gaps) {
+    events.push({ t: gap.t, type: PRIVACY_GAP_EVENT, data: { index: gap.index } });
+  }
   events.sort((a, b) => (a.t as number) - (b.t as number));
 
   const shared: Record<string, unknown> = {

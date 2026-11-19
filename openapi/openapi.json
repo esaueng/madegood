@@ -134,6 +134,8 @@
               "unsupported_media_type",
               "payload_too_large",
               "invalid_track",
+              "track_too_large",
+              "zone_limit",
               "internal"
             ]
           },
@@ -1533,7 +1535,7 @@
             }
           },
           "400": {
-            "description": "The body is invalid, or the user already has 20 zones.",
+            "description": "The body is invalid.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1544,6 +1546,16 @@
           },
           "401": {
             "description": "Missing or invalid access token, or the account no longer exists.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The user already has 20 zones (`zone_limit`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -2113,6 +2125,16 @@
           },
           "404": {
             "description": "No such session or track, or the caller may not see it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The track inflates to more than 16777216 bytes, too large to filter for a viewer other than the owner (`track_too_large`).",
             "content": {
               "application/json": {
                 "schema": {
