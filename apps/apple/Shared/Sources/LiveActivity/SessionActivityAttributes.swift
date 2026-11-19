@@ -14,6 +14,9 @@
             var movingTime: String
             /// "Paused" or "Auto-paused", or nil while moving.
             var pauseLabel: String?
+            /// Man-overboard guidance ("120 m · 245°", or "Waiting for GPS") while a mark is
+            /// set, else nil. Optional, so states from earlier builds still decode.
+            var manOverboard: String? = nil
         }
 
         var sportName: String

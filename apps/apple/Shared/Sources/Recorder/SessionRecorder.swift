@@ -331,7 +331,8 @@ final class SessionRecorder {
                     guard let readings = self?.mirrorReadings(for: sessionID) else { return }
                     sequence += 1
                     let snapshot = WorkoutMirrorSnapshot(
-                        sessionID: sessionID, sequence: sequence, sport: sport, sentAt: Date(), readings: readings)
+                        sessionID: sessionID, sequence: sequence, sport: sport, sentAt: Date(), readings: readings,
+                        manOverboard: ManOverboard.shared.mark)
                     if let data = try? encoder.encode(snapshot) {
                         // HealthKit reconnects on its own. Send the latest snapshot on the
                         // next tick rather than replaying samples after a dropped link.

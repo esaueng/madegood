@@ -45,9 +45,11 @@
         func update(_ metrics: LiveMetrics?, sport: Sport) {
             guard let activity else { return }
             let state = Self.state(metrics, sport: sport)
-            // Pause changes go out at once; otherwise at most every few seconds.
+            // Pause and man-overboard changes go out at once; otherwise at most every few seconds.
             let pauseChanged = state.pauseLabel != lastState?.pauseLabel
-            guard state != lastState, pauseChanged || Date().timeIntervalSince(lastUpdate) >= Self.minimumUpdateInterval
+            let mobChanged = (state.manOverboard == nil) != (lastState?.manOverboard == nil)
+            guard state != lastState,
+                pauseChanged || mobChanged || Date().timeIntervalSince(lastUpdate) >= Self.minimumUpdateInterval
             else { return }
             lastUpdate = Date()
             lastState = state
@@ -95,7 +97,16 @@
                     ?? "–",
                 distance: display.distance(metrics?.distance ?? 0),
                 movingTime: Formatting.elapsed(metrics?.movingTime ?? 0),
-                pauseLabel: metrics.flatMap { LiveDisplay.pauseLabel($0.pauseState) })
+                pauseLabel: metrics.flatMap { LiveDisplay.pauseLabel($0.pauseState) },
+                manOverboard: manOverboardText(display: display))
+        }
+
+        /// Distance and true bearing back to the man-overboard mark, if one is set.
+        static func manOverboardText(display: LiveDisplay) -> String? {
+            let manOverboard = ManOverboard.shared
+            guard manOverboard.mark != nil else { return nil }
+            guard let guidance = manOverboard.guidance() else { return "Waiting for GPS" }
+            return "\(display.distance(guidance.distance)) · \(LiveDisplay.course(guidance.bearing))"
         }
     }
 #endif

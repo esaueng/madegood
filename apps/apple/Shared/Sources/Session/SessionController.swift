@@ -135,6 +135,15 @@ final class SessionController {
         Haptics.play(.lap)
     }
 
+    /// Marks man-overboard with its haptic. Before the first GPS fix there is nothing to
+    /// mark: a failure buzz says so. Returns whether a position was marked.
+    @discardableResult
+    func markManOverboard() -> Bool {
+        let marked = recorder.markManOverboard()
+        Haptics.play(marked ? .manOverboard : .failure)
+        return marked
+    }
+
     /// One press of the Action button after the one that started the session: works the
     /// countdown, or runs the sport's chosen action while recording (`ActionButtonPress`).
     @discardableResult
@@ -152,9 +161,7 @@ final class SessionController {
         case .mark:
             recorder.mark()
             Haptics.play(.mark)
-        case .manOverboard:
-            // Before the first GPS fix there is nothing to mark: say so with a failure buzz.
-            Haptics.play(recorder.markManOverboard() ? .manOverboard : .failure)
+        case .manOverboard: markManOverboard()
         case .ignore: break
         }
         return press

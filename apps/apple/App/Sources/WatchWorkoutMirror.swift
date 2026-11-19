@@ -1,6 +1,7 @@
 import Foundation
 import HealthKit
 import Observation
+import WaterKit
 
 /// Receives read-only live snapshots. The watch owns the recording and its lifecycle.
 @MainActor
@@ -55,13 +56,28 @@ final class WatchWorkoutMirror: NSObject, HKWorkoutSessionDelegate {
             let decoder = JSONDecoder()
             for packet in packets {
                 if let snapshot = try? decoder.decode(WorkoutMirrorSnapshot.self, from: packet) {
-                    state.receive(snapshot, from: ObjectIdentifier(source))
+                    receive(snapshot, from: ObjectIdentifier(source))
                 }
             }
         case .disconnected(let source):
             close(source, stopped: false)
         case .stopped(let source):
             close(source, stopped: true)
+        }
+    }
+
+    /// The watch's man-overboard mark in the last accepted snapshot, by recording.
+    private var mirroredMark: (sessionID: UUID, mark: ManOverboard.Mark?)?
+
+    private func receive(_ snapshot: WorkoutMirrorSnapshot, from connection: ObjectIdentifier) {
+        let before = state.lastConfirmed
+        state.receive(snapshot, from: connection)
+        guard let accepted = state.lastConfirmed, accepted != before else { return }
+        // A mark on the watch shows on the phone too, and stays until cleared (PLAN §5).
+        let previous = mirroredMark?.sessionID == accepted.sessionID ? mirroredMark?.mark : nil
+        mirroredMark = (accepted.sessionID, accepted.manOverboard)
+        if ManOverboard.shared.applyMirrored(accepted.manOverboard, previous: previous) {
+            Haptics.play(.manOverboard)
         }
     }
 
@@ -86,9 +102,20 @@ final class WatchWorkoutMirror: NSObject, HKWorkoutSessionDelegate {
             var readings = LiveReadings(nil)
             readings.speed = 5
             readings.pauseState = .manuallyPaused
+            // `-demoWatchMOB`: the watch has marked man-overboard 150 m north of the demo
+            // origin (a fake position, like the rest of the demo).
+            var mark: ManOverboard.Mark?
+            if ProcessInfo.processInfo.arguments.contains("-demoWatchMOB") {
+                let point = Geo.destination(
+                    lat: DemoFeed.origin.lat, lon: DemoFeed.origin.lon, bearing: 0, distance: 150)
+                mark = ManOverboard.Mark(
+                    latitude: point.lat, longitude: point.lon, markedAt: .now, positionAt: .now, positionAge: 0)
+            }
             state.connect(connection)
-            state.receive(
-                WorkoutMirrorSnapshot(sessionID: UUID(), sequence: 1, sport: .canoe, sentAt: .now, readings: readings),
+            receive(
+                WorkoutMirrorSnapshot(
+                    sessionID: UUID(), sequence: 1, sport: .canoe, sentAt: .now, readings: readings,
+                    manOverboard: mark),
                 from: connection)
         }
     #endif
