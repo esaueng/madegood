@@ -1,5 +1,5 @@
 import { createRoute, z } from "@hono/zod-openapi";
-import { and, desc, eq, isNull, lt, or } from "drizzle-orm";
+import { and, desc, eq, isNull, lt, or, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
 import type { Context } from "hono";
 import { optionalAuth, requireAuth } from "../auth/middleware";
@@ -10,8 +10,10 @@ import { createRouter } from "../lib/router";
 import { SHARED_TRACK_MAX_FIXES, shareTrack } from "../lib/session-privacy";
 import {
   accountActive,
-  deleteOlderTracks,
-  removeIfDetached,
+  collectUserGarbage,
+  deleteSessionRow,
+  discardUpload,
+  insertSession,
   replaceSessionMetadata,
   storeTrack,
   UPLOAD_REVISION_HEADER,
@@ -710,7 +712,7 @@ sessionRoutes.openapi(putRoute, async (c) => {
   // A DELETE that raced this PUT leaves a tombstone: remove what the PUT wrote.
   const settle = async (session: Session, status: 200 | 201) => {
     if (await isTombstoned(db, userId, id)) {
-      await db.delete(sessions).where(and(eq(sessions.id, id), eq(sessions.userId, userId)));
+      await deleteSessionRow(db, c.env.TRACKS, id, userId);
       return sessionDeleted(c);
     }
     return c.json(toSessionBody(session, userId), status);
@@ -725,18 +727,10 @@ sessionRoutes.openapi(putRoute, async (c) => {
   if (replaced.kind === "stale") return revisionError(c, replaced.stored);
   if (replaced.kind === "updated") return settle(replaced.session, 200);
 
-  const [user] = await db
-    .select({ defaultVisibility: users.defaultVisibility })
-    .from(users)
-    .where(eq(users.id, userId));
-  if (!user) return unknownUser(c);
-
-  const [created] = await db
-    .insert(sessions)
-    .values({ id, userId, visibility: user.defaultVisibility, uploadRevision: revision, ...fields })
-    .onConflictDoNothing({ target: sessions.id })
-    .returning();
+  // One statement: the account must be active, and it supplies the default visibility.
+  const created = await insertSession(db, { id, userId, revision, fields });
   if (created) return settle(created, 201);
+  if (!(await accountActive(db, userId))) return unknownUser(c);
 
   // The ID exists. It is either another account's, or the caller's own from a concurrent
   // first upload, which a retry of the update above handles.
@@ -797,42 +791,38 @@ sessionRoutes.openapi(putTrackRoute, async (c) => {
   const problem = await checkTrack(bytes);
   if (problem) return apiError(c, 400, "invalid_track", problem);
 
-  // One object per revision, attached only while the row is still at that revision, so a
-  // delayed older upload can never replace the track of a newer one.
+  // Its own object per upload attempt, attached only while the row is still at this
+  // revision (and the account active), so no upload can replace or delete another's track.
+  // The key is recorded for deletion before the put and unrecorded when it attaches
+  // (lib/r2-garbage.ts): after any failure the object is still collected.
   const key = trackKey(userPrefix(userId), id, revision);
-  // The object may be in R2 with no row pointing at it after a failure (D1 down after the
-  // put, or the account deleted meanwhile): remove it unless the row is known to hold it.
-  // When even that read fails, the session's or the account's deletion sweep removes it.
   const stored = await storeTrack(db, c.env.TRACKS, { id, userId, revision, key, bytes }).catch(
     async (error: unknown): Promise<never> => {
-      await removeIfDetached(db, c.env.TRACKS, { id, userId, key }).catch(() => {});
+      await discardUpload(db, c.env.TRACKS, key).catch(() => {});
       throw error;
     },
   );
   const attached = stored.kind === "attached";
   if (!attached || (await isTombstoned(db, userId, id))) {
+    if (attached) {
+      // Deleted while the body was uploading (review of #37): the row goes again, with the
+      // key it now names recorded in the same batch.
+      await deleteSessionRow(db, c.env.TRACKS, id, userId);
+      await collectUserGarbage(db, c.env.TRACKS, userId);
+    } else {
+      // Never attached: only this upload's own object goes.
+      await discardUpload(db, c.env.TRACKS, key);
+    }
     if (!(await accountActive(db, userId))) {
-      // The account is being deleted: its sweep would find this object too, but do not
-      // leave it until then.
-      await c.env.TRACKS.delete(key);
       return apiError(c, 401, "unauthorized", "The account no longer exists.");
     }
-    // The session was deleted, or moved to a newer revision, while the body was uploading
-    // (review of #37). DELETE removes the row before the objects, so either it already
-    // deleted this object or it will find none; remove ours so no track outlives its
-    // session or revision.
-    await c.env.TRACKS.delete(key);
-    if (attached) {
-      await db.delete(sessions).where(and(eq(sessions.id, id), eq(sessions.userId, userId)));
-      return sessionDeleted(c);
-    }
+    if (attached) return sessionDeleted(c);
     const [now] = await db
       .select({ uploadRevision: sessions.uploadRevision })
       .from(sessions)
       .where(and(eq(sessions.id, id), eq(sessions.userId, userId), isNull(sessions.deletedAt)));
     return now ? revisionError(c, now.uploadRevision) : notFound(c);
   }
-  await deleteOlderTracks(c.env.TRACKS, userId, id, revision);
 
   // Post-processing (lib/postprocess.ts) reads the whole track, checks `v` and `sessionId`,
   // derives the bounds and times, and fetches wind for shared sessions. A failed send is a
@@ -942,7 +932,12 @@ sessionRoutes.openapi(patchRoute, async (c) => {
   if (body.notes !== undefined) changes.notes = clean(body.notes);
   if (body.visibility !== undefined) changes.visibility = body.visibility;
 
-  const mine = and(eq(sessions.id, id), eq(sessions.userId, userId), isNull(sessions.deletedAt));
+  const mine = and(
+    eq(sessions.id, id),
+    eq(sessions.userId, userId),
+    isNull(sessions.deletedAt),
+    sql`EXISTS (SELECT 1 FROM users WHERE users.id = ${userId} AND users.deleted_at IS NULL)`,
+  );
   if (Object.keys(changes).length === 0) {
     const [session] = await db.select().from(sessions).where(mine);
     return session ? c.json(toSessionBody(session, userId), 200) : notFound(c);
@@ -970,26 +965,14 @@ sessionRoutes.openapi(deleteRoute, async (c) => {
   const { id } = c.req.valid("param");
   const userId = c.var.userId;
   const db = drizzle(c.env.DB);
-  // The row goes first, then the objects (review of #37). A track upload attaches its
-  // object only if the row still exists and otherwise deletes it, so with this order no
-  // upload that overlaps the delete can leave a track behind. The objects are deleted even
-  // when there is no row, so retrying after an R2 failure still cleans up.
-  const deleted = await db
-    .delete(sessions)
-    .where(and(eq(sessions.id, id), eq(sessions.userId, userId)))
-    .returning({ trackKey: sessions.trackKey });
-  if (deleted.length > 0) {
-    // Only a session that existed is tombstoned, so a later PUT cannot bring it back; an
-    // unknown ID leaves nothing behind. A PUT that recreated the row before the tombstone
-    // was written is removed again here (PUTs also re-check the tombstone after writing).
-    await db
-      .insert(sessionTombstones)
-      .values({ id, userId, deletedAt: Date.now() })
-      .onConflictDoNothing();
-    await db.delete(sessions).where(and(eq(sessions.id, id), eq(sessions.userId, userId)));
-  }
+  // The row goes first, with its track key recorded and the tombstone written in the same
+  // batch (lib/r2-garbage.ts), then the objects. A track upload attaches only to a live row
+  // and otherwise deletes its own object, so no upload overlapping the delete leaves a track.
+  // A later PUT for the ID gets 410 from the tombstone.
+  await deleteSessionRow(db, c.env.TRACKS, id, userId, { tombstone: true });
   await deletePrefix(c.env.TRACKS, `${userPrefix(userId)}sessions/${id}/`);
-  const keys = deleted.flatMap((row) => (row.trackKey ? [row.trackKey] : []));
-  if (keys.length > 0) await c.env.TRACKS.delete(keys);
+  // Recorded keys only once no upload can still be attaching them; this session's own
+  // objects are already gone with its prefix.
+  await collectUserGarbage(db, c.env.TRACKS, userId);
   return c.body(null, 204);
 });

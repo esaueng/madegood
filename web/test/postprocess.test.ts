@@ -24,7 +24,8 @@ import {
 } from "../src/server/lib/postprocess";
 import { SHARED_TRACK_MAX_FIXES } from "../src/server/lib/session-privacy";
 import { storeTrack } from "../src/server/lib/session-upload";
-import { TrackTooLarge } from "../src/server/lib/track";
+import { userPrefix } from "../src/server/lib/storage";
+import { TrackTooLarge, trackKey } from "../src/server/lib/track";
 import {
   boundsCenter,
   deriveTrack,
@@ -532,36 +533,41 @@ describe("review of #72", { timeout: 30_000 }, () => {
     expect(theirs.trackEndedAt).toBe(mine.trackEndedAt);
   });
 
-  it("ends a same-revision upload race at the stored object's ETag", async () => {
+  it("ends a same-revision upload race at the last upload to attach, each with its own object", async () => {
     const owner = await signIn();
     const id = crypto.randomUUID();
     await upload(owner, id, track(id, line(10)));
     const db = drizzle(env.DB);
-    const key = (await row(id)).trackKey as string;
+    const original = (await row(id)).trackKey as string;
     const bytes = async (n: number) => gzip(JSON.stringify(track(id, line(n))));
-    const input = { id, userId: owner.user.id, revision: 0, key };
+    const keyA = trackKey(userPrefix(owner.user.id), id, 0);
+    const keyB = trackKey(userPrefix(owner.user.id), id, 0);
+    const input = { id, userId: owner.user.id, revision: 0 };
     const [a, b] = [await bytes(20), await bytes(30)];
-    // A puts, then B puts and attaches, then A attaches its own (now overwritten) ETag.
+    // A puts, then B puts and attaches, then A attaches: no upload overwrites another's bytes.
     let second: Awaited<ReturnType<typeof storeTrack>> | undefined;
     const first = await storeTrack(
       db,
       env.TRACKS,
-      { ...input, bytes: a },
+      { ...input, key: keyA, bytes: a },
       {
         afterPut: async () => {
-          second = await storeTrack(db, env.TRACKS, { ...input, bytes: b });
+          second = await storeTrack(db, env.TRACKS, { ...input, key: keyB, bytes: b });
         },
       },
     );
-    const head = await env.TRACKS.head(key);
-    expect(second).toMatchObject({ kind: "attached", etag: head?.etag, replaced: false });
-    // A lost: it reports B's ETag and that its own bytes were replaced (the route's 412).
-    expect(first).toMatchObject({ kind: "attached", etag: head?.etag, replaced: true });
-    expect((await row(id)).trackEtag).toBe(head?.etag);
-    // So the message both uploads send gets processed rather than dropped.
+    expect(second).toMatchObject({ kind: "attached", replaced: false });
+    expect(first).toMatchObject({ kind: "attached", replaced: false });
+    // A attached last, so the row names A's object; B's and the original were replaced and
+    // deleted at once.
+    const headA = await env.TRACKS.head(keyA);
+    expect((await row(id)).trackKey).toBe(keyA);
+    expect((await row(id)).trackEtag).toBe(headA?.etag);
+    expect(await env.TRACKS.head(keyB)).toBeNull();
+    expect(await env.TRACKS.head(original)).toBeNull();
     const message = await messageFor(id);
     expect(await processSession(env, message, { fetch: noFetch })).toBe("processed");
-    expect((await row(id)).trackEndedAt).toBe(START_MS + 290_000);
+    expect((await row(id)).trackEndedAt).toBe(START_MS + 190_000);
   });
 
   it("does not ask for wind once the session is made private", async () => {
@@ -822,29 +828,30 @@ describe("scoped re-check of #72", { timeout: 30_000 }, () => {
     expect(south(shared)).toBe(0);
   });
 
-  it("reports the stored ETag to an upload that loses after attaching", async () => {
+  it("reports an upload that another one replaced after it attached", async () => {
     const owner = await signIn();
     const id = crypto.randomUUID();
     await upload(owner, id, track(id, line(10)));
     const db = drizzle(env.DB);
-    const key = (await row(id)).trackKey as string;
-    const input = { id, userId: owner.user.id, revision: 0, key };
+    const input = { id, userId: owner.user.id, revision: 0 };
+    const keyA = trackKey(userPrefix(owner.user.id), id, 0);
+    const keyB = trackKey(userPrefix(owner.user.id), id, 0);
     const a = await gzip(JSON.stringify(track(id, line(20))));
     const b = await gzip(JSON.stringify(track(id, line(30))));
-    // A puts and attaches; B puts and attaches before A reads the object back.
+    // A attaches; B attaches before A reads the row back.
     const first = await storeTrack(
       db,
       env.TRACKS,
-      { ...input, bytes: a },
+      { ...input, key: keyA, bytes: a },
       {
         afterAttach: async () => {
-          await storeTrack(db, env.TRACKS, { ...input, bytes: b });
+          await storeTrack(db, env.TRACKS, { ...input, key: keyB, bytes: b });
         },
       },
     );
-    const head = await env.TRACKS.head(key);
-    expect(first).toMatchObject({ kind: "attached", etag: head?.etag, replaced: true });
-    expect((await row(id)).trackEtag).toBe(head?.etag);
+    expect(first).toMatchObject({ kind: "attached", replaced: true });
+    expect((await row(id)).trackKey).toBe(keyB);
+    expect(await env.TRACKS.head(keyA)).toBeNull();
   });
 
   it("keeps migration 0007 as previews applied it, with the later columns in 0008", () => {

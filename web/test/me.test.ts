@@ -268,9 +268,10 @@ describe("DELETE /api/me", () => {
       .mockRejectedValueOnce(new Error("R2 unavailable"));
     await expect(runAccountDeletion(env, id, later)).rejects.toThrow("R2 unavailable");
     failing.mockRestore();
-    // Nothing was lost: the account is still marked, its rows and keys still known.
+    // Nothing was lost: the account is still marked and its objects are still there for the
+    // next pass (rows go first, their keys recorded in the same batch; lib/r2-garbage.ts).
     expect((await userRow(id))?.deletedAt).toEqual(expect.any(Number));
-    expect(await count("privacy_zones", id)).toBe(1);
+    expect((await env.TRACKS.list({ prefix: `users/${id}/` })).objects).toHaveLength(3);
 
     // The scheduled sweep picks it up and finishes.
     const swept = await sweepAccountDeletions(env, later, 1000);

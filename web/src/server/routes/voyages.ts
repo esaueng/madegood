@@ -321,7 +321,8 @@ voyageRoutes.openapi(putVoyage, async (c) => {
             endedAt: sql<number | null>`${fields.endedAt}`.as("endedAt"),
           })
           .from(users)
-          .where(eq(users.id, userId)),
+          // An account being deleted (lib/account-deletion.ts) gets no new rows.
+          .where(and(eq(users.id, userId), isNull(users.deletedAt))),
       )
       .onConflictDoNothing()
       .returning({ id: voyages.id }),
@@ -402,7 +403,12 @@ voyageRoutes.openapi(putLeg, async (c) => {
             distanceM: sql<number | null>`${fields.distanceM}`.as("distanceM"),
           })
           .from(voyages)
-          .where(parent),
+          .where(
+            and(
+              parent,
+              sql`EXISTS (SELECT 1 FROM users WHERE users.id = ${userId} AND users.deleted_at IS NULL)`,
+            ),
+          ),
       )
       .onConflictDoNothing()
       .returning({ id: legs.id }),

@@ -12,7 +12,7 @@ import {
 } from "../auth/users";
 import { clearSessionCookies } from "../auth/web-cookies";
 import { sessions, users } from "../db/schema";
-import { requestAccountDeletion, runAccountDeletion } from "../lib/account-deletion";
+import { requestAccountDeletion, runScheduledDeletion } from "../lib/account-deletion";
 import { apiError, errorResponse } from "../lib/errors";
 import { createRouter } from "../lib/router";
 import { TRACK_SPORTS } from "../lib/track";
@@ -205,9 +205,8 @@ me.openapi(deleteRoute, async (c) => {
   // D1 batch, then swept once in this request (so the data is gone when it answers, unless
   // storage fails) and by the scheduled sweep until the account record goes too.
   await requestAccountDeletion(c.env.DB, userId);
-  await runAccountDeletion(c.env, userId).catch((error) => {
-    console.error("Account deletion pass failed; the scheduled sweep retries it.", error);
-  });
+  // A failed pass is retried by the scheduled sweep with backoff (runScheduledDeletion).
+  await runScheduledDeletion(c.env, userId);
   // The website's refresh rows are gone; clear its cookies too, so the browser stops
   // presenting them. Apps (bearer tokens) get no cookies.
   if (c.req.header("Authorization") === undefined) clearSessionCookies(c);

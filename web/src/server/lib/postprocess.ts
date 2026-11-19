@@ -3,13 +3,7 @@ import { and, asc, eq, gt, isNotNull, isNull, lt, ne, or, type SQL, sql } from "
 import { drizzle } from "drizzle-orm/d1";
 import { privacyZones, type Session, sessions, users } from "../db/schema";
 import type { Zone } from "./session-privacy";
-import { userPrefix } from "./storage";
-import {
-  parseGzippedJson,
-  SHARED_TRACK_MAX_INFLATED_BYTES,
-  TrackTooLarge,
-  trackKey,
-} from "./track";
+import { parseGzippedJson, SHARED_TRACK_MAX_INFLATED_BYTES, TrackTooLarge } from "./track";
 import { boundsCenter, deriveTrack, InvalidTrack, type TrackDerived } from "./track-derived";
 import { fetchWind, type StoredWind, WindTransientError, windRequest } from "./wind";
 
@@ -121,7 +115,8 @@ async function loadZones(
 
 /** True while the owner's zones version is still `version`. */
 const zonesStillAt = (userId: string, version: number): SQL =>
-  sql`(SELECT ${users.zonesVersion} FROM ${users} WHERE ${users.id} = ${userId}) = ${version}`;
+  // Null, so false, for an account being deleted: no derived write lands after the lock.
+  sql`(SELECT ${users.zonesVersion} FROM ${users} WHERE ${users.id} = ${userId} AND ${users.deletedAt} IS NULL) = ${version}`;
 
 /** Whether others may be shown this session's public data, given the owner's version. */
 export const publicIsCurrent = (
@@ -169,16 +164,19 @@ export async function processSession(
   if (!parsed.success) return "invalid_message";
   const msg = parsed.data;
   const db = drizzle(env.DB);
-  const key = trackKey(userPrefix(msg.userId), msg.sessionId, msg.revision);
-  // The row as long as it still holds this message's track.
-  const current = and(
+  // The row as long as it still holds this message's track. Each upload has its own key
+  // (lib/track.ts), so the row's key and ETag identify the object.
+  const holding = and(
     eq(sessions.id, msg.sessionId),
     eq(sessions.userId, msg.userId),
     isNull(sessions.deletedAt),
     eq(sessions.uploadRevision, msg.revision),
-    eq(sessions.trackKey, key),
     eq(sessions.trackEtag, msg.etag),
   );
+  const [attached] = await db.select({ key: sessions.trackKey }).from(sessions).where(holding);
+  const key = attached?.key;
+  if (!key) return "skipped_stale";
+  const current = and(holding, eq(sessions.trackKey, key));
 
   let outcome: Outcome = "skipped_done";
   let session: Session | undefined;

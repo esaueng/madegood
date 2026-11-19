@@ -287,9 +287,22 @@ to `scripts/testflight` as a build setting.
   revokes its sign-ins at once, then deletes the user's rows, live voyage shares and every
   R2 object under their prefix (202). Anything that fails is retried by the scheduled
   sweep (the `triggers.crons` entry in `wrangler.jsonc`), which also deletes the account
-  record once 20 minutes have passed. Without the cron trigger the data is still removed by
-  the request, but the account record stays marked until a sweep runs, and that Apple ID
-  cannot sign in again until then.
+  record once 20 minutes have passed. A deletion that keeps failing backs off (1 minute,
+  doubling, at most 6 hours) so others still run; after 8 failed passes each failure is
+  logged as `{"event":"account_deletion_failing",…}` (search Workers observability for it).
+  Without the cron trigger (previews) the data is still removed by the request, and the
+  account record goes the next time that Apple ID signs in, or the account's token is used,
+  after the 20 minutes.
+- Every write (sessions, tracks, privacy zones, voyages, live sharing, post-processing,
+  refresh tokens) requires the account to be active in the same SQL statement, so nothing
+  authorized before a deletion lands after it.
+- Track objects: every upload attempt writes its own key
+  (`sessions/<id>/track.v1.r<revision>.<attempt>.gz`). Keys no row names any more go into
+  `pending_r2_deletes` in the same D1 batch as the change that detaches them, and an
+  upload records its key before writing it (and unrecords it when it attaches). Detached
+  tracks are deleted at once; recorded uploads that never attached are collected after 15
+  minutes by later uploads of the user and by the cron trigger. Account deletion collects
+  all of the user's recorded keys, inside or outside their prefix.
 - Workers observability is on in `wrangler.jsonc` (`observability.enabled`), so
   Cloudflare keeps request logs for your account; turn it off there if you do not want
   them.

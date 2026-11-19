@@ -9,7 +9,7 @@ import {
   rotateRefreshToken,
   signAccessToken,
 } from "../auth/tokens";
-import { AccountDeleting, cleanDisplayName, findOrCreateUser } from "../auth/users";
+import { AccountDeleting, cleanDisplayName } from "../auth/users";
 import {
   clearSessionCookies,
   refreshCookie,
@@ -18,6 +18,7 @@ import {
   setSessionCookies,
   WEB_AUTH_PATH,
 } from "../auth/web-cookies";
+import { signInAppleSubject } from "../lib/account-deletion";
 import { apiError } from "../lib/errors";
 
 // Sign in with Apple for the website, kept out of the OpenAPI document: these are browser
@@ -136,17 +137,15 @@ webAuth.post("/auth/web/apple/callback", async (c) => {
     throw err;
   }
   const db = drizzle(c.env.DB);
-  let user: Awaited<ReturnType<typeof findOrCreateUser>>["user"];
   try {
-    ({ user } = await findOrCreateUser(db, sub, displayNameFrom(form.user)));
+    const { tokens } = await signInAppleSubject(c.env, sub, displayNameFrom(form.user), (user) =>
+      issueTokenPair(db, user.id, c.env.JWT_SIGNING_KEY, { bindSession: true }),
+    );
+    setSessionCookies(c, tokens);
   } catch (err) {
     if (err instanceof AccountDeleting) return c.redirect(failed(c.req.url, "deleting"), 303);
     throw err;
   }
-  setSessionCookies(
-    c,
-    await issueTokenPair(db, user.id, c.env.JWT_SIGNING_KEY, { bindSession: true }),
-  );
   const next = safeNext(typeof pending.next === "string" ? pending.next : null);
   return c.redirect(`${new URL(c.req.url).origin}${next}`, 303);
 });

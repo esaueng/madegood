@@ -31,7 +31,12 @@ export const users = sqliteTable(
       .notNull()
       .default("private"),
     createdAt: timestamp("created_at").notNull().default(sql`(unixepoch('subsec') * 1000)`),
+    /** Set when the account is being deleted (lib/account-deletion.ts); the row is the job. */
     deletedAt: timestamp("deleted_at"),
+    /** Failed passes of the deletion job, for backoff and alerting. */
+    deletionAttempts: integer("deletion_attempts").notNull().default(0),
+    /** When the deletion job runs next; null means as soon as possible. */
+    deletionNextAt: timestamp("deletion_next_at"),
     /**
      * Bumped in the same D1 batch as every privacy zone change. Public derived data
      * (sessions.public_*) is served only while it was computed at the current version.
@@ -248,4 +253,20 @@ export const voyageLiveRegistry = sqliteTable(
     primaryKey({ columns: [table.userId, table.voyageId] }),
     uniqueIndex("voyage_live_slug_hash").on(table.slugHash),
   ],
+);
+
+/**
+ * R2 objects nothing should reference any more (lib/r2-garbage.ts). A key is recorded in
+ * the same D1 batch that stops a row referencing it (or before an upload writes it), so no
+ * object is ever left without a record; collecting deletes the object, then the row.
+ * Deliberately no foreign key: rows outlive the account until its deletion collects them.
+ */
+export const pendingR2Deletes = sqliteTable(
+  "pending_r2_deletes",
+  {
+    key: text("key").primaryKey(),
+    userId: text("user_id").notNull(),
+    createdAt: timestamp("created_at").notNull(),
+  },
+  (table) => [index("pending_r2_deletes_user").on(table.userId, table.createdAt)],
 );

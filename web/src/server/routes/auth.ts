@@ -3,13 +3,9 @@ import { drizzle } from "drizzle-orm/d1";
 import type { AppEnv } from "../app";
 import { InvalidIdentityToken, parseAudiences, verifyAppleIdentityToken } from "../auth/apple";
 import { issueTokenPair, rotateRefreshToken, signAccessToken } from "../auth/tokens";
-import {
-  AccountDeleting,
-  cleanDisplayName,
-  findOrCreateUser,
-  toUserBody,
-  UserBody,
-} from "../auth/users";
+import { AccountDeleting, cleanDisplayName, toUserBody, UserBody } from "../auth/users";
+import type { User } from "../db/schema";
+import { signInAppleSubject } from "../lib/account-deletion";
 import { apiError, errorResponse } from "../lib/errors";
 import { createRouter } from "../lib/router";
 
@@ -105,9 +101,11 @@ export const auth = createRouter<AppEnv>()
       throw err;
     }
     const db = drizzle(c.env.DB);
-    let user: Awaited<ReturnType<typeof findOrCreateUser>>["user"];
+    let signedIn: { user: User; tokens: Awaited<ReturnType<typeof issueTokenPair>> };
     try {
-      ({ user } = await findOrCreateUser(db, sub, cleanDisplayName(displayName)));
+      signedIn = await signInAppleSubject(c.env, sub, cleanDisplayName(displayName), (user) =>
+        issueTokenPair(db, user.id, c.env.JWT_SIGNING_KEY),
+      );
     } catch (err) {
       if (err instanceof AccountDeleting) {
         return apiError(
@@ -119,7 +117,7 @@ export const auth = createRouter<AppEnv>()
       }
       throw err;
     }
-    const tokens = await issueTokenPair(db, user.id, c.env.JWT_SIGNING_KEY);
+    const { user, tokens } = signedIn;
     return c.json({ ...tokens, user: toUserBody(user) }, 200);
   })
   .openapi(refreshRoute, async (c) => {

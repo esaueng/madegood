@@ -3,6 +3,7 @@ import { drizzle } from "drizzle-orm/d1";
 import type { Context } from "hono";
 import { createMiddleware } from "hono/factory";
 import { users } from "../db/schema";
+import { finishInBackground } from "../lib/account-deletion";
 import { apiError } from "../lib/errors";
 import { isFamilyLive, verifyAccessClaims } from "./tokens";
 import { accessCookie, sameOrigin } from "./web-cookies";
@@ -73,10 +74,19 @@ export const requireAuth = createMiddleware<AuthEnv>(async (c, next) => {
     return apiError(c, 401, "unauthorized", "A valid access token is required.");
   }
   const [account] = await drizzle(c.env.DB)
-    .select({ deletedAt: users.deletedAt })
+    .select({ id: users.id, deletedAt: users.deletedAt })
     .from(users)
     .where(eq(users.id, found.userId));
   if (!account || account.deletedAt !== null) {
+    // A client that keeps using a deleting account's token finishes the deletion once its
+    // grace period is over, even where no cron runs (lib/account-deletion.ts).
+    if (account) {
+      let ctx: ExecutionContext | null = null;
+      try {
+        ctx = c.executionCtx as ExecutionContext;
+      } catch {}
+      finishInBackground(c.env, ctx, account);
+    }
     return apiError(c, 401, "unauthorized", "The account no longer exists.");
   }
   c.set("userId", found.userId);
