@@ -10,6 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as PrivacyRouteImport } from './routes/privacy'
 import { Route as SigninRouteImport } from './routes/signin'
 import { Route as AppIndexRouteImport } from './routes/app/index'
 import { Route as AppSettingsRouteImport } from './routes/app/settings'
@@ -18,6 +19,11 @@ import { Route as SIdRouteImport } from './routes/s/$id'
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const PrivacyRoute = PrivacyRouteImport.update({
+  id: '/privacy',
+  path: '/privacy',
   getParentRoute: () => rootRouteImport,
 } as any)
 const SigninRoute = SigninRouteImport.update({
@@ -43,6 +49,7 @@ const SIdRoute = SIdRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/privacy': typeof PrivacyRoute
   '/signin': typeof SigninRoute
   '/app/settings': typeof AppSettingsRoute
   '/s/$id': typeof SIdRoute
@@ -50,6 +57,7 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/privacy': typeof PrivacyRoute
   '/signin': typeof SigninRoute
   '/app/settings': typeof AppSettingsRoute
   '/s/$id': typeof SIdRoute
@@ -58,6 +66,7 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/privacy': typeof PrivacyRoute
   '/signin': typeof SigninRoute
   '/app/settings': typeof AppSettingsRoute
   '/s/$id': typeof SIdRoute
@@ -65,14 +74,22 @@ export interface FileRoutesById {
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/signin' | '/app/settings' | '/s/$id' | '/app/'
+  fullPaths: '/' | '/privacy' | '/signin' | '/app/settings' | '/s/$id' | '/app/'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/signin' | '/app/settings' | '/s/$id' | '/app'
-  id: '__root__' | '/' | '/signin' | '/app/settings' | '/s/$id' | '/app/'
+  to: '/' | '/privacy' | '/signin' | '/app/settings' | '/s/$id' | '/app'
+  id:
+    | '__root__'
+    | '/'
+    | '/privacy'
+    | '/signin'
+    | '/app/settings'
+    | '/s/$id'
+    | '/app/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  PrivacyRoute: typeof PrivacyRoute
   SigninRoute: typeof SigninRoute
   AppSettingsRoute: typeof AppSettingsRoute
   SIdRoute: typeof SIdRoute
@@ -86,6 +103,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/privacy': {
+      id: '/privacy'
+      path: '/privacy'
+      fullPath: '/privacy'
+      preLoaderRoute: typeof PrivacyRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/signin': {
@@ -121,6 +145,7 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  PrivacyRoute: PrivacyRoute,
   SigninRoute: SigninRoute,
   AppSettingsRoute: AppSettingsRoute,
   SIdRoute: SIdRoute,
