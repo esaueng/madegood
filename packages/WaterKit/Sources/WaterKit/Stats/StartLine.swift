@@ -81,18 +81,8 @@ public struct StartLinePingAverager: Sendable {
         if let accuracy = fix.horizontalAccuracy, !(accuracy >= 0 && accuracy <= Self.maximumAccuracy) {
             return false
         }
+        guard let (latitude, longitude) = Self.project(fix, to: pressedAt) else { return false }
         seen.insert(fix.t)
-        var latitude = fix.latitude
-        var longitude = fix.longitude
-        let dt = pressedAt - fix.t
-        if let speed = fix.speed, let course = fix.course, speed.isFinite, course.isFinite, speed >= 0,
-            speed <= Self.maximumProjectionSpeed, dt != 0
-        {
-            let moved = Geo.destination(
-                lat: latitude, lon: longitude, bearing: dt > 0 ? course : course + 180, distance: speed * abs(dt))
-            latitude = moved.lat
-            longitude = moved.lon
-        }
         let accuracy = max(1, fix.horizontalAccuracy ?? Self.assumedAccuracy)
         let w = 1 / (accuracy * accuracy)
         let v = SphereVector(latitude: latitude, longitude: longitude)
@@ -104,6 +94,21 @@ public struct StartLinePingAverager: Sendable {
         }
         fixes += 1
         return true
+    }
+
+    /// The fix's position moved to `time` along its Doppler speed and course (unchanged
+    /// without a believable speed and course). Nil for a non-finite position.
+    public static func project(_ fix: GPSFix, to time: Double) -> (latitude: Double, longitude: Double)? {
+        guard fix.latitude.isFinite, fix.longitude.isFinite, abs(fix.latitude) <= 90, time.isFinite else {
+            return nil
+        }
+        let dt = time - fix.t
+        guard let speed = fix.speed, let course = fix.course, speed.isFinite, course.isFinite, speed >= 0,
+            speed <= maximumProjectionSpeed, dt != 0
+        else { return (fix.latitude, fix.longitude) }
+        let moved = Geo.destination(
+            lat: fix.latitude, lon: fix.longitude, bearing: dt > 0 ? course : course + 180, distance: speed * abs(dt))
+        return (moved.lat, moved.lon)
     }
 
     /// The averaged ping, or nil without a usable fix.

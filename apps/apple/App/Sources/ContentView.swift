@@ -510,8 +510,8 @@ private struct LiveView: View {
                     localStatus(readings)
                 }
 
-                if recorder != nil, let ocs = startLine.ocs {
-                    OCSBanner(warning: ocs, display: display) { startLine.dismissOCS() }
+                if recorder != nil, let warning = startLine.warning {
+                    OCSBanner(warning: warning, display: display) { startLine.dismissWarning() }
                 }
                 if let recorder, let startedAt {
                     if first == .map {

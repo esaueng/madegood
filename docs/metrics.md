@@ -302,9 +302,12 @@ Not for navigation: the GPS is on the wrist or phone, a few metres from the bow.
   press. The average is weighted by 1/accuracy² on the unit sphere. No usable fix: the
   ping fails (a failure buzz). The pin is the port end, the boat (committee) the
   starboard end, looking from the pre-start side.
-- **Line.** Ends 10 m – 5 km apart. The line is kept for 6 h after its last ping, so
-  later races off the same line reuse it, and recorded with the session (`linePing`
-  events, docs/formats.md).
+- **Line.** Ends 10 m – 5 km apart. The whole line is kept for 6 h after its last ping
+  (checked at each countdown start and every read), so later races off the same line
+  reuse it. A saved line is used again only once the countdown's first position is
+  within 2 km of its middle; farther away it is dropped, and until then it is neither
+  shown, checked nor recorded. The line in use is recorded with the session
+  (`linePing` events, docs/formats.md).
 - **Distance to the line.** Perpendicular distance to the line's great circle, exact on
   the spherical Earth used by `Geo` (no local projection, so it holds across ±180° and
   near the poles). Positive on the pre-start side (right of pin → boat), negative when
@@ -317,10 +320,15 @@ Not for navigation: the GPS is on the wrist or phone, a few metres from the bow.
   middle, and which end is upwind (favoured); within 2° it is square. The countdown's
   estimate comes from its own sailing (the course histogram of "Sailing wind and VMG"),
   which knows only the axis; the wind is then taken from the course side of the line.
-- **OCS.** At the gun (the countdown reaching zero, by itself or a sync), a current
-  position over the line shows "OCS: return" with a failure buzz. It clears when a
-  recorded fix is back on the pre-start side, when dismissed, or after 5 minutes.
-  Start now skips the check.
+- **OCS.** At the gun (the countdown reaching zero, by itself or a sync), the newest fix
+  is moved to the gun time along its Doppler speed and course, if it is within 2 s of
+  the gun by its own timestamp. Over the line: "OCS: return". Behind but closer than the
+  fix's accuracy and heading for the line: "Possibly OCS". No fix that recent: "OCS
+  unknown", never a silent all-clear. A ping still being averaged at the gun is finished
+  first with the fixes it has (or fails visibly), so it counts and is recorded. An over
+  warning clears when a recorded fix is behind the line by more than its accuracy, when
+  dismissed, or 5 minutes after it appeared (on a timer, with or without GPS). Start now
+  skips the check.
 
 ## Motorboating
 

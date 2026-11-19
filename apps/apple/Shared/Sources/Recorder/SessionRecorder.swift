@@ -299,7 +299,7 @@ final class SessionRecorder {
         writers[.events]?.append(RawFormat.EventLine(ts: anchor.unix, type: .start))
         if sport == .sailing {
             // The start line in use, pinged during the countdown (docs/formats.md, events).
-            for ping in StartLineController.shared.pings {
+            for ping in StartLineController.shared.pingsToRecord {
                 writers[.events]?.append(
                     RawFormat.EventLine(
                         ts: anchor.unix, type: .linePing, data: ping.eventData(age: anchor.unix - ping.time)))
@@ -457,7 +457,7 @@ final class SessionRecorder {
                 ManOverboard.Position(
                     latitude: line.lat, longitude: line.lon, at: Date(timeIntervalSince1970: line.ts),
                     speed: line.spd, course: line.crs))
-            if StartLineController.shared.ocs != nil {
+            if StartLineController.shared.warning != nil {
                 StartLineController.shared.recorded(
                     GPSFix(
                         t: line.ts, latitude: line.lat, longitude: line.lon, horizontalAccuracy: line.hacc,

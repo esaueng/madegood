@@ -464,14 +464,14 @@ private struct SessionPages: View {
         }
         .tabViewStyle(.verticalPage)
         .overlay(alignment: .top) {
-            if let ocs = startLine.ocs {
-                OCSBanner(warning: ocs, display: UserSettings.display(for: sport), compact: true) {
-                    startLine.dismissOCS()
+            if let warning = startLine.warning {
+                OCSBanner(warning: warning, display: UserSettings.display(for: sport), compact: true) {
+                    startLine.dismissWarning()
                 }
                 .transition(.move(edge: .top).combined(with: .opacity))
             }
         }
-        .animation(.snappy, value: startLine.ocs)
+        .animation(.snappy, value: startLine.warning)
         .overlay(alignment: .bottom) {
             if let banner {
                 DistanceAlertBanner(text: UserSettings.display(for: sport).distance(banner.distance))

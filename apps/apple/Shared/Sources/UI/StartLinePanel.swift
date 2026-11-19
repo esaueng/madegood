@@ -53,15 +53,18 @@ struct StartLinePanel: View {
                     .foregroundStyle(position.isOver ? Theme.coral : .primary)
                     .minimumScaleFactor(0.6)
                     .lineLimit(1)
-                Text(position.isOver ? "Over the line" : (position.isBetweenEnds ? "to line" : "to line (outside ends)"))
-                    .font(compact ? .caption2 : .footnote.weight(.semibold))
-                    .foregroundStyle(position.isOver ? Theme.coral : .secondary)
+                Text(
+                    position.isOver ? "Over the line" : (position.isBetweenEnds ? "to line" : "to line (outside ends)")
+                )
+                .font(compact ? .caption2 : .footnote.weight(.semibold))
+                .foregroundStyle(position.isOver ? Theme.coral : .secondary)
             }
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(
                 position.isOver
                     ? "Over the line by \(display.lineDistance(position.distance))"
-                    : "\(display.lineDistance(position.distance)) to line")
+                    : "\(display.lineDistance(position.distance)) to line"
+            )
             .accessibilityIdentifier("startLine.distance")
             HStack(spacing: compact ? 10 : 24) {
                 value(
@@ -85,7 +88,8 @@ struct StartLinePanel: View {
                 .accessibilityLabel(
                     bias.favoured == nil
                         ? "Line square to the wind"
-                        : "\(bias.favoured == .pin ? "Pin" : "Boat") end favoured by \(Int(abs(bias.degrees).rounded())) degrees")
+                        : "\(bias.favoured == .pin ? "Pin" : "Boat") end favoured by \(Int(abs(bias.degrees).rounded())) degrees"
+                )
                 .accessibilityIdentifier("startLine.bias")
         }
     }
@@ -131,21 +135,40 @@ struct StartLinePanel: View {
     }
 }
 
-/// "Over the line at the start": shown on the session screens until the boat is back on
-/// the pre-start side, the user dismisses it, or it times out.
+/// The start check's warning after the gun: over ("OCS: return"), possibly over, or
+/// unknown (no GPS at the gun). Shown on the session screens until the boat is back
+/// behind the line, the user dismisses it, or it times out.
 struct OCSBanner: View {
-    let warning: StartLineController.OCSWarning
+    let warning: OCSWarning
     let display: LiveDisplay
     var compact = false
     let dismiss: () -> Void
 
+    private var title: String {
+        switch warning.check {
+        case .over: "OCS: return"
+        case .possiblyOver: "Possibly OCS"
+        case .unknown: "OCS unknown"
+        case .clear: ""
+        }
+    }
+
+    private var detail: String {
+        switch warning.check {
+        case .over(let distance): "Over by \(display.lineDistance(distance)) at the start"
+        case .possiblyOver(let distance): "\(display.lineDistance(distance)) behind, within GPS error"
+        case .unknown: "No GPS fix at the start"
+        case .clear: ""
+        }
+    }
+
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: "exclamationmark.triangle.fill")
+            Image(systemName: warning.check == .unknown ? "location.slash" : "exclamationmark.triangle.fill")
             VStack(alignment: .leading, spacing: 0) {
-                Text("OCS: return")
+                Text(title)
                     .font((compact ? Font.footnote : .headline).weight(.bold))
-                Text("Over by \(display.lineDistance(warning.distance)) at the start")
+                Text(detail)
                     .font(compact ? .caption2 : .footnote)
             }
             Spacer(minLength: 0)
@@ -153,12 +176,14 @@ struct OCSBanner: View {
                 Image(systemName: "xmark")
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Dismiss OCS warning")
+            .accessibilityLabel("Dismiss start warning")
             .accessibilityIdentifier("ocs.dismiss")
         }
         .foregroundStyle(.white)
         .padding(compact ? 8 : 12)
-        .background(Theme.coral, in: .rect(cornerRadius: compact ? 12 : 16))
+        .background(
+            warning.check == .unknown ? Color.gray : Theme.coral, in: .rect(cornerRadius: compact ? 12 : 16)
+        )
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("ocs.banner")
     }
