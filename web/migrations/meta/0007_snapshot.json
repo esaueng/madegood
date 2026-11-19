@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "a88c6190-9f0e-46d4-8c62-b50bf4894a8f",
+  "id": "dcb4b261-3a3f-49ef-a9ce-3ea00e0aceb1",
   "prevId": "bef3eac3-ed15-4fb1-9e2f-729b94d992da",
   "tables": {
     "legs": {
@@ -558,6 +558,27 @@
           "notNull": false,
           "autoincrement": false
         },
+        "public_track_started_at": {
+          "name": "public_track_started_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "public_track_ended_at": {
+          "name": "public_track_ended_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "public_zones_version": {
+          "name": "public_zones_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "integer",
@@ -680,6 +701,14 @@
           "primaryKey": false,
           "notNull": false,
           "autoincrement": false
+        },
+        "zones_version": {
+          "name": "zones_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
         }
       },
       "indexes": {

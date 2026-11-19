@@ -14,9 +14,12 @@ export type TrackDerived = {
   publicBounds: Bounds | null;
   /** Geohash of the first fix in time, at START_GEOHASH_PRECISION. Owner-only. */
   startGeohash: string | null;
-  /** First and last valid fix, epoch ms. */
+  /** First and last valid fix, epoch ms. Owner-only: a zone may hide the start. */
   startedAt: number | null;
   endedAt: number | null;
+  /** First and last fix others may see, epoch ms. */
+  publicStartedAt: number | null;
+  publicEndedAt: number | null;
 };
 
 /** 5 characters: a cell about 4.9 km × 4.9 km, enough to group sessions by spot. */
@@ -144,6 +147,8 @@ export function deriveTrack(
   let first = Infinity;
   let last = -Infinity;
   let start: { lat: number; lon: number } | null = null;
+  let firstVisible = Infinity;
+  let lastVisible = -Infinity;
   for (let i = 0; i < t.length; i++) {
     const [ti, la, lo] = [t[i], lat[i], lon[i]];
     if (!finite(ti) || !finite(la) || !finite(lo) || Math.abs(la) > 90 || Math.abs(lo) > 180) {
@@ -157,6 +162,8 @@ export function deriveTrack(
     if (ti > last) last = ti;
     if (Math.abs(la) <= MERCATOR_MAX_LAT && !insideZone({ lat: la, lon: lo }, zones)) {
       visible.add(la, lo);
+      if (ti < firstVisible) firstVisible = ti;
+      if (ti > lastVisible) lastVisible = ti;
     }
   }
   const time = (seconds: number) => {
@@ -169,5 +176,7 @@ export function deriveTrack(
     startGeohash: start ? geohash(start.lat, start.lon, START_GEOHASH_PRECISION) : null,
     startedAt: start ? time(first) : null,
     endedAt: start ? time(last) : null,
+    publicStartedAt: Number.isFinite(firstVisible) ? time(firstVisible) : null,
+    publicEndedAt: Number.isFinite(lastVisible) ? time(lastVisible) : null,
   };
 }

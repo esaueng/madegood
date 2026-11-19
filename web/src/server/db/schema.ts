@@ -32,6 +32,11 @@ export const users = sqliteTable(
       .default("private"),
     createdAt: timestamp("created_at").notNull().default(sql`(unixepoch('subsec') * 1000)`),
     deletedAt: timestamp("deleted_at"),
+    /**
+     * Bumped in the same D1 batch as every privacy zone change. Public derived data
+     * (sessions.public_*) is served only while it was computed at the current version.
+     */
+    zonesVersion: integer("zones_version").notNull().default(0),
   },
   (table) => [
     uniqueIndex("users_apple_sub_unique").on(table.appleSub),
@@ -124,7 +129,7 @@ export const sessions = sqliteTable(
     processedEtag: text("processed_etag"),
     /** `done`, `too_large` or `invalid` for `processedEtag`; null while pending. */
     postprocessStatus: text("postprocess_status", { enum: ["done", "too_large", "invalid"] }),
-    /** First and last valid GPS fix, epoch ms. */
+    /** First and last valid GPS fix, epoch ms. Owner only. */
     trackStartedAt: timestamp("track_started_at"),
     trackEndedAt: timestamp("track_ended_at"),
     /**
@@ -136,6 +141,11 @@ export const sessions = sqliteTable(
     publicMinLon: real("public_min_lon"),
     publicMaxLat: real("public_max_lat"),
     publicMaxLon: real("public_max_lon"),
+    /** First and last fix others may see (zones applied), epoch ms. */
+    publicTrackStartedAt: timestamp("public_track_started_at"),
+    publicTrackEndedAt: timestamp("public_track_ended_at"),
+    /** users.zones_version the public_* columns were computed with; null when not computed. */
+    publicZonesVersion: integer("public_zones_version"),
     createdAt: timestamp("created_at").notNull().default(sql`(unixepoch('subsec') * 1000)`),
     updatedAt: timestamp("updated_at").notNull().default(sql`(unixepoch('subsec') * 1000)`),
     deletedAt: timestamp("deleted_at"),

@@ -3,6 +3,7 @@ import type { drizzle } from "drizzle-orm/d1";
 import { type Session, sessions } from "../db/schema";
 import { CLEARED_DERIVED } from "./postprocess";
 import { userPrefix } from "./storage";
+import { TRACK_CONTENT_TYPE } from "./track";
 
 type Db = ReturnType<typeof drizzle>;
 
@@ -112,4 +113,61 @@ export async function replaceSessionMetadata(
     .from(sessions)
     .where(own);
   return now ? { kind: "stale", stored: now.uploadRevision } : { kind: "missing" };
+}
+
+export type StoreResult =
+  | { kind: "attached"; etag: string; httpEtag: string }
+  | { kind: "detached" };
+
+/**
+ * Stores a track object and attaches it to the row while the row is still at `revision`,
+ * clearing the data derived from an earlier upload. Returns the ETag the row records,
+ * which is always the ETag of the object R2 holds once this returns.
+ *
+ * Two uploads of the same revision with different bytes can interleave so that R2 keeps
+ * B's bytes while the row records A's ETag (A attached last). Each upload therefore reads
+ * the object back after attaching and, when it differs, moves the row to the stored ETag
+ * (compare-and-swap on the ETag it wrote). The last upload to attach always does this
+ * after the last put, so the row ends at the stored object. `hooks` let tests interleave.
+ */
+export async function storeTrack(
+  db: Db,
+  bucket: R2Bucket,
+  input: { id: string; userId: string; revision: number; key: string; bytes: Uint8Array },
+  hooks: { afterPut?: () => Promise<void> } = {},
+): Promise<StoreResult> {
+  const { id, userId, revision, key, bytes } = input;
+  const object = await bucket.put(key, bytes, {
+    httpMetadata: { contentType: TRACK_CONTENT_TYPE },
+  });
+  await hooks.afterPut?.();
+  const atRevision = and(
+    eq(sessions.id, id),
+    eq(sessions.userId, userId),
+    isNull(sessions.deletedAt),
+    eq(sessions.uploadRevision, revision),
+  );
+  const [attached] = await db
+    .update(sessions)
+    .set({ trackKey: key, trackEtag: object.etag, ...CLEARED_DERIVED, updatedAt: Date.now() })
+    .where(atRevision)
+    .returning({ id: sessions.id });
+  if (!attached) return { kind: "detached" };
+
+  let etag = object.etag;
+  let httpEtag = object.httpEtag;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const stored = await bucket.head(key);
+    if (!stored || stored.etag === etag) break;
+    const [moved] = await db
+      .update(sessions)
+      .set({ trackEtag: stored.etag, ...CLEARED_DERIVED, updatedAt: Date.now() })
+      .where(and(atRevision, eq(sessions.trackKey, key), eq(sessions.trackEtag, etag)))
+      .returning({ id: sessions.id });
+    // Another upload attached after this one; it reads the object back itself.
+    if (!moved) break;
+    etag = stored.etag;
+    httpEtag = stored.httpEtag;
+  }
+  return { kind: "attached", etag, httpEtag };
 }

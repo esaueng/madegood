@@ -507,7 +507,7 @@
               "null"
             ],
             "format": "date-time",
-            "description": "First GPS fix, once processed."
+            "description": "First GPS fix, once processed: the owner gets the whole track's, everyone else the first fix the shared track shows."
           },
           "trackEndedAt": {
             "type": [
@@ -515,7 +515,7 @@
               "null"
             ],
             "format": "date-time",
-            "description": "Last GPS fix, once processed."
+            "description": "Last GPS fix, once processed; as for `trackStartedAt`."
           },
           "wind": {
             "$ref": "#/components/schemas/SessionWind"
@@ -1718,6 +1718,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "The sessions could not be queued for reprocessing (`postprocess_unavailable`); the zone was not added. Try again.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           }
         }
       }
@@ -1761,6 +1771,16 @@
           },
           "401": {
             "description": "Missing or invalid access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The zone is removed, but the sessions could not be queued for reprocessing (`postprocess_unavailable`). Repeat the request.",
             "content": {
               "application/json": {
                 "schema": {

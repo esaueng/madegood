@@ -5,12 +5,13 @@ import type { Context } from "hono";
 import { optionalAuth, requireAuth } from "../auth/middleware";
 import { privacyZones, type Session, sessions, sessionTombstones, users } from "../db/schema";
 import { apiError, errorResponse } from "../lib/errors";
-import { CLEARED_DERIVED, enqueuePostprocess } from "../lib/postprocess";
+import { enqueuePostprocess, publicIsCurrent } from "../lib/postprocess";
 import { createRouter } from "../lib/router";
 import { SHARED_TRACK_MAX_FIXES, shareTrack } from "../lib/session-privacy";
 import {
   deleteOlderTracks,
   replaceSessionMetadata,
+  storeTrack,
   UPLOAD_REVISION_HEADER,
 } from "../lib/session-upload";
 import { deletePrefix, userPrefix } from "../lib/storage";
@@ -230,8 +231,14 @@ const SessionBody = z
         "The track's bounding box, null until processed. The owner gets the whole track's; " +
         "everyone else the box of what the shared track shows (privacy zones cut out).",
     }),
-    trackStartedAt: isoTime.nullable().openapi({ description: "First GPS fix, once processed." }),
-    trackEndedAt: isoTime.nullable().openapi({ description: "Last GPS fix, once processed." }),
+    trackStartedAt: isoTime.nullable().openapi({
+      description:
+        "First GPS fix, once processed: the owner gets the whole track's, everyone else the " +
+        "first fix the shared track shows.",
+    }),
+    trackEndedAt: isoTime.nullable().openapi({
+      description: "Last GPS fix, once processed; as for `trackStartedAt`.",
+    }),
     wind: WindBody.nullable().openapi({
       description:
         "Modelled wind from Open-Meteo for the session's time and area, fetched only while " +
@@ -339,9 +346,22 @@ function windOf(session: Session): z.infer<typeof WindBody> | null {
   };
 }
 
-function toSessionBody(session: Session, viewerId: string | null): z.infer<typeof SessionBody> {
+/**
+ * `ownerZonesVersion` is the owner's users.zones_version. Others get public derived data
+ * only while it was computed at that version (lib/postprocess.ts); without it, none.
+ */
+function toSessionBody(
+  session: Session,
+  viewerId: string | null,
+  ownerZonesVersion?: number | null,
+): z.infer<typeof SessionBody> {
   const owner = session.userId === viewerId;
   const processed = processingState(session) === "done";
+  const shown = processed && (owner || publicIsCurrent(session, ownerZonesVersion));
+  // The owner's times cover the whole track; others get the first and last visible fix.
+  const [startedAt, endedAt] = owner
+    ? [session.trackStartedAt, session.trackEndedAt]
+    : [session.publicTrackStartedAt, session.publicTrackEndedAt];
   return {
     id: session.id,
     sport: session.sport,
@@ -359,10 +379,9 @@ function toSessionBody(session: Session, viewerId: string | null): z.infer<typeo
     analyzerVersion: session.analyzerVersion,
     hasTrack: session.trackKey !== null,
     processing: processingState(session),
-    bounds: processed ? boundsOf(session, owner) : null,
-    trackStartedAt:
-      processed && session.trackStartedAt !== null ? iso(session.trackStartedAt) : null,
-    trackEndedAt: processed && session.trackEndedAt !== null ? iso(session.trackEndedAt) : null,
+    bounds: shown ? boundsOf(session, owner) : null,
+    trackStartedAt: shown && startedAt !== null ? iso(startedAt) : null,
+    trackEndedAt: shown && endedAt !== null ? iso(endedAt) : null,
     wind: windOf(session),
     isOwner: owner,
     createdAt: iso(session.createdAt),
@@ -725,9 +744,15 @@ sessionRoutes.openapi(putRoute, async (c) => {
 
 sessionRoutes.openapi(getRoute, async (c) => {
   const { id } = c.req.valid("param");
-  const session = await findSession(drizzle(c.env.DB), id);
+  const db = drizzle(c.env.DB);
+  const session = await findSession(db, id);
   if (!session || !canView(session, c.var.viewerId)) return notFound(c);
-  return c.json(toSessionBody(session, c.var.viewerId), 200);
+  if (session.userId === c.var.viewerId) return c.json(toSessionBody(session, c.var.viewerId), 200);
+  const [owner] = await db
+    .select({ zonesVersion: users.zonesVersion })
+    .from(users)
+    .where(eq(users.id, session.userId));
+  return c.json(toSessionBody(session, c.var.viewerId, owner?.zonesVersion), 200);
 });
 
 sessionRoutes.openapi(putTrackRoute, async (c) => {
@@ -771,22 +796,8 @@ sessionRoutes.openapi(putTrackRoute, async (c) => {
   // One object per revision, attached only while the row is still at that revision, so a
   // delayed older upload can never replace the track of a newer one.
   const key = trackKey(userPrefix(userId), id, revision);
-  const object = await c.env.TRACKS.put(key, bytes, {
-    httpMetadata: { contentType: TRACK_CONTENT_TYPE },
-  });
-  const [attached] = await db
-    .update(sessions)
-    // Clears data derived from an earlier upload; the consumer derives it again.
-    .set({ trackKey: key, trackEtag: object.etag, ...CLEARED_DERIVED, updatedAt: Date.now() })
-    .where(
-      and(
-        eq(sessions.id, id),
-        eq(sessions.userId, userId),
-        isNull(sessions.deletedAt),
-        eq(sessions.uploadRevision, revision),
-      ),
-    )
-    .returning({ id: sessions.id });
+  const stored = await storeTrack(db, c.env.TRACKS, { id, userId, revision, key, bytes });
+  const attached = stored.kind === "attached";
   if (!attached || (await isTombstoned(db, userId, id))) {
     // The session was deleted, or moved to a newer revision, while the body was uploading
     // (review of #37). DELETE removes the row before the objects, so either it already
@@ -810,7 +821,7 @@ sessionRoutes.openapi(putTrackRoute, async (c) => {
   // 503: the client repeats the upload, which is idempotent and queues it again.
   try {
     await enqueuePostprocess(c.env, c.executionCtx, [
-      { v: 1, sessionId: id, userId, revision, etag: object.etag },
+      { v: 1, sessionId: id, userId, revision, etag: stored.etag },
     ]);
   } catch (error) {
     console.error("Could not queue post-processing.", error);
@@ -822,7 +833,7 @@ sessionRoutes.openapi(putTrackRoute, async (c) => {
     );
   }
 
-  c.header("ETag", object.httpEtag);
+  c.header("ETag", stored.httpEtag);
   return c.body(null, 204);
 });
 

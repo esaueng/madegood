@@ -8,16 +8,21 @@ import { env } from "cloudflare:workers";
 import { and, eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
 import { describe, expect, it, vi } from "vitest";
-import { sessions } from "../src/server/db/schema";
+import { createApp } from "../src/server/app";
+import { sessions, users } from "../src/server/db/schema";
 import worker from "../src/server/index";
 import {
   enqueuePostprocess,
   handlePostprocessBatch,
-  type PostprocessMessage,
+  processInline,
+  processMessage,
   processSession,
   retryDelaySeconds,
+  type SessionMessage,
+  USER_PAGE,
 } from "../src/server/lib/postprocess";
 import { SHARED_TRACK_MAX_FIXES } from "../src/server/lib/session-privacy";
+import { storeTrack } from "../src/server/lib/session-upload";
 import { TrackTooLarge } from "../src/server/lib/track";
 import {
   boundsCenter,
@@ -95,7 +100,7 @@ const row = async (id: string) => {
 };
 
 /** The message the upload of `id` queued, rebuilt from the row. */
-async function messageFor(id: string): Promise<PostprocessMessage> {
+async function messageFor(id: string): Promise<SessionMessage> {
   const r = await row(id);
   return {
     v: 1,
@@ -114,7 +119,7 @@ async function getSession(token: string | null, id: string) {
 
 /** Waits for the real queue consumer (wrangler.jsonc) to finish with the session. */
 async function waitUntilProcessed(
-  token: string,
+  token: string | null,
   id: string,
   check = (s: Record<string, unknown>) => s.processing === "done",
 ) {
@@ -364,13 +369,11 @@ describe("upload post-processing", { timeout: 30_000 }, () => {
     expect(zone.status).toBe(201);
     // Cleared in the same request, so the old box is never served with the new zone.
     const r = await row(id);
-    expect([r.publicMinLat, r.processedEtag]).toEqual([null, null]);
+    expect([r.publicMinLat, r.publicZonesVersion]).toEqual([null, null]);
     expect((await getSession(null, id)).bounds).toBeNull();
 
-    await waitUntilProcessed(owner.accessToken, id);
-    expect(((await getSession(null, id)).bounds as { south: number }).south).toBeGreaterThan(
-      300 * DEG_PER_M,
-    );
+    const theirs = await waitUntilProcessed(null, id, (s) => s.bounds !== null);
+    expect((theirs.bounds as { south: number }).south).toBeGreaterThan(300 * DEG_PER_M);
     // Wind survives zone edits; it is not fetched again.
     expect((await row(id)).windJson).not.toBeNull();
   });
@@ -443,5 +446,218 @@ describe("upload post-processing", { timeout: 30_000 }, () => {
     await enqueuePostprocess({ DB: env.DB, TRACKS: env.TRACKS }, ctx, [message]);
     await waitOnExecutionContext(ctx);
     expect((await row(id)).processedEtag).toBe(message.etag);
+  });
+});
+
+describe("review of #72", { timeout: 30_000 }, () => {
+  const addZone = (token: string) =>
+    api("/me/privacy-zones", json("POST", { lat: 0, lon: 0, radiusM: 300 }, token));
+  const south = (s: Record<string, unknown>) => (s.bounds as { south: number } | null)?.south;
+
+  it("never stores a public box cut without a zone added while the track was being read", async () => {
+    const owner = await signIn();
+    const id = crypto.randomUUID();
+    await upload(owner, id, track(id, line(100)));
+    await api(`/sessions/${id}`, json("PATCH", { visibility: "public" }, owner.accessToken));
+    await waitUntilProcessed(owner.accessToken, id);
+    const message = await messageFor(id);
+    // Force a recompute, and add a zone between deriving (without it) and writing.
+    await drizzle(env.DB).update(sessions).set({ processedEtag: null }).where(eq(sessions.id, id));
+    let added = false;
+    const outcome = await processSession(env, message, {
+      fetch: noFetch,
+      hooks: {
+        afterDerive: async () => {
+          if (added) return;
+          added = true;
+          expect((await addZone(owner.accessToken)).status).toBe(201);
+        },
+      },
+    });
+    expect(outcome).toBe("processed");
+    const r = await row(id);
+    const [{ version } = { version: -1 }] = await drizzle(env.DB)
+      .select({ version: users.zonesVersion })
+      .from(users)
+      .where(eq(users.id, owner.user.id));
+    // The stale write was refused; the second pass used the zone.
+    expect(r.publicZonesVersion).toBe(version);
+    expect(r.publicMinLat).toBeGreaterThan(300 * DEG_PER_M);
+    expect(south(await getSession(null, id))).toBeGreaterThan(300 * DEG_PER_M);
+  });
+
+  it("serves no public data computed at an older zones version, and recomputes it", async () => {
+    const owner = await signIn();
+    const id = crypto.randomUUID();
+    await upload(owner, id, track(id, line(100)));
+    await api(`/sessions/${id}`, json("PATCH", { visibility: "public" }, owner.accessToken));
+    await waitUntilProcessed(owner.accessToken, id);
+    const before = await row(id);
+    // A zone change the row has not caught up with (as if its requeue were still pending).
+    await drizzle(env.DB)
+      .update(users)
+      .set({ zonesVersion: (before.publicZonesVersion ?? 0) + 1 })
+      .where(eq(users.id, owner.user.id));
+    const theirs = await getSession(null, id);
+    expect([theirs.bounds, theirs.trackStartedAt]).toEqual([null, null]);
+    expect(south(await getSession(owner.accessToken, id))).toBe(0);
+    // processedEtag still matches, yet the message recomputes instead of skipping.
+    expect(await processSession(env, await messageFor(id), { fetch: noFetch })).toBe("processed");
+    expect(south(await getSession(null, id))).toBe(0);
+  });
+
+  it("gives others only the times of fixes outside the zones", async () => {
+    const owner = await signIn();
+    expect((await addZone(owner.accessToken)).status).toBe(201);
+    const id = crypto.randomUUID();
+    await upload(owner, id, track(id, line(100)));
+    await api(`/sessions/${id}`, json("PATCH", { visibility: "unlisted" }, owner.accessToken));
+    const mine = await waitUntilProcessed(owner.accessToken, id);
+    expect(mine.trackStartedAt).toBe(START);
+    const theirs = await getSession(null, id);
+    // 10 m a fix: the first fix outside 300 m is the 31st, 300 s in.
+    expect(Date.parse(theirs.trackStartedAt as string)).toBeGreaterThanOrEqual(START_MS + 300_000);
+    expect(theirs.trackEndedAt).toBe(mine.trackEndedAt);
+  });
+
+  it("ends a same-revision upload race at the stored object's ETag", async () => {
+    const owner = await signIn();
+    const id = crypto.randomUUID();
+    await upload(owner, id, track(id, line(10)));
+    const db = drizzle(env.DB);
+    const key = (await row(id)).trackKey as string;
+    const bytes = async (n: number) => gzip(JSON.stringify(track(id, line(n))));
+    const input = { id, userId: owner.user.id, revision: 0, key };
+    const [a, b] = [await bytes(20), await bytes(30)];
+    // A puts, then B puts and attaches, then A attaches its own (now overwritten) ETag.
+    let second: Awaited<ReturnType<typeof storeTrack>> | undefined;
+    const first = await storeTrack(
+      db,
+      env.TRACKS,
+      { ...input, bytes: a },
+      {
+        afterPut: async () => {
+          second = await storeTrack(db, env.TRACKS, { ...input, bytes: b });
+        },
+      },
+    );
+    const head = await env.TRACKS.head(key);
+    expect(second).toMatchObject({ kind: "attached", etag: head?.etag });
+    expect(first).toMatchObject({ kind: "attached", etag: head?.etag });
+    expect((await row(id)).trackEtag).toBe(head?.etag);
+    // So the message both uploads send gets processed rather than dropped.
+    const message = await messageFor(id);
+    expect(await processSession(env, message, { fetch: noFetch })).toBe("processed");
+    expect((await row(id)).trackEndedAt).toBe(START_MS + 290_000);
+  });
+
+  it("does not ask for wind once the session is made private", async () => {
+    const owner = await signIn();
+    const id = crypto.randomUUID();
+    await upload(owner, id, track(id, line(10)));
+    await waitUntilProcessed(owner.accessToken, id);
+    const message = await messageFor(id);
+    const share = (visibility: "public" | "private") =>
+      drizzle(env.DB)
+        .update(sessions)
+        .set({ visibility, windJson: null })
+        .where(eq(sessions.id, id));
+
+    // Private between the snapshot and the request: no request at all.
+    await share("public");
+    expect(
+      await processSession(env, message, {
+        fetch: noFetch,
+        hooks: { beforeWind: () => share("private").then(() => undefined) },
+      }),
+    ).toBe("skipped_done");
+    expect(noFetch).not.toHaveBeenCalled();
+
+    // Private while the request is in flight: the answer is not stored.
+    await share("public");
+    const slow = vi.fn<typeof fetch>(async (input) => {
+      await share("private");
+      return steadyWest(new URL(String(input)));
+    });
+    await processSession(env, message, { fetch: slow });
+    expect(slow).toHaveBeenCalledOnce();
+    expect((await row(id)).windJson).toBeNull();
+  });
+
+  it("fans a zone change out through one user message, page by page", async () => {
+    const owner = await signIn();
+    const db = drizzle(env.DB);
+    const ids = Array.from({ length: USER_PAGE + 1 }, () => crypto.randomUUID()).sort();
+    const rows = ids.map((id) => ({
+      id,
+      userId: owner.user.id,
+      sport: "kayak" as const,
+      startedAt: START_MS,
+      trackKey: `users/${owner.user.id}/sessions/${id}/track.v1.gz`,
+      trackEtag: "e",
+    }));
+    for (let i = 0; i < rows.length; i += 5) await db.insert(sessions).values(rows.slice(i, i + 5));
+    const sent: unknown[] = [];
+    const queue = {
+      send: async (body: unknown) => void sent.push(body),
+      sendBatch: async (batch: { body: unknown }[]) => void sent.push(...batch.map((m) => m.body)),
+    } as unknown as Queue<never>;
+    const queued = { DB: env.DB, TRACKS: env.TRACKS, POSTPROCESS: queue };
+    const user = { v: 1, kind: "user", userId: owner.user.id };
+    expect(await processMessage(queued, user)).toBe("user_requeued");
+    expect(sent).toHaveLength(USER_PAGE + 1);
+    expect(sent.at(-1)).toEqual({ ...user, after: ids[USER_PAGE - 1] });
+    sent.length = 0;
+    await processMessage(queued, { ...user, after: ids[USER_PAGE - 1] });
+    expect(sent).toEqual([expect.objectContaining({ sessionId: ids[USER_PAGE] })]);
+    // A failed send retries the user message instead of losing the rest.
+    const failing = {
+      ...queued,
+      POSTPROCESS: {
+        sendBatch: async () => Promise.reject(new Error("down")),
+      } as unknown as Queue<never>,
+    };
+    await expect(processMessage(failing, user)).rejects.toThrow("down");
+  });
+
+  it("refuses a zone change it cannot queue, and leaves no zone behind", async () => {
+    const owner = await signIn();
+    const app = createApp();
+    const failing = {
+      send: async () => Promise.reject(new Error("down")),
+      sendBatch: async () => Promise.reject(new Error("down")),
+    };
+    // A plain object: assigning onto `env` itself would change the binding for other tests.
+    const bindings = {
+      DB: env.DB,
+      TRACKS: env.TRACKS,
+      JWT_SIGNING_KEY: env.JWT_SIGNING_KEY,
+      APPLE_AUDIENCES: env.APPLE_AUDIENCES,
+      POSTPROCESS: failing,
+    };
+    const response = await app.request(
+      "/api/me/privacy-zones",
+      json("POST", { lat: 0, lon: 0, radiusM: 300 }, owner.accessToken),
+      bindings,
+      createExecutionContext(),
+    );
+    expect(response.status).toBe(503);
+    const list = await api("/me/privacy-zones", { headers: bearer(owner.accessToken) });
+    expect(await list.json()).toEqual({ zones: [] });
+  });
+
+  it("reprocesses a zone change inline, bounded, without a queue", async () => {
+    const owner = await signIn();
+    const id = crypto.randomUUID();
+    await upload(owner, id, track(id, line(100)));
+    await waitUntilProcessed(owner.accessToken, id);
+    await drizzle(env.DB)
+      .update(sessions)
+      .set({ publicZonesVersion: null, visibility: "public", windJson: "{}" })
+      .where(eq(sessions.id, id));
+    await processInline({ DB: env.DB, TRACKS: env.TRACKS }, [
+      { v: 1, kind: "user", userId: owner.user.id },
+    ]);
+    expect((await row(id)).publicZonesVersion).not.toBeNull();
   });
 });

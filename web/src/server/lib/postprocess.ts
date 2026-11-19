@@ -1,7 +1,7 @@
 import { z } from "@hono/zod-openapi";
-import { and, eq, isNotNull, isNull } from "drizzle-orm";
+import { and, asc, eq, gt, isNotNull, isNull, ne, or, type SQL, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
-import { privacyZones, type Session, sessions } from "../db/schema";
+import { privacyZones, type Session, sessions, users } from "../db/schema";
 import type { Zone } from "./session-privacy";
 import { userPrefix } from "./storage";
 import {
@@ -19,18 +19,51 @@ import { fetchWind, type StoredWind, WindTransientError, windRequest } from "./w
 // write is conditional on the row still holding that exact track, so duplicates, stale
 // revisions and deleted sessions are dropped, and redelivery is harmless.
 //
+// Public data (public_*) is cut with the owner's privacy zones. It carries the
+// users.zones_version it was computed at, is written only while that version is still
+// current, and is served only while it matches (routes/sessions.ts). A zone change bumps
+// the version in the same D1 batch, so no box or time computed without a zone is ever
+// served after the zone exists, and queues one `user` message that requeues every
+// session whose public data is behind.
+//
 // Memory: the track is inflated as a stream with the shared-track caps from #64
 // (SHARED_TRACK_MAX_INFLATED_BYTES, SHARED_TRACK_MAX_FIXES). A larger track is marked
 // `too_large` and gets no derived data, as it gets no shared copy.
 
-export const PostprocessMessage = z.object({
+export const SessionMessage = z.object({
   v: z.literal(1),
+  kind: z.literal("session").optional(),
   sessionId: z.string().uuid(),
   userId: z.string().min(1),
   revision: z.number().int().min(0),
   etag: z.string().min(1),
 });
+/** Requeue the user's sessions whose public data predates their zones, from `after` on. */
+export const UserMessage = z.object({
+  v: z.literal(1),
+  kind: z.literal("user"),
+  userId: z.string().min(1),
+  after: z.string().optional(),
+});
+export const PostprocessMessage = z.union([UserMessage, SessionMessage]);
+export type SessionMessage = z.infer<typeof SessionMessage>;
+export type UserMessage = z.infer<typeof UserMessage>;
 export type PostprocessMessage = z.infer<typeof PostprocessMessage>;
+
+/** Sessions a `user` message requeues before passing the rest to a follow-up message. */
+export const USER_PAGE = 50;
+/** Without a queue, how many sessions one zone change reprocesses inline (waitUntil). */
+export const INLINE_USER_LIMIT = 20;
+
+const PUBLIC_FIELDS = {
+  publicMinLat: null,
+  publicMinLon: null,
+  publicMaxLat: null,
+  publicMaxLon: null,
+  publicTrackStartedAt: null,
+  publicTrackEndedAt: null,
+  publicZonesVersion: null,
+} as const;
 
 /** The columns post-processing owns, cleared whenever the attached track changes. */
 export const CLEARED_DERIVED = {
@@ -43,26 +76,8 @@ export const CLEARED_DERIVED = {
   maxLat: null,
   maxLon: null,
   startGeohash: null,
-  publicMinLat: null,
-  publicMinLon: null,
-  publicMaxLat: null,
-  publicMaxLon: null,
+  ...PUBLIC_FIELDS,
   windJson: null,
-} as const;
-
-/**
- * What a privacy zone change clears: the public bounds and the processed marker, so the
- * session is processed again with the new zones. Wind stays: it is not positional data
- * others could not already see, and refetching it for every session on each zone edit
- * would send Open-Meteo many requests for nothing.
- */
-export const CLEARED_PUBLIC = {
-  processedEtag: null,
-  postprocessStatus: null,
-  publicMinLat: null,
-  publicMinLon: null,
-  publicMaxLat: null,
-  publicMaxLon: null,
 } as const;
 
 /** Retry delays for a failed message: 30 s, 1, 2, 4, 8 min (wrangler.jsonc max_retries 5). */
@@ -79,36 +94,74 @@ export type Outcome =
   | "skipped_done"
   | "too_large"
   | "invalid"
-  | "invalid_message";
+  | "invalid_message"
+  | "user_requeued";
 
 export class RetryLater extends Error {}
 
-async function loadZones(db: Db, userId: string): Promise<Zone[]> {
-  return db
-    .select({ lat: privacyZones.lat, lon: privacyZones.lon, radiusM: privacyZones.radiusM })
-    .from(privacyZones)
-    .where(eq(privacyZones.userId, userId))
-    .orderBy(privacyZones.id);
+/** The owner's zones and zones version, read in one batch (one snapshot). */
+async function loadZones(
+  db: Db,
+  userId: string,
+): Promise<{ zones: Zone[]; version: number } | null> {
+  const [zones, owner] = await db.batch([
+    db
+      .select({ lat: privacyZones.lat, lon: privacyZones.lon, radiusM: privacyZones.radiusM })
+      .from(privacyZones)
+      .where(eq(privacyZones.userId, userId)),
+    db.select({ version: users.zonesVersion }).from(users).where(eq(users.id, userId)),
+  ]);
+  const version = owner[0]?.version;
+  return version === undefined ? null : { zones, version };
 }
 
-const zonesKey = (zones: Zone[]) => JSON.stringify(zones.map((z) => [z.lat, z.lon, z.radiusM]));
+/** True while the owner's zones version is still `version`. */
+const zonesStillAt = (userId: string, version: number): SQL =>
+  sql`(SELECT ${users.zonesVersion} FROM ${users} WHERE ${users.id} = ${userId}) = ${version}`;
 
-/** Whether a processed session still needs wind: others can see it and it has none. */
-export const needsWind = (s: Pick<Session, "visibility" | "windJson" | "publicMinLat">) =>
-  s.visibility !== "private" && s.windJson === null && s.publicMinLat !== null;
+/** Whether others may be shown this session's public data, given the owner's version. */
+export const publicIsCurrent = (
+  s: Pick<Session, "publicZonesVersion">,
+  zonesVersion: number | null | undefined,
+) => zonesVersion != null && s.publicZonesVersion === zonesVersion;
 
-export type ProcessDeps = { fetch?: typeof fetch; now?: () => number };
+export type ProcessDeps = {
+  fetch?: typeof fetch;
+  now?: () => number;
+  /** Test hooks that force interleavings. */
+  hooks?: { afterDerive?: () => Promise<void>; beforeWind?: () => Promise<void> };
+};
+
+type ProcessEnv = Pick<Env, "DB" | "TRACKS"> & { POSTPROCESS?: Queue<PostprocessMessage> };
 
 /**
  * Processes one message. Returns the outcome, or throws when the message should be
- * retried (RetryLater, WindTransientError, or any D1/R2 failure).
+ * retried (RetryLater, WindTransientError, or any D1/R2/queue failure).
  */
+export async function processMessage(
+  env: ProcessEnv,
+  raw: unknown,
+  deps: ProcessDeps = {},
+): Promise<Outcome> {
+  const parsed = PostprocessMessage.safeParse(raw);
+  if (!parsed.success) return "invalid_message";
+  const msg = parsed.data;
+  if (msg.kind === "user") {
+    await requeueUser(env, msg);
+    return "user_requeued";
+  }
+  return processSession(env, msg, deps);
+}
+
+/** How many times a session message recomputes at once when zones change under it. */
+const ZONE_RACE_ATTEMPTS = 3;
+
 export async function processSession(
   env: Pick<Env, "DB" | "TRACKS">,
   raw: unknown,
   deps: ProcessDeps = {},
 ): Promise<Outcome> {
-  const parsed = PostprocessMessage.safeParse(raw);
+  const parsed = SessionMessage.safeParse(raw);
   if (!parsed.success) return "invalid_message";
   const msg = parsed.data;
   const db = drizzle(env.DB);
@@ -122,34 +175,45 @@ export async function processSession(
     eq(sessions.trackKey, key),
     eq(sessions.trackEtag, msg.etag),
   );
-  const [row] = await db.select().from(sessions).where(current);
-  if (!row) return "skipped_stale";
 
-  let session = row;
   let outcome: Outcome = "skipped_done";
-  if (row.processedEtag !== msg.etag) {
+  let session: Session | undefined;
+  for (let attempt = 0; ; attempt++) {
+    const [row] = await db.select().from(sessions).where(current);
+    if (!row) return "skipped_stale";
+    const owner = await loadZones(db, msg.userId);
+    if (!owner) return "skipped_stale";
+    // Done only when processed from this track *and* public data is at the current zones.
+    if (row.processedEtag === msg.etag && publicIsCurrent(row, owner.version)) {
+      if (row.postprocessStatus !== "done") return outcome;
+      session = row;
+      break;
+    }
+    if (attempt >= ZONE_RACE_ATTEMPTS) throw new RetryLater("privacy zones keep changing");
+
     const object = await env.TRACKS.get(key);
     // Replaced or deleted since; the newer upload has its own message.
     if (!object || object.etag !== msg.etag) {
       await object?.body.cancel();
       return "skipped_stale";
     }
-    const zones = await loadZones(db, msg.userId);
     let derived: TrackDerived | null = null;
     let status: "done" | "too_large" | "invalid" = "done";
     try {
       derived = deriveTrack(
         await parseGzippedJson(object.body, SHARED_TRACK_MAX_INFLATED_BYTES),
         msg.sessionId,
-        zones,
+        owner.zones,
       );
     } catch (error) {
       if (error instanceof TrackTooLarge) status = "too_large";
       else if (error instanceof InvalidTrack || error instanceof SyntaxError) status = "invalid";
-      else if (error instanceof TypeError)
+      else if (error instanceof TypeError) {
         status = "invalid"; // corrupt gzip data
-      else throw error;
+      } else throw error;
     }
+    await deps.hooks?.afterDerive?.();
+    // Written only while the owner's zones are still the ones read above.
     const [written] = await db
       .update(sessions)
       .set({
@@ -166,36 +230,63 @@ export async function processSession(
         publicMinLon: derived?.publicBounds?.west ?? null,
         publicMaxLat: derived?.publicBounds?.north ?? null,
         publicMaxLon: derived?.publicBounds?.east ?? null,
+        publicTrackStartedAt: derived?.publicStartedAt ?? null,
+        publicTrackEndedAt: derived?.publicEndedAt ?? null,
+        publicZonesVersion: owner.version,
       })
-      .where(current)
+      .where(and(current, zonesStillAt(msg.userId, owner.version)))
       .returning();
-    if (!written) return "skipped_stale";
-    // A zone added while this ran may not be in `zones`. Its route clears the public
-    // bounds after inserting it, so only a change before this re-read can be missed:
-    // clear what was written and try again.
-    if (zonesKey(await loadZones(db, msg.userId)) !== zonesKey(zones)) {
-      await db.update(sessions).set(CLEARED_PUBLIC).where(current);
-      throw new RetryLater("privacy zones changed while processing");
+    if (written) {
+      if (status !== "done") return status;
+      session = written;
+      outcome = "processed";
+      break;
     }
-    if (status !== "done") return status;
-    session = written;
-    outcome = "processed";
+    // Either the track changed (the next read returns stale) or the zones did: go again.
   }
 
   if (!needsWind(session)) return outcome;
-  const wind = await lookupWind(session, deps);
-  // Only while the row is still processed from this track and still has no wind.
+  const wind = await lookupWind(db, session, current, deps);
+  if (!wind) return outcome;
+  // Only while the row still holds this processed track, is still shared, and has none.
   await db
     .update(sessions)
     .set({ windJson: JSON.stringify(wind) })
-    .where(and(current, eq(sessions.processedEtag, msg.etag), isNull(sessions.windJson)));
+    .where(
+      and(
+        current,
+        eq(sessions.processedEtag, msg.etag),
+        ne(sessions.visibility, "private"),
+        isNull(sessions.windJson),
+      ),
+    );
   return outcome === "processed" ? "processed" : "wind_only";
 }
 
-async function lookupWind(session: Session, deps: ProcessDeps): Promise<StoredWind> {
+/** Whether a processed session still needs wind: others can see it and it has none. */
+export const needsWind = (s: Pick<Session, "visibility" | "windJson" | "publicMinLat">) =>
+  s.visibility !== "private" && s.windJson === null && s.publicMinLat !== null;
+
+/**
+ * Re-reads the row right before calling Open-Meteo, so a session made private (or whose
+ * data was replaced) since the snapshot causes no request. Null when none is made.
+ */
+async function lookupWind(
+  db: Db,
+  snapshot: Session,
+  current: SQL | undefined,
+  deps: ProcessDeps,
+): Promise<StoredWind | null> {
+  await deps.hooks?.beforeWind?.();
+  const [session] = await db.select().from(sessions).where(current);
+  if (!session || !needsWind(session) || session.processedEtag !== snapshot.processedEtag) {
+    return null;
+  }
   const now = deps.now?.() ?? Date.now();
-  const startedAt = session.trackStartedAt ?? session.startedAt;
-  const endedAt = session.trackEndedAt ?? session.endedAt ?? startedAt;
+  // Only what others may see: the public box and the public time range.
+  const startedAt = session.publicTrackStartedAt;
+  const endedAt = session.publicTrackEndedAt ?? startedAt;
+  if (startedAt === null || endedAt === null) return null;
   const center = boundsCenter({
     south: session.publicMinLat as number,
     west: session.publicMinLon as number,
@@ -207,6 +298,63 @@ async function lookupWind(session: Session, deps: ProcessDeps): Promise<StoredWi
   return fetchWind(url, { startedAt, endedAt }, deps.fetch ?? fetch, now);
 }
 
+/** The user's sessions with a track whose public data is behind their zones version. */
+export async function staleSessions(
+  db: Db,
+  userId: string,
+  after: string | undefined,
+  limit: number,
+) {
+  return db
+    .select({ id: sessions.id, revision: sessions.uploadRevision, etag: sessions.trackEtag })
+    .from(sessions)
+    .innerJoin(users, eq(users.id, sessions.userId))
+    .where(
+      and(
+        eq(sessions.userId, userId),
+        isNull(sessions.deletedAt),
+        isNotNull(sessions.trackKey),
+        isNotNull(sessions.trackEtag),
+        or(
+          isNull(sessions.publicZonesVersion),
+          ne(sessions.publicZonesVersion, users.zonesVersion),
+        ),
+        after === undefined ? undefined : gt(sessions.id, after),
+      ),
+    )
+    .orderBy(asc(sessions.id))
+    .limit(limit);
+}
+
+const sessionMessage = (
+  userId: string,
+  row: { id: string; revision: number; etag: string | null },
+): SessionMessage => ({
+  v: 1,
+  sessionId: row.id,
+  userId,
+  revision: row.revision,
+  etag: row.etag as string,
+});
+
+/**
+ * A `user` message: queues a page of the user's sessions that are behind, then a
+ * follow-up for the rest. Idempotent: a redelivery queues the same sessions again, which
+ * ignore it once done. Throws (so the message retries) when a send fails.
+ */
+async function requeueUser(env: ProcessEnv, msg: UserMessage): Promise<void> {
+  const queue = env.POSTPROCESS;
+  if (!queue) throw new RetryLater("a user message needs the queue");
+  const page = await staleSessions(drizzle(env.DB), msg.userId, msg.after, USER_PAGE);
+  if (page.length > 0) {
+    await queue.sendBatch(page.map((row) => ({ body: sessionMessage(msg.userId, row) })));
+  }
+  const last = page.at(-1);
+  if (page.length === USER_PAGE && last) {
+    await queue.send({ v: 1, kind: "user", userId: msg.userId, after: last.id });
+  }
+}
+
 /** Queue handler: ack what is done or will never succeed, retry the rest with backoff. */
 export async function handlePostprocessBatch(
   batch: MessageBatch<unknown>,
@@ -215,9 +363,10 @@ export async function handlePostprocessBatch(
 ): Promise<void> {
   for (const message of batch.messages) {
     try {
-      const outcome = await processSession(env, message.body, deps);
-      if (outcome === "invalid_message")
+      const outcome = await processMessage(env, message.body, deps);
+      if (outcome === "invalid_message") {
         console.warn("Dropping a malformed post-processing message.");
+      }
       message.ack();
     } catch (error) {
       if (!(error instanceof RetryLater || error instanceof WindTransientError)) {
@@ -228,30 +377,23 @@ export async function handlePostprocessBatch(
   }
 }
 
-type PostprocessEnv = Pick<Env, "DB" | "TRACKS"> & { POSTPROCESS?: Queue<PostprocessMessage> };
-
 /**
- * Sends messages to the POSTPROCESS queue. Without the binding (previews, or a self-hosted
- * copy without Queues) it processes them after the response with waitUntil instead: one
- * attempt, no retries. Throws when the queue rejects a send.
+ * Sends messages to the POSTPROCESS queue. Throws when the queue rejects a send.
+ *
+ * Without the binding (previews, or a self-hosted copy without Queues) it processes them
+ * after the response with waitUntil instead: one attempt, no retries, and a `user`
+ * message covers at most INLINE_USER_LIMIT sessions, since a waitUntil gets about 30 s.
+ * The others show no public data until their next upload or zone change.
  */
 export async function enqueuePostprocess(
-  env: PostprocessEnv,
+  env: ProcessEnv,
   ctx: Pick<ExecutionContext, "waitUntil">,
   messages: PostprocessMessage[],
 ): Promise<void> {
   if (messages.length === 0) return;
   const queue = env.POSTPROCESS;
   if (!queue) {
-    ctx.waitUntil(
-      (async () => {
-        for (const message of messages) {
-          await processSession(env, message).catch((error) =>
-            console.warn("Inline post-processing failed.", error),
-          );
-        }
-      })(),
-    );
+    ctx.waitUntil(processInline(env, messages));
     return;
   }
   for (let i = 0; i < messages.length; i += 100) {
@@ -259,38 +401,18 @@ export async function enqueuePostprocess(
   }
 }
 
-/**
- * After the user's privacy zones change: clears the public bounds of every session with a
- * track (so none outlives the zones it was cut with) and queues them again.
- */
-export async function reprocessUserSessions(
-  env: PostprocessEnv,
-  ctx: Pick<ExecutionContext, "waitUntil">,
-  userId: string,
-): Promise<void> {
-  const rows = await drizzle(env.DB)
-    .update(sessions)
-    .set(CLEARED_PUBLIC)
-    .where(
-      and(
-        eq(sessions.userId, userId),
-        isNull(sessions.deletedAt),
-        isNotNull(sessions.trackKey),
-        isNotNull(sessions.trackEtag),
-      ),
-    )
-    .returning({ id: sessions.id, revision: sessions.uploadRevision, etag: sessions.trackEtag });
-  // A failed send leaves those sessions pending without public bounds: nothing is shown
-  // that the new zones would hide, and their next upload or zone change queues them again.
-  await enqueuePostprocess(
-    env,
-    ctx,
-    rows.map((r) => ({
-      v: 1,
-      sessionId: r.id,
-      userId,
-      revision: r.revision,
-      etag: r.etag as string,
-    })),
-  ).catch((error) => console.error("Could not queue reprocessing after a zone change.", error));
+export async function processInline(env: ProcessEnv, messages: PostprocessMessage[]) {
+  const db = drizzle(env.DB);
+  for (const message of messages) {
+    try {
+      if (message.kind === "user") {
+        const page = await staleSessions(db, message.userId, undefined, INLINE_USER_LIMIT);
+        for (const row of page) await processSession(env, sessionMessage(message.userId, row));
+      } else {
+        await processSession(env, message);
+      }
+    } catch (error) {
+      console.warn("Inline post-processing failed.", error);
+    }
+  }
 }
