@@ -32,10 +32,7 @@ final class VoyageRecorder {
         do {
             var root = URL.applicationSupportDirectory.appending(path: "Voyages", directoryHint: .isDirectory)
             #if DEBUG
-                if let id = ProcessInfo.processInfo.environment["MADEGOOD_TEST_VOYAGES"].flatMap(UUID.init(uuidString:))
-                {
-                    root = URL.temporaryDirectory.appending(path: id.uuidString, directoryHint: .isDirectory)
-                }
+                if let testRoot = Self.testLibraryRoot() { root = testRoot }
             #endif
             let library = try VoyageStore(root: root)
             var attributes = URLResourceValues()
@@ -81,6 +78,27 @@ final class VoyageRecorder {
     }
 
     private static var now: TimeInterval { Date.now.timeIntervalSince1970 }
+
+    #if DEBUG
+        private static let testLibraryKey = "debug.testVoyageLibrary"
+
+        /// A UI test's own voyage library, named by `MADEGOOD_TEST_VOYAGES`. It is remembered
+        /// so that a launch by the system (Core Location relaunches the app in the background
+        /// during a leg, without the test's environment) opens the same library and resumes
+        /// the leg, as a real relaunch does. `-resetSettings` forgets it. Kept in Application
+        /// Support, not the temporary directory, which the system may purge between launches.
+        static func testLibraryRoot() -> URL? {
+            let process = ProcessInfo.processInfo
+            let defaults = UserDefaults.standard
+            if process.arguments.contains("-resetSettings") { defaults.removeObject(forKey: testLibraryKey) }
+            if let id = process.environment["MADEGOOD_TEST_VOYAGES"].flatMap(UUID.init(uuidString:)) {
+                defaults.set(id.uuidString, forKey: testLibraryKey)
+            }
+            guard let id = defaults.string(forKey: testLibraryKey).flatMap(UUID.init(uuidString:)) else { return nil }
+            return URL.applicationSupportDirectory.appending(path: "TestVoyages", directoryHint: .isDirectory)
+                .appending(path: id.uuidString, directoryHint: .isDirectory)
+        }
+    #endif
 
     private func perform<Result>(_ operation: () throws -> Result?) -> Result? {
         do {

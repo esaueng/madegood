@@ -54,14 +54,23 @@ extension XCTestCase {
 
     /// Swipes up until the element can be tapped.
     func scrollTo(_ element: XCUIElement, in app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
-        for _ in 0..<8 where !(element.exists && element.isHittable) {
+        // An element can exist before it has a usable frame (a lazy row still off screen, or
+        // a slow simulator mid-layout); asking for hittability then fails the test, so
+        // scroll until its frame is inside the window first.
+        func reachable() -> Bool {
+            guard element.exists, !element.frame.isEmpty,
+                app.windows.firstMatch.frame.intersects(element.frame)
+            else { return false }
+            return element.isHittable
+        }
+        for _ in 0..<8 where !reachable() {
             // A slow drag, like a finger: the watch ignores XCUITest's quick swipes.
             let window = app.windows.firstMatch
             let low = window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.8))
             let high = window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.35))
             low.press(forDuration: 0.05, thenDragTo: high, withVelocity: .slow, thenHoldForDuration: 0.1)
         }
-        XCTAssertTrue(element.isHittable, "\(element) never became hittable", file: file, line: line)
+        XCTAssertTrue(reachable(), "\(element) never became hittable", file: file, line: line)
     }
 
     #if os(iOS)
