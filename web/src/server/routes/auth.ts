@@ -108,6 +108,7 @@ export const auth = createRouter<AppEnv>()
       db,
       c.req.valid("json").refreshToken,
       c.env.JWT_SIGNING_KEY,
+      { client: "app" },
     );
     if (!result.ok) {
       return result.reason === "reused"

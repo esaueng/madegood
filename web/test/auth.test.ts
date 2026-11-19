@@ -104,6 +104,8 @@ describe("POST /api/auth/apple", () => {
 });
 
 const KEY = env.JWT_SIGNING_KEY;
+/** Tokens from POST /auth/apple belong to the app. */
+const APP = { client: "app" } as const;
 
 const liveTokens = async (userId: string) =>
   (
@@ -180,6 +182,7 @@ describe("POST /api/auth/refresh", () => {
     });
     const db = drizzle(env.DB);
     const result = await rotateRefreshToken(db, session.refreshToken, KEY, {
+      ...APP,
       hooks: { afterRead: () => revokeAllRefreshTokens(db, session.user.id) }, // B
     });
     expect(result).toEqual({ ok: false, reason: "reused" });
@@ -232,6 +235,7 @@ function pausedRotation(token: string) {
   const reached = gate();
   const release = gate();
   const result = rotateRefreshToken(drizzle(env.DB), token, KEY, {
+    ...APP,
     hooks: {
       afterRead: async () => {
         reached.open();
@@ -301,7 +305,7 @@ describe("refresh-token families (re-check of #63)", () => {
     const { browser, phone } = await sameAccount("001234.overlap.0001");
     const slow = pausedRotation(browser.refreshToken);
     await slow.atRead; // the slow refresh has read the unrotated token
-    const fast = await rotateRefreshToken(drizzle(env.DB), browser.refreshToken, KEY);
+    const fast = await rotateRefreshToken(drizzle(env.DB), browser.refreshToken, KEY, APP);
     slow.release();
     const loser = await slow.result;
     expect(fast.ok && loser.ok).toBe(true);
@@ -314,7 +318,7 @@ describe("refresh-token families (re-check of #63)", () => {
     const session = await signIn();
     const slow = pausedRotation(session.refreshToken);
     await slow.atRead;
-    const fast = await rotateRefreshToken(drizzle(env.DB), session.refreshToken, KEY);
+    const fast = await rotateRefreshToken(drizzle(env.DB), session.refreshToken, KEY, APP);
     if (!fast.ok) throw new Error("rotation failed");
     expect((await refresh(fast.refreshToken)).status).toBe(200); // the successor moves on
     slow.release();
@@ -327,6 +331,7 @@ describe("refresh-token families (re-check of #63)", () => {
     expect((await refresh(browser.refreshToken)).status).toBe(200);
     const db = drizzle(env.DB);
     const result = await rotateRefreshToken(db, browser.refreshToken, KEY, {
+      ...APP,
       hooks: { afterRead: () => endRefreshFamily(db, browser.refreshToken) },
     });
     expect(result).toEqual({ ok: false, reason: "invalid" });
@@ -337,6 +342,7 @@ describe("refresh-token families (re-check of #63)", () => {
     const { browser, phone } = await sameAccount("001234.firstout.0001");
     const db = drizzle(env.DB);
     const result = await rotateRefreshToken(db, browser.refreshToken, KEY, {
+      ...APP,
       hooks: { afterRead: () => endRefreshFamily(db, browser.refreshToken) },
     });
     expect(result).toEqual({ ok: false, reason: "invalid" });
@@ -377,6 +383,45 @@ describe("refresh-token families (re-check of #63)", () => {
     const next = await newToken(await refresh(rotated.refreshToken));
     expect((await tokenRow(rotated.refreshToken)).familyId).toBe(row.id);
     expect((await tokenRow(next)).familyId).toBe(row.id);
+  });
+});
+
+describe("extra review of #63", () => {
+  const refresh = (refreshToken: string) => postJson("/auth/refresh", { refreshToken });
+
+  // Finding 2: sign-out lands after the replay decided "reuse" but before it revokes.
+  it("fails a reuse whose family is signed out just before the revocation, sparing other devices", async () => {
+    const sub = "001234.revokegap.0001";
+    const browser = await signIn({ identityToken: await identityToken({ sub }) });
+    const phone = await signIn({ identityToken: await identityToken({ sub }) });
+    expect((await refresh(browser.refreshToken)).status).toBe(200);
+    await ageRotation(browser.refreshToken, REFRESH_REUSE_GRACE_MS + 1000); // reuse, not grace
+    const db = drizzle(env.DB);
+    const result = await rotateRefreshToken(db, browser.refreshToken, KEY, {
+      ...APP,
+      hooks: { beforeRevoke: () => endRefreshFamily(db, browser.refreshToken) },
+    });
+    expect(result).toEqual({ ok: false, reason: "invalid" });
+    expect(await liveTokens(browser.user.id)).toBe(1); // the phone's
+    expect((await refresh(phone.refreshToken)).status).toBe(200);
+  });
+
+  it("still revokes everything for reuse when nothing intervenes", async () => {
+    const session = await signIn();
+    expect((await refresh(session.refreshToken)).status).toBe(200);
+    await ageRotation(session.refreshToken, REFRESH_REUSE_GRACE_MS + 1000);
+    let paused = false;
+    const result = await rotateRefreshToken(drizzle(env.DB), session.refreshToken, KEY, {
+      ...APP,
+      hooks: {
+        beforeRevoke: async () => {
+          paused = true;
+        },
+      },
+    });
+    expect(paused).toBe(true);
+    expect(result).toEqual({ ok: false, reason: "reused" });
+    expect(await liveTokens(session.user.id)).toBe(0);
   });
 });
 
