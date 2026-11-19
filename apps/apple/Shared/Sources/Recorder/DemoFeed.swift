@@ -148,8 +148,8 @@ enum DemoFeed {
             return (sport, simulator.generate().samples)
         })
 
-    /// Motion lines for session times in (`start`, `end`], with uptime timestamps.
-    static func motion(sport: Sport, from start: Double, to end: Double, startUptime: Double) -> [RawFormat.MotionLine] {
+    /// Motion lines for session times in (`start`, `end`], on the session's monotonic clock.
+    static func motion(sport: Sport, from start: Double, to end: Double, startMono: Double) -> [RawFormat.MotionLine] {
         guard let samples = paddleMotion[sport], !samples.isEmpty, end > start else { return [] }
         let first = Int((start * motionRate).rounded(.down)) + 1
         let last = Int((end * motionRate).rounded(.down))
@@ -157,7 +157,7 @@ enum DemoFeed {
         return (first...last).map { index in
             let sample = samples[index % samples.count]
             return RawFormat.MotionLine(
-                ts: startUptime + Double(index) / motionRate, userAcceleration: sample.userAcceleration,
+                ts: startMono + Double(index) / motionRate, userAcceleration: sample.userAcceleration,
                 gravity: sample.gravity, rotationRate: sample.rotationRate, attitude: sample.attitude)
         }
     }

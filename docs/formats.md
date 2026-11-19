@@ -6,7 +6,7 @@ through the same types the readers use.
 
 | Format | Used for | Leaves the device? |
 |---|---|---|
-| **Raw recording v1** | Research and algorithm work: every sensor stream at full rate | Only when the user shares it (AirDrop/Files), or with an opt-in "contribute data" setting |
+| **Raw recording v2** | Research and algorithm work: every sensor stream at full rate | Only when the user shares it (AirDrop/Files), or with an opt-in "contribute data" setting |
 | **Track v1** | The stored and uploaded session: GPS, heart rate, events, analysis summary | Uploaded when sync is on |
 
 WaterKit also exports tracks as **GPX 1.1** for other apps (see [GPX export](#gpx-export)).
@@ -27,9 +27,11 @@ definitions 1 nm = 1852 m, 1 mi = 1609.344 m and 1 h = 3600 s.
 
 ---
 
-## Raw recording v1
+## Raw recording v2
 
-A session folder, zipped for sharing:
+A session folder, zipped for sharing. Version 2 holds only absolute timestamps: no file
+carries a reading of the device's boot-time clock (version 1 did; see
+[Raw recording v1](#raw-recording-v1), which readers still accept):
 
 ```
 <sessionId>/
@@ -53,36 +55,51 @@ A session folder, zipped for sharing:
 
 ### Clocks and timestamps
 
-Every line has `ts`, the sensor's own timestamp, stored as the sensor reported it:
+Every line has `ts`, an absolute time in Unix seconds:
 
 | Streams | `ts` clock | Source |
 |---|---|---|
-| `gps`, `hr`, `heading`, `events` | Unix time, s (wall clock) | `CLLocation.timestamp`, HealthKit sample start date, `CLHeading.timestamp`, `Date()` |
-| `motion` | Device uptime, s (time since boot, not counting sleep) | `CMLogItem.timestamp` |
-| `clock` | Both (see below) | `Date()` and `ProcessInfo.systemUptime`, read together |
+| `gps`, `hr`, `heading`, `events` | Wall clock | `CLLocation.timestamp`, HealthKit sample start date, `CLHeading.timestamp`, `Date()` |
+| `motion` | The session's monotonic clock | `CMLogItem.timestamp`, converted on the device (below) |
+| `clock` | Both (see below) | `Date()` and the monotonic clock, read together |
 
-Clock anchors pair the two clocks. `meta.clock` is taken at the start; the recorder
-appends another anchor to `clock.ndjson` every 60 s and whenever the system clock
-changes. Readers convert an uptime value with the latest anchor at or before it:
+The **monotonic clock** is the device's uptime clock moved onto Unix time at the session
+start. The recorder reads `Date()` and `ProcessInfo.systemUptime` together when the session
+starts, keeps that pair in memory only, and writes every boot-time reading as
 
 ```
-unix = anchor.unix + (uptime - anchor.uptime)
+mono = startedAt + (uptime − uptime at start)
+```
+
+So it equals the wall clock at `meta.startedAt` and then advances steadily, without the
+jumps a system clock correction makes. Times are stored as doubles in Unix seconds, which
+resolve to about 0.24 µs at today's dates: motion samples keep their order and their
+relative timing to within that, far finer than the 10 ms between samples. A sample that
+rounds onto an anchor's `mono` value belongs to the segment before that anchor.
+
+Clock anchors pair the two clocks. The start is an implicit anchor (`mono = unix =
+startedAt`); the recorder appends another anchor to `clock.ndjson` every 60 s and whenever
+the system clock changes. Readers convert a monotonic time with the latest anchor before it
+(the first anchor for times at or before the start):
+
+```
+unix = anchor.unix + (mono - anchor.mono)
 ```
 
 Session time is `t = unix - meta.startedAt`. WaterKit's `RawSessionReader` does this
-conversion; files never store `t`.
+conversion; files never store `t`. Analysis that must not see wall-clock jumps (paddle
+strokes, with the user's pauses) runs on the monotonic clock instead.
 
 ### meta.json
 
 ```json
 {
   "format": "madegood-raw",
-  "version": 1,
+  "version": 2,
   "sessionId": "6F1C2A3E-8A5B-4C1D-9E2F-0A1B2C3D4E5F",
   "sport": "kayak",
   "startedAt": 1809165600.0,
   "endedAt": 1809169200.0,
-  "clock": { "unix": 1809165600.0, "uptime": 5000.0 },
   "device": { "kind": "watch", "model": "Watch7,5", "os": "watchOS 26.1" },
   "app": { "version": "0.1.0", "build": "1" },
   "requestedRates": { "motion": 100, "gps": 1 }
@@ -91,12 +108,11 @@ conversion; files never store `t`.
 
 | Field | Notes |
 |---|---|
-| `format`, `version` | Always `madegood-raw` and `1`. |
+| `format`, `version` | Always `madegood-raw` and `2`. |
 | `sessionId` | Device-generated UUID, also used as the track's session ID. |
 | `sport` | One of `sailing`, `windsurfing`, `motorboating`, `kayak`, `canoe`, `sup`. |
 | `startedAt` | Unix time of the session start, s. |
 | `endedAt` | Unix time of a clean stop. Absent if recording stopped unexpectedly. |
-| `clock` | The first clock anchor. |
 | `device` | `kind` is `watch` or `phone`; `model` is the hardware identifier. **Never** the user-assigned device name. |
 | `requestedRates` | Requested sampling rates, Hz. Actual rates come from the data: sensors may deliver less often, and gaps are visible in `ts`. |
 
@@ -126,12 +142,12 @@ values, and the line encoder rejects them.
 **motion** (`CMDeviceMotion`, device frame)
 
 ```json
-{"ts":5000.01,"ax":0.12,"ay":-0.3,"az":0.05,"gx":0.0,"gy":0.0,"gz":-9.80665,"rx":0.1,"ry":0.0,"rz":-0.2,"qx":0.0,"qy":0.0,"qz":0.0,"qw":1.0}
+{"ts":1809165600.01,"ax":0.12,"ay":-0.3,"az":0.05,"gx":0.0,"gy":0.0,"gz":-9.80665,"rx":0.1,"ry":0.0,"rz":-0.2,"qx":0.0,"qy":0.0,"qz":0.0,"qw":1.0}
 ```
 
 | Fields | Meaning | Unit |
 |---|---|---|
-| `ts` | uptime | s |
+| `ts` | monotonic clock (Unix) | s |
 | `ax ay az` | user acceleration (gravity removed) | m/s² (CoreMotion's g × 9.80665) |
 | `gx gy gz` | gravity | m/s² (g × 9.80665) |
 | `rx ry rz` | rotation rate | rad/s |
@@ -154,7 +170,28 @@ writes the line in use at the `start` event's `ts`, one event per pinged end:
 optional); `age` the seconds from the ping to the event (the ping was at `ts - age`).
 It holds positions, so it is not part of published recordings or shared copies.
 
-**clock**: `{"unix":1809165660.5,"uptime":5060.0}`.
+**clock**: `{"unix":1809165660.5,"mono":1809165660.0}` (here the wall clock is 0.5 s
+ahead of the monotonic clock 60 s in).
+
+### Raw recording v1
+
+Recordings made before version 2. Readers convert them on reading, and the iPhone converts
+one before sharing it (`RawFormatConversion`, streamed and cached per target version and
+revision), so a shared raw recording is always version 2 and holds only the recording's own
+files. A conversion that hits anything but a truncated or damaged last gzip member (a read
+error, a stream that is not gzip, the inflate limit) fails and leaves nothing behind. The
+watch sends a recording only when its `meta.json` names a version the iPhone app says it
+reads (`rawVersions` in its WatchConnectivity application context); one whose version it
+cannot read stays on the watch too. An iPhone never acknowledges a recording whose version
+it cannot read, so the watch keeps its copy. Version 1 differs only in its clocks:
+
+- `meta.json` has `"version": 1` and `"clock": {"unix": …, "uptime": …}`, the wall clock and
+  the device uptime (seconds since boot) read together at the start.
+- `motion` `ts` is device uptime, s (`CMLogItem.timestamp`, unconverted).
+- `clock` lines are `{"unix": …, "uptime": …}`.
+
+Readers put them on the monotonic clock with the `meta.json` anchor,
+`mono = clock.unix + (uptime − clock.uptime)`, and then read them as version 2.
 
 ---
 

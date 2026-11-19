@@ -94,11 +94,17 @@ final class MotionSource {
         return queue
     }()
     private let writer: RawStreamWriter
+    private let clock: RawFormat.MonotonicClock
     private let onSample: @Sendable (RawFormat.MotionLine) -> Void
 
-    /// `onSample` receives every line written, on the motion queue, for live analysis.
-    init(writer: RawStreamWriter, onSample: @escaping @Sendable (RawFormat.MotionLine) -> Void = { _ in }) {
+    /// `onSample` receives every line written, on the motion queue, for live analysis. Lines
+    /// carry the sample time on the session's monotonic `clock`, never the uptime reading.
+    init(
+        writer: RawStreamWriter, clock: RawFormat.MonotonicClock,
+        onSample: @escaping @Sendable (RawFormat.MotionLine) -> Void = { _ in }
+    ) {
         self.writer = writer
+        self.clock = clock
         self.onSample = onSample
     }
 
@@ -107,7 +113,7 @@ final class MotionSource {
     func start(rate: Double) {
         guard manager.isDeviceMotionAvailable else { return }
         manager.deviceMotionUpdateInterval = 1 / rate
-        manager.startDeviceMotionUpdates(to: queue, withHandler: Self.handler(writer: writer, onSample: onSample))
+        manager.startDeviceMotionUpdates(to: queue, withHandler: Self.handler(writer: writer, clock: clock, onSample: onSample))
     }
 
     func stop() {
@@ -117,7 +123,8 @@ final class MotionSource {
     /// Built outside the main actor so the closure is not main-actor isolated: CoreMotion
     /// calls it on `queue`.
     nonisolated private static func handler(
-        writer: RawStreamWriter, onSample: @escaping @Sendable (RawFormat.MotionLine) -> Void
+        writer: RawStreamWriter, clock: RawFormat.MonotonicClock,
+        onSample: @escaping @Sendable (RawFormat.MotionLine) -> Void
     ) -> CMDeviceMotionHandler {
         { motion, _ in
             guard let motion else { return }
@@ -127,7 +134,7 @@ final class MotionSource {
             let r = motion.rotationRate
             let q = motion.attitude.quaternion
             let line = RawFormat.MotionLine(
-                ts: motion.timestamp,
+                ts: clock.absolute(uptime: motion.timestamp),
                 userAcceleration: Vector3(x: a.x * g, y: a.y * g, z: a.z * g),
                 gravity: Vector3(x: gravity.x * g, y: gravity.y * g, z: gravity.z * g),
                 rotationRate: Vector3(x: r.x, y: r.y, z: r.z),

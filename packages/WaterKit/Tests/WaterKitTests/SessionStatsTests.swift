@@ -22,10 +22,11 @@ enum SyntheticPaddle {
         let meta = RawFormat.Meta(
             sessionId: UUID(uuidString: "00000000-0000-4000-8000-000000000001")!, sport: .kayak,
             startedAt: startUnix, endedAt: startUnix + 120,
-            clock: RawFormat.ClockAnchor(unix: startUnix, uptime: startUptime),
             device: RawFormat.Device(kind: "watch", model: "Test1,1", os: "watchOS 26.0"),
             app: RawFormat.App(version: "0.0.0", build: "0"), requestedRates: ["motion": 100, "gps": 1])
-        try RawFormat.encodeMeta(meta).write(to: folder.appendingPathComponent("meta.json"))
+        // A version 1 recording (device-uptime motion), read by the old-version reader.
+        try RawFormat.V1.encodeMeta(meta, clock: .init(unix: startUnix, uptime: startUptime))
+            .write(to: folder.appendingPathComponent("meta.json"))
 
         var gps = Data()
         for second in 0...119 {

@@ -80,6 +80,8 @@ final class SessionRecorder {
     /// ended prepared one) does not fail the start.
     private var startupInterruption: (message: String, source: WorkoutSource, generation: Int)?
     private var clockObserver: (any NSObjectProtocol)?
+    /// The recording's monotonic clock; its uptime reading stays in memory.
+    private var monotonicClock: RawFormat.MonotonicClock?
     private var engine: SessionEngine?
     private var liveStrokes: LiveStrokes?
     private var liveSport: Sport?
@@ -215,20 +217,23 @@ final class SessionRecorder {
         }
         self.folder = folder
 
-        let anchor = RawFormat.ClockAnchor(
-            unix: startedAt.timeIntervalSince1970, uptime: ProcessInfo.processInfo.systemUptime)
+        // The session's monotonic clock (raw format 2): boot-time readings become absolute
+        // times from here on, and only those are written (docs/formats.md, "Clocks").
+        let clock = RawFormat.MonotonicClock(
+            startUnix: startedAt.timeIntervalSince1970, startUptime: ProcessInfo.processInfo.systemUptime)
+        monotonicClock = clock
         let meta = RawFormat.Meta(
-            sessionId: sessionId, sport: sport, startedAt: anchor.unix, clock: anchor,
+            sessionId: sessionId, sport: sport, startedAt: clock.startUnix,
             device: DeviceInfo.current, app: DeviceInfo.app,
             requestedRates: ["gps": 1, "motion": Self.motionRate])
         self.meta = meta
         writeMeta()
         engine = SessionEngine(profile: UserSettings.profile(for: sport))
         liveSession = sessionId
-        startUnix = anchor.unix
+        startUnix = clock.startUnix
         writtenGeneratedEvents = 0
         metrics = engine?.snapshot
-        let liveStrokes = sport.isPaddling ? LiveStrokes(sport: sport, startUptime: anchor.uptime) : nil
+        let liveStrokes = sport.isPaddling ? LiveStrokes(sport: sport, clock: clock) : nil
         self.liveStrokes = liveStrokes
         strokes = liveStrokes?.snapshot()
         trackPoints = []
@@ -277,7 +282,7 @@ final class SessionRecorder {
         #endif
 
         if demo {
-            startDemoFeed(session: sessionId, sport: sport, startUptime: anchor.uptime)
+            startDemoFeed(session: sessionId, sport: sport, startMono: clock.startUnix)
         } else if let writer = writers[.gps] {
             let location = LocationSource(
                 writer: writer,
@@ -292,7 +297,7 @@ final class SessionRecorder {
             self.location = location
         }
         if !demo, let writer = writers[.motion] {
-            let motion = MotionSource(writer: writer) { [liveStrokes] line in liveStrokes?.ingest(line) }
+            let motion = MotionSource(writer: writer, clock: clock) { [liveStrokes] line in liveStrokes?.ingest(line) }
             motion.start(rate: Self.motionRate)
             self.motion = motion
         }
@@ -302,13 +307,13 @@ final class SessionRecorder {
             self.heading = heading
         }
 
-        writers[.events]?.append(RawFormat.EventLine(ts: anchor.unix, type: .start))
+        writers[.events]?.append(RawFormat.EventLine(ts: clock.startUnix, type: .start))
         if sport == .sailing {
             // The start line in use, pinged during the countdown (docs/formats.md, events).
             for ping in StartLineController.shared.pingsToRecord {
                 writers[.events]?.append(
                     RawFormat.EventLine(
-                        ts: anchor.unix, type: .linePing, data: ping.eventData(age: anchor.unix - ping.time)))
+                        ts: clock.startUnix, type: .linePing, data: ping.eventData(age: clock.startUnix - ping.time)))
             }
         }
         startLoops()
@@ -538,7 +543,7 @@ final class SessionRecorder {
 
     /// Feeds the synthetic route through the same path as real sensors (see `DemoFeed`),
     /// with synthetic wrist motion for paddling sports.
-    private func startDemoFeed(session: UUID, sport: Sport, startUptime: Double) {
+    private func startDemoFeed(session: UUID, sport: Sport, startMono: Double) {
         loops.append(
             Task { [weak self] in
                 var motionUntil = 0.0
@@ -552,7 +557,7 @@ final class SessionRecorder {
                     self.writers[.hr]?.append(hr)
                     if sport.isPaddling {
                         let elapsed = now - self.startUnix
-                        for line in DemoFeed.motion(sport: sport, from: motionUntil, to: elapsed, startUptime: startUptime) {
+                        for line in DemoFeed.motion(sport: sport, from: motionUntil, to: elapsed, startMono: startMono) {
                             self.writers[.motion]?.append(line)
                             self.liveStrokes?.ingest(line)
                         }
@@ -591,8 +596,9 @@ final class SessionRecorder {
     }
 
     private func writeClockAnchor() {
+        guard let monotonicClock else { return }
         writers[.clock]?.append(
-            RawFormat.ClockAnchor(
+            monotonicClock.anchor(
                 unix: Date().timeIntervalSince1970, uptime: ProcessInfo.processInfo.systemUptime))
     }
 

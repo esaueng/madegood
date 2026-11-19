@@ -43,21 +43,38 @@ public enum RawSessionReader {
             case .invalidMeta(let reason): "Invalid \(RawFormat.metaFileName): \(reason)"
             case .unsupportedFormat(let name): "Not a MadeGood raw recording (format \"\(name)\")"
             case .unsupportedVersion(let v):
-                "Unsupported raw format version \(v); this reader supports \(RawFormat.version)"
+                "Unsupported raw format version \(v); this reader supports \(RawFormat.readableVersions.sorted())"
             case .bothPlainAndGzipped(let stream):
                 "Both \(stream).ndjson and \(stream).ndjson.gz exist; remove one"
             }
         }
     }
 
-    /// Reads a recording folder. Pass `includeMotion: false` to skip the 100 Hz motion
-    /// stream (tens of MB per hour) when only GPS, heart rate and events are needed.
+    /// Reads a recording folder, version 1 or 2. Pass `includeMotion: false` to skip the
+    /// 100 Hz motion stream (tens of MB per hour) when only GPS, heart rate and events are
+    /// needed. Both versions come out on the session's monotonic clock: version 1's device
+    /// uptimes are converted with its start anchor, `mono = clock.unix + (uptime − clock.uptime)`.
     public static func read(folder: URL, includeMotion: Bool = true) throws -> RawSession {
-        let meta = try readMeta(folder: folder)
+        let (meta, legacyClock) = try readMetaAndLegacyClock(folder: folder)
         var issues: [RawReadIssue] = []
 
-        let clockLines: [RawFormat.ClockAnchor] = try readStream(.clock, in: folder, issues: &issues)
-        let anchors = ([meta.clock] + clockLines).sorted { $0.uptime < $1.uptime }
+        // The monotonic clock of the recording, and its anchors (sorted, never empty).
+        let toMono: (Double) -> Double
+        let anchors: [RawFormat.ClockAnchor]
+        let monotonicStart: Double
+        if let legacy = legacyClock {
+            toMono = { legacy.unix + ($0 - legacy.uptime) }
+            let lines: [RawFormat.V1.ClockAnchor] = try readStream(.clock, in: folder, issues: &issues)
+            anchors = ([legacy] + lines).map { RawFormat.ClockAnchor(unix: $0.unix, mono: toMono($0.uptime)) }
+                .sorted { $0.mono < $1.mono }
+            monotonicStart = legacy.unix
+        } else {
+            toMono = { $0 }
+            let lines: [RawFormat.ClockAnchor] = try readStream(.clock, in: folder, issues: &issues)
+            anchors = ([RawFormat.ClockAnchor(unix: meta.startedAt, mono: meta.startedAt)] + lines)
+                .sorted { $0.mono < $1.mono }
+            monotonicStart = meta.startedAt
+        }
         let clock = SessionClock(startedAt: meta.startedAt, anchors: anchors)
 
         let gps = try (readStream(.gps, in: folder, issues: &issues) as [RawFormat.GPSLine]).map { line in
@@ -69,12 +86,13 @@ public enum RawSessionReader {
         let motionLines: [RawFormat.MotionLine] =
             includeMotion ? try readStream(.motion, in: folder, issues: &issues) : []
         let motion = motionLines.map { l in
-            MotionSample(
-                t: clock.fromUptime(l.ts),
+            let mono = toMono(l.ts)
+            return MotionSample(
+                t: clock.fromMono(mono),
                 userAcceleration: Vector3(x: l.ax, y: l.ay, z: l.az),
                 gravity: Vector3(x: l.gx, y: l.gy, z: l.gz),
                 rotationRate: Vector3(x: l.rx, y: l.ry, z: l.rz),
-                attitude: Quaternion(x: l.qx, y: l.qy, z: l.qz, w: l.qw), uptime: l.ts)
+                attitude: Quaternion(x: l.qx, y: l.qy, z: l.qz, w: l.qw), monotonic: mono)
         }
         let hr = try (readStream(.hr, in: folder, issues: &issues) as [RawFormat.HRLine]).map {
             HRSample(t: clock.fromUnix($0.ts), bpm: $0.bpm)
@@ -90,9 +108,9 @@ public enum RawSessionReader {
             (line.type == EventType.pause.rawValue || line.type == EventType.resume.rawValue)
                 && line.data?["auto"] != .bool(true)
         }
-        let pauseUptimes = clock.uptimes(forUnixInRecordedOrder: pauseLines.map(\.ts))
-        let pauseEvents = zip(pauseLines, pauseUptimes).map { line, uptime in
-            SessionEvent(t: uptime - meta.clock.uptime, type: EventType(line.type), data: line.data)
+        let pauseMonos = clock.monos(forUnixInRecordedOrder: pauseLines.map(\.ts))
+        let pauseEvents = zip(pauseLines, pauseMonos).map { line, mono in
+            SessionEvent(t: mono - monotonicStart, type: EventType(line.type), data: line.data)
         }
 
         var session = RawSession(
@@ -104,11 +122,20 @@ public enum RawSessionReader {
             events: sortedByTime(events, \.t),
             clockAnchors: anchors,
             issues: issues)
-        session.pauseEventsOnUptime = pauseEvents
+        session.monotonicStart = monotonicStart
+        session.pauseEventsOnMonotonicClock = pauseEvents
         return session
     }
 
+    /// The recording's `meta.json` (version 1 or 2; version 1's clock anchor is dropped).
     public static func readMeta(folder: URL) throws -> RawFormat.Meta {
+        try readMetaAndLegacyClock(folder: folder).meta
+    }
+
+    /// `meta.json`, and for version 1 its device-uptime clock anchor.
+    static func readMetaAndLegacyClock(
+        folder: URL
+    ) throws -> (meta: RawFormat.Meta, legacyClock: RawFormat.V1.ClockAnchor?) {
         let url = folder.appendingPathComponent(RawFormat.metaFileName)
         guard FileManager.default.fileExists(atPath: url.path) else { throw Error.missingMeta(folder) }
         let data = try Data(contentsOf: url)
@@ -124,9 +151,13 @@ public enum RawSessionReader {
             throw Error.invalidMeta(String(describing: error))
         }
         guard header.format == RawFormat.formatName else { throw Error.unsupportedFormat(header.format ?? "none") }
-        guard header.version == RawFormat.version else { throw Error.unsupportedVersion(header.version ?? 0) }
+        guard let version = header.version, RawFormat.readableVersions.contains(version) else {
+            throw Error.unsupportedVersion(header.version ?? 0)
+        }
         do {
-            return try JSONDecoder().decode(RawFormat.Meta.self, from: data)
+            let meta = try JSONDecoder().decode(RawFormat.Meta.self, from: data)
+            guard version == 1 else { return (meta, nil) }
+            return (meta, try JSONDecoder().decode(RawFormat.V1.MetaClock.self, from: data).clock)
         } catch {
             throw Error.invalidMeta(String(describing: error))
         }
@@ -178,49 +209,53 @@ public enum RawSessionReader {
     }
 }
 
-/// Maps sensor clocks onto session time.
+/// Maps the wall and monotonic clocks onto session time.
 struct SessionClock: Sendable {
     var startedAt: Double
-    /// Sorted by uptime; never empty.
+    /// Sorted by `mono`; never empty.
     var anchors: [RawFormat.ClockAnchor]
 
     func fromUnix(_ unix: Double) -> Double { unix - startedAt }
 
-    /// Device uptimes for wall-clock times written in this order (events are appended as
-    /// they happen). Each anchor starts a segment of the uptime clock where wall time and
-    /// uptime advance together. Walking the segments in order, each time goes to the first
-    /// segment, from the current one on, where it lands at or after the previous result and
-    /// before the next anchor: a wall time repeated by a backward correction lands after it.
-    func uptimes(forUnixInRecordedOrder times: [Double]) -> [Double] {
+    /// Monotonic times for wall-clock times written in this order (events are appended as
+    /// they happen). Each anchor starts a segment of the monotonic clock where wall time
+    /// and monotonic time advance together. Walking the segments in order, each time goes
+    /// to the first segment, from the current one on, where it lands at or after the
+    /// previous result and before the next anchor: a wall time repeated by a backward
+    /// correction lands after it.
+    func monos(forUnixInRecordedOrder times: [Double]) -> [Double] {
         var segment = 0
         var previous = -Double.infinity
         return times.map { unix in
             var chosen: Double?
             for k in segment..<anchors.count {
-                let uptime = anchors[k].uptime + (unix - anchors[k].unix)
-                let fitsEnd = k + 1 == anchors.count || uptime < anchors[k + 1].uptime
-                if uptime >= previous, fitsEnd {
-                    chosen = uptime
+                let mono = anchors[k].mono + (unix - anchors[k].unix)
+                let fitsEnd = k + 1 == anchors.count || mono < anchors[k + 1].mono
+                if mono >= previous, fitsEnd {
+                    chosen = mono
                     segment = k
                     break
                 }
             }
             let last = anchors[anchors.count - 1]
-            let result = max(chosen ?? last.uptime + (unix - last.unix), previous)
+            let result = max(chosen ?? last.mono + (unix - last.unix), previous)
             previous = result
             return result
         }
     }
 
-    /// Converts device uptime using the latest anchor at or before it (or the first anchor),
-    /// so wall-clock corrections during a session apply from the moment they were recorded.
-    func fromUptime(_ uptime: Double) -> Double {
+    /// Converts a monotonic time using the latest anchor before it (or the first), so
+    /// wall-clock corrections during a session apply from the moment they were recorded.
+    /// Times are doubles (about 0.24 µs resolution at today's dates), so a sample read just
+    /// before an anchor can land exactly on its value; such a tie stays in the earlier
+    /// segment, where the sample was recorded.
+    func fromMono(_ mono: Double) -> Double {
         var anchor = anchors[0]
         var low = 0
         var high = anchors.count - 1
         while low <= high {
             let mid = (low + high) / 2
-            if anchors[mid].uptime <= uptime {
+            if anchors[mid].mono < mono {
                 anchor = anchors[mid]
                 low = mid + 1
             } else {
@@ -228,7 +263,7 @@ struct SessionClock: Sendable {
             }
         }
         // Subtract the large values first so sub-millisecond offsets keep full precision.
-        return (anchor.unix - startedAt) + (uptime - anchor.uptime)
+        return (anchor.unix - startedAt) + (mono - anchor.mono)
     }
 }
 

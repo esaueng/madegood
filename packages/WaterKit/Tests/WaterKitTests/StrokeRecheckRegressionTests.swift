@@ -15,33 +15,46 @@ import Testing
     }
 
     /// Finding 1: the wall clock is set back 20 s during a pause. Post-session analysis
-    /// keeps pause before resume (the uptime clock) and counts the strokes after it.
-    @Test func backwardClockCorrectionKeepsPauseOrder() throws {
+    /// keeps pause before resume (the monotonic clock) and counts the strokes after it.
+    /// Version 2 (absolute monotonic times) and version 1 (device uptime) alike.
+    @Test(arguments: [1, 2]) func backwardClockCorrectionKeepsPauseOrder(version: Int) throws {
         let start = 946_684_800.0
         let uptime0 = 100.0
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: folder) }
         let meta = RawFormat.Meta(
             sessionId: UUID(), sport: .sup, startedAt: start, endedAt: start + 70,
-            clock: RawFormat.ClockAnchor(unix: start, uptime: uptime0),
             device: .init(kind: "watch", model: "Watch0,0", os: "watchOS 26.0"), app: .init(version: "0", build: "0"))
         let motion = rotation(from: 0, to: 90, cyclesPerMinute: 60)
         try RawSessionWriter.write(RawSession(meta: meta, motion: motion), to: folder, gzip: false)
-        // At uptime 135 the wall clock goes back 20 s; pause at uptime 130, resume at 140.
         let encoder = JSONEncoder()
         func lines<T: Encodable>(_ items: [T]) throws -> Data {
             Data(try items.map { String(decoding: try encoder.encode($0), as: UTF8.self) + "\n" }.joined().utf8)
         }
-        try lines([RawFormat.ClockAnchor(unix: start + 15, uptime: 135)])
-            .write(to: folder.appendingPathComponent(RawFormat.Stream.clock.fileName))
+        // 35 s in (uptime 135) the wall clock goes back 20 s; pause 30 s in, resume 40 s in.
+        if version == 1 {
+            try RawFormat.V1.encodeMeta(meta, clock: .init(unix: start, uptime: uptime0))
+                .write(to: folder.appendingPathComponent(RawFormat.metaFileName))
+            try lines([RawFormat.V1.ClockAnchor(unix: start + 15, uptime: uptime0 + 35)])
+                .write(to: folder.appendingPathComponent(RawFormat.Stream.clock.fileName))
+            try lines(motion.map { sample in
+                RawFormat.MotionLine(
+                    ts: uptime0 + sample.t, userAcceleration: sample.userAcceleration, gravity: sample.gravity,
+                    rotationRate: sample.rotationRate, attitude: sample.attitude)
+            }).write(to: folder.appendingPathComponent(RawFormat.Stream.motion.fileName))
+        } else {
+            try lines([RawFormat.ClockAnchor(unix: start + 15, mono: start + 35)])
+                .write(to: folder.appendingPathComponent(RawFormat.Stream.clock.fileName))
+        }
         try lines([
             RawFormat.EventLine(ts: start, type: .start), RawFormat.EventLine(ts: start + 30, type: .pause),
             RawFormat.EventLine(ts: start + 20, type: .resume), RawFormat.EventLine(ts: start + 70, type: .stop),
         ]).write(to: folder.appendingPathComponent(RawFormat.Stream.events.fileName))
 
         let session = try RawSessionReader.read(folder: folder)
-        #expect(session.pauseEventsOnUptime?.map(\.t) == [30, 40])
-        #expect(session.motion.first?.uptime == uptime0)
+        #expect(session.meta.version == version)
+        #expect(session.pauseEventsOnMonotonicClock?.map(\.t) == [30, 40])
+        #expect(session.motion.first?.monotonic == start)
         let detection = StrokeAnalysis.detect(session: session)
         // 30 strokes before the pause, none in it, 50 after.
         #expect(abs(detection.strokes.count - 80) <= 2)

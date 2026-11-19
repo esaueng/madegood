@@ -1,18 +1,25 @@
 import Foundation
 
-/// The raw recording format, version 1 (docs/formats.md): a session folder holding
+/// The raw recording format, version 2 (docs/formats.md): a session folder holding
 /// `meta.json` and one NDJSON file per stream, each optionally gzipped.
 ///
-/// Timestamps are the sensor's own clock, never converted on device:
-/// - `gps`, `hr`, `heading`, `events`: Unix time in seconds (wall clock).
-/// - `motion`: seconds since device boot (`CMLogItem.timestamp`).
-/// Clock anchors pair the two clocks so readers can put every stream on one timeline.
+/// Every timestamp is an absolute time in Unix seconds; no file holds a reading of the
+/// device's boot-time clock:
+/// - `gps`, `hr`, `heading`, `events`: the wall clock.
+/// - `motion`: the session's monotonic clock, `startedAt + (uptime − uptime at start)`,
+///   computed on the device. It equals the wall clock at the start and never jumps when
+///   the system clock is corrected.
+/// Clock anchors in `clock.ndjson` pair the two (wall and monotonic, both absolute) so
+/// readers can put every stream on one timeline. Version 1 stored raw device uptime in
+/// `meta.clock`, motion and clock lines; `RawSessionReader` still reads it (`RawFormat.V1`).
 ///
 /// The recorder writes lines with `RawFormat.line(_:)` and readers decode them with the
 /// same types, so the format is defined once.
 public enum RawFormat {
     public static let formatName = "madegood-raw"
-    public static let version = 1
+    public static let version = 2
+    /// Versions `RawSessionReader` reads. Writers always write `version`.
+    public static let readableVersions: Set<Int> = [1, 2]
     public static let metaFileName = "meta.json"
     /// Standard gravity, for converting accelerometer values from g to m/s².
     public static let standardGravity = 9.80665
@@ -36,15 +43,13 @@ public enum RawFormat {
         public var startedAt: Double
         /// Unix time of the session end; nil if the recording did not stop cleanly.
         public var endedAt: Double?
-        /// Clock pairing taken at the start. More anchors may follow in `clock.ndjson`.
-        public var clock: ClockAnchor
         public var device: Device
         public var app: App
         /// Requested sampling rates, Hz, by stream name.
         public var requestedRates: [String: Double]?
 
         public init(
-            sessionId: UUID, sport: Sport, startedAt: Double, endedAt: Double? = nil, clock: ClockAnchor,
+            sessionId: UUID, sport: Sport, startedAt: Double, endedAt: Double? = nil,
             device: Device, app: App, requestedRates: [String: Double]? = nil
         ) {
             self.format = RawFormat.formatName
@@ -53,7 +58,6 @@ public enum RawFormat {
             self.sport = sport
             self.startedAt = startedAt
             self.endedAt = endedAt
-            self.clock = clock
             self.device = device
             self.app = app
             self.requestedRates = requestedRates
@@ -88,14 +92,80 @@ public enum RawFormat {
 
     // MARK: Stream lines
 
-    /// A simultaneous reading of the wall clock and the device-uptime clock (`clock.ndjson`).
+    /// A simultaneous reading of the wall clock and the session's monotonic clock, both as
+    /// Unix seconds (`clock.ndjson`). The start is an implicit anchor: `mono` equals `unix`
+    /// at `meta.startedAt`. The recorder writes another every 60 s and whenever the system
+    /// clock changes.
     public struct ClockAnchor: Sendable, Hashable, Codable {
         public var unix: Double
-        public var uptime: Double
+        public var mono: Double
 
-        public init(unix: Double, uptime: Double) {
+        public init(unix: Double, mono: Double) {
             self.unix = unix
-            self.uptime = uptime
+            self.mono = mono
+        }
+    }
+
+    /// The session's monotonic clock on the device: turns boot-time readings (motion
+    /// timestamps, `ProcessInfo.systemUptime`) into absolute times. Only these absolute
+    /// times are written; the uptime reading itself never leaves memory.
+    public struct MonotonicClock: Sendable, Hashable {
+        public let startUnix: Double
+        let startUptime: Double
+
+        /// `startUnix` and `startUptime` read together at the session start.
+        public init(startUnix: Double, startUptime: Double) {
+            self.startUnix = startUnix
+            self.startUptime = startUptime
+        }
+
+        /// The absolute monotonic time of an uptime reading, Unix s.
+        public func absolute(uptime: Double) -> Double {
+            // Subtract the large values first so sub-millisecond offsets keep full precision.
+            startUnix + (uptime - startUptime)
+        }
+
+        /// A clock anchor for a wall-clock and uptime reading taken together.
+        public func anchor(unix: Double, uptime: Double) -> ClockAnchor {
+            ClockAnchor(unix: unix, mono: absolute(uptime: uptime))
+        }
+    }
+
+    /// Version 1, read for recordings made before version 2. It stored device uptime.
+    public enum V1 {
+        /// `meta.clock` and `clock.ndjson` lines of version 1.
+        public struct ClockAnchor: Sendable, Hashable, Codable {
+            public var unix: Double
+            public var uptime: Double
+
+            public init(unix: Double, uptime: Double) {
+                self.unix = unix
+                self.uptime = uptime
+            }
+        }
+
+        /// The version 1 fields a version 2 `Meta` does not have.
+        public struct MetaClock: Sendable, Hashable, Codable {
+            public var clock: ClockAnchor
+        }
+
+        /// A complete version 1 `meta.json`, for writing old recordings in tests and tools.
+        public static func encodeMeta(_ meta: Meta, clock: ClockAnchor) throws -> Data {
+            struct Legacy: Encodable {
+                var meta: Meta
+                var clock: ClockAnchor
+                enum Keys: String, CodingKey { case clock }
+                func encode(to encoder: any Encoder) throws {
+                    var legacy = meta
+                    legacy.version = 1
+                    try legacy.encode(to: encoder)
+                    var container = encoder.container(keyedBy: Keys.self)
+                    try container.encode(clock, forKey: .clock)
+                }
+            }
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+            return try encoder.encode(Legacy(meta: meta, clock: clock))
         }
     }
 
@@ -129,7 +199,8 @@ public enum RawFormat {
         }
     }
 
-    /// `motion.ndjson`. `ts` is device uptime. Accelerations are m/s² (convert from g with
+    /// `motion.ndjson`. `ts` is the session's monotonic clock, Unix s (version 1: device
+    /// uptime). Accelerations are m/s² (convert from g with
     /// `standardGravity`), rotation rate rad/s, attitude a unit quaternion.
     public struct MotionLine: Sendable, Hashable, Codable {
         public var ts: Double

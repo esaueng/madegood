@@ -74,6 +74,21 @@ enum RecordingStore {
         .sorted { ($0.startedAt ?? .distantPast) > ($1.startedAt ?? .distantPast) }
     }
 
+    /// Prefix of the staging copies `RecordingTransfer` writes before moving a file into place.
+    static let stagingPrefix = ".incoming-"
+
+    /// Deletes staging copies left by a transfer that was interrupted (for example by the app
+    /// being stopped). Call at launch, before transfers start. They are never part of a
+    /// recording, and one from before raw format 2 may hold device uptime.
+    static func removeStaleStagingFiles(in root: URL = recordingsRoot) {
+        let fm = FileManager.default
+        for folder in (try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? [] {
+            for name in (try? fm.contentsOfDirectory(atPath: folder.path)) ?? [] where name.hasPrefix(stagingPrefix) {
+                try? fm.removeItem(at: folder.appendingPathComponent(name))
+            }
+        }
+    }
+
     static func delete(_ entry: Entry) throws {
         try FileManager.default.removeItem(at: entry.folder)
     }

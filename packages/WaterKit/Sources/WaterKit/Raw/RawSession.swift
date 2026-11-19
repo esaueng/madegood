@@ -9,15 +9,17 @@ public struct RawSession: Sendable {
     public var hr: [HRSample]
     public var heading: [HeadingSample]
     public var events: [SessionEvent]
-    /// Clock anchors in uptime order, starting with `meta.clock`.
+    /// Clock anchors in monotonic order, starting with the session start.
     public var clockAnchors: [RawFormat.ClockAnchor]
+    /// The session start on the monotonic clock (`meta.startedAt` for version 2).
+    public var monotonicStart: Double
     /// Problems found while reading that did not stop the read (e.g. a truncated last line).
     public var issues: [RawReadIssue]
     /// The user's pause and resume events (not auto-pause) in recorded order, timed on the
-    /// motion sensor's uptime clock: seconds of device uptime since `meta.clock`. A
-    /// wall-clock correction can reorder `events`; it cannot reorder these. Nil when the
-    /// session was not read from files.
-    public var pauseEventsOnUptime: [SessionEvent]?
+    /// session's monotonic clock: seconds since `monotonicStart`. A wall-clock correction
+    /// can reorder `events`; it cannot reorder these. Nil when the session was not read
+    /// from files.
+    public var pauseEventsOnMonotonicClock: [SessionEvent]?
 
     public init(
         meta: RawFormat.Meta, gps: [GPSFix] = [], motion: [MotionSample] = [], hr: [HRSample] = [],
@@ -30,7 +32,9 @@ public struct RawSession: Sendable {
         self.hr = hr
         self.heading = heading
         self.events = events
-        self.clockAnchors = clockAnchors ?? [meta.clock]
+        self.clockAnchors =
+            clockAnchors ?? [RawFormat.ClockAnchor(unix: meta.startedAt, mono: meta.startedAt)]
+        self.monotonicStart = meta.startedAt
         self.issues = issues
     }
 

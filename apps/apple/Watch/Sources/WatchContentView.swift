@@ -113,6 +113,15 @@ private struct StartScreen: View {
                         Label("\(waiting.count) waiting for iPhone", systemImage: "iphone.and.arrow.forward")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
+                        let blocked = waiting.filter { !RecordingTransfer.shared.phoneReads(folder: $0.folder) }.count
+                        if blocked > 0 {
+                            Text(
+                                "Update MadeGood on your iPhone to receive \(blocked == 1 ? "this session" : "these sessions")."
+                            )
+                            .font(.footnote)
+                            .foregroundStyle(.orange)
+                            .accessibilityIdentifier("transfer.updatePhone")
+                        }
                         Button("Send again") {
                             RecordingTransfer.shared.sendAllPending()
                         }

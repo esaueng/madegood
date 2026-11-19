@@ -16,6 +16,10 @@ struct SessionDetailView: View {
     @State private var operationError: String?
     @State private var failed = false
     @State private var share: ShareFile?
+    /// Progress of preparing the raw recording for sharing (nil when not preparing).
+    @State private var rawExportProgress: Double?
+    /// Why the last attempt to prepare the raw recording failed, shown on its row.
+    @State private var rawExportError: String?
     @State private var confirmDelete = false
     /// Bumped when a file arrives from the watch, to reload a recording still arriving.
     @State private var reloads = 0
@@ -467,7 +471,23 @@ struct SessionDetailView: View {
                 Button {
                     exportZip()
                 } label: {
-                    Label("Share raw recording", systemImage: "doc.zipper")
+                    if let rawExportProgress {
+                        HStack {
+                            Label("Preparing raw recording…", systemImage: "doc.zipper")
+                            Spacer()
+                            ProgressView(value: rawExportProgress).frame(width: 60)
+                        }
+                    } else {
+                        Label("Share raw recording", systemImage: "doc.zipper")
+                    }
+                }
+                .disabled(rawExportProgress != nil)
+                .accessibilityIdentifier("export.raw")
+                if let rawExportError {
+                    Text(rawExportError)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                        .accessibilityIdentifier("export.raw.error")
                 }
             } footer: {
                 Text(
@@ -588,7 +608,22 @@ struct SessionDetailView: View {
 
     private func exportZip() {
         isPlaying = false
-        if let url = try? ZipExport.zip(folder: item.entry.folder) { share = ShareFile(url: url) }
+        rawExportProgress = 0
+        rawExportError = nil
+        let folder = item.entry.folder
+        Task {
+            defer { rawExportProgress = nil }
+            do {
+                let url = try await ZipExport.zipRecording(folder: folder) { fraction in
+                    Task { @MainActor in
+                        if rawExportProgress != nil { rawExportProgress = fraction }
+                    }
+                }
+                share = ShareFile(url: url)
+            } catch {
+                rawExportError = "Couldn't prepare the raw recording. Part of it could not be read; try again."
+            }
+        }
     }
 }
 

@@ -10,7 +10,7 @@ import Foundation
 ///   track at 60° latitude), so recorded courses and headings stay consistent to within
 ///   that.
 /// - **Time:** every timestamp is shifted so the session starts at `fakeStart`; relative
-///   times are unchanged. Device uptime is rebased to `fakeUptime`.
+///   times are unchanged, and the monotonic clock starts at `fakeStart` too.
 /// - **Identifiers:** a new session ID. Altitude and vertical accuracy are dropped
 ///   (altitude can identify a lake), and so is the magnetic heading: its difference from
 ///   the true heading is the local magnetic declination, which narrows down the region.
@@ -26,6 +26,7 @@ public struct Anonymizer: Sendable {
     public static let fakeOrigin = (lat: 10.0, lon: -30.0)
     /// 2000-01-01T12:00:00Z.
     public static let fakeStart = 946_728_000.0
+    /// Version 1 fixtures' synthetic device uptime at the start (they predate version 2).
     public static let fakeUptime = 1_000.0
     /// Every anonymized position must lie within this distance of `fakeOrigin`, m.
     public static let checkRadius = 200_000.0
@@ -44,7 +45,7 @@ public struct Anonymizer: Sendable {
         meta.sessionId = sessionId
         meta.endedAt = meta.endedAt.map { Self.fakeStart + ($0 - meta.startedAt) }
         meta.startedAt = Self.fakeStart
-        meta.clock = RawFormat.ClockAnchor(unix: Self.fakeStart, uptime: Self.fakeUptime)
+        meta.version = RawFormat.version
 
         var result = session
         result.meta = meta
@@ -55,7 +56,15 @@ public struct Anonymizer: Sendable {
             clean.magnetic = nil
             return clean
         }
-        result.clockAnchors = [meta.clock]
+        // Motion keeps its place by `t`; one implicit anchor, no corrections.
+        result.motion = session.motion.map { sample in
+            var clean = sample
+            clean.monotonic = nil
+            return clean
+        }
+        result.clockAnchors = [RawFormat.ClockAnchor(unix: Self.fakeStart, mono: Self.fakeStart)]
+        result.monotonicStart = Self.fakeStart
+        result.pauseEventsOnMonotonicClock = nil
         result.issues = []
         return result
     }

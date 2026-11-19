@@ -3,7 +3,7 @@
 ///
 /// It runs `StrokeDetector` over the recording's motion stream; tracks do not keep motion,
 /// so this needs the raw recording. Detection runs on one monotonic clock (the motion
-/// sensor's uptime when the recording has it), so a wall-clock correction cannot reorder a
+/// sensor's monotonic time when the recording has it), so a wall-clock correction cannot reorder a
 /// pause and the strokes around it. Results are then put on the session clock.
 public struct StrokeAnalysis: Sendable, Hashable {
     public struct Stroke: Sendable, Hashable {
@@ -84,27 +84,27 @@ public struct StrokeAnalysis: Sendable, Hashable {
             strokes: strokes.map { Stroke(t: toSessionTime($0.t), side: $0.side) })
     }
 
-    /// Detects strokes in a recording. Motion read from files carries its uptime, and the
-    /// session's pause events are kept on that clock, so detection runs on uptime and is
-    /// then converted to session time with the clock anchors.
+    /// Detects strokes in a recording. Motion read from files carries its monotonic time,
+    /// and the session's pause events are kept on that clock, so detection runs on the
+    /// monotonic clock and is then converted to session time with the clock anchors.
     public static func detect(session: RawSession, config: StrokeDetector.Config = StrokeDetector.Config()) -> Detection {
         let sport = session.meta.sport
-        guard let pauseEvents = session.pauseEventsOnUptime, !session.motion.isEmpty,
-            session.motion.allSatisfy({ $0.uptime != nil })
+        guard let pauseEvents = session.pauseEventsOnMonotonicClock, !session.motion.isEmpty,
+            session.motion.allSatisfy({ $0.monotonic != nil })
         else {
             return detect(motion: session.motion, sport: sport, events: session.events, config: config)
         }
-        let origin = session.meta.clock.uptime
-        // Uptime order is recording order, whatever the wall clock did.
+        let origin = session.monotonicStart
+        // Monotonic order is recording order, whatever the wall clock did.
         let motion = session.motion.map { sample in
             var sample = sample
-            sample.t = (sample.uptime ?? 0) - origin
+            sample.t = (sample.monotonic ?? 0) - origin
             return sample
         }.sorted { $0.t < $1.t }
         let clock = SessionClock(
-            startedAt: session.meta.startedAt, anchors: session.clockAnchors.sorted { $0.uptime < $1.uptime })
+            startedAt: session.meta.startedAt, anchors: session.clockAnchors.sorted { $0.mono < $1.mono })
         return detect(motion: motion, sport: sport, events: pauseEvents, config: config) {
-            clock.fromUptime($0 + origin)
+            clock.fromMono($0 + origin)
         }
     }
 
