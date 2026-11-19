@@ -269,8 +269,11 @@ export const exportJobs = sqliteTable(
     cursor: integer("cursor").notNull().default(0),
     totalItems: integer("total_items").notNull().default(0),
     nextPart: integer("next_part").notNull().default(2),
-    /** JSON: [{ part, bytes }] for every part written so far. */
+    /** JSON: [{ part, bytes, key, listing }] for every committed part. */
     partsJson: text("parts_json").notNull().default("[]"),
+    /** The step attempt that holds the claim on (cursor, nextPart), and since when. */
+    attempt: text("attempt"),
+    attemptAt: timestamp("attempt_at"),
     error: text("error"),
     createdAt: timestamp("created_at").notNull(),
     updatedAt: timestamp("updated_at").notNull(),

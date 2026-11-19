@@ -236,13 +236,20 @@ model value for the area, shown as such, and not for navigation.
 Settings → Export all my data on the website runs a background job
 (`src/server/lib/export-job.ts`):
 
-- `POST /api/me/exports` freezes a snapshot (every session's ID, upload revision, track
+- `POST /api/me/exports` first inserts the job in one conditional statement (the account
+  active, no export running, fewer than three started in the last day), then freezes a
+  snapshot (every session's ID, upload revision, track
   key and ETag; every voyage and leg) as JSON in R2 under the user's prefix
   (`users/<id>/exports/<export>/snapshot.json`) and records the job in D1 (`export_jobs`).
-  One export runs at a time per user, three may start per day.
-- Each message on `madegood-exports` (batch size 1) builds one ZIP part into an R2
-  multipart upload: documents first (sessions in files of 250, looked up by the frozen
-  IDs), then tracks by their frozen key and ETag. A part stops at 500 MiB, 400 items or
+  Concurrent requests cannot get past either limit. A failure after the snapshot is
+  written deletes it again.
+- Each message on `madegood-exports` (batch size 1) claims its step in D1 with an
+  attempt token (a claim is protected for 10 minutes), builds one ZIP part into an R2
+  multipart upload under a key that includes the token, and commits it by compare-and-swap;
+  an attempt that lost its claim deletes only its own objects, and the job's cursor moves
+  only from a committed part's listing. Documents come first (sessions in files of 250,
+  looked up by the frozen IDs and written one compact JSON line per session, the stored
+  summary embedded as is), then tracks by their frozen key and ETag. A part stops at 500 MiB, 400 items or
   700 storage calls, then queues the next step. A track replaced since the snapshot is
   exported at its current version (noted in `manifest.json`); one that is gone is listed
   in `errors.json`.

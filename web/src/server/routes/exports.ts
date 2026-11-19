@@ -5,11 +5,11 @@ import { type AuthEnv, requireAuth } from "../auth/middleware";
 import { type ExportJob, exportJobs } from "../db/schema";
 import { apiError, errorResponse } from "../lib/errors";
 import {
+  type CommittedPart,
   createExportJob,
   EXPORT_TTL_MS,
   EXPORTS_PER_DAY,
   firstMessage,
-  partKey,
   recentExports,
   sendExportStep,
 } from "../lib/export-job";
@@ -165,6 +165,9 @@ exportRoutes.openapi(createRouteDef, async (c) => {
   if (result.kind === "rate_limited") {
     return apiError(c, 429, "rate_limited", "You can start another export tomorrow.");
   }
+  if (result.kind === "account_gone") {
+    return apiError(c, 401, "unauthorized", "The account no longer exists.");
+  }
   if (result.kind === "too_large") {
     return apiError(c, 413, "export_too_large", "This account holds too many sessions to export.");
   }
@@ -206,11 +209,12 @@ exportRoutes.openapi(partRoute, async (c) => {
   if (job.status === "queued" || job.status === "building") {
     return apiError(c, 409, "export_not_ready", "The export is still being prepared.");
   }
-  const listed = (JSON.parse(job.partsJson) as { part: number }[]).some((p) => p.part === part);
-  if (job.status !== "ready" || !listed || (job.expiresAt ?? 0) <= Date.now()) {
+  // Only a committed part, by the key its commit recorded (lib/export-job.ts).
+  const committed = (JSON.parse(job.partsJson) as CommittedPart[]).find((p) => p.part === part);
+  if (job.status !== "ready" || !committed || (job.expiresAt ?? 0) <= Date.now()) {
     return apiError(c, 404, "not_found", "This export has expired or has no such part.");
   }
-  const object = await c.env.TRACKS.get(partKey(job.userId, job.id, part));
+  const object = await c.env.TRACKS.get(committed.key);
   if (!object) return apiError(c, 404, "not_found");
   const day = new Date(job.createdAt).toISOString().slice(0, 10);
   return new Response(object.body, {

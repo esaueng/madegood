@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gte, inArray, isNull, lt, or } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
 import { z } from "zod";
 import { toUserBody } from "../auth/users";
@@ -53,6 +53,15 @@ export const GIVE_UP_AFTER_MS = 12 * 3600 * 1000;
 /** Rows of finished exports are kept this long so the website can show what happened. */
 export const ROW_TTL_MS = 30 * 24 * 3600 * 1000;
 const D1_IN = 50;
+/** IDs per `IN (...)` query when one more parameter (the owner) is bound: under D1's 100. */
+const D1_IN_MAX = 90;
+/**
+ * Upper bound of one session's document line, bytes: the stored summary (at most 64 KiB of
+ * text, up to 3 bytes each in UTF-8), the wind (small) and every other field with worst-case
+ * escaping. A part reserves this per session before streaming its document; a session
+ * that would exceed it is listed in errors.json instead.
+ */
+export const SESSION_DOC_MAX_BYTES = 256 * 1024;
 
 type Db = ReturnType<typeof drizzle>;
 type ExportEnv = Pick<Env, "DB" | "TRACKS"> & { EXPORTS?: Queue<ExportMessage> };
@@ -95,10 +104,17 @@ export const exportPrefix = (userId: string, exportId: string) =>
   `${userPrefix(userId)}exports/${exportId}/`;
 const snapshotKey = (userId: string, exportId: string) =>
   `${exportPrefix(userId, exportId)}snapshot.json`;
-export const partKey = (userId: string, exportId: string, part: number) =>
-  `${exportPrefix(userId, exportId)}part-${part}.zip`;
-const listingKey = (userId: string, exportId: string, part: number) =>
-  `${exportPrefix(userId, exportId)}part-${part}.json`;
+/** Each step attempt writes its own objects, so no attempt can overwrite another's. */
+export const partKey = (userId: string, exportId: string, part: number, attempt: string) =>
+  `${exportPrefix(userId, exportId)}part-${part}-${attempt}.zip`;
+const listingKey = (userId: string, exportId: string, part: number, attempt: string) =>
+  `${exportPrefix(userId, exportId)}part-${part}-${attempt}.json`;
+
+/** A committed part, as `parts_json` records it. */
+export type CommittedPart = { part: number; bytes: number; key: string; listing?: string };
+
+/** How long a claimed step is protected from another attempt (a crashed one is retried). */
+export const CLAIM_LEASE_MS = 10 * 60 * 1000;
 const legTrackKey = (userId: string, voyageId: string, legId: string) =>
   `${userPrefix(userId)}voyages/${voyageId}/legs/${legId}/track.v1.gz`;
 
@@ -179,102 +195,142 @@ export type CreateResult =
   | { kind: "created"; job: ExportJob }
   | { kind: "in_progress"; job: ExportJob }
   | { kind: "rate_limited" }
-  | { kind: "too_large" };
+  | { kind: "too_large" }
+  | { kind: "account_gone" };
 
-/** Freezes the snapshot and records the job; the caller then sends its first message. */
+/**
+ * Records the job and freezes its snapshot; the caller then sends its first message.
+ *
+ * The job row comes first, from one INSERT ... SELECT that holds every condition, so
+ * concurrent requests cannot get past them: the account is active, no export is running,
+ * and fewer than EXPORTS_PER_DAY started in the last day. The snapshot is then written under
+ * that job's key (the row exists, so an account deletion that follows removes both), and
+ * any failure after the write deletes it again.
+ */
 export async function createExportJob(
   env: ExportEnv,
   userId: string,
   now = Date.now(),
+  hooks: { afterInsert?: () => Promise<void> } = {},
 ): Promise<CreateResult> {
   const db = drizzle(env.DB);
-  const [active] = await db
-    .select()
-    .from(exportJobs)
-    .where(
-      and(
-        eq(exportJobs.userId, userId),
-        or(eq(exportJobs.status, "queued"), eq(exportJobs.status, "building")),
-      ),
-    );
-  if (active) return { kind: "in_progress", job: active };
-  const recent = await db
-    .select({ id: exportJobs.id })
-    .from(exportJobs)
-    .where(and(eq(exportJobs.userId, userId), gte(exportJobs.createdAt, now - 24 * 3600 * 1000)));
-  if (recent.length >= EXPORTS_PER_DAY) return { kind: "rate_limited" };
-
-  const sessionRows = await db
-    .select({
-      id: sessions.id,
-      revision: sessions.uploadRevision,
-      trackKey: sessions.trackKey,
-      etag: sessions.trackEtag,
-    })
-    .from(sessions)
-    .where(and(eq(sessions.userId, userId), isNull(sessions.deletedAt)))
-    .orderBy(asc(sessions.startedAt), asc(sessions.id));
-  if (sessionRows.length > EXPORT_MAX_SESSIONS) return { kind: "too_large" };
-  const [voyageRows, legRows] = await Promise.all([
-    db
-      .select({ id: voyages.id })
-      .from(voyages)
-      .where(eq(voyages.userId, userId))
-      .orderBy(asc(voyages.id)),
-    db
-      .select({ id: legs.id, voyageId: legs.voyageId })
-      .from(legs)
-      .where(eq(legs.userId, userId))
-      .orderBy(asc(legs.voyageId), asc(legs.id)),
-  ]);
-  // Leg tracks have fixed keys; their ETags come from one listing of the voyages prefix.
-  const legObjects = new Map<string, string>();
-  let cursor: string | undefined;
-  do {
-    const page = await env.TRACKS.list({ prefix: `${userPrefix(userId)}voyages/`, cursor });
-    for (const o of page.objects) legObjects.set(o.key, o.etag);
-    cursor = page.truncated ? page.cursor : undefined;
-  } while (cursor);
-
   const exportId = crypto.randomUUID();
-  const snapshot: Snapshot = {
-    v: 1,
-    exportId,
-    userId,
-    createdAt: now,
-    sessions: sessionRows.map((s) => ({
-      id: s.id,
-      revision: s.revision,
-      trackKey: s.trackKey,
-      etag: s.trackKey ? (s.etag ?? null) : null,
-    })),
-    voyages: voyageRows.map((v) => ({
-      id: v.id,
-      legs: legRows
-        .filter((l) => l.voyageId === v.id)
-        .map((l) => {
-          const key = legTrackKey(userId, v.id, l.id);
-          const etag = legObjects.get(key);
-          return { id: l.id, trackKey: etag ? key : null, etag: etag ?? null };
-        }),
-    })),
-  };
-  await env.TRACKS.put(snapshotKey(userId, exportId), JSON.stringify(snapshot), {
-    httpMetadata: { contentType: "application/json" },
-  });
-  const [job] = await db
-    .insert(exportJobs)
-    .values({
-      id: exportId,
+  const inserted = await env.DB.prepare(
+    `INSERT INTO export_jobs (id, user_id, status, cursor, total_items, next_part, parts_json, created_at, updated_at)
+     SELECT ?, id, 'queued', 0, 0, 2, '[]', ?, ? FROM users
+     WHERE id = ? AND deleted_at IS NULL
+       AND NOT EXISTS (
+         SELECT 1 FROM export_jobs WHERE user_id = ? AND status IN ('queued', 'building'))
+       AND (SELECT count(*) FROM export_jobs WHERE user_id = ? AND created_at >= ?) < ?`,
+  )
+    .bind(exportId, now, now, userId, userId, userId, now - 24 * 3600 * 1000, EXPORTS_PER_DAY)
+    .run();
+  if (inserted.meta.changes !== 1) {
+    const [active] = await db
+      .select()
+      .from(exportJobs)
+      .where(
+        and(
+          eq(exportJobs.userId, userId),
+          or(eq(exportJobs.status, "queued"), eq(exportJobs.status, "building")),
+        ),
+      );
+    if (active) return { kind: "in_progress", job: active };
+    if (!(await accountActive(db, userId))) return { kind: "account_gone" };
+    return { kind: "rate_limited" };
+  }
+  await hooks.afterInsert?.();
+
+  const key = snapshotKey(userId, exportId);
+  let written = false;
+  try {
+    const sessionRows = await db
+      .select({
+        id: sessions.id,
+        revision: sessions.uploadRevision,
+        trackKey: sessions.trackKey,
+        etag: sessions.trackEtag,
+      })
+      .from(sessions)
+      .where(and(eq(sessions.userId, userId), isNull(sessions.deletedAt)))
+      .orderBy(asc(sessions.startedAt), asc(sessions.id));
+    if (sessionRows.length > EXPORT_MAX_SESSIONS) {
+      // Not counted against the daily limit: nothing was exported.
+      await db.delete(exportJobs).where(eq(exportJobs.id, exportId));
+      return { kind: "too_large" };
+    }
+    const [voyageRows, legRows] = await Promise.all([
+      db
+        .select({ id: voyages.id })
+        .from(voyages)
+        .where(eq(voyages.userId, userId))
+        .orderBy(asc(voyages.id)),
+      db
+        .select({ id: legs.id, voyageId: legs.voyageId })
+        .from(legs)
+        .where(eq(legs.userId, userId))
+        .orderBy(asc(legs.voyageId), asc(legs.id)),
+    ]);
+    // Leg tracks have fixed keys; their ETags come from one listing of the voyages prefix.
+    const legObjects = new Map<string, string>();
+    let cursor: string | undefined;
+    do {
+      const page = await env.TRACKS.list({ prefix: `${userPrefix(userId)}voyages/`, cursor });
+      for (const o of page.objects) legObjects.set(o.key, o.etag);
+      cursor = page.truncated ? page.cursor : undefined;
+    } while (cursor);
+
+    const snapshot: Snapshot = {
+      v: 1,
+      exportId,
       userId,
-      status: "queued",
-      totalItems: planItems(snapshot).length,
       createdAt: now,
-      updatedAt: now,
-    })
-    .returning();
-  if (!job) throw new Error("could not record the export job");
-  return { kind: "created", job };
+      sessions: sessionRows.map((s) => ({
+        id: s.id,
+        revision: s.revision,
+        trackKey: s.trackKey,
+        etag: s.trackKey ? (s.etag ?? null) : null,
+      })),
+      voyages: voyageRows.map((v) => ({
+        id: v.id,
+        legs: legRows
+          .filter((l) => l.voyageId === v.id)
+          .map((l) => {
+            const legKey = legTrackKey(userId, v.id, l.id);
+            const etag = legObjects.get(legKey);
+            return { id: l.id, trackKey: etag ? legKey : null, etag: etag ?? null };
+          }),
+      })),
+    };
+    written = true;
+    await env.TRACKS.put(key, JSON.stringify(snapshot), {
+      httpMetadata: { contentType: "application/json" },
+    });
+    // Still this job's, for an active account: else the snapshot must not stay behind.
+    const [job] = await db
+      .update(exportJobs)
+      .set({ totalItems: planItems(snapshot).length, updatedAt: Date.now() })
+      .where(
+        and(
+          eq(exportJobs.id, exportId),
+          sql`EXISTS (SELECT 1 FROM users WHERE users.id = ${userId} AND users.deleted_at IS NULL)`,
+        ),
+      )
+      .returning();
+    if (!job) {
+      await env.TRACKS.delete(key);
+      await db.delete(exportJobs).where(eq(exportJobs.id, exportId));
+      return { kind: "account_gone" };
+    }
+    return { kind: "created", job };
+  } catch (error) {
+    if (written) await env.TRACKS.delete(key).catch(() => {});
+    await db
+      .delete(exportJobs)
+      .where(eq(exportJobs.id, exportId))
+      .catch(() => {});
+    throw error;
+  }
 }
 
 export const firstMessage = (job: ExportJob): ExportMessage => ({
@@ -314,6 +370,8 @@ export async function sendExportStep(
 
 type PartListing = {
   part: number;
+  /** The plan's cursor after this part: the job advances to it only when the part commits. */
+  next: number;
   files: { name: string; note?: string }[];
   errors: { file: string; reason: string; detail?: string }[];
 };
@@ -326,7 +384,7 @@ export const PART_LIMITS: PartLimits = {
   maxCalls: PART_MAX_CALLS,
 };
 
-class Calls {
+export class Calls {
   used = 0;
   constructor(readonly max = PART_MAX_CALLS) {}
   take(n = 1) {
@@ -417,6 +475,93 @@ const sessionDocument = (s: SessionRow, trackName: string | null) => ({
   updatedAt: iso(s.updatedAt),
 });
 
+/** A JSON value stored as text, embedded as is when it parses (never re-encoded). */
+const rawJson = (text: string | null): string => {
+  if (text === null) return "null";
+  try {
+    JSON.parse(text);
+    return text;
+  } catch {
+    return JSON.stringify(text);
+  }
+};
+
+/** One session's document as a compact JSON line, the stored summary and wind embedded raw. */
+export function sessionDocumentLine(s: SessionRow): string {
+  const {
+    summary: _summary,
+    wind: _wind,
+    ...fields
+  } = sessionDocument(s, s.trackKey ? `tracks/sessions/${s.id}.track.v1.gz` : null);
+  const head = JSON.stringify(fields);
+  return `${head.slice(0, -1)},"summary":${rawJson(s.summaryJson)},"wind":${rawJson(s.windJson)}}`;
+}
+
+function toStream(chunks: AsyncGenerator<Uint8Array>): ReadableStream<Uint8Array> {
+  return new ReadableStream({
+    async pull(controller) {
+      const { done, value } = await chunks.next();
+      if (done) controller.close();
+      else controller.enqueue(value);
+    },
+    async cancel() {
+      await chunks.return(undefined);
+    },
+  });
+}
+
+/**
+ * A sessions document, `[` one line per session `]`, written session by session: D1_IN rows
+ * are read at a time, and only one session's line is encoded at once.
+ */
+export async function* sessionDocumentChunks(
+  db: Db,
+  userId: string,
+  item: { name: string; ids: string[] },
+  calls: Calls,
+  listing: Pick<PartListing, "errors">,
+): AsyncGenerator<Uint8Array> {
+  let first = true;
+  yield encoder.encode("[");
+  for (let i = 0; i < item.ids.length; i += D1_IN) {
+    const ids = item.ids.slice(i, i + D1_IN);
+    calls.take();
+    const rows = await db
+      .select()
+      .from(sessions)
+      .where(
+        and(eq(sessions.userId, userId), isNull(sessions.deletedAt), inArray(sessions.id, ids)),
+      );
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    rows.length = 0;
+    for (const id of ids) {
+      const row = byId.get(id);
+      byId.delete(id);
+      if (!row) {
+        listing.errors.push({
+          file: `${item.name}#${id}`,
+          reason: "deleted",
+          detail: "The session was deleted after the export started.",
+        });
+        continue;
+      }
+      const line = encoder.encode(sessionDocumentLine(row));
+      if (line.length > SESSION_DOC_MAX_BYTES) {
+        listing.errors.push({
+          file: `${item.name}#${id}`,
+          reason: "too_large",
+          detail: `Its document is ${line.length} bytes; download the session instead.`,
+        });
+        continue;
+      }
+      yield encoder.encode(first ? "\n" : ",\n");
+      yield line;
+      first = false;
+    }
+  }
+  yield encoder.encode("\n]\n");
+}
+
 /** Reads an item's bytes (documents) or body (tracks); null when it is gone. */
 async function readItem(
   env: ExportEnv,
@@ -427,52 +572,29 @@ async function readItem(
   listing: PartListing,
 ): Promise<{ data: Uint8Array | ReadableStream<Uint8Array>; size: number } | null> {
   if (item.kind === "sessions") {
-    const rows: SessionRow[] = [];
-    for (let i = 0; i < item.ids.length; i += D1_IN) {
-      calls.take();
-      rows.push(
-        ...(await db
-          .select()
-          .from(sessions)
-          .where(
-            and(
-              eq(sessions.userId, userId),
-              isNull(sessions.deletedAt),
-              inArray(sessions.id, item.ids.slice(i, i + D1_IN)),
-            ),
-          )),
-      );
-    }
-    const byId = new Map(rows.map((r) => [r.id, r]));
-    const docs = [];
-    for (const id of item.ids) {
-      const row = byId.get(id);
-      if (!row) {
-        listing.errors.push({
-          file: `${item.name}#${id}`,
-          reason: "deleted",
-          detail: "The session was deleted after the export started.",
-        });
-        continue;
-      }
-      docs.push(sessionDocument(row, row.trackKey ? `tracks/sessions/${id}.track.v1.gz` : null));
-    }
-    const bytes = json(docs);
-    return { data: bytes, size: bytes.length };
+    const stream = toStream(sessionDocumentChunks(db, userId, item, calls, listing));
+    return { data: stream, size: item.ids.length * (SESSION_DOC_MAX_BYTES + 2) + 4 };
   }
   if (item.kind === "voyages") {
-    calls.take(2);
-    const [voyageRows, legRows] = await Promise.all([
-      db
-        .select()
-        .from(voyages)
-        .where(and(eq(voyages.userId, userId), inArray(voyages.id, item.ids))),
-      db
-        .select()
-        .from(legs)
-        .where(and(eq(legs.userId, userId), inArray(legs.voyageId, item.ids)))
-        .orderBy(asc(legs.startedAt), asc(legs.id)),
-    ]);
+    const voyageRows: (typeof voyages.$inferSelect)[] = [];
+    const legRows: (typeof legs.$inferSelect)[] = [];
+    for (let i = 0; i < item.ids.length; i += D1_IN_MAX) {
+      const ids = item.ids.slice(i, i + D1_IN_MAX);
+      calls.take(2);
+      const [v, l] = await Promise.all([
+        db
+          .select()
+          .from(voyages)
+          .where(and(eq(voyages.userId, userId), inArray(voyages.id, ids))),
+        db
+          .select()
+          .from(legs)
+          .where(and(eq(legs.userId, userId), inArray(legs.voyageId, ids)))
+          .orderBy(asc(legs.startedAt), asc(legs.id)),
+      ]);
+      voyageRows.push(...v);
+      legRows.push(...l);
+    }
     const byId = new Map(voyageRows.map((v) => [v.id, v]));
     const docs = item.ids.flatMap((id) => {
       const v = byId.get(id);
@@ -560,10 +682,11 @@ async function buildDataPart(
   items: Item[],
   cursor: number,
   part: number,
+  attempt: string,
   calls: Calls,
   limits: PartLimits,
-): Promise<{ cursor: number; bytes: number }> {
-  const listing: PartListing = { part, files: [], errors: [] };
+): Promise<CommittedPart & { listing: string; next: number }> {
+  const listing: PartListing = { part, next: cursor, files: [], errors: [] };
   let next = cursor;
   let used = 22; // end of central directory
   async function* entries(): AsyncGenerator<ZipEntry> {
@@ -590,15 +713,13 @@ async function buildDataPart(
       yield { name: item.name, data: async () => read.data };
     }
   }
-  const bytes = await uploadStream(
-    env.TRACKS,
-    partKey(userId, exportId, part),
-    zipStream(entries(), new Date()),
-    calls,
-  );
+  const key = partKey(userId, exportId, part, attempt);
+  const bytes = await uploadStream(env.TRACKS, key, zipStream(entries(), new Date()), calls);
+  listing.next = next;
+  const listingAt = listingKey(userId, exportId, part, attempt);
   calls.take();
-  await env.TRACKS.put(listingKey(userId, exportId, part), JSON.stringify(listing));
-  return { cursor: next, bytes };
+  await env.TRACKS.put(listingAt, JSON.stringify(listing));
+  return { part, bytes, key, listing: listingAt, next };
 }
 
 const README = `MadeGood account export
@@ -614,7 +735,8 @@ The other parts hold:
 
 sessions/            Every session in your account (when the export started): times, sport,
                      title, notes, visibility, statistics, the analysis summary, the area and
-                     times worked out from the track, and the wind estimate. ${SESSIONS_PER_FILE} per file.
+                     times worked out from the track, and the wind estimate. ${SESSIONS_PER_FILE} per
+                     file, a JSON array with one session per line.
 voyages/             Private voyages and their legs, if you synced any.
 tracks/sessions/     Each session's track as you uploaded it (gzipped JSON, track v1,
                      docs/formats.md in the MadeGood source). Privacy zones are not cut out:
@@ -630,14 +752,18 @@ async function buildFirstPart(
   db: Db,
   job: ExportJob,
   snapshot: Snapshot,
+  attempt: string,
   calls: Calls,
-): Promise<number> {
-  const parts = JSON.parse(job.partsJson) as { part: number; bytes: number }[];
+): Promise<CommittedPart> {
+  // Only committed parts, through the listing each commit recorded.
+  const parts = JSON.parse(job.partsJson) as CommittedPart[];
   const listings: PartListing[] = [];
   for (const p of parts) {
+    if (!p.listing) continue;
     calls.take();
-    const object = await env.TRACKS.get(listingKey(job.userId, job.id, p.part));
-    if (object) listings.push(await object.json<PartListing>());
+    const object = await env.TRACKS.get(p.listing);
+    if (!object) throw new Error(`the listing of part ${p.part} is missing`);
+    listings.push(await object.json<PartListing>());
   }
   calls.take(3);
   const [user] = await db.select().from(users).where(eq(users.id, job.userId));
@@ -672,24 +798,35 @@ async function buildFirstPart(
     yield { name: "manifest.json", data: async () => json(manifest) };
     if (errors.length > 0) yield { name: "errors.json", data: async () => json(errors) };
   }
-  return uploadStream(
-    env.TRACKS,
-    partKey(job.userId, job.id, 1),
-    zipStream(entries(), new Date()),
-    calls,
-  );
+  const key = partKey(job.userId, job.id, 1, attempt);
+  const bytes = await uploadStream(env.TRACKS, key, zipStream(entries(), new Date()), calls);
+  return { part: 1, bytes, key };
 }
+
+export type StepHooks = {
+  /** After this attempt wrote its part, before it commits. */
+  beforeCommit?: () => Promise<void>;
+};
 
 /**
  * One step of an export: builds the next part and returns the following message, or null
  * when the job is finished, failed or the message is stale (a duplicate or an old step).
- * Throws on storage failures; the queue retries and the sweep resumes.
+ *
+ * 1. **Claim** (cursor, nextPart) in D1 with this attempt's token, unless another attempt
+ *    holds an unexpired claim: concurrent deliveries of one step do not build in parallel.
+ * 2. **Write** the part and its listing under keys that include the token.
+ * 3. **Commit** by compare-and-swap on (cursor, nextPart, token): the job's cursor moves to
+ *    the listing's `next`, and `parts_json` records the part's keys. An attempt that loses
+ *    (its claim expired and another committed) deletes only its own objects.
+ * Throws on storage failures after deleting its objects and releasing its claim; the queue
+ * retries and the sweep resumes.
  */
 export async function runExportStep(
   env: ExportEnv,
   message: ExportMessage,
   now = () => Date.now(),
   limits: PartLimits = PART_LIMITS,
+  hooks: StepHooks = {},
 ): Promise<ExportMessage | null> {
   const db = drizzle(env.DB);
   const [job] = await db.select().from(exportJobs).where(eq(exportJobs.id, message.exportId));
@@ -700,84 +837,120 @@ export async function runExportStep(
     await failJob(env, job, "The account is being deleted.");
     return null;
   }
-  const object = await env.TRACKS.get(snapshotKey(job.userId, job.id));
-  if (!object) {
-    await failJob(env, job, "The export's snapshot is missing.");
-    return null;
-  }
-  const snapshot = Snapshot.parse(await object.json());
-  const items = planItems(snapshot);
-  const calls = new Calls(limits.maxCalls);
-  const current = and(
+
+  const attempt = crypto.randomUUID();
+  const claimed = await env.DB.prepare(
+    `UPDATE export_jobs SET attempt = ?, attempt_at = ?, status = 'building', updated_at = ?
+     WHERE id = ? AND cursor = ? AND next_part = ? AND status IN ('queued', 'building')
+       AND (attempt IS NULL OR attempt_at < ?)`,
+  )
+    .bind(attempt, now(), now(), job.id, job.cursor, job.nextPart, now() - CLAIM_LEASE_MS)
+    .run();
+  if (claimed.meta.changes !== 1) return null;
+  const mine = and(
     eq(exportJobs.id, job.id),
     eq(exportJobs.cursor, job.cursor),
     eq(exportJobs.nextPart, job.nextPart),
+    eq(exportJobs.attempt, attempt),
   );
+  const written: string[] = [];
+  const discard = async () => {
+    if (written.length > 0) await env.TRACKS.delete(written).catch(() => {});
+  };
 
-  if (job.cursor < items.length) {
-    const built = await buildDataPart(
-      env,
-      db,
-      job.userId,
-      job.id,
-      items,
-      job.cursor,
-      job.nextPart,
-      calls,
-      limits,
-    );
-    const parts = [
-      ...(JSON.parse(job.partsJson) as { part: number; bytes: number }[]),
-      { part: job.nextPart, bytes: built.bytes },
-    ];
-    const [updated] = await db
+  try {
+    const object = await env.TRACKS.get(snapshotKey(job.userId, job.id));
+    if (!object) {
+      await failJob(env, job, "The export's snapshot is missing.");
+      return null;
+    }
+    const snapshot = Snapshot.parse(await object.json());
+    const items = planItems(snapshot);
+    const calls = new Calls(limits.maxCalls);
+    const committedParts = JSON.parse(job.partsJson) as CommittedPart[];
+
+    if (job.cursor < items.length) {
+      written.push(
+        partKey(job.userId, job.id, job.nextPart, attempt),
+        listingKey(job.userId, job.id, job.nextPart, attempt),
+      );
+      const built = await buildDataPart(
+        env,
+        db,
+        job.userId,
+        job.id,
+        items,
+        job.cursor,
+        job.nextPart,
+        attempt,
+        calls,
+        limits,
+      );
+      await hooks.beforeCommit?.();
+      const [updated] = await db
+        .update(exportJobs)
+        .set({
+          cursor: built.next,
+          nextPart: job.nextPart + 1,
+          partsJson: JSON.stringify([
+            ...committedParts,
+            { part: built.part, bytes: built.bytes, key: built.key, listing: built.listing },
+          ]),
+          attempt: null,
+          attemptAt: null,
+          updatedAt: now(),
+        })
+        .where(mine)
+        .returning();
+      if (!updated) {
+        await discard();
+        await dropIfJobGone(env, db, job);
+        return null;
+      }
+      if (!(await accountActive(db, job.userId))) {
+        await failJob(env, updated, "The account is being deleted.");
+        return null;
+      }
+      return firstMessage(updated);
+    }
+
+    written.push(partKey(job.userId, job.id, 1, attempt));
+    const first = await buildFirstPart(env, db, job, snapshot, attempt, calls);
+    await hooks.beforeCommit?.();
+    const [done] = await db
       .update(exportJobs)
       .set({
-        status: "building",
-        cursor: built.cursor,
-        nextPart: job.nextPart + 1,
-        partsJson: JSON.stringify(parts),
+        status: "ready",
+        partsJson: JSON.stringify([first, ...committedParts]),
+        attempt: null,
+        attemptAt: null,
         updatedAt: now(),
+        expiresAt: now() + EXPORT_TTL_MS,
       })
-      .where(current)
+      .where(mine)
       .returning();
-    if (!updated) {
+    if (!done) {
+      await discard();
       await dropIfJobGone(env, db, job);
       return null;
     }
     if (!(await accountActive(db, job.userId))) {
-      await failJob(env, updated, "The account is being deleted.");
-      return null;
+      await failJob(env, done, "The account is being deleted.");
     }
-    return firstMessage(updated);
+    return null;
+  } catch (error) {
+    await discard();
+    await env.DB.prepare(
+      "UPDATE export_jobs SET attempt = NULL, attempt_at = NULL WHERE id = ? AND attempt = ?",
+    )
+      .bind(job.id, attempt)
+      .run()
+      .catch(() => {});
+    throw error;
   }
-
-  const bytes = await buildFirstPart(env, db, job, snapshot, calls);
-  const parts = [
-    { part: 1, bytes },
-    ...(JSON.parse(job.partsJson) as { part: number; bytes: number }[]),
-  ];
-  const [done] = await db
-    .update(exportJobs)
-    .set({
-      status: "ready",
-      partsJson: JSON.stringify(parts),
-      updatedAt: now(),
-      expiresAt: now() + EXPORT_TTL_MS,
-    })
-    .where(current)
-    .returning();
-  if (!done) await dropIfJobGone(env, db, job);
-  if (done && !(await accountActive(db, job.userId))) {
-    await failJob(env, done, "The account is being deleted.");
-  }
-  return null;
 }
 
-/**
- * After a lost compare-and-swap: a duplicate step may have won (its part has the same key,
- * so it stays), or the job is gone with its account, and then what this step wrote goes.
- */
+/** After a lost commit: if the job is gone with its account, so is everything it wrote. */
 async function dropIfJobGone(env: ExportEnv, db: Db, job: ExportJob) {
   const [still] = await db
     .select({ id: exportJobs.id })
@@ -829,6 +1002,7 @@ export async function sweepExports(
     .select()
     .from(exportJobs)
     .where(and(eq(exportJobs.status, "ready"), lt(exportJobs.expiresAt, now)))
+    .orderBy(asc(exportJobs.expiresAt))
     .limit(50);
   for (const job of expired) {
     await deletePrefix(env.TRACKS, exportPrefix(job.userId, job.id));
@@ -847,6 +1021,8 @@ export async function sweepExports(
         lt(exportJobs.updatedAt, now - STUCK_AFTER_MS),
       ),
     )
+    // Oldest first, so the ones to give up on are never starved by newer stuck jobs.
+    .orderBy(asc(exportJobs.createdAt))
     .limit(50);
   for (const job of stuck) {
     if (job.createdAt < now - GIVE_UP_AFTER_MS) {

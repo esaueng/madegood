@@ -1,15 +1,20 @@
 import { env } from "cloudflare:workers";
+import { drizzle } from "drizzle-orm/d1";
 import { describe, expect, it } from "vitest";
 import {
+  Calls,
+  CLAIM_LEASE_MS,
+  type CommittedPart,
   createExportJob,
   EXPORT_TTL_MS,
   type ExportMessage,
   firstMessage,
   GIVE_UP_AFTER_MS,
   type PartLimits,
-  partKey,
   runExportStep,
+  SESSION_DOC_MAX_BYTES,
   STUCK_AFTER_MS,
+  sessionDocumentChunks,
   sweepExports,
 } from "../src/server/lib/export-job";
 import { crc32, type ZipEntry, zipStream } from "../src/server/lib/zip";
@@ -58,6 +63,11 @@ const parse = (entries: Entry[], name: string) => {
 /** The storage the job uses, without the queue: tests run every step themselves. */
 const manual = () => ({ DB: env.DB, TRACKS: env.TRACKS });
 
+const one = <T = unknown>(query: string, ...values: unknown[]) =>
+  env.DB.prepare(query)
+    .bind(...values)
+    .first<T>();
+
 const sql = (query: string, ...values: unknown[]) =>
   env.DB.prepare(query)
     .bind(...values)
@@ -101,10 +111,11 @@ async function jobRow(id: string) {
 /** Every part of a finished job, read from R2 and checked as ZIPs. */
 async function readParts(userId: string, exportId: string) {
   const row = await jobRow(exportId);
-  const parts = JSON.parse(row?.partsJson ?? "[]") as { part: number; bytes: number }[];
+  const parts = JSON.parse(row?.partsJson ?? "[]") as CommittedPart[];
   const out = new Map<number, Entry[]>();
   for (const p of parts) {
-    const object = await env.TRACKS.get(partKey(userId, exportId, p.part));
+    expect(p.key.startsWith(`users/${userId}/exports/${exportId}/part-${p.part}-`)).toBe(true);
+    const object = await env.TRACKS.get(p.key);
     if (!object) throw new Error(`part ${p.part} is missing`);
     const bytes = new Uint8Array(await object.arrayBuffer());
     expect(bytes.length).toBe(p.bytes);
@@ -371,7 +382,7 @@ describe("account export jobs", () => {
       Date.now() - GIVE_UP_AFTER_MS - 1,
     );
     if (old.kind !== "created") throw new Error(old.kind);
-    const failed = await sweepExports(manual(), null, Date.now() + STUCK_AFTER_MS);
+    const failed = await sweepExports(manual(), null, Date.now() + STUCK_AFTER_MS + 1000);
     expect(failed.failed).toBeGreaterThanOrEqual(1);
     expect((await jobRow(old.job.id))?.status).toBe("failed");
   });
@@ -486,5 +497,220 @@ describe("ZIP writer", () => {
     expect(zip.map((e) => e.name)).toEqual(["a.txt", "dir/stream.bin"]);
     expect(zip[1]?.data).toEqual(big);
     expect(crc32(new TextEncoder().encode("123456789"))).toBe(0xcbf43926);
+  });
+});
+
+describe("review of the #79 redesign", () => {
+  /** Objects under the export's prefix. */
+  const objects = async (userId: string, exportId: string) =>
+    (await env.TRACKS.list({ prefix: `users/${userId}/exports/${exportId}/` })).objects.map(
+      (o) => o.key,
+    );
+
+  it("finding 1: a duplicate delivery cannot build the claimed step", async () => {
+    const owner = await signIn();
+    await sessionWithTrack(owner, new Uint8Array([1]));
+    const job = await createManual(owner);
+    const message = firstMessage(job);
+    let duplicate: ExportMessage | null | undefined;
+    const before = await objects(owner.user.id, job.id);
+    const next = await runExportStep(manual(), message, undefined, undefined, {
+      beforeCommit: async () => {
+        // Delivered again while this attempt holds the claim: it does nothing.
+        duplicate = await runExportStep(manual(), message);
+      },
+    });
+    expect(duplicate).toBeNull();
+    expect(next).not.toBeNull();
+    // Only this attempt's part and listing were added.
+    expect((await objects(owner.user.id, job.id)).length - before.length).toBe(2);
+  });
+
+  it("finding 1: an attempt that lost its claim deletes only its own objects", async () => {
+    const owner = await signIn();
+    const a = await sessionWithTrack(owner, new Uint8Array([1]));
+    const b = await sessionWithTrack(owner, new Uint8Array([2]), START_MS + 1);
+    const job = await createManual(owner);
+    const message = firstMessage(job);
+    let winner: ExportMessage | null = null;
+    const loser = await runExportStep(manual(), message, undefined, undefined, {
+      beforeCommit: async () => {
+        // This attempt stalls past its lease; a retry claims the step, builds and commits.
+        await sql(
+          "update export_jobs set attempt_at = ? where id = ?",
+          Date.now() - CLAIM_LEASE_MS - 1000,
+          job.id,
+        );
+        winner = await runExportStep(manual(), message);
+      },
+    });
+    expect(loser).toBeNull();
+    expect(winner).not.toBeNull();
+    // The winner's part is the one committed; the loser's objects are gone.
+    const row = await jobRow(job.id);
+    const committed = JSON.parse(row?.partsJson ?? "[]") as CommittedPart[];
+    expect(committed).toHaveLength(1);
+    const keys = await objects(owner.user.id, job.id);
+    expect(keys.filter((k) => /part-2-/.test(k)).sort()).toEqual(
+      [committed[0]?.key, committed[0]?.listing].sort(),
+    );
+    // Finishing gives every track, from the committed listing's cursor on.
+    await runAll(winner as unknown as ExportMessage);
+    const names = [...(await readParts(owner.user.id, job.id)).values()].flat().map((e) => e.name);
+    expect(names).toContain(`tracks/sessions/${a.id}.track.v1.gz`);
+    expect(names).toContain(`tracks/sessions/${b.id}.track.v1.gz`);
+  });
+
+  it("finding 1: a failed attempt releases its claim and leaves nothing", async () => {
+    const owner = await signIn();
+    await sessionWithTrack(owner, new Uint8Array([1]));
+    const job = await createManual(owner);
+    const message = firstMessage(job);
+    await expect(
+      runExportStep(manual(), message, undefined, undefined, {
+        beforeCommit: async () => {
+          throw new Error("synthetic failure");
+        },
+      }),
+    ).rejects.toThrow("synthetic failure");
+    expect((await objects(owner.user.id, job.id)).filter((k) => /part-/.test(k))).toEqual([]);
+    // The retry can claim at once and finishes.
+    expect(await runAll(message)).toBe(2);
+    expect((await jobRow(job.id))?.status).toBe("ready");
+  });
+
+  it("finding 2: an account deleted while the export starts leaves no snapshot", async () => {
+    const owner = await signIn();
+    await sessionWithTrack(owner, new Uint8Array([1]));
+    const result = await createExportJob(manual(), owner.user.id, Date.now(), {
+      afterInsert: async () => {
+        // DELETE /me between the job row and the snapshot: rows cascade, prefix swept.
+        await sql("delete from users where id = ?", owner.user.id);
+        await sql("delete from export_jobs where user_id = ?", owner.user.id);
+      },
+    });
+    expect(result.kind).toBe("account_gone");
+    expect(
+      (await env.TRACKS.list({ prefix: `users/${owner.user.id}/exports/` })).objects,
+    ).toHaveLength(0);
+
+    const locked = await signIn();
+    const marked = await createExportJob(manual(), locked.user.id, Date.now(), {
+      afterInsert: async () => {
+        await sql("update users set deleted_at = ? where id = ?", Date.now(), locked.user.id);
+      },
+    });
+    expect(marked.kind).toBe("account_gone");
+    expect(
+      (await env.TRACKS.list({ prefix: `users/${locked.user.id}/exports/` })).objects,
+    ).toHaveLength(0);
+    expect(await one("select id from export_jobs where user_id = ?", locked.user.id)).toBeNull();
+    // A locked account cannot start one at all.
+    expect((await createExportJob(manual(), locked.user.id)).kind).toBe("account_gone");
+  });
+
+  it("finding 3: exports 250 voyages (more IDs than one D1 query may bind)", async () => {
+    const owner = await signIn();
+    const ids = Array.from({ length: 250 }, () => crypto.randomUUID()).sort();
+    const statements = ids.flatMap((id, i) => [
+      env.DB.prepare(
+        "insert into voyages (user_id, id, title, started_at) values (?, ?, ?, ?)",
+      ).bind(owner.user.id, id, `Passage ${i}`, START_MS + i),
+      env.DB.prepare(
+        "insert into legs (user_id, id, voyage_id, started_at, ended_at) values (?, ?, ?, ?, ?)",
+      ).bind(owner.user.id, crypto.randomUUID(), id, START_MS, START_MS + 60_000),
+    ]);
+    for (let i = 0; i < statements.length; i += 100)
+      await env.DB.batch(statements.slice(i, i + 100));
+    const job = await createManual(owner);
+    await runAll(firstMessage(job));
+    const all = [...(await readParts(owner.user.id, job.id)).values()].flat();
+    const voyagesOut = all
+      .filter((e) => e.name.startsWith("voyages/"))
+      .flatMap((e) => JSON.parse(text(e.data)) as { id: string; legs: unknown[] }[]);
+    expect(voyagesOut.map((v) => v.id)).toEqual(ids);
+    expect(voyagesOut.every((v) => v.legs.length === 1)).toBe(true);
+  }, 60_000);
+
+  it("finding 4: streams session documents one session at a time, nested summaries verbatim", async () => {
+    const owner = await signIn();
+    // Near the 64 KiB summary limit, deeply nested: pretty-printing it would multiply it.
+    const nested = (depth: number): unknown =>
+      depth === 0 ? [1.5, "x", null] : { a: [nested(depth - 1)] };
+    let summary = JSON.stringify({ deep: nested(400), pad: "" });
+    summary = JSON.stringify({
+      deep: nested(400),
+      pad: "y".repeat(64 * 1024 - summary.length - 8),
+    });
+    const ids: string[] = [];
+    const statements = [];
+    for (let i = 0; i < 260; i++) {
+      const id = crypto.randomUUID();
+      ids.push(id);
+      statements.push(
+        env.DB.prepare(
+          "insert into sessions (id, user_id, sport, started_at, summary_json) values (?, ?, 'sup', ?, ?)",
+        ).bind(id, owner.user.id, START_MS + i, summary),
+      );
+    }
+    for (let i = 0; i < statements.length; i += 50) await env.DB.batch(statements.slice(i, i + 50));
+
+    // The writer yields one session line at a time, each within the reserved bound.
+    const chunks: number[] = [];
+    const listing = { errors: [] };
+    for await (const chunk of sessionDocumentChunks(
+      drizzle(env.DB),
+      owner.user.id,
+      { name: "sessions/sessions-0001.json", ids: ids.slice(0, 250) },
+      new Calls(),
+      listing,
+    )) {
+      chunks.push(chunk.length);
+    }
+    expect(Math.max(...chunks)).toBeLessThanOrEqual(SESSION_DOC_MAX_BYTES);
+    expect(chunks.filter((n) => n > 1000)).toHaveLength(250);
+
+    const job = await createManual(owner);
+    await runAll(firstMessage(job));
+    const all = [...(await readParts(owner.user.id, job.id)).values()].flat();
+    const docs = all
+      .filter((e) => e.name.startsWith("sessions/"))
+      .flatMap((e) => JSON.parse(text(e.data)) as { id: string; summary: unknown }[]);
+    expect(docs.map((d) => d.id)).toEqual(ids);
+    expect(JSON.stringify(docs[0]?.summary)).toBe(summary);
+  }, 60_000);
+
+  it("finding 5: concurrent creates start exactly one export and keep the daily limit", async () => {
+    const owner = await signIn();
+    const results = await Promise.all(
+      Array.from({ length: 5 }, () => createExportJob(manual(), owner.user.id)),
+    );
+    const created = results.filter((r) => r.kind === "created");
+    expect(created).toHaveLength(1);
+    expect(results.filter((r) => r.kind === "in_progress")).toHaveLength(4);
+    const first = created[0];
+    if (first?.kind !== "created") throw new Error("none created");
+    await runAll(firstMessage(first.job));
+
+    // Two more over the day, each racing duplicates, then the limit.
+    for (let i = 0; i < 2; i++) {
+      const racing = await Promise.all(
+        Array.from({ length: 4 }, () => createExportJob(manual(), owner.user.id)),
+      );
+      const made = racing.filter((r) => r.kind === "created");
+      expect(made).toHaveLength(1);
+      const job = made[0];
+      if (job?.kind !== "created") throw new Error("none created");
+      await runAll(firstMessage(job.job));
+    }
+    const late = await Promise.all(
+      Array.from({ length: 3 }, () => createExportJob(manual(), owner.user.id)),
+    );
+    expect(late.every((r) => r.kind === "rate_limited")).toBe(true);
+    const count = await one<{ n: number }>(
+      "select count(*) as n from export_jobs where user_id = ?",
+      owner.user.id,
+    );
+    expect(count?.n).toBe(3);
   });
 });
