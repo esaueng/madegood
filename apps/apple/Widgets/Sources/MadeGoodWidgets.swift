@@ -34,18 +34,31 @@ struct SessionLiveActivity: Widget {
                         .font(.caption)
                 }
                 DynamicIslandExpandedRegion(.bottom) {
-                    HStack {
-                        Text(context.state.speed).font(.title2.weight(.bold).monospacedDigit())
-                        Spacer()
-                        Text(context.state.distance).font(.title3.monospacedDigit())
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text(context.state.speed).font(.title2.weight(.bold).monospacedDigit())
+                            Spacer()
+                            Text(context.state.distance).font(.title3.monospacedDigit())
+                        }
+                        if let mob = context.state.manOverboard {
+                            ManOverboardLine(text: mob, note: context.state.manOverboardNote, isStale: context.isStale)
+                        }
                     }
                 }
             } compactLeading: {
-                SportImage(attributes: context.attributes, size: 20, labeled: true)
+                if context.state.manOverboard != nil {
+                    ManOverboardIcon()
+                } else {
+                    SportImage(attributes: context.attributes, size: 20, labeled: true)
+                }
             } compactTrailing: {
                 Text(context.state.speedNumber).monospacedDigit().font(.caption.weight(.semibold))
             } minimal: {
-                SportImage(attributes: context.attributes, size: 20, labeled: true)
+                if context.state.manOverboard != nil {
+                    ManOverboardIcon()
+                } else {
+                    SportImage(attributes: context.attributes, size: 20, labeled: true)
+                }
             }
         }
     }
@@ -55,6 +68,16 @@ private struct LockScreenView: View {
     let context: ActivityViewContext<SessionActivityAttributes>
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let mob = context.state.manOverboard {
+                ManOverboardLine(text: mob, note: context.state.manOverboardNote, isStale: context.isStale)
+            }
+            metrics
+        }
+        .foregroundStyle(.white)
+    }
+
+    private var metrics: some View {
         HStack(alignment: .center, spacing: 16) {
             VStack(alignment: .leading, spacing: 4) {
                 Label {
@@ -79,7 +102,45 @@ private struct LockScreenView: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .foregroundStyle(.white)
+    }
+}
+
+/// The man-overboard mark: distance and true bearing back to it, in red.
+private struct ManOverboardLine: View {
+    let text: String
+    /// How far to trust the mark ("Marked from a position 32 s old"), if not fully.
+    let note: String?
+    /// Past the content's stale date (the fix time plus 10 s): the app has stopped
+    /// updating, so the distance and bearing are no longer shown.
+    let isStale: Bool
+
+    private var shown: String { isStale ? "position stale" : text }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Label {
+                Text("MOB · \(shown)").monospacedDigit()
+            } icon: {
+                Image(systemName: "figure.wave")
+            }
+            .font(.subheadline.weight(.bold))
+            .foregroundStyle(.red)
+            if let note {
+                Text(note)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.orange)
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Man overboard, \(shown)\(note.map { ". \($0)" } ?? "")")
+    }
+}
+
+private struct ManOverboardIcon: View {
+    var body: some View {
+        Image(systemName: "figure.wave")
+            .foregroundStyle(.red)
+            .accessibilityLabel("Man overboard")
     }
 }
 

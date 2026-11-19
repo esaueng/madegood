@@ -189,6 +189,35 @@ export async function signOut(): Promise<void> {
   await fetch("/api/auth/web/signout", { method: "POST", credentials: "same-origin" });
 }
 
+export type AccountExport = {
+  id: string;
+  status: "queued" | "building" | "ready" | "failed" | "expired";
+  createdAt: string;
+  expiresAt: string | null;
+  progress: { done: number; total: number };
+  /** Set once ready; `url` is a path under /api. */
+  parts: { part: number; bytes: number; url: string }[];
+  /** Files left out of a ready export; errors.json in part 1 lists them. */
+  omitted: number;
+  error: string | null;
+};
+
+/** The newest export, if any (GET /api/me/exports). */
+export const fetchLatestExport = () =>
+  apiJson<{ exports: AccountExport[] }>("/me/exports").then((r) => r.exports[0] ?? null);
+
+/** Starts an export (POST /api/me/exports); a running one is returned instead (409). */
+export async function startExport(): Promise<AccountExport> {
+  const response = await apiFetch("/me/exports", { method: "POST" });
+  if (response.status === 409) {
+    const body = (await response.json()) as { message?: string };
+    if (body.message)
+      return apiJson<AccountExport>(`/me/exports/${encodeURIComponent(body.message)}`);
+  }
+  if (!response.ok) throw await failure(response);
+  return response.json() as Promise<AccountExport>;
+}
+
 /** Full-page navigation to Apple's sign-in, returning to `next` afterwards. */
 export const signInUrl = (next: string) => `/api/auth/web/apple?next=${encodeURIComponent(next)}`;
 

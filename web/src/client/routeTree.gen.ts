@@ -11,6 +11,8 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as PrivacyRouteImport } from './routes/privacy'
+import { Route as SessionsRouteImport } from './routes/sessions'
+import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as SigninRouteImport } from './routes/signin'
 import { Route as AppIndexRouteImport } from './routes/app/index'
 import { Route as AppSettingsRouteImport } from './routes/app/settings'
@@ -24,6 +26,16 @@ const IndexRoute = IndexRouteImport.update({
 const PrivacyRoute = PrivacyRouteImport.update({
   id: '/privacy',
   path: '/privacy',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SessionsRoute = SessionsRouteImport.update({
+  id: '/sessions',
+  path: '/sessions',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SettingsRoute = SettingsRouteImport.update({
+  id: '/settings',
+  path: '/settings',
   getParentRoute: () => rootRouteImport,
 } as any)
 const SigninRoute = SigninRouteImport.update({
@@ -50,6 +62,8 @@ const SIdRoute = SIdRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/privacy': typeof PrivacyRoute
+  '/sessions': typeof SessionsRoute
+  '/settings': typeof SettingsRoute
   '/signin': typeof SigninRoute
   '/app/settings': typeof AppSettingsRoute
   '/s/$id': typeof SIdRoute
@@ -58,6 +72,8 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/privacy': typeof PrivacyRoute
+  '/sessions': typeof SessionsRoute
+  '/settings': typeof SettingsRoute
   '/signin': typeof SigninRoute
   '/app/settings': typeof AppSettingsRoute
   '/s/$id': typeof SIdRoute
@@ -67,6 +83,8 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/privacy': typeof PrivacyRoute
+  '/sessions': typeof SessionsRoute
+  '/settings': typeof SettingsRoute
   '/signin': typeof SigninRoute
   '/app/settings': typeof AppSettingsRoute
   '/s/$id': typeof SIdRoute
@@ -74,13 +92,31 @@ export interface FileRoutesById {
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/privacy' | '/signin' | '/app/settings' | '/s/$id' | '/app/'
+  fullPaths:
+    | '/'
+    | '/privacy'
+    | '/sessions'
+    | '/settings'
+    | '/signin'
+    | '/app/settings'
+    | '/s/$id'
+    | '/app/'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/privacy' | '/signin' | '/app/settings' | '/s/$id' | '/app'
+  to:
+    | '/'
+    | '/privacy'
+    | '/sessions'
+    | '/settings'
+    | '/signin'
+    | '/app/settings'
+    | '/s/$id'
+    | '/app'
   id:
     | '__root__'
     | '/'
     | '/privacy'
+    | '/sessions'
+    | '/settings'
     | '/signin'
     | '/app/settings'
     | '/s/$id'
@@ -90,6 +126,8 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   PrivacyRoute: typeof PrivacyRoute
+  SessionsRoute: typeof SessionsRoute
+  SettingsRoute: typeof SettingsRoute
   SigninRoute: typeof SigninRoute
   AppSettingsRoute: typeof AppSettingsRoute
   SIdRoute: typeof SIdRoute
@@ -110,6 +148,20 @@ declare module '@tanstack/react-router' {
       path: '/privacy'
       fullPath: '/privacy'
       preLoaderRoute: typeof PrivacyRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/sessions': {
+      id: '/sessions'
+      path: '/sessions'
+      fullPath: '/sessions'
+      preLoaderRoute: typeof SessionsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/settings': {
+      id: '/settings'
+      path: '/settings'
+      fullPath: '/settings'
+      preLoaderRoute: typeof SettingsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/signin': {
@@ -146,6 +198,8 @@ declare module '@tanstack/react-router' {
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   PrivacyRoute: PrivacyRoute,
+  SessionsRoute: SessionsRoute,
+  SettingsRoute: SettingsRoute,
   SigninRoute: SigninRoute,
   AppSettingsRoute: AppSettingsRoute,
   SIdRoute: SIdRoute,

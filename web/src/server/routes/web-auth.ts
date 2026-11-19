@@ -40,12 +40,12 @@ const randomToken = () => {
     .replace(/=+$/, "");
 };
 
-/** A same-site path to return to after sign-in; anything else falls back to /app. */
+/** A same-site path to return to after sign-in; anything else falls back to /sessions. */
 export function safeNext(value: string | undefined | null): string {
   if (!value?.startsWith("/") || value.startsWith("//") || value.includes("\\")) {
-    return "/app";
+    return "/sessions";
   }
-  return value.length > 512 ? "/app" : value;
+  return value.length > 512 ? "/sessions" : value;
 }
 
 const callbackUrl = (requestUrl: string) =>

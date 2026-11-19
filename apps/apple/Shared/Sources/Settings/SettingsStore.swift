@@ -13,6 +13,8 @@ final class SettingsStore {
     private(set) var sports: [Sport: SportSettings] = [:]
     private(set) var lastUsed: [Sport: Double] = [:]
     private(set) var lastSessions: [Sport: UserSettings.LastSession] = [:]
+    /// The start screen order the user dragged into, or nil for most recent first.
+    private(set) var startOrder: [Sport]?
 
     private init() {
         reload()
@@ -26,6 +28,7 @@ final class SettingsStore {
     func reload() {
         sports = Dictionary(uniqueKeysWithValues: Sport.allCases.map { ($0, UserSettings.settings(for: $0)) })
         lastUsed = UserSettings.lastUsed()
+        startOrder = UserSettings.startOrder
         lastSessions = Sport.allCases.reduce(into: [:]) { result, sport in
             result[sport] = UserSettings.lastSession(sport)
         }
@@ -58,11 +61,28 @@ final class SettingsStore {
         Set(Sport.allCases.filter { self[$0].isHidden })
     }
 
-    /// The start screen's sports: visible ones, most recently used first. `extraUse`
-    /// adds use times from elsewhere (sessions in the iPhone's history).
+    /// The start screen's sports: visible ones in the user's own order once they have
+    /// dragged one, otherwise most recently used first. `extraUse` adds use times from
+    /// elsewhere (sessions in the iPhone's history).
     func startList(extraUse: [Sport: Double] = [:]) -> [Sport] {
+        if let startOrder { return SportList.ordered(custom: startOrder, hidden: hiddenSports) }
         let merged = lastUsed.merging(extraUse) { max($0, $1) }
         return SportList.ordered(lastUsed: merged, hidden: hiddenSports)
+    }
+
+    /// Keeps the visible sports in `visible`'s order from now on (hidden ones keep their
+    /// places). `current` is the list as shown, so the first drag starts from recent use.
+    func reorderStartList(current: [Sport], to visible: [Sport]) {
+        let order = SportList.reordered(
+            custom: startOrder ?? (current + Sport.allCases.filter { !current.contains($0) }), visible: visible)
+        UserSettings.startOrder = order
+        startOrder = order
+    }
+
+    /// Back to most recently used first.
+    func useRecentStartOrder() {
+        UserSettings.startOrder = nil
+        startOrder = nil
     }
 
     func canHide(_ sport: Sport) -> Bool {

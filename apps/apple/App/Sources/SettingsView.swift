@@ -6,7 +6,11 @@ import WaterKit
 struct SettingsView: View {
     @Environment(PrivateVoyageSync.self) private var voyageSync: PrivateVoyageSync?
     @State private var store = SettingsStore.shared
+    @State private var weather = LocalWeather.shared
     @AppStorage(UserSettings.Key.appearance) private var appearance: Appearance = .system
+    @State private var exportingAll = false
+    @State private var exportedAll: SessionDetailView.ShareFile?
+    @State private var exportMessage: String?
 
     var body: some View {
         NavigationStack {
@@ -18,10 +22,32 @@ struct SettingsView: View {
                         }
                         .accessibilityIdentifier("settings.sport.\(sport.rawValue)")
                     }
+                    if store.startOrder != nil {
+                        Button("Order Start Screen by Recent Use", systemImage: "clock.arrow.circlepath") {
+                            store.useRecentStartOrder()
+                        }
+                        .accessibilityIdentifier("settings.recentOrder")
+                    }
                 } header: {
                     Text("Sports")
                 } footer: {
-                    Text("Units, first screen, alerts, countdown and Health for each sport. Changes reach your watch.")
+                    Text(
+                        "Units, first screen, alerts, countdown and Health for each sport. Changes reach your watch. "
+                            + "Touch and hold a sport on the start screen to drag it into your own order.")
+                }
+
+                Section {
+                    Toggle(
+                        "Local Conditions",
+                        isOn: Binding(get: { weather.isEnabled }, set: { weather.setEnabled($0) })
+                    )
+                    .accessibilityIdentifier("settings.localWeather")
+                } header: {
+                    Text("Weather")
+                } footer: {
+                    Text(
+                        "Wind and weather where you are, rated for your sports, on the start screen. Your position "
+                            + "is rounded to about 10 km and sent to Open-Meteo. A guide only, not a marine forecast.")
                 }
 
                 Section {
@@ -45,6 +71,28 @@ struct SettingsView: View {
 
                 SessionSyncSection()
 
+                Section {
+                    Button {
+                        exportAll()
+                    } label: {
+                        Label(
+                            exportingAll ? "Preparing Export…" : "Export All Recordings",
+                            systemImage: "square.and.arrow.up.on.square")
+                    }
+                    .disabled(exportingAll)
+                    .accessibilityIdentifier("settings.exportAll")
+                    if let exportMessage {
+                        Text(exportMessage).foregroundStyle(.secondary)
+                            .accessibilityIdentifier("settings.exportAllMessage")
+                    }
+                } header: {
+                    Text("Your Data")
+                } footer: {
+                    Text(
+                        "A ZIP file of every recording on this iPhone: raw sensor files and tracks. Exports contain precise locations and times. To download what is in your MadeGood account, use Settings on the website."
+                    )
+                }
+
                 if voyageSync != nil {
                     PrivateVoyageAccountSection()
                 }
@@ -66,8 +114,30 @@ struct SettingsView: View {
                 }
             }
             .navigationTitle("Settings")
+            .sheet(item: $exportedAll) { file in
+                ShareSheet(url: file.url) { ExportFiles.discard(file.url) }
+            }
             .navigationDestination(for: Sport.self) { sport in
                 SportSettingsForm(sport: sport)
+            }
+        }
+    }
+}
+
+extension SettingsView {
+    private func exportAll() {
+        exportingAll = true
+        exportMessage = nil
+        Task {
+            defer { exportingAll = false }
+            do {
+                if let url = try await ZipExport.zipAllRecordings(root: RecordingStore.root) {
+                    exportedAll = SessionDetailView.ShareFile(url: url)
+                } else {
+                    exportMessage = "There are no recordings on this iPhone yet."
+                }
+            } catch {
+                exportMessage = "Couldn’t export your recordings. Try again."
             }
         }
     }

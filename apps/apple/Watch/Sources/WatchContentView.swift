@@ -29,7 +29,7 @@ struct WatchContentView: View {
                 CountdownView(controller: controller, countdown: countdown)
             } else {
                 switch recorder.state {
-                case .idle where manOverboard.mark != nil:
+                case .idle where manOverboard.isActive:
                     // An active mark outlives the session (and relaunches) until cleared.
                     ManOverboardPage(
                         manOverboard: manOverboard, sport: controller.sport ?? .sailing,
@@ -168,9 +168,9 @@ private struct SportCard: View {
             Button(action: start) {
                 HStack(spacing: 8) {
                     SportIcon(sport: sport, size: 24)
-                        .foregroundStyle(Theme.cream)
+                        .foregroundStyle(Theme.pearl)
                         .frame(width: 32, height: 32)
-                        .background(Theme.brightTeal.opacity(isLuminanceReduced ? 0.4 : 1), in: .circle)
+                        .background(Theme.brightPetrol.opacity(isLuminanceReduced ? 0.4 : 1), in: .circle)
                     VStack(alignment: .leading, spacing: 1) {
                         title
                         subtitle
@@ -194,13 +194,13 @@ private struct SportCard: View {
                     .contentShape(.rect)
             }
             .buttonStyle(.plain)
-            .foregroundStyle(Theme.cream.opacity(0.9))
+            .foregroundStyle(Theme.pearl.opacity(0.9))
             .padding(.trailing, 2)
             .accessibilityLabel("\(sport.displayName) settings")
             .accessibilityIdentifier("sportSettings.open.\(sport.rawValue)")
         }
         .background(
-            Theme.teal.opacity(isLuminanceReduced ? 0.25 : 0.55),
+            Theme.petrol.opacity(isLuminanceReduced ? 0.25 : 0.55),
             in: .rect(cornerRadius: 22, style: .continuous)
         )
         .preference(key: TitleScaleKey.self, value: fittingScale)
@@ -258,7 +258,47 @@ private struct TitleScaleKey: PreferenceKey {
 }
 
 /// The countdown before recording: a ring and the time left, with Sync for race starts.
+/// Sailing adds a second page for the start line.
 private struct CountdownView: View {
+    let controller: SessionController
+    let countdown: SessionController.Countdown
+
+    var body: some View {
+        if countdown.sport == .sailing {
+            TabView {
+                CountdownTimerPage(controller: controller, countdown: countdown)
+                StartLinePage(countdown: countdown)
+            }
+            .tabViewStyle(.verticalPage)
+            .toolbar(.hidden, for: .navigationBar)
+        } else {
+            CountdownTimerPage(controller: controller, countdown: countdown)
+        }
+    }
+}
+
+/// The start line during a sailing countdown (docs/metrics.md, "Start line").
+private struct StartLinePage: View {
+    let countdown: SessionController.Countdown
+    @State private var startLine = StartLineController.shared
+    @Environment(\.isLuminanceReduced) private var isLuminanceReduced
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: isLuminanceReduced ? 1 : 0.5)) { _ in
+            ScrollView {
+                StartLinePanel(
+                    startLine: startLine, remaining: countdown.timer.remaining(at: SessionController.now),
+                    display: UserSettings.display(for: .sailing), compact: true
+                )
+                // Clear of the page indicator on the right edge.
+                .padding(.trailing, 8)
+            }
+        }
+        .toolbar(.hidden, for: .navigationBar)
+    }
+}
+
+private struct CountdownTimerPage: View {
     let controller: SessionController
     let countdown: SessionController.Countdown
     @Environment(\.isLuminanceReduced) private var isLuminanceReduced
@@ -272,11 +312,11 @@ private struct CountdownView: View {
             let isFinal = seconds <= 10
             VStack(spacing: 6) {
                 ZStack {
-                    Circle().stroke(Theme.brightTeal.opacity(0.25), lineWidth: 8)
+                    Circle().stroke(Theme.brightPetrol.opacity(0.25), lineWidth: 8)
                     Circle()
                         .trim(from: 0, to: min(1, max(0, fraction)))
                         .stroke(
-                            isFinal ? Theme.coral : Theme.brightTeal, style: StrokeStyle(lineWidth: 8, lineCap: .round)
+                            isFinal ? Theme.coral : Theme.brightPetrol, style: StrokeStyle(lineWidth: 8, lineCap: .round)
                         )
                         .rotationEffect(.degrees(-90))
                     VStack(spacing: 0) {
@@ -308,7 +348,7 @@ private struct CountdownView: View {
                         } label: {
                             Text("Sync").font(.footnote.weight(.semibold))
                         }
-                        .tint(Theme.brightTeal)
+                        .tint(Theme.brightPetrol)
                         .accessibilityHint("Rounds to the nearest minute")
                         .accessibilityIdentifier("countdown.sync")
                     }
@@ -388,6 +428,7 @@ private struct SessionPages: View {
     let sport: Sport
     @State private var page: Page
     @State private var manOverboard = ManOverboard.shared
+    @State private var startLine = StartLineController.shared
     @State private var banner: SessionRecorder.DistanceAlertEvent?
     private let hero: LiveScreen
 
@@ -405,7 +446,7 @@ private struct SessionPages: View {
 
     var body: some View {
         TabView(selection: $page) {
-            if manOverboard.mark != nil {
+            if manOverboard.isActive {
                 ManOverboardPage(manOverboard: manOverboard, sport: sport).tag(Page.manOverboard)
             }
             ControlsPage(recorder: recorder) { page = .manOverboard }.tag(Page.controls)
@@ -422,6 +463,21 @@ private struct SessionPages: View {
             MapPage(points: recorder.trackPoints, manOverboard: manOverboard.mark).tag(Page.map)
         }
         .tabViewStyle(.verticalPage)
+        .overlay(alignment: .top) {
+            VStack(spacing: 4) {
+                if let warning = startLine.warning {
+                    OCSBanner(warning: warning, display: UserSettings.display(for: sport), compact: true) {
+                        startLine.dismissWarning()
+                    }
+                }
+                if let failed = startLine.failedAtStart {
+                    PingFailedBanner(end: failed, compact: true) { startLine.dismissFailedAtStart() }
+                }
+            }
+            .transition(.move(edge: .top).combined(with: .opacity))
+        }
+        .animation(.snappy, value: startLine.warning)
+        .animation(.snappy, value: startLine.failedAtStart)
         .overlay(alignment: .bottom) {
             if let banner {
                 DistanceAlertBanner(text: UserSettings.display(for: sport).distance(banner.distance))
@@ -432,9 +488,12 @@ private struct SessionPages: View {
         .animation(.snappy, value: banner)
         // A new mark from anywhere (the controls or the Action button), including one that
         // replaces an earlier mark, shows the way back.
-        .onChange(of: manOverboard.mark) { old, new in
+        .onChange(of: manOverboard.mark?.identity) { old, new in
             // Wait a turn: the page only exists once the mark has redrawn the pages.
             if let new, new != old { Task { @MainActor in page = .manOverboard } }
+        }
+        .onChange(of: manOverboard.awaitingFixSince) { _, pressed in
+            if pressed != nil { Task { @MainActor in page = .manOverboard } }
         }
         .onChange(of: recorder.distanceAlert) { _, alert in
             guard let alert else { return }
@@ -471,7 +530,7 @@ private struct MetricsPage: View {
                         Text(label).foregroundStyle(.yellow)
                             .accessibilityIdentifier("pauseBadge")
                     } else if let lap = LiveDisplay.lapLabel(metrics) {
-                        Text(lap).foregroundStyle(Theme.brightTeal)
+                        Text(lap).foregroundStyle(Theme.brightPetrol)
                             .accessibilityIdentifier("metric.lap")
                     }
                     Spacer()
@@ -578,7 +637,7 @@ private struct SpeedPage: View {
         VStack(alignment: .leading, spacing: 4) {
             Text("Speed bests")
                 .font(.footnote.weight(.semibold))
-                .foregroundStyle(Theme.brightTeal)
+                .foregroundStyle(Theme.brightPetrol)
                 .accessibilityIdentifier("page.speed")
             ForEach(0..<(rows.count + 1) / 2, id: \.self) { line in
                 HStack(alignment: .top, spacing: 8) {
@@ -622,7 +681,7 @@ private struct SailingPage: View {
                 VStack(alignment: .leading, spacing: 0) {
                     Text("Sailing")
                         .font(.footnote.weight(.semibold))
-                        .foregroundStyle(Theme.brightTeal)
+                        .foregroundStyle(Theme.brightPetrol)
                         .accessibilityIdentifier("page.sailing")
                     Text(sailing?.vmgTitle ?? "VMG")
                         .font(.footnote)
@@ -716,9 +775,8 @@ private struct ControlsPage: View {
             }
             GridRow {
                 ControlButton(title: "MOB", symbol: "figure.wave", tint: .red) {
-                    recorder.markManOverboard()
-                    WKInterfaceDevice.current().play(.notification)
-                    if ManOverboard.shared.mark != nil { showManOverboard() }
+                    SessionController.shared.markManOverboard()
+                    showManOverboard()
                 }
                 ControlButton(title: "Lock", symbol: "drop.fill", tint: .cyan) {
                     // Water lock ignores taps until the user turns the Digital Crown.
@@ -773,14 +831,32 @@ struct ManOverboardPage: View {
                     } else {
                         Image(systemName: "location.slash").font(.title).foregroundStyle(.red)
                         Text("Man overboard").font(.headline).foregroundStyle(.red)
-                        Text("Waiting for GPS").font(.footnote).foregroundStyle(.secondary)
+                        Text(
+                            ManOverboardNotes.waiting(
+                                positionAge: manOverboard.positionAge(), hasMark: manOverboard.mark != nil))
+                            .font(.footnote).foregroundStyle(.secondary)
                             .accessibilityIdentifier("mob.waiting")
                     }
+                    if let issue = manOverboard.locationIssue {
+                        Text(ManOverboardNotes.locationIssue(issue))
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(.orange)
+                            .accessibilityIdentifier("mob.locationIssue")
+                    }
+                    if let notice = manOverboard.notice {
+                        Text(notice).font(.footnote)
+                            .accessibilityIdentifier("mob.notice")
+                    }
+                    if manOverboard.mark != nil, manOverboard.awaitingFixSince != nil {
+                        Text("A press here is waiting for a position").font(.footnote)
+                            .accessibilityIdentifier("mob.pending")
+                    }
                     if let mark = manOverboard.mark {
-                        if mark.positionAge > ManOverboard.freshFor {
-                            Text("Marked from a fix \(Formatting.duration(mark.positionAge)) old")
-                                .font(.footnote)
+                        if let note = ManOverboardNotes.markQuality(mark) {
+                            Text(note)
+                                .font(.footnote.weight(.semibold))
                                 .foregroundStyle(.orange)
+                                .accessibilityIdentifier("mob.markQuality")
                         }
                         Text(mark.markedAt, style: .relative).font(.footnote).foregroundStyle(.secondary)
                     }
@@ -848,7 +924,7 @@ private struct SummaryView: View {
                 if let categories = metrics.speedCategories {
                     Text("Speed bests")
                         .font(.footnote.weight(.semibold))
-                        .foregroundStyle(Theme.brightTeal)
+                        .foregroundStyle(Theme.brightPetrol)
                         .padding(.top, 4)
                     // The 2 s and 10 s bests are the max speeds above.
                     ForEach(SpeedCategoryReadings(categories).rows.dropFirst(2)) { row in

@@ -94,6 +94,12 @@ final class SessionController {
         countdown = Countdown(
             id: countdownID, sport: sport, timer: StartCountdown(duration: seconds, startingAt: Self.now), canSync: sport == .sailing)
         Haptics.play(.countdownStarted)
+        if sport == .sailing {
+            // The start line needs positions before recording starts.
+            StartLineController.shared.countdownBegan { [weak self] in
+                self?.countdown?.timer.remaining(at: Self.now) ?? 0
+            }
+        }
         runTicker()
         // On the watch, a prepared workout session keeps the app running with the wrist
         // down, so the buzzes and the start stay on time.
@@ -113,18 +119,19 @@ final class SessionController {
         countdown.timer.sync(at: Self.now)
         self.countdown = countdown
         Haptics.play(.sync)
-        if countdown.timer.isFinished(at: Self.now) { finishCountdown() }
+        if countdown.timer.isFinished(at: Self.now) { finishCountdown(atGun: true) }
     }
 
     /// Skips the rest of the countdown and starts recording now.
     func startNow() {
         guard countdown != nil else { return }
-        finishCountdown()
+        finishCountdown(atGun: false)
     }
 
     func cancelCountdown() {
         ticker?.cancel()
         ticker = nil
+        if countdown?.sport == .sailing { StartLineController.shared.countdownEnded(gunDeadline: nil) }
         countdown = nil
         recorder.cancelPrepared()
     }
@@ -133,6 +140,21 @@ final class SessionController {
         guard recorder.isRecording else { return }
         recorder.lap()
         Haptics.play(.lap)
+    }
+
+    /// Marks man-overboard (PLAN §5) at any time: during a recording, a countdown, a
+    /// mirrored watch session or none. The mark comes from `ManOverboard`'s latest
+    /// position (a session's fixes, or its own location updates); with none yet, it
+    /// marks the first fix to arrive. The `mob` event goes into the local recording only
+    /// when there is one.
+    @discardableResult
+    func markManOverboard() -> ManOverboard.MarkResult {
+        let result = ManOverboard.shared.press()
+        // At the mark limit nothing was marked: ManOverboard has said so with a failure buzz.
+        guard result != .full else { return result }
+        if recorder.isRecording { recorder.recordManOverboard(result) }
+        Haptics.play(.manOverboard)
+        return result
     }
 
     /// One press of the Action button after the one that started the session: works the
@@ -152,9 +174,7 @@ final class SessionController {
         case .mark:
             recorder.mark()
             Haptics.play(.mark)
-        case .manOverboard:
-            // Before the first GPS fix there is nothing to mark: say so with a failure buzz.
-            Haptics.play(recorder.markManOverboard() ? .manOverboard : .failure)
+        case .manOverboard: markManOverboard()
         case .ignore: break
         }
         return press
@@ -180,14 +200,15 @@ final class SessionController {
                 }
                 previous = now
                 if countdown.timer.isFinished(at: now) {
-                    self.finishCountdown()
+                    self.finishCountdown(atGun: true)
                     return
                 }
             }
         }
     }
 
-    private func finishCountdown() {
+    /// `atGun`: the countdown reached zero (by itself or a sync), rather than Start now.
+    private func finishCountdown(atGun: Bool) {
         guard let countdown else { return }
         #if os(iOS)
             if WatchWorkoutMirror.shared.isAttached {
@@ -197,6 +218,10 @@ final class SessionController {
         #endif
         ticker?.cancel()
         ticker = nil
+        if countdown.sport == .sailing {
+            // The gun is the countdown's deadline (moved by a sync), not when this runs.
+            StartLineController.shared.countdownEnded(gunDeadline: atGun ? countdown.timer.endsAt : nil)
+        }
         self.countdown = nil
         Haptics.play(.recordingStarted)
         startRecording(countdown.sport)

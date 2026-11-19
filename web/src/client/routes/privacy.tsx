@@ -46,9 +46,10 @@ function Privacy() {
         <p>While you record a session, the apps use:</p>
         <ul>
           <li>
-            <strong>Location</strong>, only while you are recording, to measure your track, speed
-            and course. The iPhone keeps recording with the screen off and shows the system location
-            indicator.
+            <strong>Location</strong>, while you are recording, to measure your track, speed and
+            course. The iPhone keeps recording with the screen off and shows the system location
+            indicator. If you turn on local conditions, the iPhone also reads its position while the
+            start screen is open (below).
           </li>
           <li>
             <strong>Motion</strong> sensors during a session, to count paddle strokes.
@@ -76,7 +77,19 @@ function Privacy() {
             account, identifier or cookie, and gets back the modelled wind. (The server can also ask
             Open-Meteo for shared sessions; see below.)
           </li>
-          <li>Files you choose to share or export (GPX, raw recordings, ZIP files).</li>
+          <li>
+            <strong>Open-Meteo local conditions</strong>, only if you turn them on (Show on the
+            start screen, or Settings → Weather). While the start screen is open, at most every 15
+            minutes, the iPhone sends Open-Meteo its position rounded to 0.1° (about 10 km), with no
+            account, identifier or cookie, and gets back the current weather and the next few hours.
+            The position is not stored; the last answer is kept on the iPhone.
+          </li>
+          <li>
+            Files you choose to share or export (GPX, raw recordings, ZIP files). They contain
+            precise positions and times. A raw recording also holds the motion samples and, if
+            recorded, heart rate; its times are clock times, and a recording made by an older
+            version of the app is converted to that format when you share it.
+          </li>
         </ul>
       </Section>
 
@@ -210,11 +223,14 @@ function Privacy() {
           <li>
             Export a session as GPX or its raw recording from the iPhone, or all recordings on the
             iPhone from Settings. Export everything in your account from{" "}
-            <Link to="/app/settings" className={link}>
+            <Link to="/settings" className={link}>
               Settings
             </Link>{" "}
             on this website: ZIP files with your profile, settings, privacy zones, session details
-            and every track as you uploaded it (large accounts come in several parts).
+            and every track as you uploaded it (large accounts come in several parts). The server
+            prepares the files in the background and keeps them for 7 days, available only to you,
+            then deletes them; a record of the export (its status, size and any error, no data from
+            your sessions) is kept for 30 days after that. You can start up to three exports a day.
           </li>
           <li>
             Delete a session, and it is removed from the server at once. A device that still has the
@@ -224,11 +240,13 @@ function Privacy() {
             Delete your account in the iPhone app (Settings → Account → Delete Account) or on this
             website's Settings page. At that moment every sign-in ends and the account is locked: it
             cannot sign in, and nothing can be read from it or added to it. The same request deletes
-            your sessions, tracks, privacy zones, settings, voyages and shared positions. If any
-            part of that fails, the server tries again every 30 minutes until it is done. About 20
-            minutes after your request (at the next run after that) the account record itself is
-            deleted, with the deleted session IDs; only then can the same Apple ID start a new,
-            empty account. Recordings on your devices and workouts in Apple Health are not affected.
+            your sessions, tracks, privacy zones, settings, voyages, shared positions and data
+            exports (any export in progress stops, and its files are deleted). If any part of that
+            fails, the server tries again, every 30 minutes at first and at least every 6 hours,
+            until it is done. About 20 minutes after your request (at the next run after that) the
+            account record itself is deleted, with the deleted session IDs; only then can the same
+            Apple ID start a new, empty account. Recordings on your devices and workouts in Apple
+            Health are not affected.
           </li>
           <li>
             Processing a track after upload goes through a queue. A job that keeps failing is set

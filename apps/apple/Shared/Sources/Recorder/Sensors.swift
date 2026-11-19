@@ -13,27 +13,42 @@ import WaterKit
 final class LocationSource: Sendable {
     private let writer: RawStreamWriter
     private let onFix: @Sendable (RawFormat.GPSLine) -> Void
+    private let onIssue: @Sendable (ManOverboard.LocationIssue?) -> Void
     private let task = Mutex<Task<Void, Never>?>(nil)
 
     /// `onFix` receives every line written, on a background task, for live analysis.
-    init(writer: RawStreamWriter, onFix: @escaping @Sendable (RawFormat.GPSLine) -> Void = { _ in }) {
+    /// `onIssue` receives Core Location's diagnostics (denied, restricted, approximate,
+    /// unavailable, or nil when fine) whenever they change.
+    init(
+        writer: RawStreamWriter, onFix: @escaping @Sendable (RawFormat.GPSLine) -> Void = { _ in },
+        onIssue: @escaping @Sendable (ManOverboard.LocationIssue?) -> Void = { _ in }
+    ) {
         self.writer = writer
         self.onFix = onFix
+        self.onIssue = onIssue
     }
 
     func start() {
         let writer = writer
         let onFix = onFix
+        let onIssue = onIssue
         let newTask = Task.detached(priority: .userInitiated) {
+            var lastIssue: ManOverboard.LocationIssue?
             do {
                 for try await update in CLLocationUpdate.liveUpdates(.fitness) {
                     if Task.isCancelled { break }
+                    let issue = ManOverboard.issue(from: update)
+                    if issue != lastIssue {
+                        lastIssue = issue
+                        onIssue(issue)
+                    }
                     guard let location = update.location, let line = Self.line(for: location) else { continue }
                     writer.append(line)
                     onFix(line)
                 }
             } catch {
                 print("LocationSource: updates ended: \(error)")
+                onIssue(.unavailable)
             }
         }
         task.withLock { $0 = newTask }
