@@ -4,14 +4,16 @@ import XCTest
 final class PhoneVoyageConsentUITests: XCTestCase {
     @MainActor func testRecoversAndPrivatelySyncsTheCompletedLegWithConsent() throws {
         continueAfterFailure = false
-        defer { XCUIDevice.shared.location = nil }
+        // A teardown block, not `defer`: it also runs after a failed assertion stops the
+        // test, so a recording leg never keeps receiving fixes into the next test.
+        addTeardownBlock { @MainActor in XCUIDevice.shared.location = nil }
 
         let name = "Synthetic passage \(UUID().uuidString.prefix(8))"
         let app = XCUIApplication()
         app.launchArguments = ["-demoPrivateVoyageSync"]
         app.launchEnvironment["MADEGOOD_TEST_VOYAGES"] = UUID().uuidString
         resetLocationPermission(app)
-        app.launch()
+        launchFresh(app)
         openVoyages(in: app)
         app.buttons["New Voyage"].tap()
         let form = app.alerts["New Voyage"]
@@ -32,8 +34,12 @@ final class PhoneVoyageConsentUITests: XCTestCase {
         let countBeforeRestart = try XCTUnwrap((savedCount.value as? String).flatMap(Int.init))
         XCTAssertGreaterThan(countBeforeRestart, 0)
 
+        // Stop the simulated fixes first: with a leg recording, a location update after
+        // the terminate makes Core Location relaunch the app in the background, without
+        // this test's environment. The leg must come back from the explicit launch.
+        XCUIDevice.shared.location = nil
         app.terminate()
-        app.launch()
+        launchFresh(app)
         openVoyages(in: app)
         let activeLeg = element("voyage.activeLeg", in: app)
         XCTAssertTrue(activeLeg.waitForExistence(timeout: 10))

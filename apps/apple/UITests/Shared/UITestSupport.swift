@@ -8,8 +8,21 @@ extension XCTestCase {
     func launchDemoApp(extraArguments: [String] = [], resetSettings: Bool = true) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["-demoSession"] + (resetSettings ? ["-resetSettings"] : []) + extraArguments
-        app.launch()
+        launchFresh(app)
         return app
+    }
+
+    /// Launches `app` in a new process with this test's arguments and environment. The
+    /// system can start the app on its own: after a voyage test terminates it during a leg,
+    /// Core Location relaunches it in the background. XCUITest did not launch that copy, so
+    /// `launch()` does not terminate it and the test ends up driving a process without its
+    /// arguments (no demo mode, the real voyage library). Terminate any running copy first.
+    func launchFresh(_ app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
+        if app.state != .notRunning {
+            app.terminate()
+            XCTAssertTrue(app.wait(for: .notRunning, timeout: 10), "App still running", file: file, line: line)
+        }
+        app.launch()
     }
 
     /// An independent synthetic library for each test, preserved across that test's relaunches.

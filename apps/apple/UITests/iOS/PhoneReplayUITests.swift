@@ -153,7 +153,7 @@ final class PhoneReplayUITests: XCTestCase {
 
         // Relaunch with the same synthetic raw recording to exercise the saved sidecar.
         app.terminate()
-        app.launch()
+        launchFresh(app)
         app.tabBars.buttons["History"].tap()
         XCTAssertTrue(trimmedSailing.waitForExistence(timeout: 15))
         scrollTo(trimmedSailing, in: app)
@@ -207,7 +207,7 @@ final class PhoneReplayUITests: XCTestCase {
 
         XCTAssertTrue(app.navigationBars["Sailing"].waitForExistence(timeout: 5))
         app.terminate()
-        app.launch()
+        launchFresh(app)
         app.tabBars.buttons["History"].tap()
         XCTAssertTrue(trimmedSailing.waitForExistence(timeout: 15))
         scrollTo(trimmedSailing, in: app)
