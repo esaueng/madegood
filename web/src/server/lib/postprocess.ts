@@ -3,13 +3,7 @@ import { and, asc, eq, gt, isNotNull, isNull, lt, ne, or, type SQL, sql } from "
 import { drizzle } from "drizzle-orm/d1";
 import { privacyZones, type Session, sessions, users } from "../db/schema";
 import type { Zone } from "./session-privacy";
-import { userPrefix } from "./storage";
-import {
-  parseGzippedJson,
-  SHARED_TRACK_MAX_INFLATED_BYTES,
-  TrackTooLarge,
-  trackKey,
-} from "./track";
+import { parseGzippedJson, SHARED_TRACK_MAX_INFLATED_BYTES, TrackTooLarge } from "./track";
 import { boundsCenter, deriveTrack, InvalidTrack, type TrackDerived } from "./track-derived";
 import { fetchWind, type StoredWind, WindTransientError, windRequest } from "./wind";
 
@@ -109,7 +103,11 @@ async function loadZones(
       .select({ lat: privacyZones.lat, lon: privacyZones.lon, radiusM: privacyZones.radiusM })
       .from(privacyZones)
       .where(eq(privacyZones.userId, userId)),
-    db.select({ version: users.zonesVersion }).from(users).where(eq(users.id, userId)),
+    // A deleting account (lib/account-deletion.ts) gets no more processing or wind requests.
+    db
+      .select({ version: users.zonesVersion })
+      .from(users)
+      .where(and(eq(users.id, userId), isNull(users.deletedAt))),
   ]);
   const version = owner[0]?.version;
   return version === undefined ? null : { zones, version };
@@ -117,7 +115,8 @@ async function loadZones(
 
 /** True while the owner's zones version is still `version`. */
 const zonesStillAt = (userId: string, version: number): SQL =>
-  sql`(SELECT ${users.zonesVersion} FROM ${users} WHERE ${users.id} = ${userId}) = ${version}`;
+  // Null, so false, for an account being deleted: no derived write lands after the lock.
+  sql`(SELECT ${users.zonesVersion} FROM ${users} WHERE ${users.id} = ${userId} AND ${users.deletedAt} IS NULL) = ${version}`;
 
 /** Whether others may be shown this session's public data, given the owner's version. */
 export const publicIsCurrent = (
@@ -165,16 +164,19 @@ export async function processSession(
   if (!parsed.success) return "invalid_message";
   const msg = parsed.data;
   const db = drizzle(env.DB);
-  const key = trackKey(userPrefix(msg.userId), msg.sessionId, msg.revision);
-  // The row as long as it still holds this message's track.
-  const current = and(
+  // The row as long as it still holds this message's track. Each upload has its own key
+  // (lib/track.ts), so the row's key and ETag identify the object.
+  const holding = and(
     eq(sessions.id, msg.sessionId),
     eq(sessions.userId, msg.userId),
     isNull(sessions.deletedAt),
     eq(sessions.uploadRevision, msg.revision),
-    eq(sessions.trackKey, key),
     eq(sessions.trackEtag, msg.etag),
   );
+  const [attached] = await db.select({ key: sessions.trackKey }).from(sessions).where(holding);
+  const key = attached?.key;
+  if (!key) return "skipped_stale";
+  const current = and(holding, eq(sessions.trackKey, key));
 
   let outcome: Outcome = "skipped_done";
   let session: Session | undefined;
@@ -319,7 +321,7 @@ export async function staleSessions(
   return db
     .select({ id: sessions.id, revision: sessions.uploadRevision, etag: sessions.trackEtag })
     .from(sessions)
-    .innerJoin(users, eq(users.id, sessions.userId))
+    .innerJoin(users, and(eq(users.id, sessions.userId), isNull(users.deletedAt)))
     .where(
       and(
         eq(sessions.userId, userId),
@@ -442,7 +444,7 @@ export async function ensureUserRequeued(
   const [user] = await db
     .select({ version: users.zonesVersion, queued: users.zonesQueuedVersion })
     .from(users)
-    .where(eq(users.id, userId));
+    .where(and(eq(users.id, userId), isNull(users.deletedAt)));
   if (!user || user.queued >= user.version) return false;
   await enqueuePostprocess(env, ctx, [{ v: 1, kind: "user", userId }]);
   // Only forward: a later zone change keeps the marker behind its own version.
@@ -464,7 +466,7 @@ export async function sweepPendingZoneChanges(
   const pending = await drizzle(env.DB)
     .select({ id: users.id })
     .from(users)
-    .where(lt(users.zonesQueuedVersion, users.zonesVersion))
+    .where(and(lt(users.zonesQueuedVersion, users.zonesVersion), isNull(users.deletedAt)))
     .limit(SWEEP_USERS);
   let queued = 0;
   for (const { id } of pending) {

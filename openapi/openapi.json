@@ -142,6 +142,9 @@
               "revision_mismatch",
               "postprocess_unavailable",
               "track_replaced",
+              "account_mismatch",
+              "account_deleting",
+              "upload_expired",
               "export_in_progress",
               "export_too_large",
               "export_not_ready",
@@ -237,6 +240,20 @@
             ]
           }
         },
+        "additionalProperties": false
+      },
+      "DeleteMeRequest": {
+        "type": "object",
+        "properties": {
+          "userId": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The ID of the account the user confirmed deleting (GET /me `id`). A request for any other account than the signed-in one is refused, so a stale confirmation can never delete whoever is signed in now."
+          }
+        },
+        "required": [
+          "userId"
+        ],
         "additionalProperties": false
       },
       "MeStats": {
@@ -1499,6 +1516,16 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "The account is being deleted (`account_deleting`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           }
         }
       }
@@ -1653,7 +1680,7 @@
       },
       "delete": {
         "summary": "Delete the signed-in user's account and all their data",
-        "description": "Deletes the user's track files and every database row that belongs to them. Repeating the request with the same access token succeeds.",
+        "description": "Starts deleting the account: from this response on it cannot sign in or change anything, and every sign-in is revoked. The server then removes the track files and every database row that belongs to the account, retrying until done; the account record itself goes about 20 minutes later. Repeating the request with the same access token succeeds. A website request (session cookie) also gets its session cookies cleared. The server holds no Sign in with Apple tokens (it never redeems an authorization code), so there is nothing to revoke with Apple.",
         "tags": [
           "account"
         ],
@@ -1662,12 +1689,42 @@
             "bearerAuth": []
           }
         ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeleteMeRequest"
+              }
+            }
+          }
+        },
         "responses": {
-          "204": {
-            "description": "The account and its data are gone."
+          "202": {
+            "description": "The account is being deleted, or is already gone."
+          },
+          "400": {
+            "description": "The request body is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           },
           "401": {
             "description": "Missing or invalid access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`userId` is not the signed-in account (`account_mismatch`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -2687,7 +2744,7 @@
             }
           },
           "503": {
-            "description": "The track is stored but could not be queued for processing (`postprocess_unavailable`). Repeat the upload.",
+            "description": "The upload took too long and its object was collected (`upload_expired`; upload again), or the track is stored but could not be queued for processing (`postprocess_unavailable`). Repeat the upload.",
             "content": {
               "application/json": {
                 "schema": {

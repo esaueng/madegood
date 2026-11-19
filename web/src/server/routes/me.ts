@@ -1,7 +1,7 @@
 import { createRoute, z } from "@hono/zod-openapi";
-import { and, eq, isNotNull, isNull, sql } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
-import { type AuthEnv, requireAuth } from "../auth/middleware";
+import { type AuthEnv, requireAuth, requireToken } from "../auth/middleware";
 import {
   cleanDisplayName,
   HANDLE_PATTERN,
@@ -10,12 +10,12 @@ import {
   toUserBody,
   UserBody,
 } from "../auth/users";
+import { clearSessionCookies } from "../auth/web-cookies";
 import { sessions, users } from "../db/schema";
+import { requestAccountDeletion, runScheduledDeletion } from "../lib/account-deletion";
 import { apiError, errorResponse } from "../lib/errors";
 import { createRouter } from "../lib/router";
-import { deletePrefix, userPrefix } from "../lib/storage";
 import { TRACK_SPORTS } from "../lib/track";
-import { purgeAccountVoyages } from "../live/registry";
 
 const security = [{ bearerAuth: [] }];
 
@@ -75,18 +75,43 @@ const patchRoute = createRoute({
   },
 });
 
+const DeleteMeRequest = z
+  .object({
+    userId: z
+      .string()
+      .min(1)
+      .openapi({
+        description:
+          "The ID of the account the user confirmed deleting (GET /me `id`). A request for any " +
+          "other account than the signed-in one is refused, so a stale confirmation can never " +
+          "delete whoever is signed in now.",
+      }),
+  })
+  .strict()
+  .openapi("DeleteMeRequest");
+
 const deleteRoute = createRoute({
   method: "delete",
   path: "/me",
   summary: "Delete the signed-in user's account and all their data",
   description:
-    "Deletes the user's track files and every database row that belongs to them. Repeating the " +
-    "request with the same access token succeeds.",
+    "Starts deleting the account: from this response on it cannot sign in or change anything, " +
+    "and every sign-in is revoked. The server then removes the track files and every database " +
+    "row that belongs to the account, retrying until done; the account record itself goes " +
+    "about 20 minutes later. Repeating the request with the same access token succeeds. A " +
+    "website request (session cookie) also gets its session cookies cleared. The server holds " +
+    "no Sign in with Apple tokens (it never redeems an authorization code), so there is " +
+    "nothing to revoke with Apple.",
   tags: ["account"],
   security,
+  request: {
+    body: { required: true, content: { "application/json": { schema: DeleteMeRequest } } },
+  },
   responses: {
-    204: { description: "The account and its data are gone." },
+    202: { description: "The account is being deleted, or is already gone." },
+    400: errorResponse("The request body is invalid."),
     401: errorResponse("Missing or invalid access token."),
+    409: errorResponse("`userId` is not the signed-in account (`account_mismatch`)."),
   },
 });
 
@@ -115,14 +140,19 @@ const statsRoute = createRoute({
   },
 });
 
+/** The account, unless it is gone or being deleted. */
+const activeUser = (userId: string) => and(eq(users.id, userId), isNull(users.deletedAt));
+
 const unknownUser = (c: Parameters<typeof apiError>[0]) =>
   apiError(c, 401, "unauthorized", "The account no longer exists.");
 
 export const me = createRouter<AuthEnv>();
-me.use("/me", requireAuth);
+// DELETE /me must work for an account already being deleted (a retry), so /me checks the
+// token only; GET and PATCH treat a deleting account as gone.
+me.use("/me", requireToken);
 
 me.openapi(getRoute, async (c) => {
-  const [user] = await drizzle(c.env.DB).select().from(users).where(eq(users.id, c.var.userId));
+  const [user] = await drizzle(c.env.DB).select().from(users).where(activeUser(c.var.userId));
   return user ? c.json(toUserBody(user), 200) : unknownUser(c);
 });
 
@@ -141,15 +171,11 @@ me.openapi(patchRoute, async (c) => {
   }
 
   if (Object.keys(changes).length === 0) {
-    const [user] = await db.select().from(users).where(eq(users.id, c.var.userId));
+    const [user] = await db.select().from(users).where(activeUser(c.var.userId));
     return user ? c.json(toUserBody(user), 200) : unknownUser(c);
   }
   try {
-    const [user] = await db
-      .update(users)
-      .set(changes)
-      .where(eq(users.id, c.var.userId))
-      .returning();
+    const [user] = await db.update(users).set(changes).where(activeUser(c.var.userId)).returning();
     return user ? c.json(toUserBody(user), 200) : unknownUser(c);
   } catch (err) {
     if (isUniqueViolation(err)) {
@@ -161,31 +187,31 @@ me.openapi(patchRoute, async (c) => {
 
 me.openapi(deleteRoute, async (c) => {
   const userId = c.var.userId;
-  const db = drizzle(c.env.DB);
-  // Track keys outside the user prefix, in case any were ever written elsewhere; read
-  // them before the rows that point at them are gone.
-  const tracks = await db
-    .select({ key: sessions.trackKey })
-    .from(sessions)
-    .where(and(eq(sessions.userId, userId), isNotNull(sessions.trackKey)));
-  const keys = tracks.flatMap((t) =>
-    t.key && !t.key.startsWith(userPrefix(userId)) ? [t.key] : [],
-  );
-  // Rows first, then objects (review of #37). A track upload attaches only to a live
-  // session and otherwise deletes its object, so with this order an upload that overlaps
-  // the deletion cannot leave a track behind. The prefix is deleted on every call, even
-  // with the rows already gone, so retrying after an R2 failure still cleans up.
-  // Sessions, voyages and their legs, refresh tokens and privacy zones cascade from the user.
-  await db.delete(users).where(eq(users.id, userId));
-  const cleanupTracks = async () => {
-    await deletePrefix(c.env.TRACKS, userPrefix(userId));
-    for (let i = 0; i < keys.length; i += 1000) await c.env.TRACKS.delete(keys.slice(i, i + 1000));
-  };
-  const cleanup = await Promise.allSettled([purgeAccountVoyages(c.env, userId), cleanupTracks()]);
-  for (const result of cleanup) {
-    if (result.status === "rejected") throw result.reason;
+  if (c.req.valid("json").userId !== userId) {
+    return apiError(
+      c,
+      409,
+      "account_mismatch",
+      "You are signed in to a different account than the one you chose to delete.",
+    );
   }
-  return c.body(null, 204);
+  // Sign in with Apple: the server never holds an Apple refresh or access token. The apps
+  // send only the identity token, and the website asks for `code id_token` but verifies the
+  // identity token alone and never exchanges the code (routes/web-auth.ts). With no token
+  // stored there is nothing to send to Apple's /auth/revoke, and no Sign in with Apple
+  // private key is needed (docs/app-store.md). Revisit this if the code is ever redeemed.
+  //
+  // The deletion is a durable job (lib/account-deletion.ts): marked and revoked here in one
+  // D1 batch, then swept once in this request (so the data is gone when it answers, unless
+  // storage fails) and by the scheduled sweep until the account record goes too.
+  await requestAccountDeletion(c.env.DB, userId);
+  // A failed pass is retried by the scheduled sweep with backoff (runScheduledDeletion).
+  await runScheduledDeletion(c.env, userId);
+  // The website's refresh rows are gone; clear its cookies too, so the browser stops
+  // presenting them. Apps (bearer tokens) get no cookies.
+  if (c.req.header("Authorization") === undefined) clearSessionCookies(c);
+  c.header("Cache-Control", "no-store");
+  return c.body(null, 202);
 });
 
 me.openapi(statsRoute, async (c) => {

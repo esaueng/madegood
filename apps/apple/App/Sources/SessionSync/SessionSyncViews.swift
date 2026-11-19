@@ -92,6 +92,7 @@ struct SessionSyncSection: View {
     @Environment(SessionSync.self) private var sync: SessionSync?
     @State private var busy = false
     @State private var message: String?
+    @State private var confirmingDeletion = false
 
     var body: some View {
         Section {
@@ -110,7 +111,19 @@ struct SessionSyncSection: View {
             )
         }
         .disabled(busy)
+        .alert("Delete your MadeGood account?", isPresented: $confirmingDeletion) {
+            Button("Delete Account", role: .destructive) {
+                if let sync { deleteAccount(sync) }
+            }
+            .accessibilityIdentifier("sessionSync.confirmDelete")
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(Self.deletionWarning)
+        }
     }
+
+    static let deletionWarning =
+        "This deletes every session you have uploaded, your privacy zones, your settings and your sign-in from MadeGood’s servers. Recordings on this iPhone and your Apple Watch stay on your devices, and workouts in Apple Health are not affected. This can’t be undone."
 
     @ViewBuilder
     private func content(_ sync: SessionSync) -> some View {
@@ -139,6 +152,8 @@ struct SessionSyncSection: View {
                 perform(failure: "Couldn’t clear the saved sign-in. Try again.") { try await sync.signOut() }
             }
             .accessibilityIdentifier("sessionSync.signOut")
+            Button("Delete Account…", role: .destructive) { confirmingDeletion = true }
+                .accessibilityIdentifier("sessionSync.deleteAccount")
         } else {
             if sync.isDemo {
                 Button("Sign In with Synthetic Account") {
@@ -164,7 +179,7 @@ struct SessionSyncSection: View {
             }
         }
         if busy { ProgressView() }
-        if let message { Text(message).foregroundStyle(.secondary) }
+        if let message { Text(message).foregroundStyle(.secondary).accessibilityIdentifier("sessionSync.message") }
     }
 
     @ViewBuilder
@@ -209,6 +224,24 @@ struct SessionSyncSection: View {
             message = nil
         } catch {
             message = "Couldn’t sign in with Apple. Try again."
+        }
+    }
+
+    private func deleteAccount(_ sync: SessionSync) {
+        busy = true
+        message = nil
+        Task {
+            defer { busy = false }
+            do {
+                try await sync.deleteAccount()
+                message = "Your account was deleted. Recordings stay on this iPhone."
+            } catch VoyageAccountError.signInRequired {
+                message = "Your sign-in expired. Sign in again, then delete your account."
+            } catch is AccountDeletedSignOutFailed {
+                message = "Your account was deleted, but the saved sign-in couldn’t be cleared. Clear it below."
+            } catch {
+                message = "Couldn’t delete your account. Check your connection and try again."
+            }
         }
     }
 

@@ -5,7 +5,7 @@ import { createApp } from "../src/server/app";
 import type { VoyageViewerState } from "../src/server/lib/voyage-sharing";
 import { liveVoyage } from "../src/server/live/registry";
 import type { Position } from "../src/server/live/voyage-live";
-import { api, bearer, postJson, signIn } from "./apple";
+import { api, bearer, deleteMe, postJson, signIn } from "./apple";
 
 const unavailable = { status: "unavailable" };
 const position = (
@@ -44,7 +44,7 @@ async function setup(voyageId: string = crypto.randomUUID(), completed = false) 
   let generation = 1;
   const ingest = (positions: Position[], grantGeneration = generation) =>
     postJson(`${path}/positions`, { grantGeneration, positions }, headers);
-  const remove = () => api("/me", { method: "DELETE", headers });
+  const remove = () => deleteMe(headers);
   async function issue(delayS = 0, expiresInS = 1200) {
     const result = await share({ action: "issue", delayS, expiresInS });
     expect(result.status).toBe(200);
@@ -425,10 +425,14 @@ describe("local voyage transport", () => {
           if (action === "delete") {
             const removed = await createApp().request(
               "/api/me",
-              { method: "DELETE", headers: voyage.headers },
+              {
+                method: "DELETE",
+                headers: { ...voyage.headers, "content-type": "application/json" },
+                body: JSON.stringify({ userId: voyage.userId }),
+              },
               env,
             );
-            expect(removed.status).toBe(204);
+            expect(removed.status).toBe(202);
             return null;
           }
           const result = await instance.configure(
@@ -457,7 +461,7 @@ describe("local voyage transport", () => {
       if (action === "delete") {
         expect((await voyage.state()).status).toBe(401);
         expect((await voyage.ingest([position(time.start + 100, 3)])).status).toBe(401);
-        expect((await voyage.remove()).status).toBe(204);
+        expect((await voyage.remove()).status).toBe(202);
         await runInDurableObject(voyage.stub, (_, state) => {
           expect(state.storage.sql.exec("SELECT * FROM positions").toArray()).toEqual([]);
           expect(state.storage.sql.exec("SELECT * FROM live_settings").toArray()).toEqual([]);
@@ -560,10 +564,14 @@ it("blocks an in-flight first batch after account deletion has purged its regist
     try {
       const removed = await createApp().request(
         "/api/me",
-        { method: "DELETE", headers: voyage.headers },
+        {
+          method: "DELETE",
+          headers: { ...voyage.headers, "content-type": "application/json" },
+          body: JSON.stringify({ userId: voyage.userId }),
+        },
         env,
       );
-      expect(removed.status).toBe(204);
+      expect(removed.status).toBe(202);
     } finally {
       release.resolve();
       spy.mockRestore();

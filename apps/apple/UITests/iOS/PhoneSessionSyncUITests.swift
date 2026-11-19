@@ -69,4 +69,42 @@ final class PhoneSessionSyncUITests: XCTestCase {
         scrollTo(enable, in: app)
         XCTAssertEqual(enable.value as? String, "0")
     }
+
+    /// Settings → Delete Account: confirmation first, then signed out with the recordings kept.
+    @MainActor
+    func testDeleteAccountConfirmsThenSignsOutAndKeepsRecordings() {
+        continueAfterFailure = false
+        let app = launchDemoHistory(extraArguments: ["-demoSessionSync"])
+        app.tabBars.buttons["Settings"].tap()
+        let signIn = app.buttons["sessionSync.demoSignIn"]
+        scrollTo(signIn, in: app)
+        signIn.tap()
+        XCTAssertTrue(element("sessionSync.signedIn", in: app).waitForExistence(timeout: 10))
+
+        let delete = app.buttons["sessionSync.deleteAccount"]
+        scrollTo(delete, in: app)
+        delete.tap()
+        let alert = app.alerts["Delete your MadeGood account?"]
+        XCTAssertTrue(alert.waitForExistence(timeout: 5))
+        XCTAssertTrue(
+            alert.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "stay on your devices")).firstMatch
+                .exists)
+        attachScreenshot("Delete account confirmation")
+
+        // Cancel keeps everything.
+        alert.buttons["Cancel"].firstMatch.tap()
+        XCTAssertTrue(element("sessionSync.signedIn", in: app).exists)
+
+        delete.tap()
+        XCTAssertTrue(alert.waitForExistence(timeout: 5))
+        alert.buttons["Delete Account"].firstMatch.tap()
+        let message = element("sessionSync.message", in: app)
+        waitForLabel(message, "Your account was deleted. Recordings stay on this iPhone.", timeout: 15)
+        XCTAssertTrue(app.buttons["sessionSync.demoSignIn"].exists)
+        XCTAssertFalse(element("sessionSync.signedIn", in: app).exists)
+        attachScreenshot("Account deleted")
+
+        app.tabBars.buttons["History"].tap()
+        XCTAssertTrue(app.buttons["session.row"].firstMatch.waitForExistence(timeout: 10))
+    }
 }

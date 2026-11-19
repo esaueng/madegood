@@ -1,5 +1,5 @@
 import { createRoute, z } from "@hono/zod-openapi";
-import { and, eq, gt, sql } from "drizzle-orm";
+import { and, eq, gt, isNull, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
 import type { Context } from "hono";
 import { bodyLimit } from "hono/body-limit";
@@ -237,8 +237,13 @@ const legBody = ({ userId: _, ...row }: typeof legs.$inferSelect) => ({
   endedAt: iso(row.endedAt),
 });
 
+/** The account exists and is not being deleted (lib/account-deletion.ts). */
 const hasAccount = (db: ReturnType<typeof drizzle>, userId: string) =>
-  db.select({ id: users.id }).from(users).where(eq(users.id, userId)).get();
+  db
+    .select({ id: users.id })
+    .from(users)
+    .where(and(eq(users.id, userId), isNull(users.deletedAt)))
+    .get();
 const hasLeg = (db: ReturnType<typeof drizzle>, userId: string, voyageId: string, legId: string) =>
   db
     .select({ id: legs.id })
@@ -316,7 +321,8 @@ voyageRoutes.openapi(putVoyage, async (c) => {
             endedAt: sql<number | null>`${fields.endedAt}`.as("endedAt"),
           })
           .from(users)
-          .where(eq(users.id, userId)),
+          // An account being deleted (lib/account-deletion.ts) gets no new rows.
+          .where(and(eq(users.id, userId), isNull(users.deletedAt))),
       )
       .onConflictDoNothing()
       .returning({ id: voyages.id }),
@@ -397,7 +403,12 @@ voyageRoutes.openapi(putLeg, async (c) => {
             distanceM: sql<number | null>`${fields.distanceM}`.as("distanceM"),
           })
           .from(voyages)
-          .where(parent),
+          .where(
+            and(
+              parent,
+              sql`EXISTS (SELECT 1 FROM users WHERE users.id = ${userId} AND users.deleted_at IS NULL)`,
+            ),
+          ),
       )
       .onConflictDoNothing()
       .returning({ id: legs.id }),

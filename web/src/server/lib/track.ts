@@ -62,14 +62,18 @@ export async function parseGzippedJson(
 const LEG_TRACK_MAX_INFLATED_BYTES = 16 * 1024 * 1024;
 
 /**
- * Where a user's track for a session lives in the TRACKS bucket, under `userPrefix`. Each
- * upload revision has its own object, so a delayed upload of an older revision can never
- * overwrite the stored one. Revision 0 (no revision sent) keeps the original name.
+ * Where an upload of a session's track goes in the TRACKS bucket, under `userPrefix`. Every
+ * upload attempt has its own object (revision and a random attempt ID), so no upload can
+ * overwrite another's bytes and cleanup after a failure deletes only its own object. The
+ * row names the object that is attached. Older uploads used `track.v1.gz` and
+ * `track.v1.r<revision>.gz`; rows that name those keep working.
  */
-export const trackKey = (prefix: string, sessionId: string, revision = 0) =>
-  revision === 0
-    ? `${prefix}sessions/${sessionId}/track.v1.gz`
-    : `${prefix}sessions/${sessionId}/track.v1.r${revision}.gz`;
+export const trackKey = (
+  prefix: string,
+  sessionId: string,
+  revision: number,
+  attempt: string = crypto.randomUUID(),
+) => `${prefix}sessions/${sessionId}/track.v1.r${revision}.${attempt}.gz`;
 
 /** Reads a request body into memory, or returns null once it exceeds `limit` bytes. */
 export async function readBody(

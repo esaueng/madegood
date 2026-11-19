@@ -2,6 +2,7 @@ import { and, eq, gt, isNull, or } from "drizzle-orm";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
 import { jwtVerify, SignJWT } from "jose";
 import { refreshTokens } from "../db/schema";
+import { AccountDeleting } from "./account-state";
 
 export const ACCESS_TOKEN_TTL_S = 15 * 60;
 export const REFRESH_TOKEN_TTL_MS = 60 * 24 * 60 * 60 * 1000;
@@ -149,15 +150,16 @@ export async function issueRefreshToken(
 ) {
   const token = newToken();
   const id = crypto.randomUUID();
-  await db.insert(refreshTokens).values({
-    id,
-    userId,
-    familyId: id,
-    client,
-    tokenHash: await hashRefreshToken(token),
-    expiresAt: now + REFRESH_TOKEN_TTL_MS,
-    createdAt: now,
-  });
+  // One statement: a sign-in that raced the account's deletion (which deletes every refresh
+  // token) cannot leave a new family behind, because the account must still be active.
+  const result = await db.$client
+    .prepare(
+      `INSERT INTO refresh_tokens (id, user_id, family_id, client, token_hash, expires_at, created_at)
+       SELECT ?, id, ?, ?, ?, ?, ? FROM users WHERE id = ? AND deleted_at IS NULL`,
+    )
+    .bind(id, id, client, await hashRefreshToken(token), now + REFRESH_TOKEN_TTL_MS, now, userId)
+    .run();
+  if (result.meta.changes !== 1) throw new AccountDeleting();
   return { token, familyId: id };
 }
 
@@ -352,7 +354,8 @@ export async function consumeRefreshToken(
       .prepare(
         `INSERT INTO refresh_tokens
            (id, user_id, token_hash, expires_at, created_at, family_id, client)
-         SELECT ?, ?, ?, ?, ?, ?, ? WHERE changes() = 1`,
+         SELECT ?, ?, ?, ?, ?, ?, ? WHERE changes() = 1
+           AND EXISTS (SELECT 1 FROM users WHERE id = ? AND deleted_at IS NULL)`,
       )
       .bind(
         crypto.randomUUID(),
@@ -362,6 +365,7 @@ export async function consumeRefreshToken(
         now,
         row.familyId ?? row.id,
         row.client ?? "app",
+        row.userId,
       ),
   ]);
   return revoked?.meta.changes === 1;

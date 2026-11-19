@@ -1,6 +1,7 @@
-import { exports } from "cloudflare:workers";
-import { exportJWK, generateKeyPair, SignJWT } from "jose";
+import { env, exports } from "cloudflare:workers";
+import { decodeJwt, exportJWK, generateKeyPair, SignJWT } from "jose";
 import { vi } from "vitest";
+import { DELETION_GRACE_MS, runAccountDeletion } from "../src/server/lib/account-deletion";
 import { openMeteo } from "./open-meteo";
 
 // A stand-in for Apple's signing key. The Worker fetches the "Apple" JWKS from a mocked
@@ -81,3 +82,25 @@ export async function signIn(body: { identityToken?: string; displayName?: strin
 }
 
 export const bearer = (token: string) => ({ authorization: `Bearer ${token}` });
+
+/**
+ * DELETE /me for the token's own account, then (unless `finish` is false) runs the deletion
+ * job past its grace period, as the scheduled sweep would.
+ */
+export async function deleteMe(
+  auth: string | Record<string, string>,
+  options: { finish?: boolean; userId?: string } = {},
+) {
+  const headers = typeof auth === "string" ? bearer(auth) : auth;
+  const token = (headers.authorization ?? "").replace(/^Bearer /i, "");
+  const userId = options.userId ?? String(decodeJwt(token).sub);
+  const response = await api("/me", {
+    method: "DELETE",
+    headers: { ...headers, "content-type": "application/json" },
+    body: JSON.stringify({ userId }),
+  });
+  if ((options.finish ?? true) && response.status === 202) {
+    await runAccountDeletion(env, String(decodeJwt(token).sub), Date.now() + DELETION_GRACE_MS + 1);
+  }
+  return response;
+}

@@ -139,13 +139,15 @@ session.
   ID of the account shown (the server refuses any other, so a stale confirmation cannot
   delete whoever is signed in now). The server marks the account deleting and revokes every
   sign-in at once: it can no longer sign in, read or write. It then removes the D1 rows
-  (sessions, privacy zones, voyages and legs, export jobs) and every R2 object (export
-  parts included; an export step still running stops and deletes what it wrote), retrying on the
+  (sessions, privacy zones, voyages and legs) and every R2 object, retrying on the
   scheduled sweep until done, and deletes the account record about 20 minutes later
   (`web/src/server/lib/account-deletion.ts`). The response is 202. Afterwards the iPhone
   signs out, removes the upload queue, frozen tracks, saved tokens and that account's
   sync consent; the website's session cookies are cleared in the same response.
   Recordings on the device are kept (they were never only in the account).
+- **Exports:** the first deletion pass also deletes the account's export jobs, and their
+  parts go with the rest of its R2 objects; an export step still running stops and
+  deletes what it wrote.
 - **Sign in with Apple:** no Apple tokens are held, so none are revoked (item 2).
 - Confirmation text (iPhone): "Delete your MadeGood account? This deletes every session
   you have uploaded, your privacy zones, your settings and your sign-in from MadeGood's

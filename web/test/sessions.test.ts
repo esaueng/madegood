@@ -1,8 +1,9 @@
 import { env } from "cloudflare:workers";
 import { drizzle } from "drizzle-orm/d1";
 import { describe, expect, it } from "vitest";
+import { CLAIM_LEASE_MS, collectR2Garbage } from "../src/server/lib/r2-garbage";
 import { replaceSessionMetadata } from "../src/server/lib/session-upload";
-import { api, bearer, type SignIn, signIn } from "./apple";
+import { api, bearer, deleteMe, type SignIn, signIn } from "./apple";
 
 // Synthetic data only (AGENTS.md): positions near 0,0 and dates in 2000.
 const START = "2000-01-01T10:00:00.000Z";
@@ -84,7 +85,22 @@ const putTrack = (
 ) =>
   api(`/sessions/${id}/track`, { method: "PUT", headers: { ...bearer(token), ...headers }, body });
 
-const trackKey = (userId: string, id: string) => `users/${userId}/sessions/${id}/track.v1.gz`;
+/** Every R2 object under a session's prefix (each upload attempt has its own key). */
+async function sessionObjects(userId: string, id: string): Promise<string[]> {
+  const listed = await env.TRACKS.list({ prefix: `users/${userId}/sessions/${id}/` });
+  return listed.objects.map((o) => o.key);
+}
+
+/** The key the session row names, or null. */
+async function rowKey(id: string): Promise<string | null> {
+  const row = await env.DB.prepare("select track_key as k from sessions where id = ?")
+    .bind(id)
+    .first<{ k: string | null }>();
+  return row?.k ?? null;
+}
+
+/** A per-attempt upload key (lib/track.ts). */
+const UPLOAD_KEY = /\/track\.v1\.r\d+\.[0-9a-f-]{36}\.gz$/;
 
 /**
  * Starts a track upload whose body stops after its first bytes. `reading` resolves once
@@ -257,18 +273,25 @@ describe("PUT /api/sessions/:id/track", () => {
       expect(response.status).toBe(204);
       expect(response.headers.get("etag")).toBeTruthy();
     }
-    const object = await env.TRACKS.get(trackKey(owner.user.id, id));
+    // Each upload has its own object; the one it replaced is deleted, so one remains, and it
+    // is the one the row names.
+    const key = await rowKey(id);
+    expect(key).toMatch(UPLOAD_KEY);
+    expect(key?.startsWith(`users/${owner.user.id}/sessions/${id}/`)).toBe(true);
+    const object = await env.TRACKS.get(key as string);
     expect(object?.httpMetadata?.contentType).toBe("application/gzip");
     expect(new Uint8Array(await (object as R2ObjectBody).arrayBuffer())).toEqual(file);
     const listed = await env.TRACKS.list({ prefix: `users/${owner.user.id}/` });
-    expect(listed.objects).toHaveLength(1);
+    expect(listed.objects.map((o) => o.key)).toEqual([key]);
+    const pending = await env.DB.prepare(
+      "select count(*) as n from pending_r2_deletes where user_id = ?",
+    )
+      .bind(owner.user.id)
+      .first<{ n: number }>();
+    expect(pending?.n).toBe(0);
 
     const session = await (await getSession(owner.accessToken, id)).json();
     expect(session).toMatchObject({ hasTrack: true });
-    const row = await env.DB.prepare("select track_key from sessions where id = ?")
-      .bind(id)
-      .first<{ track_key: string }>();
-    expect(row?.track_key).toBe(trackKey(owner.user.id, id));
   });
 
   it("requires the session's metadata first, from the same user", async () => {
@@ -283,8 +306,8 @@ describe("PUT /api/sessions/:id/track", () => {
 
     await putSession(owner.accessToken, id);
     expect((await putTrack(other.accessToken, id, file)).status).toBe(404);
-    expect(await env.TRACKS.head(trackKey(other.user.id, id))).toBeNull();
-    expect(await env.TRACKS.head(trackKey(owner.user.id, id))).toBeNull();
+    expect(await sessionObjects(other.user.id, id)).toEqual([]);
+    expect(await sessionObjects(owner.user.id, id)).toEqual([]);
   });
 
   it("refuses a track over 8 MiB", async () => {
@@ -297,7 +320,7 @@ describe("PUT /api/sessions/:id/track", () => {
     const response = await putTrack(owner.accessToken, id, file);
     expect(response.status).toBe(413);
     expect(await response.json()).toMatchObject({ error: "payload_too_large" });
-    expect(await env.TRACKS.head(trackKey(owner.user.id, id))).toBeNull();
+    expect(await sessionObjects(owner.user.id, id)).toEqual([]);
 
     // A body without a Content-Length is counted while it is read.
     const streamed = await putTrack(owner.accessToken, id, new Blob([file]).stream());
@@ -335,7 +358,7 @@ describe("PUT /api/sessions/:id/track", () => {
       expect(response.status, JSON.stringify(headers)).toBe(415);
       expect(await response.json()).toMatchObject({ error: "unsupported_media_type" });
     }
-    expect(await env.TRACKS.head(trackKey(owner.user.id, id))).toBeNull();
+    expect(await sessionObjects(owner.user.id, id)).toEqual([]);
   });
 });
 
@@ -577,10 +600,10 @@ describe("DELETE /api/sessions/:id", () => {
 
     expect((await deleteSession(other.accessToken, id)).status).toBe(204);
     expect((await getSession(owner.accessToken, id)).status).toBe(200);
-    expect(await env.TRACKS.head(trackKey(owner.user.id, id))).not.toBeNull();
+    expect(await sessionObjects(owner.user.id, id)).toHaveLength(1);
 
     expect((await deleteSession(owner.accessToken, id)).status).toBe(204);
-    expect(await env.TRACKS.head(trackKey(owner.user.id, id))).toBeNull();
+    expect(await sessionObjects(owner.user.id, id)).toEqual([]);
     expect((await getSession(owner.accessToken, id)).status).toBe(404);
     const row = await env.DB.prepare("select id from sessions where id = ?").bind(id).first();
     expect(row).toBeNull();
@@ -602,7 +625,21 @@ describe("DELETE /api/sessions/:id", () => {
     upload.finish();
 
     expect((await upload.response).status).toBe(404);
-    expect(await env.TRACKS.head(trackKey(owner.user.id, id))).toBeNull();
+    expect(await sessionObjects(owner.user.id, id)).toEqual([]);
+  });
+
+  // Review of #78, finding 3: an upload that lands while the account is being deleted (before
+  // the job has removed its rows) never attaches, and its object is removed at once.
+  it("removes a track that lands while the account is being deleted", async () => {
+    const owner = await signIn();
+    const id = crypto.randomUUID();
+    expect((await putSession(owner.accessToken, id)).status).toBe(201);
+    const upload = pausedUpload(owner.accessToken, id, await gzip(trackJson(id)));
+    await upload.reading;
+    expect((await deleteMe(owner.accessToken, { finish: false })).status).toBe(202);
+    upload.finish();
+    expect((await upload.response).status).toBe(401);
+    expect(await sessionObjects(owner.user.id, id)).toEqual([]);
   });
 });
 
@@ -610,9 +647,9 @@ describe("account deletion", () => {
   it("removes the user's uploaded session tracks", async () => {
     const owner = await signIn();
     const ids = [await sessionWithTrack(owner), await sessionWithTrack(owner, "public")];
-    const response = await api("/me", { method: "DELETE", headers: bearer(owner.accessToken) });
-    expect(response.status).toBe(204);
-    for (const id of ids) expect(await env.TRACKS.head(trackKey(owner.user.id, id))).toBeNull();
+    const response = await deleteMe(owner.accessToken);
+    expect(response.status).toBe(202);
+    for (const id of ids) expect(await sessionObjects(owner.user.id, id)).toEqual([]);
     expect((await getSession(null, ids[1] as string)).status).toBe(404);
   });
 
@@ -625,12 +662,27 @@ describe("account deletion", () => {
     const upload = pausedUpload(owner.accessToken, id, await gzip(trackJson(id)));
     await upload.reading;
 
-    const response = await api("/me", { method: "DELETE", headers: bearer(owner.accessToken) });
-    expect(response.status).toBe(204);
+    const response = await deleteMe(owner.accessToken);
+    expect(response.status).toBe(202);
     upload.finish();
 
-    expect((await upload.response).status).toBe(404);
-    expect(await env.TRACKS.head(trackKey(owner.user.id, id))).toBeNull();
+    // The account is gone (review of #78): the late upload is refused and leaves nothing.
+    expect((await upload.response).status).toBe(401);
+    expect(await sessionObjects(owner.user.id, id)).toEqual([]);
+  });
+
+  // Review of #78, finding 3: an upload that lands while the account is being deleted (before
+  // the job has removed its rows) never attaches, and its object is removed at once.
+  it("removes a track that lands while the account is being deleted", async () => {
+    const owner = await signIn();
+    const id = crypto.randomUUID();
+    expect((await putSession(owner.accessToken, id)).status).toBe(201);
+    const upload = pausedUpload(owner.accessToken, id, await gzip(trackJson(id)));
+    await upload.reading;
+    expect((await deleteMe(owner.accessToken, { finish: false })).status).toBe(202);
+    upload.finish();
+    expect((await upload.response).status).toBe(401);
+    expect(await sessionObjects(owner.user.id, id)).toEqual([]);
   });
 });
 
@@ -648,12 +700,38 @@ const putTrackAt = (token: string, id: string, revision: number, body: BodyInit)
     body,
   });
 
-const revisionKey = (userId: string, id: string, revision: number) =>
-  `users/${userId}/sessions/${id}/track.v1.r${revision}.gz`;
-
 /** A track whose content says which revision it is, to tell stored files apart. */
 const trackFor = (id: string, revision: number) =>
   gzip(trackJson(id).replace('"summary":{}', `"summary":{"revision":${revision}}`));
+
+describe("last review of #78: an expired upload", () => {
+  it("deletes its own object before answering upload_expired", async () => {
+    const owner = await signIn();
+    const id = crypto.randomUUID();
+    expect((await putSessionAt(owner.accessToken, id, 1)).status).toBe(201);
+    // Every record of this session's uploads is collected at once, as if the upload had
+    // taken past the grace and the collector (and the final prefix sweep) ran before the put.
+    const trigger = `lost_${id.replaceAll("-", "")}`;
+    await env.DB.prepare(
+      `CREATE TRIGGER ${trigger} AFTER INSERT ON pending_r2_deletes
+       WHEN NEW.key LIKE '%/sessions/${id}/%'
+       BEGIN DELETE FROM pending_r2_deletes WHERE key = NEW.key; END`,
+    ).run();
+    try {
+      const response = await putTrackAt(owner.accessToken, id, 1, await trackFor(id, 1));
+      expect(response.status).toBe(503);
+      expect(await response.json()).toMatchObject({ error: "upload_expired" });
+    } finally {
+      await env.DB.prepare(`DROP TRIGGER ${trigger}`).run();
+    }
+    const prefix = `users/${owner.user.id}/sessions/${id}/`;
+    expect((await env.TRACKS.list({ prefix })).objects).toEqual([]);
+    expect(await rowKey(id)).toBeNull();
+    // The app retries under a new key, which attaches.
+    expect((await putTrackAt(owner.accessToken, id, 1, await trackFor(id, 1))).status).toBe(204);
+    expect((await env.TRACKS.list({ prefix })).objects).toHaveLength(1);
+  });
+});
 
 describe("upload revisions", () => {
   it("rejects a PUT older than the stored revision", async () => {
@@ -680,7 +758,7 @@ describe("upload revisions", () => {
     expect(early.status).toBe(412);
     expect(early.headers.get("Upload-Revision")).toBe("2");
     expect(((await early.json()) as { error: string }).error).toBe("revision_mismatch");
-    expect(await env.TRACKS.head(revisionKey(owner.user.id, id, 3))).toBeNull();
+    expect((await sessionObjects(owner.user.id, id)).filter((k) => k.includes(".r3."))).toEqual([]);
   });
 
   it("detaches and deletes the old track when a newer revision's metadata arrives", async () => {
@@ -688,12 +766,14 @@ describe("upload revisions", () => {
     const id = crypto.randomUUID();
     expect((await putSessionAt(owner.accessToken, id, 1)).status).toBe(201);
     expect((await putTrackAt(owner.accessToken, id, 1, await trackFor(id, 1))).status).toBe(204);
-    expect(await env.TRACKS.head(revisionKey(owner.user.id, id, 1))).not.toBeNull();
+    expect(
+      (await sessionObjects(owner.user.id, id)).filter((k) => k.includes(".r1.")),
+    ).toHaveLength(1);
 
     expect((await putSessionAt(owner.accessToken, id, 2)).status).toBe(200);
     // The untrimmed track is gone before the trimmed one arrives.
     expect((await getTrack(owner.accessToken, id)).status).toBe(404);
-    expect(await env.TRACKS.head(revisionKey(owner.user.id, id, 1))).toBeNull();
+    expect((await sessionObjects(owner.user.id, id)).filter((k) => k.includes(".r1."))).toEqual([]);
 
     expect((await putTrackAt(owner.accessToken, id, 2, await trackFor(id, 2))).status).toBe(204);
     const track = await getTrack(owner.accessToken, id);
@@ -740,7 +820,7 @@ describe("upload revisions", () => {
 
     const track = await getTrack(owner.accessToken, id);
     expect(await gunzip(await track.arrayBuffer())).toContain('"revision":2');
-    expect(await env.TRACKS.head(revisionKey(owner.user.id, id, 1))).toBeNull();
+    expect((await sessionObjects(owner.user.id, id)).filter((k) => k.includes(".r1."))).toEqual([]);
   });
 });
 
@@ -781,9 +861,7 @@ describe("deleted sessions stay deleted", () => {
         .bind(owner.user.id)
         .first<{ n: number }>();
     expect((await count())?.n).toBe(1);
-    expect(
-      (await api("/me", { method: "DELETE", headers: bearer(owner.accessToken) })).status,
-    ).toBe(204);
+    expect((await deleteMe(owner.accessToken)).status).toBe(202);
     expect((await count())?.n).toBe(0);
   });
 });
@@ -830,15 +908,18 @@ describe("concurrent metadata PUTs", () => {
     const track = await getTrack(owner.accessToken, id);
     expect(track.status).toBe(200);
     expect(await gunzip(await track.arrayBuffer())).toContain('"revision":2');
-    expect(await env.TRACKS.head(revisionKey(owner.user.id, id, 2))).not.toBeNull();
-    expect(await env.TRACKS.head(revisionKey(owner.user.id, id, 1))).toBeNull();
+    expect(
+      (await sessionObjects(owner.user.id, id)).filter((k) => k.includes(".r2.")),
+    ).toHaveLength(1);
+    expect((await sessionObjects(owner.user.id, id)).filter((k) => k.includes(".r1."))).toEqual([]);
   });
 
-  it("retries an old track's deletion that failed on the next PUT", async () => {
+  it("keeps a detached track recorded when deleting it fails, and collects it later", async () => {
     const owner = await signIn();
     const id = crypto.randomUUID();
     expect((await putSessionAt(owner.accessToken, id, 1)).status).toBe(201);
     expect((await putTrackAt(owner.accessToken, id, 1, await trackFor(id, 1))).status).toBe(204);
+    const old = (await rowKey(id)) as string;
 
     const failingDelete = new Proxy(env.TRACKS, {
       get(target, property) {
@@ -855,10 +936,21 @@ describe("concurrent metadata PUTs", () => {
       fields,
     });
     expect(result.kind).toBe("updated");
-    expect(await env.TRACKS.head(revisionKey(owner.user.id, id, 1))).not.toBeNull();
+    expect(await rowKey(id)).toBeNull();
+    expect(await env.TRACKS.head(old)).not.toBeNull();
+    // Recorded in the same batch that detached it, so nothing has to find it in a row.
+    const recorded = await env.DB.prepare("select key from pending_r2_deletes where key = ?")
+      .bind(old)
+      .first();
+    expect(recorded).not.toBeNull();
 
-    // The next successful PUT derives the leftover from the listing and deletes it.
-    expect((await putSessionAt(owner.accessToken, id, 2)).status).toBe(200);
-    expect(await env.TRACKS.head(revisionKey(owner.user.id, id, 1))).toBeNull();
+    // The failed delete keeps its claim (claims are one-way); the next collector takes the
+    // key over once the claim lapses.
+    expect(await collectR2Garbage(drizzle(env.DB), env.TRACKS, { userId: owner.user.id })).toBe(0);
+    await env.DB.prepare("update pending_r2_deletes set claimed_at = claimed_at - ? where key = ?")
+      .bind(CLAIM_LEASE_MS + 1, old)
+      .run();
+    expect(await collectR2Garbage(drizzle(env.DB), env.TRACKS, { userId: owner.user.id })).toBe(1);
+    expect(await env.TRACKS.head(old)).toBeNull();
   });
 });

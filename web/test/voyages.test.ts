@@ -2,7 +2,7 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { createApp } from "../src/server/app";
 import { userPrefix } from "../src/server/lib/storage";
-import { api, bearer, identityToken, postJson, signIn } from "./apple";
+import { api, bearer, deleteMe, identityToken, postJson, signIn } from "./apple";
 
 const voyage = {
   title: "Synthetic cruise",
@@ -46,7 +46,7 @@ const putTrack = (bytes: Uint8Array, token: string): RequestInit => ({
   headers: { ...bearer(token), "content-type": "application/gzip" },
   body: new Uint8Array(bytes),
 });
-const deleteAccount = (token: string) => api("/me", { method: "DELETE", headers: bearer(token) });
+const deleteAccount = (token: string) => deleteMe(token);
 
 async function createLeg(
   token: string,
@@ -321,8 +321,8 @@ describe("private voyage sync", () => {
     expect((await api(trackPath, putTrack(bytes, owner.accessToken))).status).toBe(204);
     expect((await api(trackPath, putTrack(bytes, other.accessToken))).status).toBe(204);
 
-    expect((await deleteAccount(owner.accessToken)).status).toBe(204);
-    expect((await deleteAccount(owner.accessToken)).status).toBe(204);
+    expect((await deleteAccount(owner.accessToken)).status).toBe(202);
+    expect((await deleteAccount(owner.accessToken)).status).toBe(202);
     for (const table of ["voyages", "legs"]) {
       const row = await env.DB.prepare(`select id from ${table} where user_id = ?`)
         .bind(owner.user.id)
@@ -353,7 +353,7 @@ describe("private voyage sync", () => {
       get(target, property) {
         if (property === "batch") {
           return async (statements: D1PreparedStatement[]) => {
-            expect((await deleteAccount(accessToken)).status).toBe(204);
+            expect((await deleteAccount(accessToken)).status).toBe(202);
             return target.batch(statements);
           };
         }
@@ -383,7 +383,7 @@ describe("private voyage sync", () => {
         get(target, property) {
           if (property === "put") {
             return async (key: string, bytes: Uint8Array, options: R2PutOptions) => {
-              expect((await deleteAccount(accessToken)).status).toBe(204);
+              expect((await deleteAccount(accessToken)).status).toBe(202);
               const stored = await target.put(key, bytes, options);
               latePut = stored !== null;
               return stored;
