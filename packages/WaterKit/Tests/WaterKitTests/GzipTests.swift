@@ -70,6 +70,13 @@ import Testing
         #expect(throws: Gzip.Error.outputTooLarge(limit: 1000)) { try Gzip.decompress(compressed, limit: 1000) }
     }
 
+    @Test func defaultOutputLimitFitsNativeInt() throws {
+        // arm64_32 uses a 32-bit Int. Keep the default positive on that target.
+        #expect(Int64(Gzip.defaultOutputLimit) == min(Int64(Int.max), 2_147_483_648))
+        let input = Data("recorded event\n".utf8)
+        #expect(try Gzip.decompress(Gzip.compress(input)) == input)
+    }
+
     @Test func ignoresTrailingZeroPadding() throws {
         let padded = try Gzip.compress(Data("x".utf8)) + Data(repeating: 0, count: 16)
         #expect(try Gzip.decompress(padded) == Data("x".utf8))

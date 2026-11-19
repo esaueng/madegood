@@ -20,7 +20,7 @@ public enum Gzip {
     }
 
     /// Default ceiling for decompressed output, guarding against decompression bombs.
-    public static let defaultOutputLimit = 2 << 30
+    public static let defaultOutputLimit = Int(clamping: Int64(2) << 30)
 
     private static let chunkSize = 64 * 1024
 
@@ -31,7 +31,7 @@ public enum Gzip {
 
     /// Compresses `data` into a single gzip member.
     public static func compress(_ data: Data, level: Int32 = 6) throws -> Data {
-        guard data.count <= Int(UInt32.max) else { throw Error.inputTooLarge }
+        guard let inputSize = uInt(exactly: data.count) else { throw Error.inputTooLarge }
         var stream = z_stream()
         let initStatus = czlib_deflate_init_gzip(&stream, level)
         guard initStatus == Z_OK else { throw Error.initFailed(initStatus) }
@@ -41,7 +41,7 @@ public enum Gzip {
         var buffer = [UInt8](repeating: 0, count: chunkSize)
         try data.withUnsafeBytes { (input: UnsafeRawBufferPointer) in
             stream.next_in = UnsafeMutablePointer(mutating: input.bindMemory(to: Bytef.self).baseAddress)
-            stream.avail_in = uInt(input.count)
+            stream.avail_in = inputSize
             var status: Int32 = Z_OK
             repeat {
                 try buffer.withUnsafeMutableBufferPointer { out in
@@ -103,7 +103,7 @@ public enum Gzip {
         _ data: Data, limit: Int, memberStart: (Int) -> Void
     ) throws -> (data: Data, complete: Bool) {
         guard isGzipped(data) else { throw Error.invalidData }
-        guard data.count <= Int(UInt32.max) else { throw Error.inputTooLarge }
+        guard let inputSize = uInt(exactly: data.count) else { throw Error.inputTooLarge }
 
         var stream = z_stream()
         let initStatus = czlib_inflate_init_gzip(&stream)
@@ -115,7 +115,7 @@ public enum Gzip {
 
         return try data.withUnsafeBytes { (input: UnsafeRawBufferPointer) -> (Data, Bool) in
             stream.next_in = UnsafeMutablePointer(mutating: input.bindMemory(to: Bytef.self).baseAddress)
-            stream.avail_in = uInt(input.count)
+            stream.avail_in = inputSize
             memberStart(0)
 
             while true {
