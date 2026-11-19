@@ -166,6 +166,9 @@ final class PhoneReplayUITests: XCTestCase {
         let restore = app.buttons["trim.restore"]
         scrollTo(restore, in: app)
         restore.tap()
+        // The sailing maneuver list is long, so the button can be below the visible rows.
+        XCTAssertTrue(app.navigationBars["Sailing"].waitForExistence(timeout: 5))
+        scrollTo(trim, in: app)
         waitForLabel(trim, "Trim Session")
         app.navigationBars.buttons["History"].tap()
         waitForLabel(totals, originalTotals)

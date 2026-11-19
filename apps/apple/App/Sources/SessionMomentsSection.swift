@@ -11,11 +11,25 @@ struct SessionMomentsSection: View {
 
     @State private var wind: Double?
     @State private var editingWind = false
-    @State private var sailingResult: (request: SailingRequest, maneuvers: [SailingManeuver])?
+    @State private var sailingResult: (request: SailingRequest, analysis: SailingAnalysis)?
+    /// Fetched forecasts and fetch state per query; only the one for the displayed
+    /// selection is shown, so a trimmed or edited selection in another area or on another
+    /// day asks again, and a late answer for an earlier selection stays with it.
+    @State private var forecasts = OpenMeteoForecasts()
+
+    private var forecastState: OpenMeteoForecasts.State { forecasts.state(for: forecastQuery) }
+
+    private var forecastQuery: OpenMeteo.Query? {
+        OpenMeteo.query(track: presentation.selection.track, duration: presentation.selection.duration)
+    }
+
+    /// The forecast for the displayed selection, if one has been fetched for it.
+    private var currentForecast: OpenMeteoWind? { forecasts.wind(for: forecastQuery) }
 
     private struct SailingRequest: Equatable {
         let source: SessionLibrary.Source
-        let wind: Double
+        let wind: Double?
+        let prior: Double?
     }
 
     var body: some View {
@@ -24,6 +38,7 @@ struct SessionMomentsSection: View {
         let splits = selection.replay.paddlingSplits
         if sport == .sailing {
             sailingSection
+                .task(id: forecastQuery) { loadCachedForecast() }
         } else if !splits.isEmpty {
             Section {
                 ForEach(splits, id: \.index) { split in
@@ -48,13 +63,15 @@ struct SessionMomentsSection: View {
         }
     }
 
+    @ViewBuilder
     private var sailingSection: some View {
-        let request = wind.map { SailingRequest(source: source, wind: $0) }
-        return Section {
+        let request = SailingRequest(source: source, wind: wind, prior: currentForecast?.fromDegrees)
+        let analysis = sailingResult?.request == request ? sailingResult?.analysis : nil
+        Section {
             Button {
                 editingWind = true
             } label: {
-                LabeledContent("True wind from", value: wind.map { "\($0.formatted(.number))°" } ?? "Optional")
+                LabeledContent(windTitle(analysis), value: windText(analysis))
                     .contentShape(.rect)
             }
             .buttonStyle(.plain)
@@ -63,53 +80,205 @@ struct SessionMomentsSection: View {
             .sheet(isPresented: $editingWind) {
                 SessionWindEditor(wind: wind) { value in
                     guard wind != value else { return }
-                    sailingResult = nil
                     wind = value
                     windChanged()
                 }
             }
 
-            if let request {
-                if let sailingResult, sailingResult.request == request {
-                    if sailingResult.maneuvers.isEmpty {
+            if let analysis {
+                if analysis.windFrom == nil {
+                    Text("Add a wind direction to look for tacks and gybes.").foregroundStyle(.secondary)
+                } else {
+                    if analysis.maneuvers.isEmpty {
                         Text("No tacks or gybes detected.").foregroundStyle(.secondary)
                     } else {
-                        ForEach(sailingResult.maneuvers.indices, id: \.self) { index in
-                            let maneuver = sailingResult.maneuvers[index]
-                            let name = maneuver.event.type == .tack ? "Tack" : "Gybe"
-                            let title = "\(name) · \(SessionReplayView.Highlight.time(maneuver.event.t))"
-                            let duration = maneuver.range.upperBound - maneuver.range.lowerBound
-                            momentRow(
-                                title, id: "maneuver.\(index)", detail: "Turn duration \(Formatting.duration(duration))"
-                            ) {
-                                select(
-                                    SessionReplayView.Highlight(
-                                        title: title, range: maneuver.range, eventTime: maneuver.event.t,
-                                        data: presentation.replayData))
-                            }
-                        }
+                        maneuverRows(analysis.maneuvers, resolved: analysis.windResolved)
                     }
-                } else {
-                    ProgressView("Analyzing maneuvers")
-                        .task(id: request) {
-                            await analyzeSailing(request)
-                        }
+                    vmgRows(analysis)
                 }
             } else {
-                Text("Add a wind direction to look for tacks and gybes.").foregroundStyle(.secondary)
+                ProgressView("Analyzing maneuvers")
             }
+            forecastRow
         } header: {
             Text("Moments")
+        } footer: {
+            Text(footer(analysis))
         }
+        .task(id: request) {
+            await analyzeSailing(request)
+        }
+    }
+
+    /// "Wind axis" while only the axis is known, else "True wind from".
+    private func windTitle(_ analysis: SailingAnalysis?) -> String {
+        guard wind == nil, let analysis, analysis.windSource == .estimate, !analysis.windResolved else {
+            return "True wind from"
+        }
+        return "Wind axis"
+    }
+
+    private func windText(_ analysis: SailingAnalysis?) -> String {
+        if let wind { return "\(wind.formatted(.number))°" }
+        guard let analysis, analysis.windSource == .estimate, let estimate = analysis.estimate else {
+            return "Optional"
+        }
+        let direction = Int(estimate.fromDegrees.rounded()) % 360
+        guard analysis.windResolved else { return "\(direction)°/\((direction + 180) % 360)° (estimated)" }
+        return "\(direction)° (estimated)"
+    }
+
+    private func footer(_ analysis: SailingAnalysis?) -> String {
+        var parts: [String] = []
+        if wind == nil, let estimate = analysis?.estimate {
+            let confidence = Int((estimate.axisConfidence * 100).rounded())
+            let spread = Int(estimate.axisUncertainty.rounded())
+            let legs = Int(estimate.legAngle.rounded())
+            parts.append(
+                "Wind axis ±\(spread)° from the two most-sailed courses \(legs)° apart; axis confidence \(confidence) %.")
+            switch estimate.side {
+            case .resolvedByPrior:
+                parts.append("Open-Meteo chose which side the wind came from.")
+            case .unresolved:
+                parts.append("Which side the wind came from is unknown, so tacks and gybes are not told apart.")
+            case .priorInconclusive(let prior):
+                let forecast = Int(prior.rounded()) % 360
+                parts.append(
+                    "Open-Meteo's \(forecast)° is too far from both ends of the axis to choose a side, "
+                        + "so tacks and gybes are not told apart.")
+            }
+        }
+        return parts.joined(separator: " ")
+    }
+
+    @ViewBuilder
+    private var forecastRow: some View {
+        if let forecast = currentForecast {
+            LabeledContent("Open-Meteo wind") {
+                Text("\(Int(forecast.fromDegrees.rounded()) % 360)° · \(display.speed(forecast.speed))")
+                    .monospacedDigit()
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier("moments.openMeteo.result")
+        } else if forecastQuery != nil {
+            Button {
+                Task { await fetchForecast() }
+            } label: {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(forecastState == .failed ? "Open-Meteo unavailable. Try again" : "Compare with Open-Meteo")
+                        // Said before the tap: what leaves the phone.
+                        Text("Sends the approximate area (~50 km) and dates")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    if forecastState == .loading { ProgressView() }
+                }
+            }
+            .disabled(forecastState == .loading)
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier("moments.openMeteo.fetch")
+        }
+    }
+
+    @ViewBuilder
+    private func vmgRows(_ analysis: SailingAnalysis) -> some View {
+        if analysis.windResolved {
+            if analysis.upwindVMG != nil || analysis.downwindVMG != nil {
+                LabeledContent("VMG upwind", value: display.speed(analysis.upwindVMG))
+                    .accessibilityIdentifier("moments.vmg.upwind")
+                LabeledContent("VMG downwind", value: display.speed(analysis.downwindVMG))
+                    .accessibilityIdentifier("moments.vmg.downwind")
+                if let pointing = analysis.pointingAngle {
+                    LabeledContent("Pointing", value: "\(Int(pointing.rounded()))° off the wind")
+                        .accessibilityIdentifier("moments.pointing")
+                }
+            }
+            ForEach([("Starboard tack", analysis.starboard), ("Port tack", analysis.port)], id: \.0) { name, totals in
+                if totals.time > 0 {
+                    let value = "\(Formatting.elapsed(totals.time)) · \(display.distance(totals.distance))"
+                    LabeledContent(name, value: value)
+                        .monospacedDigit()
+                }
+            }
+        } else if let axisVMG = analysis.axisVMG {
+            // Only the axis is known: figures that do not depend on the side.
+            LabeledContent("VMG along the wind axis", value: display.speed(axisVMG))
+                .accessibilityIdentifier("moments.vmg.axis")
+            if let angle = analysis.axisAngle {
+                LabeledContent("Angle to the axis", value: "\(Int(angle.rounded()))°")
+                    .accessibilityIdentifier("moments.axisAngle")
+            }
+        }
+    }
+
+    private func maneuverRows(_ maneuvers: [SailingManeuver], resolved: Bool) -> some View {
+        ForEach(maneuvers.indices, id: \.self) { index in
+            let maneuver = maneuvers[index]
+            let name = Self.maneuverName(maneuver, resolved: resolved)
+            let title = "\(name) · \(SessionReplayView.Highlight.time(maneuver.event.t))"
+            momentRow(title, id: "maneuver.\(index)", detail: Self.maneuverDetail(maneuver)) {
+                select(
+                    SessionReplayView.Highlight(
+                        title: title, range: maneuver.range, eventTime: maneuver.event.t,
+                        data: presentation.replayData))
+            }
+        }
+    }
+
+    /// "Tack" or "Gybe" only when the wind's side is known.
+    static func maneuverName(_ maneuver: SailingManeuver, resolved: Bool) -> String {
+        guard resolved else { return "Tack or gybe" }
+        return maneuver.event.type == .tack ? "Tack" : "Gybe"
+    }
+
+    /// "Turn 92° · 0:06 · speed loss 41 %".
+    static func maneuverDetail(_ maneuver: SailingManeuver) -> String {
+        var parts: [String] = []
+        if let angle = maneuver.turnAngle { parts.append("Turn \(Int(angle.rounded()))°") }
+        parts.append(Formatting.duration(maneuver.duration))
+        if let loss = maneuver.speedLossPercent { parts.append("speed loss \(Int(loss.rounded())) %") }
+        return parts.joined(separator: " · ")
     }
 
     private func analyzeSailing(_ request: SailingRequest) async {
         let selection = presentation.selection
-        let maneuvers = await Task.detached(priority: .userInitiated) {
-            selection.sailingManeuvers(windFromDegreesTrue: request.wind)
+        let analysis = await Task.detached(priority: .userInitiated) {
+            selection.sailingAnalysis(windFromDegreesTrue: request.wind, windPrior: request.prior)
         }.value
         guard !Task.isCancelled else { return }
-        sailingResult = (request, maneuvers)
+        sailingResult = (request, analysis)
+    }
+
+    private func loadCachedForecast() {
+        guard currentForecast == nil, !DemoFeed.isEnabled, let query = forecastQuery,
+            let cached = OpenMeteoCache.wind(for: query)
+        else { return }
+        forecasts.complete(query, with: cached)
+    }
+
+    private func fetchForecast() async {
+        // The query is fixed now: the answer is filed under it even if the selection changes.
+        guard let query = forecastQuery else { return }
+        forecasts.start(query)
+        do {
+            let result: OpenMeteoWind
+            if DemoFeed.isEnabled {
+                // UI tests never reach the network: a fixed answer, or a failure on request.
+                try await Task.sleep(for: .milliseconds(300))
+                if ProcessInfo.processInfo.arguments.contains("-demoOpenMeteoOffline") {
+                    throw URLError(.notConnectedToInternet)
+                }
+                result = OpenMeteoWind(fromDegrees: 10, speed: 6, hours: 2)
+            } else {
+                result = try await OpenMeteo.fetch(query)
+                OpenMeteoCache.store(result, for: query)
+            }
+            forecasts.complete(query, with: result)
+        } catch {
+            forecasts.fail(query)
+        }
     }
 
     private func momentRow(_ title: String, id: String, detail: String, action: @escaping () -> Void) -> some View {

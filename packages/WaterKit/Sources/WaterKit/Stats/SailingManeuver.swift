@@ -6,13 +6,42 @@ public struct SailingManeuver: Sendable, Hashable {
     public let range: ClosedRange<Double>
 }
 
+extension SailingManeuver {
+    /// Approach-to-departure time, s.
+    public var duration: Double { range.upperBound - range.lowerBound }
+    /// Lowest Doppler speed in the turn below the approach speed, percent.
+    public var speedLossPercent: Double? { number("speedLossPct") }
+    /// Course change between the approach and departure legs, degrees (always positive).
+    public var turnAngle: Double? { number("angleDeg") }
+
+    private func number(_ key: String) -> Double? {
+        if case .number(let value)? = event.data?[key] { return value }
+        return nil
+    }
+}
+
+/// One usable sailing fix: session time, Doppler speed (m/s) and reported course over
+/// ground (degrees true).
+struct SailingObservation: Sendable, Hashable {
+    let t: Double
+    let speed: Double
+    let course: Double
+}
+
 extension SessionSelection {
     /// Detect sailing maneuvers on this selection's clock, including after trimming.
     /// Supply a session-wide wind-from direction in degrees true (0...360).
     /// Missing or invalid wind yields no events. Results are in chronological order.
     public func sailingManeuvers(windFromDegreesTrue wind: Double?) -> [SailingManeuver] {
         guard track.sport == .sailing, let wind, (0...360).contains(wind) else { return [] }
+        return SailingManeuverDetector.detect(in: sailingObservationRuns(), windFrom: wind)
+    }
 
+    /// Fixes usable for sailing analysis, split into runs of uninterrupted evidence.
+    /// Pauses, retained-span cuts, GPS gaps and anchors, a missing or unreliable course
+    /// (including on a rejected fix) and speeds too low for a course all end a run.
+    func sailingObservationRuns() -> [[SailingObservation]] {
+        guard track.sport == .sailing else { return [] }
         let timeline = SessionReplayTimeline(replay: replay, recordedFixes: track.gps, endTime: duration)
         var unreliableCourses = track.gps.lazy.filter {
             $0.t.isFinite && !SailingManeuverDetector.reliableCourseAccuracy($0.courseAccuracy)
@@ -22,7 +51,12 @@ extension SessionSelection {
             $0.t.isFinite && ($0.type == .start || $0.type == .pause || $0.type == .resume)
         }.makeIterator()
         var transition = transitions.next()
-        var maneuvers: [SailingManeuver] = []
+        var runs: [[SailingObservation]] = []
+        var run: [SailingObservation] = []
+        func finishRun() {
+            if !run.isEmpty { runs.append(run) }
+            run.removeAll(keepingCapacity: true)
+        }
         for (index, (span, range)) in zip(replay.fixSpans, replayRanges).enumerated() {
             // The selection supplies the original manual pause state at each span start.
             // Any previous auto-pause state ends at the cut.
@@ -31,20 +65,19 @@ extension SessionSelection {
             }
             var paused = false
             var routeSegment: Int?
-            var detector = SailingManeuverDetector()
             for (fix, point) in zip(span, timeline.points[span.indices]) {
                 // A discarded GPS fix can still indicate that course was unreliable
                 // between otherwise accepted positions.
                 while let uncertain = unreliableCourse, uncertain.t <= fix.t {
-                    detector.finishRun()
+                    finishRun()
                     unreliableCourse = unreliableCourses.next()
                 }
                 if point.routeSegment != routeSegment {
-                    detector.finishRun()
+                    finishRun()
                     routeSegment = point.routeSegment
                 }
                 while let event = transition, event.t <= fix.t {
-                    detector.finishRun()
+                    finishRun()
                     paused = event.type == .pause
                     transition = transitions.next()
                 }
@@ -53,19 +86,18 @@ extension SessionSelection {
                     SailingManeuverDetector.reliableCourseAccuracy(fix.courseAccuracy),
                     let speed = point.speed, speed >= SailingManeuverDetector.minimumCourseSpeed
                 else {
-                    detector.finishRun()
+                    finishRun()
                     continue
                 }
-                detector.append(t: fix.t, speed: speed, courseRelativeToWind: course - wind)
+                run.append(SailingObservation(t: fix.t, speed: speed, course: course))
             }
-            detector.finishRun()
-            maneuvers.append(contentsOf: detector.maneuvers)
+            finishRun()
         }
-        return maneuvers
+        return runs
     }
 }
 
-private struct SailingManeuverDetector {
+struct SailingManeuverDetector {
     // Use the same minimum speed for trustworthy course as the live GPS filter.
     static let minimumCourseSpeed = GPSFilter.Config().minSpeedForCourse
     static let maximumTurnDuration = 20.0
@@ -88,6 +120,19 @@ private struct SailingManeuverDetector {
 
     private var run: [Observation] = []
     private(set) var maneuvers: [SailingManeuver] = []
+
+    /// Maneuvers in runs of observations, against a wind-from direction in degrees true.
+    static func detect(in runs: [[SailingObservation]], windFrom wind: Double) -> [SailingManeuver] {
+        var detector = SailingManeuverDetector()
+        for run in runs {
+            for observation in run {
+                detector.append(
+                    t: observation.t, speed: observation.speed, courseRelativeToWind: observation.course - wind)
+            }
+            detector.finishRun()
+        }
+        return detector.maneuvers
+    }
 
     mutating func append(t: Double, speed: Double, courseRelativeToWind: Double) {
         let course =
@@ -154,10 +199,11 @@ private struct SailingManeuverDetector {
             minimumSpeed = min(minimumSpeed, fixes[i].speed)
         }
         guard counterturn <= maximumCounterturn,
-            let speedBefore = stableLeg(in: fixes, at: approach, direction: -1),
-            let speedAfter = stableLeg(in: fixes, at: departure, direction: 1),
-            minimumSpeed <= min(speedBefore, speedAfter) * (1 - minimumSpeedDipFraction)
+            let legBefore = stableLeg(in: fixes, at: approach, direction: -1),
+            let legAfter = stableLeg(in: fixes, at: departure, direction: 1),
+            minimumSpeed <= min(legBefore.speed, legAfter.speed) * (1 - minimumSpeedDipFraction)
         else { return nil }
+        let speedBefore = legBefore.speed
 
         let type: EventType = axis.truncatingRemainder(dividingBy: 360) == 0 ? .tack : .gybe
         let event = SessionEvent(
@@ -165,17 +211,22 @@ private struct SailingManeuverDetector {
             data: [
                 "durationS": .number(end.t - start.t),
                 "speedLossPct": .number((1 - minimumSpeed / speedBefore) * 100),
+                // Between the legs' mean courses: the edge fixes can already be turning.
+                "angleDeg": .number(abs(legAfter.course - legBefore.course)),
             ])
         return SailingManeuver(event: event, range: start.t...end.t)
     }
 
-    /// Mean Doppler speed of a sustained course leading into or out of a turn.
-    /// Require at least three fixes spanning 3–5 seconds within a 12° course band.
-    private static func stableLeg(in fixes: [Observation], at start: Int, direction: Int) -> Double? {
+    /// Mean Doppler speed and (unwrapped) course of a sustained course leading into or out
+    /// of a turn. Require at least three fixes spanning 3–5 seconds within a 12° course band.
+    private static func stableLeg(in fixes: [Observation], at start: Int, direction: Int)
+        -> (speed: Double, course: Double)?
+    {
         let anchor = fixes[start]
         var low = anchor.course
         var high = anchor.course
         var speedSum = anchor.speed
+        var courseSum = anchor.course
         var count = 1
         var index = start + direction
         while fixes.indices.contains(index) {
@@ -186,8 +237,11 @@ private struct SailingManeuverDetector {
             high = max(high, sample.course)
             guard high - low <= maximumLegSpread else { break }
             speedSum += sample.speed
+            courseSum += sample.course
             count += 1
-            if count >= 3, span >= stableLegDuration { return speedSum / Double(count) }
+            if count >= 3, span >= stableLegDuration {
+                return (speedSum / Double(count), courseSum / Double(count))
+            }
             index += direction
         }
         return nil

@@ -77,6 +77,22 @@ public struct LiveMetrics: Sendable, Hashable {
     public var isFinished: Bool
     /// Speedsurfing categories, for sports whose profile tracks them (windsurfing).
     public var speedCategories: SpeedCategories? = nil
+    /// Wind estimate, VMG and maneuvers, for sports whose profile tracks them (sailing).
+    public var sailing: LiveSailing? = nil
+}
+
+extension Optional where Wrapped == SessionEngine {
+    /// Runs `body` on the stored engine in place. The engine is moved out first, so the
+    /// mutation does not copy its buffers (the sailing history grows all session; a
+    /// copy-out/mutate/store-back of a still-referenced engine copied it on every fix).
+    /// Returns nil, without calling `body`, when there is no engine.
+    @discardableResult
+    public mutating func update<T>(_ body: (inout SessionEngine) throws -> T) rethrows -> T? {
+        guard var engine = self else { return nil }
+        self = nil
+        defer { self = engine }
+        return try body(&engine)
+    }
 }
 
 /// The sport-independent live session engine: GPS cleaning, auto-pause, laps and the
@@ -160,11 +176,13 @@ public struct SessionEngine: LiveAnalyzer {
     private var intervalBroken = false
     private var retainedSpanStart: Double?
     private var categoryTracker: SpeedCategoryTracker?
+    private var sailingTracker: SailingTracker?
 
     public init(profile: SportProfile, filter: GPSFilter.Config = GPSFilter.Config()) {
         self.profile = profile
         self.filter = GPSFilter(config: filter)
         if profile.tracksSpeedCategories { categoryTracker = SpeedCategoryTracker() }
+        if profile.tracksSailing { sailingTracker = SailingTracker() }
     }
 
     init(profile: SportProfile, recordsMovement: Bool) {
@@ -192,6 +210,7 @@ public struct SessionEngine: LiveAnalyzer {
         course = nil
         recent.removeAll(keepingCapacity: true)
         categoryTracker?.breakRun()
+        sailingTracker?.breakRun()
         intervalBroken = false
         mode = .moving
         slow = nil
@@ -228,7 +247,20 @@ public struct SessionEngine: LiveAnalyzer {
             heartRateMax: heartRateMax,
             pauseState: pauseState, laps: laps, currentLap: lap(endingAt: latestTime, isAuto: false),
             acceptedFixes: acceptedFixes, rejectedFixes: rejectedFixes, isFinished: finished,
-            speedCategories: speedCategories)
+            speedCategories: speedCategories, sailing: sailing)
+    }
+
+    /// For tests: see `SailingTracker.storageCopies`.
+    var sailingStorageCopies: Int { sailingTracker?.storageCopies ?? 0 }
+
+    private var sailing: LiveSailing? {
+        guard let sailingTracker else { return nil }
+        var live = LiveSailing(wind: sailingTracker.wind, tacks: sailingTracker.tacks, gybes: sailingTracker.gybes)
+        if let wind = sailingTracker.wind?.fromDegrees, let course, let speed = currentSpeed {
+            live.trueWindAngle = SailingVMG.trueWindAngle(course: course, windFrom: wind)
+            live.vmg = SailingVMG.vmg(speed: speed, course: course, windFrom: wind)
+        }
+        return live
     }
 
     private var speedCategories: SpeedCategories? {
@@ -252,6 +284,8 @@ public struct SessionEngine: LiveAnalyzer {
     private mutating func ingestFix(_ fix: GPSFix) {
         guard case .accepted(let accepted) = filter.ingest(fix) else {
             rejectedFixes += 1
+            // A rejected fix can still say the course was unreliable (as post-session).
+            if !SailingManeuverDetector.reliableCourseAccuracy(fix.courseAccuracy) { sailingTracker?.breakRun() }
             return
         }
         acceptedFixes += 1
@@ -287,6 +321,10 @@ public struct SessionEngine: LiveAnalyzer {
             dt: dt, step: step, speed: speed, underWay: (intervalSpeed ?? 0) >= Self.underWaySpeed, at: fix.t,
             intervalStart: startsInterval ? fix.t : (previous?.t ?? fix.t))
         updateSpeeds(fix, speed: speed)
+        if accepted.isAnchor || mode == .manuallyPaused { sailingTracker?.breakRun() }
+        if mode != .manuallyPaused {
+            sailingTracker?.ingest(t: fix.t, speed: speed, course: fix.course, courseAccuracy: fix.courseAccuracy)
+        }
         if let speed {
             categoryTracker?.ingest(
                 t: fix.t, speed: speed, latitude: fix.latitude, longitude: fix.longitude, isAnchor: accepted.isAnchor)
@@ -415,10 +453,12 @@ public struct SessionEngine: LiveAnalyzer {
     private mutating func ingestEvent(_ event: SessionEvent) {
         switch event.type {
         case .pause:
+            sailingTracker?.breakRun()
             mode = .manuallyPaused
             slow = nil
             fast = nil
         case .resume:
+            sailingTracker?.breakRun()
             // At a cut boundary there is no pre-pause fix to disconnect in this span.
             if mode == .manuallyPaused, event.t != retainedSpanStart { intervalBroken = true }
             if mode != .moving { mode = .moving }
@@ -427,6 +467,7 @@ public struct SessionEngine: LiveAnalyzer {
         case .lap:
             closeLap(at: event.t, isAuto: false)
         case .stop:
+            sailingTracker?.finish(at: event.t)
             finished = true
         default:
             break

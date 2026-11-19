@@ -46,6 +46,25 @@ extension SessionStats {
             lines.append(line)
         }
         let eventList = events.sorted { $0.key < $1.key }.map { "\($0.key) ×\($0.value)" }
+        if let sailing {
+            var line = "Sailing   \(sailing.maneuvers) tacks or gybes"
+            if let axis = sailing.windAxis {
+                let other = (axis + 180).truncatingRemainder(dividingBy: 360)
+                line += ", wind axis \(Self.fixed(axis, 0))°/\(Self.fixed(other, 0))°"
+                if let spread = sailing.windAxisUncertainty { line += " ±\(Self.fixed(spread, 0))°" }
+                line += " (estimated, side unknown"
+                if let confidence = sailing.windAxisConfidence {
+                    line += ", axis confidence \(Self.fixed(confidence, 2))"
+                }
+                line += ")"
+            } else {
+                line += ", no wind estimate"
+            }
+            lines.append(line)
+            if let vmg = sailing.axisVMG {
+                lines.append("VMG       \(Self.speed(vmg)) along the wind axis")
+            }
+        }
         lines.append("Events    \(eventList.isEmpty ? "none" : eventList.joined(separator: ", "))")
         if issues.isEmpty {
             lines.append("Issues    none")

@@ -45,6 +45,22 @@ public struct SessionStats: Sendable, Hashable, Codable {
     public var issues: [String]
     /// Paddle strokes, for kayak, canoe and SUP recordings with motion (docs/metrics.md "Strokes").
     public var strokes: StrokeStats?
+    /// Sailing recordings: the track's wind estimate, maneuvers and VMG (docs/metrics.md
+    /// "Sailing wind and VMG"). There is no prior here, so only the wind's axis is known:
+    /// maneuvers are not split into tacks and gybes, and VMG is along the axis.
+    public var sailing: SailingStats?
+
+    public struct SailingStats: Sendable, Hashable, Codable {
+        /// One direction of the estimated wind axis, degrees true; nil without an estimate.
+        public var windAxis: Double?
+        public var windAxisConfidence: Double?
+        /// Degrees.
+        public var windAxisUncertainty: Double?
+        /// Tacks and gybes together.
+        public var maneuvers: Int
+        /// Mean |VMG| while not reaching, m/s.
+        public var axisVMG: Double?
+    }
 
     public struct StrokeStats: Sendable, Hashable, Codable {
         public var count: Int
@@ -77,6 +93,13 @@ extension SessionStats {
                 count: analysis.strokeCount, averageRate: analysis.averageStrokeRate,
                 distancePerStroke: analysis.distancePerStroke, sideSwitches: singleBlade ? analysis.sideSwitches : nil,
                 sideBalance: analysis.sideBalance)
+        }
+        if session.meta.sport == .sailing, let selection = try? SessionSelection(session: session) {
+            let analysis = selection.sailingAnalysis()
+            sailing = SailingStats(
+                windAxis: analysis.estimate?.fromDegrees, windAxisConfidence: analysis.estimate?.axisConfidence,
+                windAxisUncertainty: analysis.estimate?.axisUncertainty, maneuvers: analysis.maneuvers.count,
+                axisVMG: analysis.axisVMG)
         }
     }
 

@@ -32,9 +32,66 @@ enum DemoFeed {
     /// session clock, or the engine treats its speed as stale.
     static func fix(at ts: Double, startUnix: Double, sport: Sport? = nil) -> RawFormat.GPSLine {
         let elapsed = max(0, ts - startUnix)
+        if sport == .sailing, tacksEnabled { return beatFix(at: ts, elapsed: elapsed) }
         let speed = speed(for: sport)
         let point = Geo.destination(lat: origin.lat, lon: origin.lon, bearing: 90, distance: speed * elapsed)
         return RawFormat.GPSLine(ts: ts, lat: point.lat, lon: point.lon, hacc: 5, spd: speed, crs: 90)
+    }
+
+    /// With `-demoTacks`, sailing beats upwind instead: wind from north, 25 s on each tack
+    /// (315° and 045°) joined by 6 s tacks that dip to half speed. The wind estimate
+    /// appears about a minute in (docs/metrics.md, "Sailing wind and VMG").
+    static let tacksArgument = "-demoTacks"
+    static let tackLeg = 25.0
+    static let tackTurn = 6.0
+
+    static var tacksEnabled: Bool {
+        isEnabled && ProcessInfo.processInfo.arguments.contains(tacksArgument)
+    }
+
+    /// Course (degrees true) and Doppler speed (m/s) at `elapsed` on the demo beat.
+    static func beat(at elapsed: Double) -> (course: Double, speed: Double) {
+        let period = 2 * (tackLeg + tackTurn)
+        let phase = elapsed.truncatingRemainder(dividingBy: period)
+        let half = phase < tackLeg + tackTurn ? 0.0 : 1.0
+        let into = phase - half * (tackLeg + tackTurn)
+        let from = half == 0 ? 315.0 : 405.0
+        let to = half == 0 ? 405.0 : 315.0
+        guard into >= tackLeg else { return (from.truncatingRemainder(dividingBy: 360), speed) }
+        let fraction = (into - tackLeg) / tackTurn
+        let course = (from + (to - from) * fraction).truncatingRemainder(dividingBy: 360)
+        return (course, speed * (1 - 0.5 * (1 - abs(fraction * 2 - 1))))
+    }
+
+    /// Integrates the beat in 0.25 s steps (on a flat local plane, fine over a demo's
+    /// few kilometres), using whole periods so a long session stays cheap.
+    private static func beatOffset(at elapsed: Double) -> (north: Double, east: Double) {
+        func integrate(_ duration: Double) -> (north: Double, east: Double) {
+            var (north, east) = (0.0, 0.0)
+            var t = 0.0
+            while t < duration {
+                let dt = min(0.25, duration - t)
+                let (course, v) = beat(at: t + dt / 2)
+                north += v * dt * cos(course * .pi / 180)
+                east += v * dt * sin(course * .pi / 180)
+                t += dt
+            }
+            return (north, east)
+        }
+        let period = 2 * (tackLeg + tackTurn)
+        let whole = (elapsed / period).rounded(.down)
+        let perPeriod = integrate(period)
+        let rest = integrate(elapsed - whole * period)
+        return (whole * perPeriod.north + rest.north, whole * perPeriod.east + rest.east)
+    }
+
+    private static func beatFix(at ts: Double, elapsed: Double) -> RawFormat.GPSLine {
+        let (course, v) = beat(at: elapsed)
+        let offset = beatOffset(at: elapsed)
+        let distance = (offset.north * offset.north + offset.east * offset.east).squareRoot()
+        let bearing = atan2(offset.east, offset.north) * 180 / .pi
+        let point = Geo.destination(lat: origin.lat, lon: origin.lon, bearing: bearing, distance: distance)
+        return RawFormat.GPSLine(ts: ts, lat: point.lat, lon: point.lon, hacc: 5, spd: v, crs: course)
     }
 
     /// Synthetic wrist motion for paddling, at 25 Hz: a steady 64 SPM for kayak (two

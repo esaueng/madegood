@@ -391,7 +391,7 @@ private struct SessionPages: View {
     @State private var banner: SessionRecorder.DistanceAlertEvent?
     private let hero: LiveScreen
 
-    enum Page { case manOverboard, controls, metrics, strokes, speed, map }
+    enum Page { case manOverboard, controls, metrics, strokes, speed, sailing, map }
 
     init(recorder: SessionRecorder, startedAt: Date, sport: Sport) {
         self.recorder = recorder
@@ -415,6 +415,9 @@ private struct SessionPages: View {
             }
             if UserSettings.profile(for: sport).tracksSpeedCategories {
                 SpeedPage(recorder: recorder, sport: sport).tag(Page.speed)
+            }
+            if UserSettings.profile(for: sport).tracksSailing {
+                SailingPage(recorder: recorder, sport: sport).tag(Page.sailing)
             }
             MapPage(points: recorder.trackPoints, manOverboard: manOverboard.mark).tag(Page.map)
         }
@@ -597,6 +600,54 @@ private struct SpeedPage: View {
                         .accessibilityIdentifier(row.id)
                     }
                 }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+}
+
+/// The sailing sport page (PLAN §6): VMG large, heading, the wind arrow once the track
+/// gives an estimate, and the maneuver count (docs/metrics.md, "Sailing wind and VMG").
+private struct SailingPage: View {
+    let recorder: SessionRecorder
+    let sport: Sport
+    @Environment(\.isLuminanceReduced) private var isLuminanceReduced
+
+    var body: some View {
+        let display = UserSettings.display(for: sport)
+        let metrics = recorder.metrics
+        let sailing = metrics?.sailing.map(SailingReadings.init)
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 0) {
+                    Text("Sailing")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(Theme.brightTeal)
+                        .accessibilityIdentifier("page.sailing")
+                    Text(sailing?.vmgTitle ?? "VMG")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                if let wind = sailing?.windFrom {
+                    WindArrow(windFrom: wind, course: metrics?.course, resolved: sailing?.resolved ?? false, size: 40)
+                        .opacity(isLuminanceReduced ? 0.6 : 1)
+                }
+            }
+            Text(display.vmg(sailing?.vmg))
+                .font(.system(size: 36, weight: .semibold, design: .rounded).monospacedDigit())
+                .minimumScaleFactor(0.6)
+                .lineLimit(1)
+                .accessibilityLabel(sailing?.vmgTitle ?? "VMG")
+                .accessibilityValue(sailing?.vmg == nil ? "Unavailable" : display.vmg(sailing?.vmg))
+                .accessibilityIdentifier("metric.vmg")
+            Field(label: "Heading", value: LiveDisplay.course(metrics?.course))
+            Field(label: sailing?.windTitle ?? "Wind axis", value: sailing?.windText ?? "–")
+            ForEach(sailing?.maneuverRows ?? [("maneuvers", "Tacks/gybes", 0)], id: \.id) { row in
+                Field(label: row.title, value: "\(row.count)")
+            }
+            if !isLuminanceReduced, let sailing, sailing.trueWindAngle != nil {
+                Field(label: sailing.angleTitle, value: sailing.angleText)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -802,6 +853,15 @@ private struct SummaryView: View {
                     // The 2 s and 10 s bests are the max speeds above.
                     ForEach(SpeedCategoryReadings(categories).rows.dropFirst(2)) { row in
                         Field(label: row.title, value: display.speed(row.value))
+                    }
+                }
+                if let live = metrics.sailing {
+                    let sailing = SailingReadings(live)
+                    ForEach(sailing.maneuverRows, id: \.id) { row in
+                        Field(label: row.title, value: "\(row.count)")
+                    }
+                    if sailing.windFrom != nil {
+                        Field(label: sailing.windTitle, value: sailing.windText)
                     }
                 }
                 if !metrics.laps.isEmpty {

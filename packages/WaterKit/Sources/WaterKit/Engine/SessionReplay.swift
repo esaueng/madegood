@@ -34,8 +34,11 @@ public struct SessionReplay: Sendable {
 
     init(track: Track, profile: SportProfile?, removedIntervals: [ClosedRange<Double>]) {
         self.removedIntervals = removedIntervals
-        var engine = SessionEngine(
-            profile: profile ?? .standard(for: track.sport), recordsMovement: track.sport.isPaddling)
+        var profile = profile ?? .standard(for: track.sport)
+        // After the session, `SessionSelection.sailingAnalysis` analyzes sailing in one
+        // pass; the live tracker's periodic refreshes are not needed here.
+        profile.tracksSailing = false
+        var engine = SessionEngine(profile: profile, recordsMovement: track.sport.isPaddling)
         // Events the engine generated live are stored with {"auto": true}. They are left
         // out here and regenerated; fed back in, an auto-pause would act as a manual one.
         let userEvents = track.events.filter { $0.data?["auto"] != .bool(true) }
