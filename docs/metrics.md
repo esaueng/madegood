@@ -471,10 +471,12 @@ the anchor itself. The swing radius is stored in metres and displayed in metres 
 feet according to the motorboat distance setting. The circle is not for navigation.
 
 A fix is confidently outside when its distance minus horizontal accuracy exceeds
-the radius, using at least 5 m of accuracy for that comparison. Drift is confirmed
-after three distinct confidently outside fixes, regardless of how far apart they
-arrive. A confidently inside fix (distance plus reported accuracy below the
-radius) resets the count and clears the confirmed drift state.
+the radius, using at least 5 m of accuracy for that comparison. With good GPS
+(reported accuracy of 5 m or better), drift confirmation requires fixes more than
+5 m beyond the selected swing radius. Drift is confirmed after three distinct
+confidently outside fixes, regardless of how far apart they arrive. A confidently
+inside fix (distance plus reported accuracy below the radius) resets the count
+and clears the confirmed drift state.
 A fix whose accuracy circle touches or crosses the boundary leaves the count
 unchanged. Fixes with unknown accuracy, accuracy worse than 25 m, or locations
 older than 15 s do not enter the calculation. These readings are live only and do
@@ -492,15 +494,17 @@ has been observed ringing is restored at its original deadline, or as soon as
 AlarmKit can schedule it if overdue. Significant clock changes and foreground
 checks reconcile both fixed system alarms against saved monotonic deadlines.
 
-Use Stop on the system alarm or in the Anchor Alarm screen. While armed, stopping
-the GPS backup snoozes it for 120 s. The next eligible fix can renew it immediately.
+Use Stop on the system alarm or in the Anchor Alarm screen. Stopping the current
+GPS backup snoozes it for 120 s. The next eligible fix can renew it immediately.
+Stopping an older GPS backup leaves the current deadline in place.
 Stopping the drift alarm schedules another alert after 120 s of elapsed time if
 drift is still confirmed. A confidently inside fix clears the scheduled drift
 re-alert when it can still be safely cancelled, and a new alert requires drift
 to be confirmed again. Automatic cancellation requires more than 10 s until the
 pending alarm is due, allowing for app preemption and AlarmKit processing time.
-A sounding alarm, including one that starts during renewal or disarm, stays
-audible until the user stops it.
+AlarmKit reads state and cancels in separate calls. If iOS suspends the app beyond
+that margin between the calls, an automatic cancel can remove an alarm that has
+just started ringing.
 
 ## Session summary
 

@@ -61,7 +61,10 @@ struct AnchorAlarmView: View {
                             )
                             .accessibilityIdentifier("anchor.arm")
                     } footer: {
-                        Text("Allow room for the anchor rode and the boat to swing.")
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("With good GPS, the drift alarm triggers more than 5 m outside this circle.")
+                            Text("Allow room for the anchor rode and the boat to swing.")
+                        }
                     }
                 }
 

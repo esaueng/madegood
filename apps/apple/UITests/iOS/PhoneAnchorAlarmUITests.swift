@@ -16,6 +16,7 @@ final class PhoneAnchorAlarmUITests: XCTestCase {
 
         let picker = app.buttons["anchor.radius"]
         scrollTo(picker, in: app)
+        XCTAssertTrue(app.staticTexts["With good GPS, the drift alarm triggers more than 5 m outside this circle."].exists)
         picker.tap()
         let radiusLabel = "20.0 m"
         let radius = app.buttons[radiusLabel]

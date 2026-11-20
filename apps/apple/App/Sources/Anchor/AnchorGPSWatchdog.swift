@@ -11,6 +11,7 @@ final class AnchorGPSWatchdog {
     private let system: AnchorSystemAlarms
     private var loss = AnchorGPSLoss()
     private var knownAlarms = AnchorGPSLoss.Alarms()
+    private var ownership = AlarmOwnership()
     private var update: Task<Void, Never>?
     private var retry: Task<Void, Never>?
     private var periodicCheck: Task<Void, Never>?
@@ -38,6 +39,13 @@ final class AnchorGPSWatchdog {
     private struct SavedDeadline: Codable {
         let deadline: AnchorGPSLoss.Checkpoint
         let alarms: AnchorGPSLoss.Alarms?
+        let ownership: AlarmOwnership?
+    }
+
+    // This slot belongs to the arming whose deadline we persist alongside it.
+    // A present ownership record with no slot means no watchdog was installed.
+    private struct AlarmOwnership: Codable {
+        var currentID: UUID?
     }
 
     private static let storageKey = "anchorWatch.watchdog"
@@ -71,6 +79,7 @@ final class AnchorGPSWatchdog {
             : nil
         loss.arm(at: clock().uptime, restoring: restoring, checkpoint: saved?.deadline)
         knownAlarms = saved?.alarms ?? .init()
+        ownership = saved?.ownership ?? AlarmOwnership(currentID: Self.soleAlarmID(in: knownAlarms))
         hasSystemAlarm = false
         needsLegacyDeadline = restoring && saved == nil
         if !needsLegacyDeadline { persistDeadline() }
@@ -127,9 +136,8 @@ final class AnchorGPSWatchdog {
         guard let snapshot = try? system.snapshot() else { return }
         for id in snapshot.sounding {
             if (try? system.stopSounding(id)) == true {
-                knownAlarms.sounding.remove(id)
-                knownAlarms.pending.removeValue(forKey: id)
-                loss.snooze(at: clock().uptime)
+                // Reconcile the disappearance the same way as a system Stop.
+                knownAlarms.sounding.insert(id)
                 persistDeadline()
             }
         }
@@ -177,6 +185,7 @@ final class AnchorGPSWatchdog {
     func stop() {
         loss.disarm()
         knownAlarms = .init()
+        ownership = .init()
         hasSystemAlarm = false
         needsLegacyDeadline = false
         persistDeadline()
@@ -218,11 +227,13 @@ final class AnchorGPSWatchdog {
         var changed = needsLegacyDeadline || knownAlarms != snapshot
         if needsLegacyDeadline {
             needsLegacyDeadline = false
+            ownership.currentID = snapshot.earliestPending?.key ?? Self.soleAlarmID(in: snapshot)
             if let fallback = snapshot.earliestPending {
                 loss.adoptLegacyAlarm(remaining: fallback.value.timeIntervalSince(now.wallTime), at: now.uptime)
             }
         }
-        if !snapshot.stoppedAlarms(since: knownAlarms).isEmpty {
+        if let current = ownership.currentID, snapshot.stoppedAlarms(since: knownAlarms).contains(current) {
+            ownership.currentID = nil
             loss.snooze(at: now.uptime)
             changed = true
         }
@@ -247,6 +258,7 @@ final class AnchorGPSWatchdog {
         case .install(let next):
             try await system.schedule(next, desired)
             if loss.isCurrent(request) {
+                ownership.currentID = next
                 knownAlarms.pending[next] = desired
                 hasSystemAlarm = true
                 persistDeadline()
@@ -262,15 +274,22 @@ final class AnchorGPSWatchdog {
             guard let deadline = snapshot.pending[other],
                 canCancelPendingAnchorAlarm(deadline: deadline, now: clock().wallTime)
             else { continue }
-            if try system.cancelPending(other), knownAlarms.pending.removeValue(forKey: other) != nil {
+            if try system.cancelPending(other) {
+                knownAlarms.pending.removeValue(forKey: other)
+                if ownership.currentID == other { ownership.currentID = nil }
                 persistDeadline()
             }
         }
     }
 
+    private static func soleAlarmID(in snapshot: AnchorSystemAlarms.Snapshot) -> UUID? {
+        let ids = snapshot.sounding.union(snapshot.pending.keys)
+        return ids.count == 1 ? ids.first : nil
+    }
+
     private func persistDeadline() {
         let data = loss.checkpoint(at: clock().uptime).flatMap {
-            try? JSONEncoder().encode(SavedDeadline(deadline: $0, alarms: knownAlarms))
+            try? JSONEncoder().encode(SavedDeadline(deadline: $0, alarms: knownAlarms, ownership: ownership))
         }
         defaults?.set(data, forKey: Self.storageKey)
     }
@@ -315,8 +334,8 @@ struct AnchorSystemAlarms {
 }
 
 func canCancelPendingAnchorAlarm(deadline: Date, now: Date) -> Bool {
-    // AlarmKit offers no atomic check-and-cancel. Leave a 10 s margin for
-    // app preemption and daemon latency between the snapshot and cancellation.
+    // AlarmKit offers no atomic check-and-cancel. If iOS suspends the app past
+    // this 10 s margin between calls, cancel can remove an alarm that started ringing.
     deadline.timeIntervalSince(now) > 10
 }
 

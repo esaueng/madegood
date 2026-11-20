@@ -352,13 +352,87 @@ final class AnchorGPSWatchdogTests: XCTestCase {
         XCTAssertFalse(system.cancelAttempts.contains(original))
         XCTAssertTrue(system.stoppedByApp.isEmpty)
 
-        let snoozed = expectation(description: "in-app Stop installs snooze while armed")
-        system.onSchedule = { _ in snoozed.fulfill() }
+        let replacement = system.pending
+        let stopped = expectation(description: "in-app Stop reconciles the superseded alarm")
         watchdog.stopSoundingAlarms()
-        await waitFor(snoozed)
+        system.onSnapshot = {
+            system.onSnapshot = nil
+            stopped.fulfill()
+        }
+        await waitFor(stopped)
         XCTAssertEqual(system.stoppedByApp, [original])
         XCTAssertTrue(system.sounding.isEmpty)
-        XCTAssertEqual(Array(system.pending.values), [system.wallTime.addingTimeInterval(120)])
+        XCTAssertEqual(system.pending, replacement)
+        XCTAssertEqual(system.attempts.count, 2)
+    }
+
+    func testInAppStopOfPreviousArmingPreservesRearmedDeadline() async throws {
+        try await checkStopOfPreviousArming(useSystemStop: false)
+    }
+
+    func testSystemStopOfPreviousArmingPreservesRearmedDeadlineAfterRestore() async throws {
+        try await checkStopOfPreviousArming(useSystemStop: true)
+    }
+
+    private func checkStopOfPreviousArming(useSystemStop: Bool) async throws {
+        let suite = "AnchorGPSWatchdogTests.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(Data("""
+            {"point":{"latitude":0,"longitude":0},"radius":10,
+             "confirmedOutside":true,"alertPending":true}
+            """.utf8), forKey: "anchorWatch.configuration")
+        let drift = FakeAlarms()
+        drift.sounding = [AnchorWatch.soundID]
+        let gps = FakeAlarms()
+        let watchdog = gps.makeWatchdog(defaults: defaults)
+        let watch = AnchorWatch(
+            system: drift.driver, clock: { .init(uptime: gps.uptime, wallTime: gps.wallTime) },
+            defaults: defaults, gpsWatchdog: watchdog)
+        let armed = expectation(description: "GPS backup scheduled")
+        gps.onSchedule = { _ in armed.fulfill() }
+        watchdog.start()
+        await waitFor(armed)
+        let old = try XCTUnwrap(gps.pending.keys.first)
+
+        let driftSnoozed = expectation(description: "drift Stop schedules a re-alert")
+        drift.onSchedule = { _ in driftSnoozed.fulfill() }
+        watch.stopDriftAlarm()
+        await waitFor(driftSnoozed)
+
+        gps.advance(by: 112)
+        watch.disarm()
+        XCTAssertNotNil(gps.pending[old])
+        let deadline = gps.wallTime.addingTimeInterval(120)
+        let rearmed = expectation(description: "re-arm installed a GPS backup without fixes")
+        gps.onSchedule = { _ in rearmed.fulfill() }
+        watchdog.start()
+        await waitFor(rearmed)
+        let current = try XCTUnwrap(gps.pending.first { $0.key != old })
+        XCTAssertEqual(current.value, deadline)
+
+        gps.advance(by: 8)
+        gps.fire(old)
+        gps.advance(by: 52)
+        gps.onSchedule = nil
+        if useSystemStop {
+            let restored = gps.makeWatchdog(defaults: defaults)
+            restored.start(restoring: true)
+            gps.sounding.remove(old)
+            await restored.reconcileAfterSystemStop(id: old)
+        } else {
+            watch.stopGPSLossAlarm()
+            let reconciled = expectation(description: "in-app Stop reconciles the old backup")
+            gps.onSnapshot = {
+                gps.onSnapshot = nil
+                reconciled.fulfill()
+            }
+            await waitFor(reconciled)
+            XCTAssertEqual(gps.stoppedByApp, [old])
+        }
+        XCTAssertTrue(gps.sounding.isEmpty)
+        XCTAssertEqual(gps.pending, [current.key: deadline])
+        XCTAssertEqual(gps.attempts.count, 2)
     }
 
     func testAlarmRingingBeforeScheduleReturnsSurvivesGoodFixAndDisarm() async throws {
