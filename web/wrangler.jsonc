@@ -50,6 +50,15 @@
   },
   "migrations": [{ "tag": "voyage-live-v1", "new_sqlite_classes": ["VoyageLive"] }],
   "r2_buckets": [{ "binding": "TRACKS", "bucket_name": "madegood-tracks" }],
+  // Local namespace placeholders. scripts/cloudflare-config assigns deployment namespaces.
+  "ratelimits": [
+    { "name": "AUTH_RATE_LIMIT", "namespace_id": "1001", "simple": { "limit": 60, "period": 60 } },
+    {
+      "name": "SESSION_UPLOAD_RATE_LIMIT",
+      "namespace_id": "1002",
+      "simple": { "limit": 1200, "period": 60 }
+    }
+  ],
   // Upload post-processing (src/server/lib/postprocess.ts, docs/self-hosting.md). A message
   // that fails max_retries times lands in the dead-letter queue, which has no consumer:
   // inspect or replay it from the dashboard.
@@ -103,6 +112,18 @@
       "durable_objects": { "bindings": [] },
       "migrations": [],
       "r2_buckets": [{ "binding": "TRACKS", "bucket_name": "madegood-tracks-preview" }],
+      "ratelimits": [
+        {
+          "name": "AUTH_RATE_LIMIT",
+          "namespace_id": "1003",
+          "simple": { "limit": 60, "period": 60 }
+        },
+        {
+          "name": "SESSION_UPLOAD_RATE_LIMIT",
+          "namespace_id": "1004",
+          "simple": { "limit": 1200, "period": 60 }
+        }
+      ],
       // No queue: preview version uploads cannot set queue consumers. Without the binding
       // the Worker post-processes each upload after responding (waitUntil, one attempt).
       "queues": {},

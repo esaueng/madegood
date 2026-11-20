@@ -69,6 +69,31 @@ For a separate preview environment (`env.preview` in `wrangler.jsonc`), create
 ([Upload post-processing](#upload-post-processing)). Previews never touch
 production data.
 
+## API rate limits
+
+The bindings in `web/wrangler.jsonc` enforce approximate limits per Cloudflare
+location. [Workers Rate Limiting](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/)
+
+| Binding | Budget | Routes |
+|---|---|---|
+| `AUTH_RATE_LIMIT` | 60 requests per minute per client IP (`CF-Connecting-IP`) | `POST /api/auth/apple`, `POST /api/auth/refresh`, and the web Apple sign-in entry, callback and refresh |
+| `SESSION_UPLOAD_RATE_LIMIT` | 1,200 requests per minute per authenticated user ID | `PUT /api/sessions/:id` and `PUT /api/sessions/:id/track` share the budget |
+
+An upload takes two requests, so the upload budget covers about 600 complete
+sessions per minute before retries. Auth requests without `CF-Connecting-IP` share
+one fallback bucket. When a binding declines a request, the API returns `429` with
+`error: rate_limited` and `Retry-After: 60` (seconds). The iPhone upload queue uses
+that delay when retrying and keeps its credentials if token refresh is throttled.
+Account exports keep their separate daily budget.
+
+Cloudflare uses the configured namespace numbers at deployment. With
+`scripts/cloudflare-config`, the local placeholders are replaced with stable
+numbers derived from the D1 database IDs, including the per-PR preview database.
+This uses the existing D1 secrets in GitHub Actions. If you fill in the config
+by hand, assign a distinct positive integer string to each binding in each
+environment in your deployment copy. Each number must be unused by other
+rate limit bindings on the same Cloudflare account.
+
 ## Secrets and settings
 
 Secrets are set with `wrangler secret put`, and locally in `web/.dev.vars` (gitignored).
@@ -151,9 +176,9 @@ Set in the repository (Settings → Secrets and variables → Actions):
 The IDs aren't credentials, but they're secrets rather than variables so GitHub masks them
 in the public workflow logs (Cloudflare's CI guides store `CLOUDFLARE_ACCOUNT_ID` the same way).
 
-`scripts/cloudflare-config` writes the IDs into the runner's copy of `wrangler.jsonc`;
-the repository keeps the placeholders. Set the `JWT_SIGNING_KEY` secret on both Workers
-once by hand (above); the workflow does not manage secrets.
+`scripts/cloudflare-config` writes the database and rate limit namespace IDs into the
+runner's copy of `wrangler.jsonc`, leaving the repository placeholders in place.
+Set the `JWT_SIGNING_KEY` secret on both Workers once by hand (above).
 
 ## Database migrations
 
