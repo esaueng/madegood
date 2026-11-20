@@ -45,9 +45,9 @@ export type Session = {
   bounds: { south: number; west: number; north: number; east: number } | null;
   trackStartedAt: string | null;
   trackEndedAt: string | null;
-  /** Modelled wind (Open-Meteo), for public and unlisted sessions only. */
+  /** Modelled wind, for public and unlisted sessions only. */
   wind: {
-    source: "open-meteo-forecast" | "open-meteo-archive";
+    source: "weatherkit";
     directionDeg: number | null;
     speedMps: number | null;
     gustMps: number | null;

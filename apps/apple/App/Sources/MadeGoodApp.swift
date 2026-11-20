@@ -4,7 +4,9 @@ import SwiftUI
 struct MadeGoodApp: App {
     @UIApplicationDelegateAdaptor(VoyageSyncAppDelegate.self) private var voyageDelegate
     @Environment(\.scenePhase) private var scenePhase
-    private let voyageSync = DemoOffWater.storage == nil ? PrivateVoyageSync.shared : nil
+    #if MADEGOOD_VOYAGES
+        private let voyageSync = DemoOffWater.storage == nil ? PrivateVoyageSync.shared : nil
+    #endif
     private let sessionSync = DemoOffWater.storage == nil ? SessionSync.shared : nil
     @State private var demoLibrary = SessionLibrary()
     private let demoSeedFailed: Bool
@@ -12,7 +14,7 @@ struct MadeGoodApp: App {
     init() {
         // Share sheets from an earlier run are gone; so is any need for their files.
         ExportFiles.removeAll()
-        #if DEBUG
+        #if DEBUG && MADEGOOD_VOYAGES
             VoyageRecorder.forgetTestLibraryIfRequested()
         #endif
         if DemoOffWater.storage != nil {
@@ -51,14 +53,18 @@ struct MadeGoodApp: App {
                     HistoryView(library: demoLibrary)
                 } else {
                     ContentView()
-                        .environment(voyageSync)
+                        #if MADEGOOD_VOYAGES
+                            .environment(voyageSync)
+                            .task(id: voyageSync?.account.binding) { await voyageSync?.accountDidChange() }
+                        #endif
                         .environment(sessionSync)
-                        .task(id: voyageSync?.account.binding) { await voyageSync?.accountDidChange() }
                         .task(id: sessionSync?.account.binding) { await sessionSync?.accountDidChange() }
                         .onChange(of: scenePhase) { _, phase in
                             if phase == .active {
                                 AnchorWatch.shared.becameActive()
-                                voyageSync?.kick()
+                                #if MADEGOOD_VOYAGES
+                                    voyageSync?.kick()
+                                #endif
                                 sessionSync?.kick()
                             } else {
                                 AnchorWatch.shared.becameInactive()

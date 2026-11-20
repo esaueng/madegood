@@ -153,10 +153,12 @@ final class VoyageSyncAppDelegate: VoyageLaunchDelegate {
             sync.reconnect(completion: completionHandler)
             return
         }
-        guard DemoOffWater.storage == nil, let sync = PrivateVoyageSync.shared else {
-            completionHandler()
-            return
-        }
-        sync.reconnectUploads(identifier: identifier, completion: completionHandler)
+        #if MADEGOOD_VOYAGES
+            if DemoOffWater.storage == nil, let sync = PrivateVoyageSync.shared {
+                sync.reconnectUploads(identifier: identifier, completion: completionHandler)
+                return
+            }
+        #endif
+        completionHandler()
     }
 }

@@ -5,12 +5,11 @@ import { privacyZones, type Session, sessions, users } from "../db/schema";
 import { logFailure } from "./logging";
 import type { Zone } from "./session-privacy";
 import { parseGzippedJson, SHARED_TRACK_MAX_INFLATED_BYTES, TrackTooLarge } from "./track";
-import { boundsCenter, deriveTrack, InvalidTrack, type TrackDerived } from "./track-derived";
-import { fetchWind, type StoredWind, WindTransientError, windRequest } from "./wind";
+import { deriveTrack, InvalidTrack, type TrackDerived } from "./track-derived";
 
 // Upload post-processing (docs/PLAN.md §7). A track upload enqueues one message per
 // (session, revision, track ETag); the consumer derives the bounds, start geohash and time
-// range from the stored track, then, for sessions others can see, fetches wind. Every
+// range from the stored track. Every
 // write is conditional on the row still holding that exact track, so duplicates, stale
 // revisions and deleted sessions are dropped, and redelivery is harmless.
 //
@@ -72,7 +71,6 @@ export const CLEARED_DERIVED = {
   maxLon: null,
   startGeohash: null,
   ...PUBLIC_FIELDS,
-  windJson: null,
 } as const;
 
 /** Retry delays for a failed message: 30 s, 1, 2, 4, 8 min (wrangler.jsonc max_retries 5). */
@@ -84,7 +82,6 @@ type Db = ReturnType<typeof drizzle>;
 /** What a message led to; tests read it, the queue handler acks or retries on it. */
 export type Outcome =
   | "processed"
-  | "wind_only"
   | "skipped_stale"
   | "skipped_done"
   | "too_large"
@@ -104,7 +101,7 @@ async function loadZones(
       .select({ lat: privacyZones.lat, lon: privacyZones.lon, radiusM: privacyZones.radiusM })
       .from(privacyZones)
       .where(eq(privacyZones.userId, userId)),
-    // A deleting account (lib/account-deletion.ts) gets no more processing or wind requests.
+    // A deleting account (lib/account-deletion.ts) gets no more processing.
     db
       .select({ version: users.zonesVersion })
       .from(users)
@@ -126,17 +123,15 @@ export const publicIsCurrent = (
 ) => zonesVersion != null && s.publicZonesVersion === zonesVersion;
 
 export type ProcessDeps = {
-  fetch?: typeof fetch;
-  now?: () => number;
   /** Test hooks that force interleavings. */
-  hooks?: { afterDerive?: () => Promise<void>; beforeWind?: () => Promise<void> };
+  hooks?: { afterDerive?: () => Promise<void> };
 };
 
 type ProcessEnv = Pick<Env, "DB" | "TRACKS"> & { POSTPROCESS?: Queue<PostprocessMessage> };
 
 /**
  * Processes one message. Returns the outcome, or throws when the message should be
- * retried (RetryLater, WindTransientError, or any D1/R2/queue failure).
+ * retried (RetryLater or any D1/R2/queue failure).
  */
 export async function processMessage(
   env: ProcessEnv,
@@ -157,7 +152,7 @@ export async function processMessage(
 const ZONE_RACE_ATTEMPTS = 3;
 
 export async function processSession(
-  env: Pick<Env, "DB" | "TRACKS">,
+  env: ProcessEnv,
   raw: unknown,
   deps: ProcessDeps = {},
 ): Promise<Outcome> {
@@ -179,18 +174,20 @@ export async function processSession(
   if (!key) return "skipped_stale";
   const current = and(holding, eq(sessions.trackKey, key));
 
-  let outcome: Outcome = "skipped_done";
-  let session: Session | undefined;
   for (let attempt = 0; ; attempt++) {
-    const [row] = await db.select().from(sessions).where(current);
+    const [row] = await db
+      .select({
+        processedEtag: sessions.processedEtag,
+        publicZonesVersion: sessions.publicZonesVersion,
+      })
+      .from(sessions)
+      .where(current);
     if (!row) return "skipped_stale";
     const owner = await loadZones(db, msg.userId);
     if (!owner) return "skipped_stale";
     // Done only when processed from this track *and* public data is at the current zones.
     if (row.processedEtag === msg.etag && publicIsCurrent(row, owner.version)) {
-      if (row.postprocessStatus !== "done") return outcome;
-      session = row;
-      break;
+      return "skipped_done";
     }
     if (attempt >= ZONE_RACE_ATTEMPTS) throw new RetryLater("privacy zones keep changing");
 
@@ -238,78 +235,10 @@ export async function processSession(
         publicZonesVersion: owner.version,
       })
       .where(and(current, zonesStillAt(msg.userId, owner.version)))
-      .returning();
-    if (written) {
-      if (status !== "done") return status;
-      session = written;
-      outcome = "processed";
-      break;
-    }
+      .returning({ id: sessions.id });
+    if (written) return status === "done" ? "processed" : status;
     // Either the track changed (the next read returns stale) or the zones did: go again.
   }
-
-  if (!needsWind(session)) return outcome;
-  const version = session.publicZonesVersion;
-  if (version === null) return outcome;
-  const wind = await lookupWind(db, session, current, deps);
-  if (!wind) return outcome;
-  // Wind is public data like the bounds: it is stored only while the row still holds this
-  // processed track, is still shared, has none, and its public data is still at the
-  // owner's current zones version (a zone change clears wind with the rest).
-  await db
-    .update(sessions)
-    .set({ windJson: JSON.stringify(wind) })
-    .where(
-      and(
-        current,
-        eq(sessions.processedEtag, msg.etag),
-        ne(sessions.visibility, "private"),
-        isNull(sessions.windJson),
-        eq(sessions.publicZonesVersion, version),
-        zonesStillAt(msg.userId, version),
-      ),
-    );
-  return outcome === "processed" ? "processed" : "wind_only";
-}
-
-/** Whether a processed session still needs wind: others can see it and it has none. */
-export const needsWind = (s: Pick<Session, "visibility" | "windJson" | "publicMinLat">) =>
-  s.visibility !== "private" && s.windJson === null && s.publicMinLat !== null;
-
-/**
- * Re-reads the row right before calling Open-Meteo, so a session made private (or whose
- * data was replaced) since the snapshot causes no request. Null when none is made.
- */
-async function lookupWind(
-  db: Db,
-  snapshot: Session,
-  current: SQL | undefined,
-  deps: ProcessDeps,
-): Promise<StoredWind | null> {
-  await deps.hooks?.beforeWind?.();
-  const [session] = await db.select().from(sessions).where(current);
-  if (
-    !session ||
-    !needsWind(session) ||
-    session.processedEtag !== snapshot.processedEtag ||
-    session.publicZonesVersion !== snapshot.publicZonesVersion
-  ) {
-    return null;
-  }
-  const now = deps.now?.() ?? Date.now();
-  // Only what others may see: the public box and the public time range.
-  const startedAt = session.publicTrackStartedAt;
-  const endedAt = session.publicTrackEndedAt ?? startedAt;
-  if (startedAt === null || endedAt === null) return null;
-  const center = boundsCenter({
-    south: session.publicMinLat as number,
-    west: session.publicMinLon as number,
-    north: session.publicMaxLat as number,
-    east: session.publicMaxLon as number,
-  });
-  const url = windRequest(center, { startedAt, endedAt }, now);
-  if (!url) return { status: "unavailable", reason: "no_window", fetchedAt: now };
-  return fetchWind(url, { startedAt, endedAt }, deps.fetch ?? fetch, now);
 }
 
 /** The user's sessions with a track whose public data is behind their zones version. */
@@ -383,7 +312,7 @@ export async function handlePostprocessBatch(
       }
       message.ack();
     } catch (error) {
-      if (!(error instanceof RetryLater || error instanceof WindTransientError)) {
+      if (!(error instanceof RetryLater)) {
         logFailure("postprocess_retry", error);
       }
       message.retry({ delaySeconds: retryDelaySeconds(message.attempts) });

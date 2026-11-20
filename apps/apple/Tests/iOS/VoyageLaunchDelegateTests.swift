@@ -11,11 +11,15 @@ final class VoyageLaunchDelegateTests: XCTestCase {
     }
 
     @MainActor
-    func testNormalLaunchAttemptsToResumeAnActiveVoyage() {
+    func testNormalLaunchOnlyOpensTheLibraryWhenVoyagesAreEnabled() {
         var recoveryCount = 0
         VoyageLaunchDelegate.restoreActiveLeg(isReplayDemo: false) {
             recoveryCount += 1
         }
-        XCTAssertEqual(recoveryCount, 1)
+        #if DEBUG
+            XCTAssertEqual(recoveryCount, 1)
+        #else
+            XCTAssertEqual(recoveryCount, 0)
+        #endif
     }
 }

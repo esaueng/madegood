@@ -4,7 +4,9 @@ import WaterKit
 /// One row per sport, each opening that sport's settings (the same form as on the watch),
 /// then app-wide items.
 struct SettingsView: View {
-    @Environment(PrivateVoyageSync.self) private var voyageSync: PrivateVoyageSync?
+    #if MADEGOOD_VOYAGES
+        @Environment(PrivateVoyageSync.self) private var voyageSync: PrivateVoyageSync?
+    #endif
     @State private var store = SettingsStore.shared
     @State private var weather = LocalWeather.shared
     @AppStorage(UserSettings.Key.appearance) private var appearance: Appearance = .system
@@ -115,9 +117,11 @@ struct SettingsView: View {
                     )
                 }
 
-                if voyageSync != nil {
-                    PrivateVoyageAccountSection()
-                }
+                #if MADEGOOD_VOYAGES
+                    if voyageSync != nil {
+                        PrivateVoyageAccountSection()
+                    }
+                #endif
 
                 Section("About") {
                     LabeledContent("Version", value: AppInfo.version)

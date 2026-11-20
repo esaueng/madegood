@@ -1,3 +1,4 @@
+import { applyD1Migrations } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
@@ -65,6 +66,31 @@ describe("D1 migrations: sessions, tokens, privacy zones", () => {
         .first<{ n: number }>();
       expect(row?.n, table).toBe(0);
     }
+  });
+
+  it("clears existing wind values and preserves the sessions during rollout", async () => {
+    const db = env.TEST_MIGRATION_DB;
+    const name = "0013_clear_stored_wind.sql";
+    await applyD1Migrations(
+      db,
+      env.TEST_MIGRATIONS.filter((migration) => migration.name < name),
+    );
+    await db.batch([
+      db.prepare(
+        "INSERT INTO users (id, apple_sub, handle) VALUES ('u50', 'sub-50', 'wind-test-owner')",
+      ),
+      db.prepare(`INSERT INTO sessions (id, user_id, sport, started_at, wind_json)
+        VALUES ('s50', 'u50', 'kayak', 1, '{"source":"open-meteo-archive"}'),
+               ('s51', 'u50', 'kayak', 1, NULL)`),
+    ]);
+    await applyD1Migrations(db, env.TEST_MIGRATIONS);
+    // The previous queue consumer may still finish a pending wind update during deployment.
+    await db.prepare("UPDATE sessions SET wind_json = '{}' WHERE id = 's51'").run();
+    const { results } = await db.prepare("SELECT id, wind_json FROM sessions ORDER BY id").all();
+    expect(results).toEqual([
+      { id: "s50", wind_json: null },
+      { id: "s51", wind_json: null },
+    ]);
   });
 
   it("reject a session for an unknown user and a reused token hash", async () => {

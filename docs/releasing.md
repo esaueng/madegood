@@ -33,6 +33,18 @@ Secrets and variables → Actions → Secrets, for example `https://<your-worker
 build. It is a secret rather than a variable so the log masks it (the host names your Workers
 subdomain), and failure logs redact it before upload. Without it, TestFlight builds show sync as not set up.
 
+## Voyages for 1.0
+
+`MADEGOOD_VOYAGES` is a Swift compilation condition set in the Debug configuration in
+[`apps/apple/Project.swift`](../apps/apple/Project.swift). Release keeps the Voyages tab
+and its settings hidden and skips voyage recording recovery, sync, and live sharing.
+Existing voyage legs, including interrupted recordings, stay on disk.
+
+When Phase 5 ships, add `MADEGOOD_VOYAGES` to the Release configuration's
+`SWIFT_ACTIVE_COMPILATION_CONDITIONS` alongside `$(inherited)` and regenerate the
+Xcode project with `tuist generate --no-open`. Update the Release expectations in
+`PhoneVoyagesAvailabilityUITests` and `VoyageLaunchDelegateTests` when enabling it.
+
 ## Publish the landing page download link
 
 1. Open the Cloudflare dashboard and go to **Workers & Pages** → **madegood** →

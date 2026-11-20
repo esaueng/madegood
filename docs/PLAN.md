@@ -56,13 +56,23 @@ bundle prefix `app.madegood` (forks override it in `Local.xcconfig`) · GitHub r
 | Data | D1 (Drizzle ORM) for metadata, R2 for track files, Queues for post-upload jobs |
 | API contract | Zod schemas → OpenAPI (`@hono/zod-openapi`) → Swift client (`swift-openapi-generator`) |
 | Auth | Sign in with Apple (iOS + web), our own JWT access + refresh tokens |
-| Weather | Apple WeatherKit on iPhone, Open-Meteo for post-upload wind in the Worker |
+| Weather | Apple WeatherKit on iPhone and for shared-session views in the Worker |
 | Tooling | pnpm workspaces, Biome, Vitest + `@cloudflare/vitest-pool-workers`, swift-format, GitHub Actions |
 | Minimum OS | iOS 26 / watchOS 26 (needed for iPhone-only workout sessions) |
 
+**Weather provider decision.** Apple WeatherKit is the sole weather provider. The
+Worker uses WeatherKit REST on session detail views for Public and Unlisted sessions
+when the deployment has Apple credentials. It sends only the 0.1° cell of the
+privacy-cut bounds center and the UTC-hour window of the visible fixes, along with
+the request settings and credentials described in [self-hosting](self-hosting.md#what-is-sent-to-apple-weather).
+The owner chose view-time lookup with a three-hour Workers Cache API TTL solely to
+speed repeat views. WeatherKit wind stays out of D1, R2, KV, and account exports.
+Migration 0013 clears earlier wind values and retains the empty column for rollout
+compatibility.
+
 The iPhone uses Apple WeatherKit for local conditions and the optional sailing wind
 comparison. It sends a fixed 0.1° × 0.1° grid cell (about 11 km per side at the equator)
-instead of an exact GPS fix. The Worker still uses Open-Meteo for post-upload wind.
+instead of an exact GPS fix.
 
 ---
 
@@ -107,7 +117,7 @@ iPhone (live view / standalone session)   │ on finish: post-analysis (WaterKit
                                           ▼
                     Worker /api ──► D1 (summary) + R2 (track.json.gz)
                                           ▼
-                              Queue job: wind lookup, bbox/geohash
+                              Queue job: bbox/geohash and fix times
                                           ▼
                                    Website (React)
 ```
@@ -331,7 +341,7 @@ sessions       id (device UUID), user_id, sport, title, notes, visibility
                (private|unlisted|public), started_at, ended_at, duration_s, moving_s,
                distance_m, max_speed_mps, avg_speed_mps, min_lat, min_lon, max_lat,
                max_lon, start_geohash, summary_json, analyzer_version, track_key,
-               wind_json, created_at, updated_at, deleted_at
+               created_at, updated_at, deleted_at
 privacy_zones  id, user_id, lat, lon, radius_m
 
 -- Phase 5 (Voyages)
@@ -373,9 +383,8 @@ GET    /api/live/:slug             WebSocket for viewers (respects share delay)
 - Auth: verify the Apple identity token against Apple's public keys with `jose`; issue a
   15-minute access JWT plus a rotating refresh token (stored hashed). The web uses an
   HttpOnly cookie.
-- Queue consumer: fetch Open-Meteo wind for the session time and area, compute
-  bbox/geohash, and later render a static map thumbnail for Open Graph previews.
-- Rate limits on auth and upload with the Workers rate limiting binding.
+- Queue consumer: compute bbox/geohash and fix times from uploaded tracks.
+- Workers rate limiting bindings protect auth, uploads, and view-time WeatherKit cache misses.
 
 ### Environments
 - `production` and per-PR **preview** versions through Workers Builds; separate D1/R2 for
@@ -432,7 +441,7 @@ Each phase ends with a checkable exit criterion. Tasks are sized for one agent P
 1. D1 schema + migrations, Drizzle, OpenAPI generation, Swift client codegen.
 2. Sign in with Apple (iOS + web), tokens, account deletion, data export.
 3. iPhone sync: upload queue in a background URLSession, retries, status in the UI.
-4. Upload endpoints, R2 storage, queue consumer (wind, bbox).
+4. Upload endpoints, R2 storage, queue consumer (bounds, fix times).
 5. Web: dashboard, session page (map, replay, charts), profile, settings.
 6. Visibility + privacy zones, Open Graph tags for shared links.
 
