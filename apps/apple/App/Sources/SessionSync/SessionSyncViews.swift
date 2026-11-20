@@ -107,7 +107,7 @@ struct SessionSyncSection: View {
             Text("Account")
         } footer: {
             Text(
-                "When sync is on, sessions recorded while you are signed in upload to your MadeGood account. They are private unless you share them. Signing out turns sync off. Recordings stay on this iPhone."
+                "When sync is on, sessions recorded while you are signed in upload to your MadeGood account. Signing out turns sync off. Recordings stay on this iPhone."
             )
         }
         .disabled(busy)
@@ -122,6 +122,9 @@ struct SessionSyncSection: View {
         }
     }
 
+    static let visibilityExplanation =
+        "New uploads use your account’s Visibility of new sessions, which you set in Settings on madegood.app. If it’s Unlisted or Public, new sessions are shared that way automatically."
+
     static let deletionWarning =
         "This deletes every session you have uploaded, your privacy zones, your settings and your sign-in from MadeGood’s servers. Recordings on this iPhone and your Apple Watch stay on your devices, and workouts in Apple Health are not affected. This can’t be undone."
 
@@ -133,6 +136,12 @@ struct SessionSyncSection: View {
                 .accessibilityIdentifier("sessionSync.signedIn")
             Toggle("Sync sessions", isOn: $sync.isEnabled)
                 .accessibilityIdentifier("sessionSync.enabled")
+            // Static and always true: the server applies the account's default at upload, and
+            // this iPhone doesn't read it (#133).
+            Text(Self.visibilityExplanation)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .accessibilityIdentifier("sessionSync.visibilityNotice")
             if sync.isEnabled {
                 Toggle("Upload on Wi-Fi only", isOn: $sync.wifiOnly)
                     .accessibilityIdentifier("sessionSync.wifiOnly")

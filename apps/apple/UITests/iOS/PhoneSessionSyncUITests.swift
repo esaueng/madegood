@@ -20,6 +20,13 @@ final class PhoneSessionSyncUITests: XCTestCase {
         let enable = app.switches["sessionSync.enabled"]
         scrollTo(enable, in: app)
         XCTAssertEqual(enable.value as? String, "0")
+        // Under the switch: where new uploads take their visibility from (#133).
+        let notice = element("sessionSync.visibilityNotice", in: app)
+        XCTAssertTrue(notice.exists)
+        XCTAssertEqual(
+            notice.label,
+            "New uploads use your account’s Visibility of new sessions, which you set in Settings on madegood.app. If it’s Unlisted or Public, new sessions are shared that way automatically."
+        )
         enable.switches.firstMatch.tap()
         XCTAssertTrue(app.switches["sessionSync.wifiOnly"].waitForExistence(timeout: 5))
 
