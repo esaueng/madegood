@@ -47,7 +47,10 @@ subdomain), and failure logs redact it before upload. Without it, TestFlight bui
 Cloudflare deploys a new Worker version with the updated binding using the existing build.
 Wrangler preserves this dashboard setting on later deployments. Remove the variable or
 clear its value and select **Deploy** to restore the coming-soon text. The website only
-accepts HTTPS links to the two Apple hosts above.
+accepts HTTPS links to the two Apple hosts above. Wrangler also retains other deployed
+text and JSON variables when a key is removed from `vars`. To retire one, remove it from
+both `vars` and the dashboard. To turn off web sign-in, set `APPLE_WEB_CLIENT_ID` to an
+empty string in `vars`.
 
 ## One-time setup (for a fork or a new team)
 

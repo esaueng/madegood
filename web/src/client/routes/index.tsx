@@ -19,6 +19,10 @@ export const Route = createFileRoute("/")({
 });
 
 const GITHUB_URL = "https://github.com/esaueng/madegood";
+const releaseText = {
+  testflight: "MadeGood is in beta on TestFlight.",
+  "app-store": "MadeGood is available on the App Store.",
+};
 
 // The shared button focus ring (ring/50) is too faint on this page's surfaces; the
 // landing page's calls to action use a foreground-colored ring with an offset instead
@@ -111,8 +115,8 @@ const watchShots = [
 ];
 
 function Home() {
-  const { data } = useQuery({ queryKey: ["site-config"], queryFn: fetchSiteConfig });
-  const download = data?.download ?? null;
+  const { data, isPending } = useQuery({ queryKey: ["site-config"], queryFn: fetchSiteConfig });
+  const download = isPending ? undefined : (data?.download ?? null);
 
   return (
     <>
@@ -206,10 +210,10 @@ function Home() {
           Get MadeGood
         </h2>
         <p className="mt-2 max-w-xl text-muted-foreground">
-          {download?.store === "testflight"
-            ? "MadeGood is in beta on TestFlight. It needs iOS 26 and, for the watch app, watchOS 26."
-            : download?.store === "app-store"
-              ? "MadeGood is available on the App Store. It needs iOS 26 and, for the watch app, watchOS 26."
+          {download
+            ? `${releaseText[download.store]} It needs iOS 26 and, for the watch app, watchOS 26.`
+            : isPending
+              ? "MadeGood needs iOS 26 and, for the watch app, watchOS 26."
               : "MadeGood is coming soon to TestFlight and the App Store. It will need iOS 26 and, for the watch app, watchOS 26. Until then you can build it yourself from the source."}
         </p>
         <div className="mt-6 flex flex-wrap gap-3">
@@ -230,7 +234,7 @@ function Home() {
   );
 }
 
-function DownloadButton({ download }: { download: DownloadLink | null }) {
+function DownloadButton({ download }: { download: DownloadLink | null | undefined }) {
   if (download) {
     return (
       <a href={download.url} className={cta()}>
@@ -244,7 +248,9 @@ function DownloadButton({ download }: { download: DownloadLink | null }) {
   return (
     <p className="inline-flex h-10 items-center gap-2 rounded-md border border-dashed px-4 text-sm font-medium text-foreground">
       <Download className="size-4" aria-hidden />
-      Coming soon to TestFlight and the App Store
+      {download === undefined
+        ? "Checking download availability…"
+        : "Coming soon to TestFlight and the App Store"}
     </p>
   );
 }
