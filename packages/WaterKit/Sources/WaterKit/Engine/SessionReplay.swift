@@ -10,6 +10,8 @@ public struct SessionReplay: Sendable {
     /// Post-session fixed-distance splits for kayak, canoe and SUP. Workout laps
     /// are in `metrics.laps` and `metrics.currentLap`.
     public let paddlingSplits: [PaddlingSplit]
+    /// Observed moving steps for paddling analyses, excluding replay route gaps.
+    let paddlingMovement: [SessionEngine.MovementInterval]
     let windsurfPlaning: WindsurfAnalysis.Planing?
 
     /// Open intervals on the replay clock whose samples were removed by a local edit.
@@ -67,7 +69,9 @@ public struct SessionReplay: Sendable {
         self.fixes = fixes
         events = (userEvents + engine.generatedEvents).sorted { $0.t < $1.t }
         let intervals = engine.movementIntervals ?? []
-        paddlingSplits = track.sport.isPaddling ? PaddlingSplit.makeSplits(from: intervals) : []
+        let movement = intervals.filter { $0.duration <= SessionReplayTimeline.maxRouteGap }
+        paddlingMovement = track.sport.isPaddling ? movement : []
+        paddlingSplits = track.sport.isPaddling ? PaddlingSplit.makeSplits(from: movement) : []
         windsurfPlaning =
             track.sport == .windsurfing
             ? WindsurfAnalysis.Planing(fixes: fixes, intervals: intervals, threshold: profile.planingSpeedThreshold)
