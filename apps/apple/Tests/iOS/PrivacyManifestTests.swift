@@ -47,6 +47,9 @@ final class PrivacyManifestTests: XCTestCase {
                 "NSPrivacyCollectedDataTypePreciseLocation", "NSPrivacyCollectedDataTypeHealth",
                 "NSPrivacyCollectedDataTypeFitness", "NSPrivacyCollectedDataTypeOtherUserContent",
                 "NSPrivacyCollectedDataTypeUserID", "NSPrivacyCollectedDataTypeName",
+                // The client IP (and its country) in Cloudflare's sampled security records,
+                // kept up to 31 days: declared as Coarse Location (docs/app-store.md, #133).
+                "NSPrivacyCollectedDataTypeCoarseLocation",
             ])
         for entry in collected {
             XCTAssertEqual(entry["NSPrivacyCollectedDataTypeTracking"] as? Bool, false)

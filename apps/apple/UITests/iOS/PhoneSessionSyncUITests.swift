@@ -20,6 +20,8 @@ final class PhoneSessionSyncUITests: XCTestCase {
         let enable = app.switches["sessionSync.enabled"]
         scrollTo(enable, in: app)
         XCTAssertEqual(enable.value as? String, "0")
+        // The account's Visibility of new sessions is shown before the switch is turned on.
+        waitForLabel(element("sessionSync.visibility", in: app), "Visibility of new sessions, Private")
         enable.switches.firstMatch.tap()
         XCTAssertTrue(app.switches["sessionSync.wifiOnly"].waitForExistence(timeout: 5))
 
@@ -68,6 +70,26 @@ final class PhoneSessionSyncUITests: XCTestCase {
         signIn.tap()
         scrollTo(enable, in: app)
         XCTAssertEqual(enable.value as? String, "0")
+    }
+
+    /// A Public account default is shown beside Sync sessions with a warning that new
+    /// uploads are shared automatically (review of #133, finding 2).
+    @MainActor
+    func testSyncSwitchShowsAPublicAccountDefault() {
+        continueAfterFailure = false
+        let app = launchDemoHistory(extraArguments: ["-demoSessionSync", "-demoSessionVisibility", "public"])
+        app.tabBars.buttons["Settings"].tap()
+        let signIn = app.buttons["sessionSync.demoSignIn"]
+        scrollTo(signIn, in: app)
+        signIn.tap()
+        XCTAssertTrue(element("sessionSync.signedIn", in: app).waitForExistence(timeout: 10))
+        let visibility = element("sessionSync.visibility", in: app)
+        scrollTo(visibility, in: app)
+        waitForLabel(visibility, "Visibility of new sessions, Public")
+        let notice = element("sessionSync.visibilityNotice", in: app)
+        XCTAssertTrue(notice.label.hasPrefix("New uploads will be public automatically"), notice.label)
+        XCTAssertTrue(notice.label.contains("Settings on madegood.app"), notice.label)
+        attachScreenshot("Settings public visibility")
     }
 
     /// Settings → Delete Account: confirmation first, then signed out with the recordings kept.

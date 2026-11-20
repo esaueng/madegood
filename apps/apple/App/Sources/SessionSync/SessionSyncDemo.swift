@@ -31,6 +31,14 @@
     private final class SyntheticSessionTransport: SessionSyncTransport {
         private var sessions: [String: String] = [:]
         private var refusedTracks: Set<String> = []
+        /// `-demoSessionVisibility unlisted|public`: the account's Visibility of new sessions.
+        private let defaultVisibility: String = {
+            let arguments = ProcessInfo.processInfo.arguments
+            guard let flag = arguments.firstIndex(of: "-demoSessionVisibility"), flag + 1 < arguments.count,
+                let value = NewSessionVisibility(rawValue: arguments[flag + 1])
+            else { return "private" }
+            return value.rawValue
+        }()
 
         func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
             try await Task.sleep(for: .milliseconds(300))
@@ -45,6 +53,9 @@
                     }
                     """
                 return (Data(body.utf8), response(request, 200))
+            }
+            if request.httpMethod == "GET", request.url?.path == "/api/me", isAuthorized(request) {
+                return (Data(#"{"defaultVisibility": "\#(defaultVisibility)"}"#.utf8), response(request, 200))
             }
             if request.httpMethod == "DELETE", request.url?.path == "/api/me", isAuthorized(request),
                 let body = request.httpBody,

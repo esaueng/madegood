@@ -22,6 +22,9 @@ final class SessionSync {
     private(set) var preparing = false
     /// Finished recordings this account may receive only by explicit choice.
     private(set) var earlierSessions: [UUID] = []
+    /// The account's "Visibility of new sessions" from `GET /me`; nil until it loads (or
+    /// when it can't), and while signed out.
+    private(set) var newSessionVisibility: NewSessionVisibility?
     private let ledger: SessionConsentLedger
     var consent: SessionSyncConsent { ledger.consent }
 
@@ -142,8 +145,10 @@ final class SessionSync {
         outbox.removeOtherSignIns(keeping: binding)
         guard let binding else {
             earlierSessions = []
+            newSessionVisibility = nil
             return
         }
+        Task { await refreshNewSessionVisibility() }
         do {
             try outbox.restore(for: binding)
             queueUnavailable = false
@@ -152,6 +157,19 @@ final class SessionSync {
             return
         }
         recordingsChanged()
+    }
+
+    /// Reloads "Visibility of new sessions" for the signed-in account. Settings calls it on
+    /// appearing and whenever Sync sessions is switched on, so a change made on the website
+    /// shows here. A failure leaves the value unknown rather than stale.
+    func refreshNewSessionVisibility() async {
+        guard let binding = account.binding else {
+            newSessionVisibility = nil
+            return
+        }
+        let value = try? await AccountVisibility.fetch(account: account, api: api)
+        guard account.binding == binding else { return }
+        newSessionVisibility = value
     }
 
     func signOut() async throws {

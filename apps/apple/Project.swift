@@ -71,7 +71,7 @@ let project = Project(
                 "NSLocationWhenInUseUsageDescription":
                     "MadeGood records your track, speed and course during a session, including with the screen off. It also uses your position for start-line pings, to mark a man-overboard position and guide you back to it, to set an anchor point and watch for drift while the anchor alarm is armed, and, rounded to about 11 km, for local conditions if you turn them on.",
                 "NSAlarmKitUsageDescription":
-                    "MadeGood sounds an alarm if your boat drifts outside the swing radius you set, or if GPS stops updating while the anchor alarm is armed.",
+                    "MadeGood sounds an alarm if your boat drifts outside the swing radius you set, or if usable GPS positions stop arriving while the anchor alarm is armed.",
                 "UILaunchScreen": [:],
                 "UIRequiredDeviceCapabilities": ["arm64"],
                 "UISupportedInterfaceOrientations": ["UIInterfaceOrientationPortrait"],

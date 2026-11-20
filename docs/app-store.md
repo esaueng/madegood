@@ -25,9 +25,10 @@ get a rejection.
 | 10 | ~~Label and policy predate public profiles, route images and rate limiting.~~ Done: the label section below covers the public profile (#95), route preview images (#96), rate limiting (#98) and the anchor alarm, and `/privacy` describes all four. | The label and the policy must match what the service processes. |
 | 11 | ~~No support page.~~ Done (#136): https://madegood.app/support has the contact address support@madegood.app (forwarding tested by the owner), GitHub issues, common questions and the navigation notice. It is the Support URL below. | App Store Connect requires a Support URL that leads to a way to contact the developer. |
 | 12 | ~~The Voyages tab ships in Release builds.~~ Done (#138): `MADEGOOD_VOYAGES` is set in Debug only, so Release has no Voyages tab or settings and skips voyage recovery, sync and live sharing. The listing, the review notes and the purpose strings do not mention Voyages. Submit an archive built after #138 merges. | Metadata must describe what the build does (2.3.1). |
-| 13 | ~~The iPhone sends weather requests to Open-Meteo.~~ Done (#137): local conditions and the sailing wind comparison use Apple WeatherKit with a 0.1° grid cell; the phone no longer contacts Open-Meteo. One-time setup: enable WeatherKit on the iPhone App ID ([releasing.md](releasing.md#enable-apple-weather-on-the-iphone-app-id)). Live WeatherKit answers and the attribution assets are still unverified on a signed build. | The label and the policy below assume WeatherKit. |
+| 13 | ~~The iPhone sends weather requests to a non-Apple weather service.~~ Done (#137): local conditions and the sailing wind comparison use Apple WeatherKit with a 0.1° grid cell. Wind for shared sessions moves to the WeatherKit REST API in #140: fetched when an unlisted or public session is viewed, kept only in Cloudflare's cache for a few hours, never stored in D1 or exports, and earlier stored wind deleted. The iPhone's WeatherKit answers become a temporary cache in another PR. This document and `/privacy` describe that state, so submit only after both merge. One-time setup: enable WeatherKit on the iPhone App ID ([releasing.md](releasing.md#enable-apple-weather-on-the-iphone-app-id)). Live WeatherKit answers and the attribution assets are still unverified on a signed build. | The label and the policy below assume WeatherKit for all weather. |
 | 14 | **App Review needs a screen recording of a real session.** The demo modes (`-demoSession`, `-demoOCS`, `-demoOffWater`) are Debug-only (`DemoFeed.isEnabled` is `false` in Release), and tacks, gybes, planing, strokes and the start line's time to burn and line bias cannot be shown on land. Record a real session on the water with the Release build and attach it in App Store Connect → App Review Information → Attachment (or link it in the notes). Don't show the precise location of a home or other private place. | Without it, a reviewer can check only speed and distance (2.1, completeness). |
-| 15 | **Confirm Cloudflare's production settings.** #135 turned off persisted Workers observability and Logpush in `wrangler.jsonc`. It did not verify the production account and zone: zone-level HTTP request logging or Logpush, if configured, and existing log retention. | The Diagnostics answer and the policy's hosting section assume no zone-level request logging beyond Cloudflare's own Security Analytics. |
+| 15 | **Confirm Cloudflare's production settings (owner, in the dashboard).** #135 turned off persisted Workers observability and Logpush in `wrangler.jsonc`, but nobody has checked the production account and zone. Check: (a) the zone's plan and Security Analytics / Security Events retention (31 days on Free, Pro and Business, 90 days for Security Analytics on Enterprise); (b) that no zone-level HTTP request logging, Logpush or Instant Logs job is configured; (c) that Workers Logs and traces are off for the `madegood` Worker; (d) who has dashboard access to the zone. Then confirm the Coarse Location row and the Diagnostics answer below, and the 31-day figure in `/privacy`. | The label and the policy's IP section depend on what the zone actually retains. |
+| 16 | **WeatherKit server key and the 4 Worker secrets set (owner).** The WeatherKit server key from the Apple Developer account, and the four Worker secrets the server wind lookup reads, must be set with `wrangler secret put` in production and never committed. | Without them, shared sessions get no wind; the policy describes the WeatherKit path. |
 
 ## Privacy nutrition label
 
@@ -40,11 +41,18 @@ lets the developer or its third-party partners access it for longer than it take
 answer the request in real time. Data processed only on the device is not collected,
 and Apple adds: "You are not responsible for disclosing data collected by Apple." It
 also says an IP address that is sent on a request and not retained need not be
-disclosed. ([App privacy details on the App Store](https://developer.apple.com/app-store/app-privacy-details/))
+disclosed, and that a stored IP address is declared "based on how you use IP address,
+such as precise location, coarse location, device ID, or diagnostics."
+([App privacy details on the App Store](https://developer.apple.com/app-store/app-privacy-details/))
+The definition covers data that "you and/or your third-party partners" can access.
+The page does not name hosting providers, so this draft treats data that Cloudflare
+keeps for the developer, in a form the developer can read, as the developer's own
+collection. Where the guidance is ambiguous, the draft declares.
 
-**Without an account** (the default), MadeGood collects nothing. What leaves the phone
-goes to Apple, not to MadeGood: an optional Apple Weather request (below), Apple Maps
-tiles, and what the user chooses to save to Apple Health or share as a file.
+**Without an account** (the default), MadeGood collects nothing: the app sends no
+request to the MadeGood API until the user signs in. What leaves the phone goes to
+Apple, not to MadeGood: an optional Apple Weather request (below), Apple Maps tiles,
+and what the user chooses to save to Apple Health or share as a file.
 
 **Signing in** (Settings → Account → Sign in with Apple) creates the account on the
 MadeGood API, a Cloudflare Worker run by the developer. That alone sends Apple's user
@@ -57,25 +65,29 @@ answers, with the stage at which each type is collected:
 |---|---|---|---|---|---|---|
 | Identifiers | User ID | Yes, at sign-in | Yes | No | App Functionality | Apple's stable user identifier (`apple_sub`), the account ID and handle. The handle is public only while the account has a public session (below) |
 | Contact Info | Name | Yes, at sign-in, optional | Yes | No | App Functionality | The display name Apple shares on first sign-in, if the user allows it. Shown only on a visible public profile and its link preview (below). Email is not requested (`requestedScopes = [.fullName]`) |
-| Location | Precise location | Yes, with Sync sessions on | Yes | No | App Functionality | The session's GPS track (track v1 in R2), its bounding box and start geohash (D1), privacy zone centers. Covers the coarse wind lookup below |
+| Location | Precise location | Yes: tracks with Sync sessions on; privacy zones whenever added on the website | Yes | No | App Functionality | The session's GPS track (track v1 in R2), its bounding box and start geohash (D1), uploaded from the iPhone only with Sync sessions on. Separately, privacy zone centers (`privacy-zones.ts`), which a signed-in user saves on the website, from the map or the browser's location, whether or not iPhone sync is on. Covers the rounded server wind lookup below |
+| Location | Coarse location | Yes, from sign-in (any API request) | Yes | No | App Functionality | The client IP address, and the country Cloudflare shows for it, in sampled request records that zone Security Analytics keeps up to 31 days, used only for security (below) |
 | Health & Fitness | Health | Yes, with Sync sessions on | Yes | No | App Functionality | Heart rate samples in the track, average and max heart rate in the summary |
 | Health & Fitness | Fitness | Yes, with Sync sessions on | Yes | No | App Functionality | Sport, distance, speed, moving time, laps, speed categories |
 | User Content | Other user content | Yes, with Sync sessions on | Yes | No | App Functionality | Session title and notes, visibility setting |
 | Diagnostics | — | No | — | — | — | No crash or analytics SDK. The Worker's only console output is a severity and a fixed event code, and persisted logs are off (below) |
 
+Both privacy manifests declare these types, except Coarse Location, which only the
+iPhone manifest declares: the watch never calls the API.
+
 Not collected: email, phone, contacts, photos, browsing or search history, purchases,
-financial info, sensitive info, device ID, advertising data, audio, coarse location
-beyond the precise row, raw wrist motion (the 100 Hz motion stream never leaves the
+financial info, sensitive info, device ID, advertising data, audio, raw wrist motion (the 100 Hz motion stream never leaves the
 phone unless the user shares a raw recording file themselves).
 
-**Apple Weather (#137).** Local conditions (off until the user taps Show on the start
+**Apple Weather on the iPhone (#137).** Local conditions (off until the user taps Show on the start
 screen or turns on Settings → Weather → Local Conditions) and the sailing session's
 **Compare with Apple Weather** button use WeatherKit. The phone sends Apple only a
 0.1° × 0.1° grid cell (`WeatherGridCell`, about 11 km north–south), never the fix
 itself; the comparison also asks for the session's hours. Local conditions refetch at
 most every 15 minutes while the start screen is shown, and at once when the user turns
-them on. Answers are cached on the phone by cell and hour; MadeGood's server never
-sees the request. Apple says WeatherKit location "is used only to provide weather
+them on. Answers are cached on the phone only temporarily, as WeatherKit's terms
+allow (the temporary cache is in a separate PR); MadeGood's server never sees the
+request. Apple says WeatherKit location "is used only to provide weather
 forecasts, is not associated with any personally identifiable information, and is
 never tracked between requests" ([WeatherKit](https://developer.apple.com/weatherkit/)).
 Apple does not state a retention period there, so the policy doesn't claim one.
@@ -83,21 +95,21 @@ Proposed: **not declared.** The data goes to Apple, not to the developer or a pa
 whose code is in the app, and Apple's guidance says developers aren't responsible for
 disclosing data Apple collects.
 
-**Server-side Open-Meteo wind (#72).** After processing an **unlisted or public**
-session, the Worker asks Open-Meteo for hourly wind (`web/src/server/lib/wind.ts`,
-`needsWind` in `postprocess.ts`). The request carries one position, the center of the
-session's bounds with privacy zones cut out, rounded to 0.1° (`WIND_GRID_DEG`, about
-11 km), the UTC dates the session spans, and a fixed list of variables. No account,
-session ID, track or time of day is sent, and it comes from Cloudflare, so Open-Meteo
-sees Cloudflare's IP address, not the user's. Private sessions never cause a request.
-The answer is stored with the session. Open-Meteo's free-API privacy notice says it
-keeps web server logs that may contain coordinates, for troubleshooting, deletes them
-after 90 days, doesn't link them to user identities and doesn't share them
-([Open-Meteo terms](https://open-meteo.com/en/terms#privacy)). Proposed: **no extra
-row.** The input is derived from the track the developer already collects under
-Precise Location, so the label already declares it; the label has no separate
-"shared with a vendor" answer outside tracking, and this is not tracking. The policy
-names Open-Meteo and what it receives.
+**Wind for shared sessions on the website (#72; WeatherKit in PR #140, item 13).**
+WeatherKit's terms allow only temporary caching, so the server stores no wind. When
+someone views an **unlisted or public** session, the website asks the Worker, which asks
+Apple's WeatherKit REST API for that session's hourly wind
+(`web/src/server/lib/wind.ts`), and the page shows it with Apple Weather attribution.
+The request carries one position, the center of the session's bounds with privacy
+zones cut out, rounded to 0.1° (`WIND_GRID_DEG`, about 11 km), and the session's
+visible time range. No account, session ID or track is sent, and it comes from
+Cloudflare, so Apple sees Cloudflare's IP address, never the owner's or the viewer's.
+Private sessions never cause a request. The answer is kept only in Cloudflare's cache,
+for a few hours. Nothing is written to D1 or R2, data exports no longer include wind,
+and wind stored by the earlier lookup is being deleted (#140).
+Proposed: **no extra row**, for two reasons: Apple's guidance says developers aren't
+responsible for data Apple collects, and the input is derived from the track the
+developer already declares under Precise Location. The policy describes the request.
 
 **Anchor alarm.** The anchor point, swing radius and GPS fixes stay on the iPhone
 (`AnchorWatch`); nothing about the alarm is sent anywhere, with or without an
@@ -108,26 +120,51 @@ error holding one fixed `{ event: "<code>" }` object (`web/src/server/lib/loggin
 It never includes user or session IDs, handles, names, emails, Apple identifiers,
 coordinates, tokens, request bodies, URLs, headers, IP addresses or error text.
 `wrangler.jsonc` sets `"observability": { "enabled": false }` and `"logpush": false`,
-so Workers Logs, traces and Logpush don't retain invocations. Proposed: **Diagnostics:
-No.** Nothing tied to a user is written, and nothing is retained by these settings. What
-Cloudflare records on its own, per #135:
+so Workers Logs, traces and Logpush don't retain invocations. An operator who opens a
+real-time `wrangler tail` sees request URLs, headers and Cloudflare request metadata
+while it is open; nothing is stored.
 
-- Cloudflare processes every client IP at ingress.
-- An operator who opens a real-time `wrangler tail` sees request URLs, headers and
-  Cloudflare request metadata while it is open. Nothing is stored.
-- Zone Security Analytics shows sampled requests, filterable by source IP and URI, kept
-  up to 31 days on the Free, Pro and Business plans
-  ([Security Analytics](https://developers.cloudflare.com/waf/analytics/security-analytics/)).
-- Zone-level HTTP logging or Logpush would retain IPs and headers, but only if someone
-  configures it. Production account and zone settings are unverified (open item 15).
+**Cloudflare Security Analytics and the IP address.** Cloudflare, the hosting provider,
+processes every client IP at ingress. Separately, the zone's Security Analytics keeps
+sampled requests, including those to `/api`, for up to 31 days on the Free, Pro and
+Business plans (90 days on Enterprise), and the zone operator can filter them by
+source IP and see the URI and Cloudflare's per-request details such as country
+([Security Analytics](https://developers.cloudflare.com/waf/analytics/security-analytics/),
+[Security Events](https://developers.cloudflare.com/waf/analytics/security-events/)).
+How this draft answers, step by step:
+
+1. **Is it collected?** Yes. The record leaves the device, is stored in readable form
+   for longer than it takes to answer the request, and the developer can read it.
+   Cloudflare keeps it on the developer's behalf, so it is the developer's collection,
+   not Apple's "sent on a request and not retained" exception.
+2. **Which data type?** Apple classifies a stored IP by use. MadeGood uses these records
+   only for security (spotting abuse of sign-in and uploads), never to locate a user,
+   identify a device, or debug. But Cloudflare shows a country for each record, which
+   is location at lower resolution than three decimal places, and the guidance does not
+   say whether location derived by the provider counts when the developer never uses
+   it. The conservative answer is **Coarse Location**.
+3. **Linked?** **Yes.** The app calls the API only after sign-in, and a sampled URI can
+   hold a session ID that maps to an account, so the record could be tied to a user.
+4. **Purpose?** **App Functionality**, which Apple defines to include "prevent fraud,
+   implement security measures". Not tracking, not advertising, not analytics.
+5. **Diagnostics?** **No.** Security use alone is not "measuring technical
+   diagnostics", and the Worker's own logs hold no user data (above). If the owner ever
+   uses these records to troubleshoot, add Other Diagnostic Data (linked, App
+   Functionality).
+6. **Device ID?** No: the IP is not used to identify a device.
+
+These answers assume the production zone retains nothing beyond Security Analytics.
+Zone-level HTTP logging, Logpush or Instant Logs would retain IPs and headers if someone
+configured them (open item 15).
 
 **Rate limiting (#98).** Sign-in and token refresh allow 60 requests a minute per
 client IP address (`CF-Connecting-IP`); session uploads allow 1,200 a minute per
 account (`web/src/server/lib/rate-limit.ts`). Both use Cloudflare's Workers rate
 limiting bindings with 60-second windows: Cloudflare's rate limiter counts per key for
-one-minute windows, and MadeGood never writes the IP address to D1, R2 or its logs. A
-refused request gets HTTP 429 with `Retry-After: 60`. Proposed: not declared, as Apple's
-example of an IP address used to answer a request and not retained.
+one-minute windows. MadeGood's own code never writes the IP address to D1, R2 or its
+logs. A refused request gets HTTP 429 with `Retry-After: 60`. No row of its own: the
+limiter's counter is not readable by the developer, and the IP's retained copy is
+already declared under Coarse Location above.
 
 **Data shared publicly.** A new upload takes the account's **Visibility of new
 sessions** setting (`users.default_visibility`, applied on insert in
@@ -144,8 +181,9 @@ duration, distance and speeds, with no track, notes or bounds. To anyone else th
 profile exists only while the account is active and has at least one public session.
 Otherwise the profile API (`users.ts`) and the page answer exactly as for an unknown
 handle, and the Open Graph tags are generic and `noindex`. The handle and name appear
-publicly only there: on the visible profile, through its API, and in its link metadata
-(`session-preview.ts`). Shared session pages and their previews do not show them.
+publicly only there: on the visible profile, in its link metadata
+(`session-preview.ts`), and through the public profile API, `GET /api/users/{handle}`,
+which returns both directly to anyone (`users.ts`). Shared session pages and their previews do not show them.
 Unlisted sessions never appear on the profile. Nothing new is collected: the handle and
 name are already in the table above.
 
@@ -213,7 +251,10 @@ shows the background location indicator throughout:
 - **The anchor alarm** (`AnchorWatch`), only while armed. It runs standard updates
   through `CLLocationManager` with `allowsBackgroundLocationUpdates` and
   `pausesLocationUpdatesAutomatically = false`, so fixes keep arriving while the boat
-  lies still. Setup is foreground only; Disarm invalidates the background session.
+  lies still. Setup is foreground only, but it does use location: opening the Anchor
+  Alarm screen (`AnchorWatch.beginSetup`) asks for When In Use permission if needed and
+  starts foreground updates before anything is armed, to show the position and place the
+  anchor point. Disarm invalidates the background session.
 - **Man-overboard without a recording** (`ManOverboard`), while any mark still needs
   guidance or a press is waiting for its first fix, so a mark made during a countdown,
   a mirrored watch session or with nothing running keeps getting fixes when the phone
@@ -255,7 +296,8 @@ reported accuracy of 25 m or better (`AnchorAlarm.maximumAccuracy`). A fix is ou
 when its distance from the anchor, less the larger of its accuracy and 5 m, still
 exceeds the radius, so the alarm needs the boat more than 5 m beyond the circle;
 three such fixes confirm drift (`confirmationFixCount`). Uncertain fixes leave the
-count as it is; only a confidently inside fix resets it. A pending GPS backup alarm ("Check anchor and GPS") asks
+count as it is; only a confidently inside fix resets it. With a 10 m radius and
+fixes at the 25 m limit, a fix counts as outside only beyond 35 m from the anchor. A pending GPS backup alarm ("Check anchor and GPS") asks
 the operator to check the anchor and GPS if usable fixes near the swing circle stop
 arriving for about two minutes (`AnchorGPSLoss.timeout`, renewed at most every 30 s).
 It can fire while GPS still delivers updates, if those updates are too inaccurate to
@@ -286,7 +328,7 @@ needed: nothing uses those APIs.
 |---|---|---|
 | `NSLocationWhenInUseUsageDescription` | iPhone | "MadeGood records your track, speed and course during a session, including with the screen off. It also uses your position for start-line pings, to mark a man-overboard position and guide you back to it, to set an anchor point and watch for drift while the anchor alarm is armed, and, rounded to about 11 km, for local conditions if you turn them on." |
 | `NSLocationWhenInUseUsageDescription` | Watch | "MadeGood records your track, speed and course during a session, including with the screen off. It also uses your position for start-line pings, and to mark a man-overboard position and guide you back to it." |
-| `NSAlarmKitUsageDescription` | iPhone | "MadeGood sounds an alarm if your boat drifts outside the swing radius you set, or if GPS stops updating while the anchor alarm is armed." |
+| `NSAlarmKitUsageDescription` | iPhone | "MadeGood sounds an alarm if your boat drifts outside the swing radius you set, or if usable GPS positions stop arriving while the anchor alarm is armed." |
 | `NSMotionUsageDescription` | Both | "MadeGood records motion during a session to count paddle strokes. The samples stay in the recording on your devices." Motion is recorded at 100 Hz in every sport and used live for strokes in kayak, canoe and SUP. |
 | `NSHealthShareUsageDescription` | Both | See [HealthKit](#healthkit). |
 | `NSHealthUpdateUsageDescription` | Both | See [HealthKit](#healthkit). |
@@ -350,7 +392,9 @@ needed: nothing uses those APIs.
 
 Paste the quoted block into App Store Connect → App Review Information → Notes. It
 describes a Release archive with sync configured (item 5) and Voyages hidden (item 12).
-Attach the screen recording of a real session (item 14).
+Attach the screen recording of a real session (item 14). App Store Connect allows 4,000 bytes;
+as plain text (bold markers removed, one line per paragraph) the note is 3,872 UTF-8
+bytes.
 
 > MadeGood records sailing, windsurfing, kayak, canoe, SUP and motorboat sessions on
 > iPhone and Apple Watch. It is not for navigation, and its speeds are personal
@@ -367,9 +411,9 @@ Attach the screen recording of a real session (item 14).
 > tab, tap Sailing to start the countdown. Tap one ping button, walk at least 15 m (the
 > line must be at least 10 m long), then tap the other. Each ping needs a GPS fix
 > accurate to 15 m, so do this outdoors with a clear sky. Distance to the line appears
-> under the countdown once both ends are set. Time to burn appears while you walk
-> towards the line. Line bias needs a wind estimate from sailing on both tacks before
-> the start, so it does not appear on land; the screen recording shows it.
+> under the countdown once both ends are set. Time to burn and line bias need a real
+> start (approaching the line from the pre-start side, and wind from sailing both
+> tacks); the screen recording shows them.
 >
 > **Man-overboard.** The iPhone button is off by default: in Settings → Safety, turn on
 > Show Man Overboard (MOB) Button. On the Record tab, touch and hold MOB for about half
@@ -378,16 +422,17 @@ Attach the screen recording of a real session (item 14).
 > target, and location keeps running until the last one is cleared.
 >
 > **Anchor alarm (iPhone).** On the Record tab, tap Anchor alarm below the sport list
-> (it is also on a live motorboat session, and is hidden only if Motorboating is
-> hidden). Allow location, with Precise Location on. Tap Use current position, choose
-> the smallest swing radius (10 m), and tap Arm anchor alarm. iOS then asks for the
-> Alarms permission; allow it. Lock the phone and walk about 30 m from where you armed
-> it. Drift needs three GPS fixes, each accurate to 25 m, that put the phone more than
-> 5 m beyond the circle; then a system alarm sounds on the Lock Screen. Stop silences
-> it for two minutes, and it sounds again if the phone is still outside. Disarm in the
-> app ends monitoring. If no usable fix near the circle arrives for about two minutes
-> while armed (GPS stops, or its fixes are too inaccurate), a GPS backup alarm, "Check
-> anchor and GPS", sounds instead.
+> (also on a live motorboat session). Opening it starts location; allow it, with Precise
+> Location on. The anchor point is already your current position (tap the map to move
+> it; Use current position then moves it back). Choose the smallest swing radius
+> (10 m) and tap Arm anchor alarm, then allow Alarms. Lock the phone and walk at least
+> 70 m away (60 m beyond the circle), outdoors, and wait. Drift needs three fixes, each
+> accurate to 25 m, that put the phone more than the larger of its accuracy and 5 m
+> beyond the circle; then a system alarm sounds on the Lock Screen. Stop silences it for
+> two minutes; it sounds again if you are still outside. Disarm ends monitoring. If no
+> usable fix arrives for about two minutes while armed (GPS stops, or its fixes are too
+> inaccurate, even if updates continue), a GPS backup alarm, "Check anchor and GPS",
+> sounds instead.
 >
 > **Why location runs in the background for hours.** Recording keeps running with the
 > screen off because the phone is in a dry bag or pocket for the whole session. The
@@ -398,16 +443,15 @@ Attach the screen recording of a real session (item 14).
 > and stops on Stop, Disarm or Clear. AlarmKit is used only by the anchor alarm, to
 > sound the drift and GPS backup alarms on the Lock Screen.
 >
-> **Sign in, sync and account deletion.** Sync needs an account. In Settings → Account,
-> tap Sign in with Apple. Signing in creates the account but uploads nothing; sessions
-> upload only after you turn on **Sync sessions** in the same section, which is off
-> after every new sign-in. Then record a session (sessions recorded on this iPhone
-> before signing in upload only if you tap the Upload Earlier Sessions button). Sign in at
-> https://madegood.app with the same Apple ID to view the session. A new account
-> uploads sessions as private; the website's Settings can change that default. Settings → Account →
-> Delete Account deletes the account and everything uploaded to it after a
-> confirmation; recordings on the device stay. The website's Settings page has the same
-> Delete account action.
+> **Sign in, sync and account deletion.** In Settings → Account, tap Sign in with
+> Apple. This creates the account (Apple's user ID and, if shared, your name) but
+> uploads no sessions. Turn on **Sync sessions**; the row below it shows the account's
+> Visibility of new sessions (Private for a new account). Sessions recorded more than
+> ten minutes after signing in upload automatically. One recorded sooner, or before
+> sign-in, waits: tap Upload Earlier Sessions. View it at https://madegood.app, signed
+> in with the same Apple ID. Settings → Account → Delete Account deletes the account and
+> everything uploaded after a confirmation; recordings on the device stay. The website's
+> Settings page has the same action.
 
 Not in the note, for the owner:
 
@@ -416,6 +460,18 @@ Not in the note, for the owner:
   use them. They are fine for screenshots, but the App Review attachment should be a
   screen recording of a real session on the Release build (item 14): tacks, a start
   with time to burn and line bias, planing or strokes.
+- Time to burn shows only while the boat is on the pre-start side (right of the line
+  looking from the pin to the boat end), moving at 0.3 m/s or more with a course that
+  closes on the line, and within an hour of it (`StartLinePosition.timeToLine`). Line
+  bias needs a pre-start wind estimate. Neither is reliable on land, so the walkthrough
+  leaves them to the recording.
+- The anchor walk: with a 10 m radius a fix counts as outside only beyond 10 m plus the
+  larger of its accuracy and 5 m, so up to 35 m at the 25 m accuracy limit; 70 m leaves
+  room for GPS error. The anchor point is fixed at the position when Arm is tapped
+  unless the map was tapped, so arm where you start the walk.
+- Sync eligibility widens each recording by ten minutes on both sides
+  (`SessionSyncConsent.clockMargin`), so a recording that starts within ten minutes of
+  sign-in is an earlier session that needs the explicit choice.
 - Steps above match the UI at the time of writing (`AnchorAlarmView`, `ManOverboardViews`,
   `StartLinePanel`, `SessionSyncSection`). Walk through them on the submitted build.
 
@@ -445,7 +501,7 @@ Final copy for App Store Connect. Counts are characters as App Store Connect cou
   it may not appear for 1.0. Keep the text for a 1.0.x release note if so.
 - **Promotional text** can change without a new build, so it stays general; use it
   later for news.
-- **Description:** 3,044 of 4,000 characters. It claims only what this build does,
+- **Description:** 3,060 of 4,000 characters. It claims only what this build does,
   says "Not for navigation", says the account is optional, and leaves out Voyages.
 
 ```text
@@ -466,7 +522,7 @@ KAYAK, CANOE AND SUP
 
 MOTORBOATING
 • Trip log in nautical miles, engine time and a fuel estimate
-• Anchor alarm on iPhone: arm it at your anchor point with a swing radius, and the iPhone sounds a system alarm if the boat drifts outside it, or if GPS stops updating
+• Anchor alarm on iPhone: arm it at your anchor point with a swing radius, and the iPhone sounds a system alarm if the boat drifts outside it, or if usable GPS positions stop arriving
 
 ON APPLE WATCH
 • Start from your wrist and see live speed, distance and heart rate with your heart-rate zone

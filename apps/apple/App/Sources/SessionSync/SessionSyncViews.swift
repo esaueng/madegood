@@ -107,10 +107,14 @@ struct SessionSyncSection: View {
             Text("Account")
         } footer: {
             Text(
-                "When sync is on, sessions recorded while you are signed in upload to your MadeGood account. They are private unless you share them. Signing out turns sync off. Recordings stay on this iPhone."
+                "When sync is on, sessions recorded while you are signed in upload to your MadeGood account and take its Visibility of new sessions setting: Private, Unlisted or Public. Signing out turns sync off. Recordings stay on this iPhone."
             )
         }
         .disabled(busy)
+        .task { await sync?.refreshNewSessionVisibility() }
+        .onChange(of: sync?.isEnabled) { _, enabled in
+            if enabled == true { Task { await sync?.refreshNewSessionVisibility() } }
+        }
         .alert("Delete your MadeGood account?", isPresented: $confirmingDeletion) {
             Button("Delete Account", role: .destructive) {
                 if let sync { deleteAccount(sync) }
@@ -133,6 +137,16 @@ struct SessionSyncSection: View {
                 .accessibilityIdentifier("sessionSync.signedIn")
             Toggle("Sync sessions", isOn: $sync.isEnabled)
                 .accessibilityIdentifier("sessionSync.enabled")
+            // Shown before and after the switch is turned on: an Unlisted or Public account
+            // default shares every new upload automatically (review of #133).
+            LabeledContent(
+                "Visibility of new sessions", value: sync.newSessionVisibility?.label ?? "Unknown"
+            )
+            .accessibilityIdentifier("sessionSync.visibility")
+            Text(NewSessionVisibility.notice(for: sync.newSessionVisibility))
+                .font(.footnote)
+                .foregroundStyle(sync.newSessionVisibility == .private ? .secondary : .primary)
+                .accessibilityIdentifier("sessionSync.visibilityNotice")
             if sync.isEnabled {
                 Toggle("Upload on Wi-Fi only", isOn: $sync.wifiOnly)
                     .accessibilityIdentifier("sessionSync.wifiOnly")
