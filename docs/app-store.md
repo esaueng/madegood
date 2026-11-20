@@ -60,8 +60,9 @@ Cloudflare Worker run by the developer, with Apple's identity token (it carries 
 user identifier) and, if the user allows it, the name Apple shares. That request goes
 through Cloudflare on a first sign-in, before any account exists, and also when the
 sign-in then fails (invalid token, rate limit, an account still being deleted), so the
-IP handling below applies from the first attempt. An identity token that fails
-verification writes nothing to D1. Once it verifies, `signInAppleSubject`
+IP handling below applies from the first attempt. A sign-in refused before that
+(an identity token that fails verification, the rate limit, or an account still being
+deleted) writes nothing to D1. Once it verifies, `signInAppleSubject`
 (`web/src/server/lib/account-deletion.ts`) commits the `users` row through
 `findOrCreateUser` (`web/src/server/auth/users.ts`) before `issueTokenPair` runs, so a
 sign-in that fails after that (writing the refresh token, or signing the access token,

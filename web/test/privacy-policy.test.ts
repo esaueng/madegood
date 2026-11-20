@@ -90,8 +90,10 @@ describe("/privacy", () => {
   // Review of #133 at 58ed722: the account record is written before tokens are issued.
   it("says a sign-in failing after account creation can leave the account record", async () => {
     const text = await renderPolicy();
-    expect(text).not.toMatch(/stores nothing from it|failed sign-in stores nothing/);
-    expect(text).toContain("If Apple's confirmation is not valid, MadeGood stores nothing");
+    expect(text).not.toMatch(
+      /If the sign-in fails, MadeGood stores nothing|failed sign-in stores nothing/,
+    );
+    expect(text).toContain("the confirmation is not valid, there were too many attempts");
     expect(text).toContain("can still leave the account record");
     expect(text).toContain("MadeGood does not remove such a record on its own");
   });

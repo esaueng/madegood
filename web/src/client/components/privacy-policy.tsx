@@ -130,16 +130,18 @@ export function PrivacyPolicy() {
           (it carries Apple's identifier for you) and your name if you shared it. This request is
           sent on your first sign-in, before any account exists, and also when signing in then
           fails. Cloudflare handles your IP address for it as for any request (see Where it runs).
-          If Apple's confirmation is not valid, MadeGood stores nothing from the attempt. Once it is
-          checked, the server creates your account, or opens your existing one, and stores the
-          following even if you never turn on sync: Apple's identifier for you, an account ID, a
-          handle the server picks, your name if you shared it, when the account was created, and
-          your settings (units, and Visibility of new sessions, which starts at Private). Only then
-          does it issue the sign-in, storing a hash of its refresh token with its issue and expiry
-          times (60 days) and whether it is for the app or the website. So a sign-in that fails at
-          that last step can still leave the account record, and possibly the token hash, on the
-          server. MadeGood does not remove such a record on its own: it stays until you delete the
-          account, which you can do after signing in again. No session is uploaded.
+          If the attempt is refused first (the confirmation is not valid, there were too many
+          attempts, or the account is still being deleted), MadeGood stores nothing from it. Once
+          the confirmation is checked, the server creates your account, or opens your existing one,
+          and stores the following even if you never turn on sync: Apple's identifier for you, an
+          account ID, a handle the server picks, your name if you shared it, when the account was
+          created, and your settings (units, and Visibility of new sessions, which starts at
+          Private). Only then does it issue the sign-in, storing a hash of its refresh token with
+          its issue and expiry times (60 days) and whether it is for the app or the website. So a
+          sign-in that fails at that last step can still leave the account record, and possibly the
+          token hash, on the server. MadeGood does not remove such a record on its own: it stays
+          until you delete the account, which you can do after signing in again. No session is
+          uploaded.
         </p>
         <p>
           <strong>Syncing.</strong> Only when you also turn on <strong>Sync sessions</strong> (off
