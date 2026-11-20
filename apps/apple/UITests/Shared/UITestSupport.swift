@@ -63,6 +63,15 @@ extension XCTestCase {
         add(attachment)
     }
 
+    /// Saves an App Store screenshot, named `appstore <name>` so
+    /// `scripts/app-store-screenshots` can pick it out of the test results.
+    func attachAppStoreScreenshot(_ name: String) {
+        let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot(), quality: .original)
+        attachment.name = "appstore \(name)"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
     /// Any element with this accessibility identifier.
     func element(_ identifier: String, in app: XCUIApplication) -> XCUIElement {
         app.descendants(matching: .any)[identifier].firstMatch

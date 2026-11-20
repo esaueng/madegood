@@ -50,3 +50,6 @@ recordings/
 *.mgsession.zip
 fixtures/**/raw-original/
 /fixtures/.corpus/
+
+# App Store screenshots (scripts/app-store-screenshots)
+/build/

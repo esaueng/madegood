@@ -1,0 +1,261 @@
+#!/usr/bin/env python3
+"""Produce the App Store screenshot set for iPhone and Apple Watch from synthetic demo data.
+
+Runs the screenshot UI test classes (PhoneAppStoreScreenshots, WatchAppStoreScreenshots)
+on dedicated simulators of App Store Connect's largest display classes, with a clean
+status bar (9:41, full battery and signal) and light appearance, then exports the
+attachments named `appstore NN-name` and writes them as
+
+    build/app-store-screenshots/<device>/NN-name.png
+
+It fails if a screenshot is missing or is not exactly the required pixel size. The
+output folder is gitignored; upload the PNGs to App Store Connect by hand.
+
+Usage: scripts/app-store-screenshots [--device iphone|watch] [--output DIR]
+
+Generate the Xcode project first (see AGENTS.md: `mise install`, then
+`cd apps/apple && tuist install && tuist generate --no-open`).
+"""
+import argparse
+import json
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from dataclasses import dataclass
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+APPLE = ROOT / "apps" / "apple"
+
+# The demo route's synthetic origin in open water (DemoFeed.origin), so the iPhone's
+# live map shows sea around the demo track, never a real place.
+DEMO_LOCATION = "10.0,-30.0"
+
+
+@dataclass
+class Device:
+    key: str  # output folder
+    device_type: str  # simctl device type name
+    platform: str  # simctl runtime platform
+    scheme: str
+    test: str  # -only-testing identifier
+    size: tuple  # required portrait (width, height) in pixels
+    shots: tuple  # expected screenshot names, in order
+
+
+# Sizes from App Store Connect Help, "Screenshot specifications" (checked November 2026):
+# iPhone with Dynamic Island (large display) accepts 1320 x 2868 (iPhone 18 Pro Max);
+# Apple Watch accepts 422 x 514 for Ultra 4 and Ultra 3, the largest watch size.
+DEVICES = {
+    "iphone": Device(
+        key="iphone-6.9",
+        device_type="iPhone 18 Pro Max",
+        platform="iOS",
+        scheme="MadeGood",
+        test="MadeGoodUITests/PhoneAppStoreScreenshots",
+        size=(1320, 2868),
+        shots=(
+            "01-start",
+            "02-live",
+            "03-history",
+            "04-session-map",
+            "05-session-stats",
+            "06-sailing-tacks",
+            "07-paddling-strokes",
+            "08-anchor-alarm",
+        ),
+    ),
+    "watch": Device(
+        key="watch-ultra",
+        device_type="Apple Watch Ultra 4 (49mm)",
+        platform="watchOS",
+        scheme="MadeGoodWatch",
+        test="MadeGoodWatchUITests/WatchAppStoreScreenshots",
+        size=(422, 514),
+        shots=("01-sports", "02-metrics", "03-sailing", "04-map", "05-summary"),
+    ),
+}
+
+
+def fail(message: str) -> None:
+    print(f"error: {message}", file=sys.stderr)
+    sys.exit(1)
+
+
+def run(args: list, **kwargs) -> subprocess.CompletedProcess:
+    return subprocess.run(args, check=True, **kwargs)
+
+
+def simctl(*args: str, check: bool = True) -> subprocess.CompletedProcess:
+    return subprocess.run(["xcrun", "simctl", *args], check=check, capture_output=True, text=True)
+
+
+def runtime_version(identifier: str, platform: str) -> tuple:
+    match = re.search(rf"\.{platform}-([\d-]+)$", identifier)
+    return tuple(int(part) for part in match.group(1).split("-")) if match else ()
+
+
+def simulator(device: Device) -> str:
+    """The UDID of this script's own simulator for `device`, created on first use so the
+    status bar override and test runs never touch a simulator someone else is using."""
+    name = f"MadeGood Screenshots ({device.device_type})"
+    listing = json.loads(simctl("list", "--json").stdout)
+    types = [t for t in listing["devicetypes"] if t["name"] == device.device_type]
+    if not types:
+        fail(f"no {device.device_type} simulator device type; install it in Xcode > Settings > Components")
+    runtimes = sorted(
+        (
+            r
+            for r in listing["runtimes"]
+            if r.get("isAvailable") and r.get("platform") == device.platform
+            and any(t["identifier"] == types[0]["identifier"] for t in r.get("supportedDeviceTypes", []))
+        ),
+        key=lambda r: runtime_version(r["identifier"], device.platform),
+        reverse=True,
+    )
+    if not runtimes:
+        fail(f"no available {device.platform} runtime supports {device.device_type}")
+    runtime = runtimes[0]["identifier"]
+    for existing in listing["devices"].get(runtime, []):
+        if existing["name"] == name and existing.get("isAvailable"):
+            return existing["udid"]
+    print(f"Creating simulator {name!r} ({runtimes[0]['name']})")
+    return simctl("create", name, types[0]["identifier"], runtime).stdout.strip()
+
+
+def prepare(udid: str, device: Device) -> None:
+    simctl("boot", udid, check=False)  # fails harmlessly when already booted
+    run(["xcrun", "simctl", "bootstatus", udid, "-b"], stdout=subprocess.DEVNULL)
+    status = ["status_bar", udid, "override", "--time", "9:41"]
+    if device.platform == "iOS":
+        simctl("ui", udid, "appearance", "light")  # watchOS has no light appearance
+        status += [
+            "--dataNetwork", "wifi", "--wifiMode", "active", "--wifiBars", "3",
+            "--cellularMode", "active", "--cellularBars", "4", "--operatorName", "",
+            "--batteryState", "discharging", "--batteryLevel", "100",
+        ]
+        simctl("location", udid, "set", DEMO_LOCATION)
+    else:
+        # watchOS simulators refuse status bar overrides, so the watch clock shows the
+        # time of the run. Run the script at a tidy time (10:09 is Apple's) if it matters.
+        print("  note: watchOS has no status bar override; the watch clock shows the current time")
+        return
+    result = simctl(*status, check=False)
+    if result.returncode != 0:
+        fail(f"could not override the {device.device_type} status bar: {result.stderr.strip()}")
+
+
+def png_size(path: Path) -> tuple:
+    with path.open("rb") as file:
+        header = file.read(26)
+    if header[:8] != b"\x89PNG\r\n\x1a\n":
+        fail(f"{path} is not a PNG")
+    return int.from_bytes(header[16:20], "big"), int.from_bytes(header[20:24], "big")
+
+
+def png_has_alpha(path: Path) -> bool:
+    with path.open("rb") as file:
+        header = file.read(26)
+    return header[25] in (4, 6)  # colour types with an alpha channel
+
+
+def remove_alpha(path: Path) -> None:
+    """App Store Connect rejects screenshots with an alpha channel; the simulator's are
+    fully opaque, so flattening loses nothing. A small CoreGraphics script keeps it
+    lossless."""
+    script = (
+        "import CoreGraphics; import Foundation; import ImageIO; import UniformTypeIdentifiers\n"
+        "let url = URL(fileURLWithPath: CommandLine.arguments[1]) as CFURL\n"
+        "let source = CGImageSourceCreateWithURL(url, nil)!\n"
+        "let image = CGImageSourceCreateImageAtIndex(source, 0, nil)!\n"
+        "let space = image.colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB)!\n"
+        "let context = CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: 8,"
+        " bytesPerRow: 0, space: space, bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)!\n"
+        "context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))\n"
+        "let out = CGImageDestinationCreateWithURL(url, UTType.png.identifier as CFString, 1, nil)!\n"
+        "CGImageDestinationAddImage(out, context.makeImage()!, nil)\n"
+        "guard CGImageDestinationFinalize(out) else { exit(1) }\n"
+    )
+    with tempfile.NamedTemporaryFile("w", suffix=".swift", delete=False) as file:
+        file.write(script)
+    try:
+        run(["xcrun", "swift", file.name, str(path)])
+    finally:
+        Path(file.name).unlink()
+
+
+def capture(device: Device, output: Path, work: Path) -> None:
+    udid = simulator(device)
+    print(f"== {device.device_type} ({udid})")
+    prepare(udid, device)
+    results = work / f"{device.key}.xcresult"
+    shutil.rmtree(results, ignore_errors=True)
+    test = subprocess.run(
+        [
+            "xcodebuild", "test", "-workspace", "MadeGood.xcworkspace", "-scheme", device.scheme,
+            "-destination", f"id={udid}", f"-only-testing:{device.test}",
+            "-derivedDataPath", str(work / "DerivedData"), "-resultBundlePath", str(results),
+            "CODE_SIGN_IDENTITY=-", "CODE_SIGN_STYLE=Manual",
+        ],
+        cwd=APPLE, capture_output=True, text=True,
+    )
+    for line in test.stdout.splitlines():
+        if re.search(r"error:|Test Case .*(passed|failed)|\*\* TEST", line):
+            print(line)
+    if test.returncode != 0:
+        fail(f"{device.test} failed; see {results}")
+
+    exported = work / f"{device.key}-attachments"
+    shutil.rmtree(exported, ignore_errors=True)
+    run(["xcrun", "xcresulttool", "export", "attachments", "--path", str(results), "--output-path", str(exported)],
+        stdout=subprocess.DEVNULL)
+    found = {}
+    for test_entry in json.loads((exported / "manifest.json").read_text()):
+        for attachment in test_entry.get("attachments", []):
+            match = re.match(r"appstore (\S+?)(_\d+)*(_[0-9A-F-]{36})?(\.png)?$",
+                             attachment.get("suggestedHumanReadableName", ""))
+            if match:
+                found[match.group(1)] = exported / attachment["exportedFileName"]
+
+    missing = [name for name in device.shots if name not in found]
+    extra = sorted(set(found) - set(device.shots))
+    if missing or extra:
+        fail(f"{device.key}: missing {missing or 'none'}, unexpected {extra or 'none'}")
+    folder = output / device.key
+    shutil.rmtree(folder, ignore_errors=True)
+    folder.mkdir(parents=True)
+    for name in device.shots:
+        target = folder / f"{name}.png"
+        shutil.copyfile(found[name], target)
+        if png_has_alpha(target):
+            remove_alpha(target)
+        size = png_size(target)
+        if size != device.size or png_has_alpha(target):
+            fail(f"{target} is {size[0]} x {size[1]}{' with alpha' if png_has_alpha(target) else ''};"
+                 f" App Store Connect needs {device.size[0]} x {device.size[1]} without alpha")
+        print(f"  {target.relative_to(ROOT)}  {size[0]} x {size[1]}")
+    simctl("status_bar", udid, "clear", check=False)
+    simctl("shutdown", udid, check=False)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument("--device", choices=sorted(DEVICES), action="append",
+                        help="capture only this device (repeatable); default: all")
+    parser.add_argument("--output", type=Path, default=ROOT / "build" / "app-store-screenshots")
+    args = parser.parse_args()
+    if not (APPLE / "MadeGood.xcworkspace").exists():
+        fail("apps/apple/MadeGood.xcworkspace is missing; run `tuist install && tuist generate --no-open` there")
+    output = args.output.resolve()
+    work = output / ".work"
+    work.mkdir(parents=True, exist_ok=True)
+    for key in args.device or sorted(DEVICES):
+        capture(DEVICES[key], output, work)
+    print(f"Screenshots in {output}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
