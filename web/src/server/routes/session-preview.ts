@@ -4,64 +4,59 @@ import { Hono } from "hono";
 import type { AppEnv } from "../app";
 import { HANDLE_PATTERN } from "../auth/users";
 import { sessions, users } from "../db/schema";
+import { ogImage, ogInfo } from "../lib/og-image";
+import {
+  BRAND_CARD_ALT,
+  CARD_HEIGHT,
+  CARD_WIDTH,
+  formatDuration,
+  SPORT_NAMES,
+  UNITS,
+} from "../og/card";
 
 // /s/:id is the SPA's session page. The Worker serves it (wrangler.jsonc
 // `run_worker_first`) to put Open Graph tags into the HTML, so shared links preview with
-// the session's title and headline stats. Only public and unlisted sessions get them; a
-// private, deleted or unknown session gets the same generic tags, so the preview never
-// tells whether it exists. Tags never contain positions, bounds or times of day, and
-// there is no map image: a static map needs a renderer we do not run yet (PLAN §7 queue).
+// the session's title, headline stats and route image. Only public and unlisted sessions
+// get them; a private, deleted or unknown session gets the same generic tags and the brand
+// image, so the preview never tells whether it exists. Text tags never contain positions,
+// bounds or times of day; the image (lib/og-image.ts) draws only what the shared track
+// shows anyone.
 //
 // /u/:handle, the public profile, works the same way: tags only while the profile is
 // visible to everyone (routes/users.ts: at least one public session), generic otherwise.
+// Profiles use the brand image.
 
+type Image = { path: string; alt: string };
 /** `pageTitle` is the document title; without it, `title · MadeGood`. */
-type Preview = { title: string; description: string; indexable: boolean; pageTitle?: string };
+type Preview = {
+  title: string;
+  description: string;
+  indexable: boolean;
+  image: Image;
+  pageTitle?: string;
+};
 
 const SITE = "MadeGood";
 const SITE_DESCRIPTION = "Open-source tracking for sailing, paddling, and time on the water.";
+/** The brand card in web/public, drawn by scripts/render-og.mjs. */
+export const BRAND_IMAGE: Image = { path: "/og-default.png", alt: BRAND_CARD_ALT };
 const GENERIC: Preview = {
   title: "A session on MadeGood",
   pageTitle: "A session on MadeGood",
   description: SITE_DESCRIPTION,
   indexable: false,
+  image: BRAND_IMAGE,
 };
 const GENERIC_PROFILE: Preview = {
   title: "A profile on MadeGood",
   pageTitle: "A profile on MadeGood",
   description: SITE_DESCRIPTION,
   indexable: false,
+  image: BRAND_IMAGE,
 };
-
-const SPORT_NAMES = {
-  sailing: "Sailing",
-  windsurfing: "Windsurfing",
-  motorboating: "Motorboating",
-  kayak: "Kayak",
-  canoe: "Canoe",
-  sup: "Stand-up paddle",
-} as const;
-
-const UNITS = {
-  nautical: { distance: 1 / 1852, distanceUnit: "nm", speed: 3600 / 1852, speedUnit: "kn" },
-  metric: { distance: 1 / 1000, distanceUnit: "km", speed: 3.6, speedUnit: "km/h" },
-  imperial: {
-    distance: 1 / 1609.344,
-    distanceUnit: "mi",
-    speed: 3600 / 1609.344,
-    speedUnit: "mph",
-  },
-} as const;
 
 const distance = (m: number, units: keyof typeof UNITS) =>
   `${(m * UNITS[units].distance).toFixed(2)} ${UNITS[units].distanceUnit}`;
-
-function duration(s: number): string {
-  const total = Math.round(s);
-  const h = Math.floor(total / 3600);
-  const m = Math.floor((total % 3600) / 60);
-  return h > 0 ? `${h} h ${String(m).padStart(2, "0")} min` : `${m} min`;
-}
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -69,34 +64,29 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export async function sessionPreview(db: D1Database, id: string): Promise<Preview> {
   if (!UUID.test(id)) return GENERIC;
   const [row] = await drizzle(db)
-    .select({
-      sport: sessions.sport,
-      title: sessions.title,
-      visibility: sessions.visibility,
-      durationS: sessions.durationS,
-      distanceM: sessions.distanceM,
-      maxSpeedMps: sessions.maxSpeedMps,
-      units: users.units,
-    })
+    .select({ session: sessions, units: users.units, zonesVersion: users.zonesVersion })
     .from(sessions)
-    .innerJoin(users, eq(users.id, sessions.userId))
+    .innerJoin(users, and(eq(users.id, sessions.userId), isNull(users.deletedAt)))
     .where(and(eq(sessions.id, id.toLowerCase()), isNull(sessions.deletedAt)));
-  if (!row || row.visibility === "private") return GENERIC;
+  if (!row || row.session.visibility === "private") return GENERIC;
 
+  const session = row.session;
   const units = UNITS[row.units];
-  const sport = SPORT_NAMES[row.sport];
+  const sport = SPORT_NAMES[session.sport];
   const parts: string[] = [sport];
-  if (row.distanceM != null) {
-    parts.push(distance(row.distanceM, row.units));
+  if (session.distanceM != null) {
+    parts.push(distance(session.distanceM, row.units));
   }
-  if (row.durationS != null) parts.push(duration(row.durationS));
-  if (row.maxSpeedMps != null) {
-    parts.push(`max ${(row.maxSpeedMps * units.speed).toFixed(1)} ${units.speedUnit}`);
+  if (session.durationS != null) parts.push(formatDuration(session.durationS));
+  if (session.maxSpeedMps != null) {
+    parts.push(`max ${(session.maxSpeedMps * units.speed).toFixed(1)} ${units.speedUnit}`);
   }
+  const og = await ogInfo(session, row.units, row.zonesVersion);
   return {
-    title: row.title ?? sport,
+    title: session.title ?? sport,
     description: parts.join(" · "),
-    indexable: row.visibility === "public",
+    indexable: session.visibility === "public",
+    image: og ? { path: `/s/${session.id}/og.png?v=${og.fingerprint}`, alt: og.alt } : BRAND_IMAGE,
   };
 }
 
@@ -131,6 +121,7 @@ export async function profilePreview(db: D1Database, rawHandle: string): Promise
     title: row.displayName ? `${row.displayName} (@${row.handle})` : `@${row.handle}`,
     description: `${parts.join(" · ")} on MadeGood`,
     indexable: true,
+    image: BRAND_IMAGE,
   };
 }
 
@@ -142,6 +133,7 @@ const escapeHtml = (text: string) =>
 
 /** The SPA shell with the preview's title, description and Open Graph tags. */
 export function injectPreview(shell: Response, preview: Preview, url: string): Response {
+  const image = new URL(preview.image.path, url).toString();
   const title = preview.pageTitle ?? `${preview.title} · ${SITE}`;
   const meta = [
     ["property", "og:site_name", SITE],
@@ -149,9 +141,16 @@ export function injectPreview(shell: Response, preview: Preview, url: string): R
     ["property", "og:title", preview.title],
     ["property", "og:description", preview.description],
     ["property", "og:url", url],
-    ["name", "twitter:card", "summary"],
+    ["property", "og:image", image],
+    ["property", "og:image:type", "image/png"],
+    ["property", "og:image:width", String(CARD_WIDTH)],
+    ["property", "og:image:height", String(CARD_HEIGHT)],
+    ["property", "og:image:alt", preview.image.alt],
+    ["name", "twitter:card", "summary_large_image"],
     ["name", "twitter:title", preview.title],
     ["name", "twitter:description", preview.description],
+    ["name", "twitter:image", image],
+    ["name", "twitter:image:alt", preview.image.alt],
     ["name", "robots", preview.indexable ? "index, follow" : "noindex"],
   ]
     .map(([attr, key, value]) => `<meta ${attr}="${key}" content="${escapeHtml(value ?? "")}" />`)
@@ -205,6 +204,24 @@ export const sessionPreviewPage = new Hono<AppEnv>()
   .get("/s/:id", (c) =>
     previewPage(c.env, c.req.raw, () => sessionPreview(c.env.DB, c.req.param("id")), GENERIC),
   )
+  // The route image the tags point to. Anything without one (private, deleted, unknown,
+  // not yet processed) redirects to the brand card, so the answer never tells which.
+  .get("/s/:id/og.png", async (c) => {
+    const id = c.req.param("id").toLowerCase();
+    const fallback = () =>
+      new Response(null, {
+        status: 302,
+        headers: { location: BRAND_IMAGE.path, "cache-control": "no-store" },
+      });
+    if (!UUID.test(id)) return fallback();
+    const image = await ogImage(c.env, id, c.req.raw, (work) =>
+      c.executionCtx.waitUntil(work),
+    ).catch((err) => {
+      console.error("Could not serve a route image.", err);
+      return null;
+    });
+    return image ?? fallback();
+  })
   // Deeper paths under /s/ also reach the Worker; hand them to the SPA unchanged.
   .get("/s/*", (c) => c.env.ASSETS.fetch(c.req.raw));
 

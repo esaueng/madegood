@@ -87,12 +87,13 @@ export const arcClearsZones = (
  * The track v1 document others may see: fixes inside a zone removed, a `privacyGap` event
  * wherever the line must break, no heart rate, allowlisted events without free-form data,
  * no optional GPS columns, and the shared summary. Returns null when `track` is not a
- * track v1 document; throws TrackTooLarge above SHARED_TRACK_MAX_FIXES.
+ * track v1 document; throws TrackTooLarge above the fix limit.
  */
 export function shareTrack(
   track: unknown,
   zones: readonly Zone[],
   summary: Record<string, unknown> | null,
+  maxFixes = SHARED_TRACK_MAX_FIXES,
 ): Record<string, unknown> | null {
   if (!record(track) || track.v !== 1 || !record(track.gps)) return null;
   const gps = track.gps;
@@ -107,7 +108,7 @@ export function shareTrack(
   ];
 
   // Bounded before allocating anything per fix (re-check of #64).
-  if (t.length > SHARED_TRACK_MAX_FIXES) throw new TrackTooLarge();
+  if (t.length > maxFixes) throw new TrackTooLarge();
 
   // Fixes without a usable time or position are dropped. That is safe: whether a line may
   // join the visible fixes on either side is decided from those two fixes alone. So are
