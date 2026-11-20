@@ -42,7 +42,7 @@ export async function sessionPreview(db: D1Database, id: string): Promise<Previe
   const [row] = await drizzle(db)
     .select({ session: sessions, units: users.units, zonesVersion: users.zonesVersion })
     .from(sessions)
-    .innerJoin(users, eq(users.id, sessions.userId))
+    .innerJoin(users, and(eq(users.id, sessions.userId), isNull(users.deletedAt)))
     .where(and(eq(sessions.id, id.toLowerCase()), isNull(sessions.deletedAt)));
   if (!row || row.session.visibility === "private") return GENERIC;
 
@@ -145,8 +145,13 @@ export const sessionPreviewPage = new Hono<AppEnv>()
         headers: { location: BRAND_IMAGE.path, "cache-control": "no-store" },
       });
     if (!UUID.test(id)) return fallback();
-    const image = await ogImage(c.env, id).catch((err) => {
-      console.error("Could not draw a route image.", err);
+    const image = await ogImage(c.env, id, {
+      ifNoneMatch: c.req.header("if-none-match"),
+      onMiss: async () => {
+        await c.env.POSTPROCESS?.send({ v: 1, kind: "og", sessionId: id });
+      },
+    }).catch((err) => {
+      console.error("Could not serve a route image.", err);
       return null;
     });
     if (!image) return fallback();
@@ -158,11 +163,7 @@ export const sessionPreviewPage = new Hono<AppEnv>()
       "cache-control": "no-cache",
       "x-content-type-options": "nosniff",
     };
-    if (c.req.header("if-none-match") === etag) {
-      if (image.body instanceof ReadableStream) await image.body.cancel();
-      return new Response(null, { status: 304, headers });
-    }
-    return new Response(image.body, { status: 200, headers });
+    return new Response(image.body, { status: image.body === null ? 304 : 200, headers });
   })
   // Deeper paths under /s/ also reach the Worker; hand them to the SPA unchanged.
   .get("/s/*", (c) => c.env.ASSETS.fetch(c.req.raw));

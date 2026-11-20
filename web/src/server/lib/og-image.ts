@@ -1,11 +1,12 @@
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, eq, exists, isNotNull, isNull, ne, type SQL, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
-import { privacyZones, type Session, sessions, users } from "../db/schema";
+import { pendingR2Deletes, privacyZones, type Session, sessions, users } from "../db/schema";
 import { projectRoute, routeCardAlt, routeCardSvg, routeRuns, type Units } from "../og/card";
 import { svgToPng } from "../og/render";
-import { PRIVACY_GAP_EVENT, shareTrack, type Zone } from "./session-privacy";
+import { discardKey, recordKey } from "./r2-garbage";
+import { arcClearsZones, PRIVACY_GAP_EVENT, shareTrack, type Zone } from "./session-privacy";
 import { userPrefix } from "./storage";
-import { parseGzippedJson, SHARED_TRACK_MAX_INFLATED_BYTES } from "./track";
+import { parseGzippedJson, TrackTooLarge } from "./track";
 
 // Open Graph route images for shared sessions (docs/PLAN.md §7). One PNG per session in
 // the TRACKS bucket, under the session's own prefix, so deleting the session or the
@@ -17,13 +18,11 @@ import { parseGzippedJson, SHARED_TRACK_MAX_INFLATED_BYTES } from "./track";
 // may see whose public data is at the owner's current zones version. The object carries a
 // fingerprint of everything drawn (track ETag, zones version, sport, distance, duration,
 // units, renderer version) and is served only while that still matches the session, so a
-// new zone, a trimmed track (a new upload) or a units change is never shown from an old
-// image; post-processing redraws it, or the first request does. A session made private, or
-// one that can no longer have an image, has its object deleted (syncOgImage); the route
-// checks visibility on every request regardless.
+// new zone, a trimmed track (a new upload) or a units change cannot serve an old image.
+// A cache miss serves the brand fallback and asks the queue to refresh the route image.
 
-/** Bump when the card's design changes, so stored images are redrawn. */
-export const OG_RENDER_VERSION = 1;
+/** Bump when the card's design or route projection changes. */
+export const OG_RENDER_VERSION = 2;
 
 export const ogImageKey = (userId: string, sessionId: string) =>
   `${userPrefix(userId)}sessions/${sessionId}/og.png`;
@@ -97,54 +96,88 @@ export async function ogInfo(
   };
 }
 
-type OgState = { session: Session; units: Units; zonesVersion: number; zones: Zone[] };
+type Db = ReturnType<typeof drizzle>;
+type OgEnv = Pick<Env, "DB" | "TRACKS">;
 
-/**
- * The session (live, owner active), the owner's units and zones version, and their zones,
- * read in one D1 batch so the zones are the ones that version names.
- */
-async function loadState(db: D1Database, sessionId: string): Promise<OgState | null> {
-  const orm = drizzle(db);
-  const [rows, zones] = await orm.batch([
-    orm
-      .select({ session: sessions, units: users.units, zonesVersion: users.zonesVersion })
-      .from(sessions)
-      .innerJoin(users, and(eq(users.id, sessions.userId), isNull(users.deletedAt)))
-      .where(and(eq(sessions.id, sessionId), isNull(sessions.deletedAt))),
-    orm
-      .select({ lat: privacyZones.lat, lon: privacyZones.lon, radiusM: privacyZones.radiusM })
-      .from(privacyZones)
-      .where(
-        eq(
-          privacyZones.userId,
-          sql`(SELECT ${sessions.userId} FROM ${sessions} WHERE ${sessions.id} = ${sessionId})`,
-        ),
-      ),
-  ]);
-  const row = rows[0];
-  return row ? { ...row, zones } : null;
+function activeSession(db: Db, sessionId: string, condition?: SQL) {
+  return db
+    .select({
+      session: {
+        id: sessions.id,
+        userId: sessions.userId,
+        sport: sessions.sport,
+        visibility: sessions.visibility,
+        distanceM: sessions.distanceM,
+        durationS: sessions.durationS,
+        trackKey: sessions.trackKey,
+        trackEtag: sessions.trackEtag,
+        processedEtag: sessions.processedEtag,
+        postprocessStatus: sessions.postprocessStatus,
+        publicZonesVersion: sessions.publicZonesVersion,
+        publicMinLat: sessions.publicMinLat,
+      },
+      units: users.units,
+      zonesVersion: users.zonesVersion,
+    })
+    .from(sessions)
+    .innerJoin(users, and(eq(users.id, sessions.userId), isNull(users.deletedAt)))
+    .where(and(eq(sessions.id, sessionId), isNull(sessions.deletedAt), condition));
 }
 
+type OgState = Awaited<ReturnType<typeof activeSession>>[number];
+
+/** Match the content fingerprint inputs and sharing eligibility in a single D1 snapshot. */
+function currentSession(db: Db, { session, units, zonesVersion }: OgState, condition?: SQL) {
+  return activeSession(
+    db,
+    session.id,
+    and(
+      eq(sessions.userId, session.userId),
+      ne(sessions.visibility, "private"),
+      sql`${sessions.trackKey} IS ${session.trackKey}`,
+      sql`${sessions.trackEtag} IS ${session.trackEtag}`,
+      eq(sessions.processedEtag, sessions.trackEtag),
+      eq(sessions.postprocessStatus, "done"),
+      eq(sessions.publicZonesVersion, zonesVersion),
+      isNotNull(sessions.publicMinLat),
+      eq(users.zonesVersion, zonesVersion),
+      eq(users.units, units),
+      eq(sessions.sport, session.sport),
+      sql`${sessions.distanceM} IS ${session.distanceM}`,
+      sql`${sessions.durationS} IS ${session.durationS}`,
+      condition,
+    ),
+  );
+}
+
+const OG_MAX_INFLATED_BYTES = 2 * 1024 * 1024;
+const OG_MAX_INPUT_FIXES = 20_000;
+
 /** Draws the route card from the shared copy of the track, or null if it cannot be read. */
-async function render(bucket: R2Bucket, state: OgState): Promise<Uint8Array | null> {
+async function render(bucket: R2Bucket, state: OgState, zones: Zone[]): Promise<Uint8Array | null> {
   const { session } = state;
   if (!session.trackKey) return null;
   const object = await bucket.get(session.trackKey);
   if (!object || object.etag !== session.trackEtag) {
     await object?.body.cancel();
-    return null;
+    throw new Error("The route image's source track changed before rendering.");
   }
-  const shared = shareTrack(
-    await parseGzippedJson(object.body, SHARED_TRACK_MAX_INFLATED_BYTES),
-    state.zones,
-    null,
-  );
+  const shared = await parseGzippedJson(object.body, OG_MAX_INFLATED_BYTES)
+    .then((track) => shareTrack(track, zones, null, OG_MAX_INPUT_FIXES))
+    .catch((error: unknown) => {
+      if (error instanceof TrackTooLarge) return null;
+      throw error;
+    });
   if (!shared) return null;
   const gps = shared.gps as { lat: number[]; lon: number[] };
   const gaps = (shared.events as { type: string; data?: { index?: number } }[])
     .filter((e) => e.type === PRIVACY_GAP_EVENT && typeof e.data?.index === "number")
     .map((e) => e.data?.index as number);
-  const route = projectRoute(routeRuns(gps.lat, gps.lon, gaps));
+  const route = projectRoute(
+    routeRuns(gps.lat, gps.lon, gaps),
+    undefined,
+    zones.length === 0 ? undefined : (a, b) => arcClearsZones(a, b, zones),
+  );
   if (!route.start) return null;
   return svgToPng(
     routeCardSvg({
@@ -157,63 +190,112 @@ async function render(bucket: R2Bucket, state: OgState): Promise<Uint8Array | nu
   );
 }
 
-/** `body` is null when the caller asked for none and the stored image was current. */
-export type OgImage = { fingerprint: string; body: ReadableStream | Uint8Array | null };
+/** `body` is null when the caller's ETag matched and the stored image was current. */
+export type OgImage = { fingerprint: string; body: ReadableStream | null };
 
-/**
- * The session's current route image: the stored one while its fingerprint matches, else
- * drawn now and stored. Null when the session gets no image (private, deleted, not
- * processed, public data behind the zones, nothing visible).
- */
 export async function ogImage(
-  env: Pick<Env, "DB" | "TRACKS">,
+  env: OgEnv,
   sessionId: string,
-  options: { body?: boolean } = {},
+  options: { ifNoneMatch?: string; onMiss?: () => Promise<void> } = {},
 ): Promise<OgImage | null> {
-  const state = await loadState(env.DB, sessionId);
+  const db = drizzle(env.DB);
+  const [state] = await activeSession(db, sessionId);
   if (!state || !ogEligible(state.session, state.zonesVersion)) return null;
   const fingerprint = await ogFingerprint(state.session, state.units, state.zonesVersion);
   const key = ogImageKey(state.session.userId, sessionId);
-
-  const stored = options.body === false ? await env.TRACKS.head(key) : await env.TRACKS.get(key);
-  const storedBody = stored && "body" in stored ? (stored as R2ObjectBody).body : null;
-  if (stored?.customMetadata?.fp === fingerprint) return { fingerprint, body: storedBody };
-  await storedBody?.cancel();
-
-  const png = await render(env.TRACKS, state);
-  if (!png) return null;
-  await env.TRACKS.put(key, png, {
-    httpMetadata: { contentType: "image/png" },
-    customMetadata: { fp: fingerprint },
-  });
-  // Deleted while drawing: the session's prefix was already cleared, so remove this too.
-  const [still] = await drizzle(env.DB)
-    .select({ id: sessions.id })
-    .from(sessions)
-    .where(and(eq(sessions.id, sessionId), isNull(sessions.deletedAt)));
-  if (!still) {
-    await env.TRACKS.delete(key);
+  const conditional = options.ifNoneMatch === `"${fingerprint}"`;
+  const stored = conditional ? await env.TRACKS.head(key) : await env.TRACKS.get(key);
+  const body = stored && "body" in stored ? (stored as R2ObjectBody).body : null;
+  const matches = stored?.customMetadata?.fp === fingerprint;
+  if (!matches || stored?.size === 0) {
+    await body?.cancel();
+    if (!matches) await options.onMiss?.();
     return null;
   }
-  return { fingerprint, body: png };
+
+  // Last I/O before serving either a body or a 304. The R2 read may have overlapped a
+  // privacy edit, trim or deletion. Conditional requests use HEAD so no body needs
+  // cancelling after this check.
+  let current = false;
+  try {
+    current = (await currentSession(db, state)).length > 0;
+    return current ? { fingerprint, body } : null;
+  } finally {
+    if (!current) await body?.cancel();
+  }
 }
 
 /**
- * Brings the stored image in line with the session: drawn when it should have one and the
- * stored one is out of date, deleted when it should have none. Post-processing and
- * visibility changes call it; failures are left to the next call or the first request.
+ * One producer at a time per session, even across isolates. The record doubles as a
+ * reservation and survives a failed or late R2 write. The collector honors the same
+ * grace period as track uploads, then retries failed deletes. A successful write
+ * releases its reservation only while the session still matches the card we drew.
  */
 export async function syncOgImage(
-  env: Pick<Env, "DB" | "TRACKS">,
+  env: OgEnv,
   sessionId: string,
 ): Promise<"current" | "deleted" | "none"> {
-  const image = await ogImage(env, sessionId, { body: false });
-  if (image) return "current";
-  const [row] = await drizzle(env.DB)
-    .select({ userId: sessions.userId })
-    .from(sessions)
-    .where(eq(sessions.id, sessionId));
-  if (!row) return "none";
-  await env.TRACKS.delete(ogImageKey(row.userId, sessionId));
+  const db = drizzle(env.DB);
+  const [initial] = await activeSession(db, sessionId);
+  if (!initial) return "none";
+  const { userId } = initial.session;
+  const key = ogImageKey(userId, sessionId);
+
+  const fingerprint = ogEligible(initial.session, initial.zonesVersion)
+    ? await ogFingerprint(initial.session, initial.units, initial.zonesVersion)
+    : null;
+  const stored = await env.TRACKS.head(key);
+  if (fingerprint && stored?.customMetadata?.fp === fingerprint) return "current";
+  if (!fingerprint && !stored) return "none";
+
+  const createdAt = Date.now();
+  const reserved = await recordKey(env.DB, key, userId, createdAt).run();
+  if (reserved.meta.changes !== 1) return "none";
+  const reservation = and(
+    eq(pendingR2Deletes.key, key),
+    eq(pendingR2Deletes.createdAt, createdAt),
+    isNull(pendingR2Deletes.claim),
+  );
+
+  // Read the zones and the session together after taking the reservation. A producer
+  // may have finished since our first HEAD, or the session may have changed.
+  const [[state], zones] = await db.batch([
+    activeSession(db, sessionId, eq(sessions.userId, userId)),
+    db
+      .select({ lat: privacyZones.lat, lon: privacyZones.lon, radiusM: privacyZones.radiusM })
+      .from(privacyZones)
+      .where(eq(privacyZones.userId, userId)),
+  ]);
+  if (!state || !ogEligible(state.session, state.zonesVersion)) {
+    await discardKey(db, env.TRACKS, key, { before: createdAt });
+    return "deleted";
+  }
+  const fp = await ogFingerprint(state.session, state.units, state.zonesVersion);
+  if ((await env.TRACKS.head(key))?.customMetadata?.fp === fp) {
+    await db.delete(pendingR2Deletes).where(reservation);
+    return "current";
+  }
+
+  const png = await render(env.TRACKS, state, zones);
+  const held = db.select({ key: pendingR2Deletes.key }).from(pendingR2Deletes).where(reservation);
+  if ((await currentSession(db, state, exists(held))).length === 0) {
+    await discardKey(db, env.TRACKS, key, { before: createdAt });
+    return "deleted";
+  }
+  // A zero-byte marker remembers routes that exceeded the image budget. It has the
+  // same lifetime as a card, and a changed fingerprint allows another attempt.
+  await env.TRACKS.put(key, png ?? new Uint8Array(), {
+    httpMetadata: png ? { contentType: "image/png" } : undefined,
+    customMetadata: { fp },
+  });
+
+  // Consume the ledger entry atomically with the D1 eligibility/fingerprint check.
+  // If deletion already swept the prefix, this leaves the late write collectable
+  // even when the following immediate cleanup fails.
+  const committed = await db
+    .delete(pendingR2Deletes)
+    .where(and(reservation, exists(currentSession(db, state))));
+  if (committed.meta.changes === 1) return "current";
+  await discardKey(db, env.TRACKS, key, { before: createdAt });
   return "deleted";
 }

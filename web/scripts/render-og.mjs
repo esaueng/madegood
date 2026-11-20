@@ -49,7 +49,11 @@ try {
       const gaps = shared.events
         .filter((e) => e.type === privacy.PRIVACY_GAP_EVENT)
         .map((e) => e.data.index);
-      const route = card.projectRoute(card.routeRuns(shared.gps.lat, shared.gps.lon, gaps));
+      const route = card.projectRoute(
+        card.routeRuns(shared.gps.lat, shared.gps.lon, gaps),
+        undefined,
+        sample.zones?.length ? (a, b) => privacy.arcClearsZones(a, b, sample.zones) : undefined,
+      );
       const file = path.join(out, `${sample.name}.png`);
       await writeFile(file, png(card.routeCardSvg({ ...sample.card, route })));
       console.log(file);

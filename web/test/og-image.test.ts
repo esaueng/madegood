@@ -2,8 +2,11 @@ import { env } from "cloudflare:workers";
 import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
 import { describe, expect, it } from "vitest";
-import { sessions } from "../src/server/db/schema";
-import { ogImageKey } from "../src/server/lib/og-image";
+import { privacyZones, sessions, users } from "../src/server/db/schema";
+import { ogFingerprint, ogImageKey, syncOgImage } from "../src/server/lib/og-image";
+import { processMessage } from "../src/server/lib/postprocess";
+import { collectR2Garbage, UPLOAD_GRACE_MS } from "../src/server/lib/r2-garbage";
+import { arcClearsZones } from "../src/server/lib/session-privacy";
 import { distanceM, ZONE_MARGIN_M } from "../src/server/lib/voyage-sharing";
 import {
   CARD_HEIGHT,
@@ -80,11 +83,56 @@ async function shareSession(owner: SignIn, fixes: LatLon[], visibility = "public
   return id;
 }
 
+/** Set up an already-processed track without a queue consumer racing the test. */
+async function processedSession(fixes = lineFixes(), zonesVersion = 0) {
+  const owner = await signIn();
+  const id = crypto.randomUUID();
+  const key = ogImageKey(owner.user.id, id);
+  const trackKey = key.replace(/og\.png$/, "track.v1.gz");
+  const object = await env.TRACKS.put(trackKey, await gzip(JSON.stringify(track(id, fixes))));
+  if (!object) throw new Error("missing test track");
+  const [session] = await drizzle(env.DB)
+    .insert(sessions)
+    .values({
+      ...META,
+      sport: "kayak",
+      startedAt: Date.parse(START),
+      id,
+      userId: owner.user.id,
+      visibility: "public",
+      trackKey,
+      trackEtag: object.etag,
+      processedEtag: object.etag,
+      postprocessStatus: "done",
+      publicMinLat: 0,
+      publicZonesVersion: zonesVersion,
+    })
+    .returning();
+  if (!session) throw new Error("missing test session");
+  const fingerprint = await ogFingerprint(session, "nautical", zonesVersion);
+  return { id, key, trackKey, fingerprint, owner };
+}
+
+function bucket(overrides: Partial<R2Bucket>): R2Bucket {
+  return {
+    get: env.TRACKS.get.bind(env.TRACKS),
+    head: env.TRACKS.head.bind(env.TRACKS),
+    put: env.TRACKS.put.bind(env.TRACKS),
+    delete: env.TRACKS.delete.bind(env.TRACKS),
+    list: env.TRACKS.list.bind(env.TRACKS),
+    ...overrides,
+  } as R2Bucket;
+}
+
 const assets = {
   fetch: async () => new Response(SHELL, { headers: { "content-type": "text/html" } }),
 };
-const get = (path: string, headers: Record<string, string> = {}) =>
-  sessionPreviewPage.request(`${ORIGIN}${path}`, { headers }, { ...env, ASSETS: assets });
+const get = (path: string, headers: Record<string, string> = {}, bindings: Partial<Env> = {}) =>
+  sessionPreviewPage.request(
+    `${ORIGIN}${path}`,
+    { headers },
+    { ...env, ASSETS: assets, ...bindings },
+  );
 
 async function waitFor<T>(probe: () => Promise<T | null | undefined | false>): Promise<T> {
   const deadline = Date.now() + 20_000;
@@ -161,6 +209,32 @@ describe("route geometry", () => {
     expect(Math.abs(end[1] - start[1])).toBeGreaterThan(300);
   });
 
+  it("keeps a subpixel detour when a shortcut would cross a zone", () => {
+    const fix = (x: number, y: number) => ({ lat: y * DEG_PER_M, lon: x * DEG_PER_M });
+    const zones = [{ ...fix(0, 0), radiusM: 20 }];
+    const before = fix(-50, 0);
+    const entry = fix(-50, 70);
+    const exit = fix(50, 70);
+    const after = fix(50, 0);
+    const canJoin = (a: LatLon, b: LatLon) => arcClearsZones(a, b, zones);
+    expect(canJoin(before, entry)).toBe(true);
+    expect(canJoin(entry, exit)).toBe(true);
+    expect(canJoin(exit, after)).toBe(true);
+    expect(canJoin(before, after)).toBe(false);
+    // A distant run sets the scale, putting the entire detour below the thinning threshold.
+    const route = projectRoute(
+      [[before, entry, exit, after], [fix(150_000, 0)]],
+      ROUTE_BOX,
+      canJoin,
+    );
+    expect(route.runs[0]).toHaveLength(4);
+  });
+
+  it("falls back when the route cannot fit the point budget without joining gaps", () => {
+    const runs = lineFixes(3_000).map((fix) => [fix]);
+    expect(projectRoute(runs).start).toBeNull();
+  });
+
   it("keeps GPS jitter at a mooring small", () => {
     const route = projectRoute([
       [
@@ -174,14 +248,177 @@ describe("route geometry", () => {
 });
 
 describe("Open Graph route images", () => {
+  it.each(["private", "zone", "trim", "owner"] as const)(
+    "rechecks a cache hit when %s changes during the R2 read",
+    async (change) => {
+      const { id, key, fingerprint, owner } = await processedSession();
+      await env.TRACKS.put(key, "old route", { customMetadata: { fp: fingerprint } });
+      const revoke = async () => {
+        if (change === "zone" || change === "owner") {
+          await drizzle(env.DB)
+            .update(users)
+            .set(change === "zone" ? { zonesVersion: 1 } : { deletedAt: Date.now() })
+            .where(eq(users.id, owner.user.id));
+        } else {
+          await drizzle(env.DB)
+            .update(sessions)
+            .set(
+              change === "private"
+                ? { visibility: "private" }
+                : { uploadRevision: 1, trackEtag: "trimmed", processedEtag: "trimmed" },
+            )
+            .where(eq(sessions.id, id));
+        }
+      };
+      const storage = bucket({
+        async get(name) {
+          const hit = await env.TRACKS.get(name);
+          await revoke();
+          return hit;
+        },
+        async head(name) {
+          const hit = await env.TRACKS.head(name);
+          await revoke();
+          return hit;
+        },
+      });
+      // Exercise both the body and conditional paths with the matching old fingerprint.
+      const headers: Record<string, string> =
+        change === "zone" || change === "trim" ? { "if-none-match": `"${fingerprint}"` } : {};
+      const response = await get(`/s/${id}/og.png`, headers, { TRACKS: storage });
+      expect(response.status).toBe(302);
+      expect(response.headers.get("location")).toBe("/og-default.png");
+    },
+  );
+
+  it("rejects a render when the track is trimmed during its R2 write", async () => {
+    const { id } = await processedSession();
+    const storage = bucket({
+      async put(name, value, options) {
+        const result = await env.TRACKS.put(name, value, options);
+        await drizzle(env.DB)
+          .update(sessions)
+          .set({ uploadRevision: 1, trackEtag: "trimmed", processedEtag: "trimmed" })
+          .where(eq(sessions.id, id));
+        return result;
+      },
+    });
+    expect(await syncOgImage({ DB: env.DB, TRACKS: storage }, id)).not.toBe("current");
+  });
+
+  it("collects a late write after the session delete and immediate R2 cleanup failure", async () => {
+    const { id, key, owner } = await processedSession();
+    const storage = bucket({
+      async put(name, value, options) {
+        expect(name).toBe(key);
+        const deleted = await api(`/sessions/${id}`, {
+          method: "DELETE",
+          headers: bearer(owner.accessToken),
+        });
+        expect(deleted.status).toBe(204);
+        expect(await env.TRACKS.head(key)).toBeNull();
+        return env.TRACKS.put(name, value, options);
+      },
+      async delete() {
+        throw new Error("transient R2 failure");
+      },
+    });
+    await expect(syncOgImage({ DB: env.DB, TRACKS: storage }, id)).rejects.toThrow(
+      "transient R2 failure",
+    );
+    expect(await env.TRACKS.head(key)).not.toBeNull();
+    // Age the record past the upload grace and claim lease, as on a later cron pass.
+    await env.DB.prepare(
+      "UPDATE pending_r2_deletes SET created_at = 0, claimed_at = 0 WHERE key = ?",
+    )
+      .bind(key)
+      .run();
+    await collectR2Garbage(drizzle(env.DB), env.TRACKS, {
+      userId: owner.user.id,
+      before: Date.now() - UPLOAD_GRACE_MS,
+    });
+    expect(await env.TRACKS.head(key)).toBeNull();
+  });
+
+  it("serves the brand fallback on cold requests without fetching the track", async () => {
+    const { id, key: imageKey } = await processedSession();
+    const reads: string[] = [];
+    const storage = bucket({
+      async get(key) {
+        reads.push(key);
+        return env.TRACKS.get(key);
+      },
+    });
+    const path = `/s/${id}/og.png`;
+    const messages: unknown[] = [];
+    const bindings = {
+      TRACKS: storage,
+      POSTPROCESS: {
+        async send(message: unknown) {
+          messages.push(message);
+          return { metadata: { metrics: { backlogCount: messages.length, backlogBytes: 0 } } };
+        },
+        metrics: async () => {
+          throw new Error("unexpected queue metrics request");
+        },
+        sendBatch: async () => {
+          throw new Error("unexpected queue batch");
+        },
+      },
+    };
+    const results = await Promise.all([get(path, {}, bindings), get(path, {}, bindings)]);
+    expect(results.map((res) => res.status)).toEqual([302, 302]);
+    expect(reads).toEqual([imageKey, imageKey]);
+    expect(messages).toContainEqual({ v: 1, kind: "og", sessionId: id });
+    await processMessage(env, messages[0]);
+    const refreshed = await get(path);
+    expect(refreshed.status).toBe(200);
+    await refreshed.body?.cancel();
+  });
+
+  it("remembers an over-budget route and keeps serving the brand fallback", async () => {
+    const { id, key } = await processedSession(lineFixes(20_001));
+    const path = `/s/${id}/og.png`;
+    await syncOgImage(env, id);
+    expect((await env.TRACKS.head(key))?.size).toBe(0);
+    expect((await get(path)).status).toBe(302);
+  });
+
+  it("lets only one overlapping producer read and render the track", async () => {
+    const { id, trackKey } = await processedSession();
+    let trackReads = 0;
+    let duplicate: Awaited<ReturnType<typeof syncOgImage>> | undefined;
+    const storage = bucket({
+      async get(key) {
+        if (key === trackKey && ++trackReads === 1) {
+          duplicate = await syncOgImage({ DB: env.DB, TRACKS: storage }, id);
+        }
+        return env.TRACKS.get(key);
+      },
+    });
+    expect(await syncOgImage({ DB: env.DB, TRACKS: storage }, id)).toBe("current");
+    expect(duplicate).not.toBe("current");
+    expect(trackReads).toBe(1);
+  });
+
   it("draws exactly the fixes outside privacy zones, with a gap across each zone", async () => {
-    const owner = await signIn();
     const zone = { lat: 500 * DEG_PER_M, lon: 0, radiusM: 150 };
-    const added = await api("/me/privacy-zones", json("POST", zone, owner.accessToken));
-    expect(added.status).toBe(201);
     const fixes = lineFixes();
-    const id = await shareSession(owner, fixes);
-    const served = new Uint8Array(await (await imageOf(id)).arrayBuffer());
+    const { id, owner } = await processedSession(fixes, 1);
+    await drizzle(env.DB).batch([
+      drizzle(env.DB).update(users).set({ zonesVersion: 1 }).where(eq(users.id, owner.user.id)),
+      drizzle(env.DB)
+        .insert(privacyZones)
+        .values({
+          id: crypto.randomUUID(),
+          userId: owner.user.id,
+          ...zone,
+        }),
+    ]);
+    expect(await syncOgImage(env, id)).toBe("current");
+    const response = await get(`/s/${id}/og.png`);
+    expect(response.status).toBe(200);
+    const served = new Uint8Array(await response.arrayBuffer());
     expect(pngSize(served)).toEqual({ width: CARD_WIDTH, height: CARD_HEIGHT });
 
     // The same card drawn by hand from the fixes outside the zone, as two separate runs.
@@ -193,10 +430,13 @@ describe("Open Graph route images", () => {
     const expected = await svgToPng(
       routeCardSvg({ ...card, route: projectRoute([before, after]) }),
     );
-    expect(served).toEqual(expected);
+    const hash = async (bytes: Uint8Array) =>
+      new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+    const servedHash = await hash(served);
+    expect(servedHash).toEqual(await hash(expected));
     // And not the card of the whole line.
     const whole = await svgToPng(routeCardSvg({ ...card, route: projectRoute([fixes]) }));
-    expect(served).not.toEqual(whole);
+    expect(servedHash).not.toEqual(await hash(whole));
   });
 
   it("gives private sessions no image and only the brand card in the tags", async () => {
@@ -257,7 +497,9 @@ describe("Open Graph route images", () => {
     });
     expect(secondTag).not.toBe(firstTag);
     const second = new Uint8Array(await (await imageOf(id)).arrayBuffer());
-    expect(second).not.toEqual(firstBytes);
+    expect(new Uint8Array(await crypto.subtle.digest("SHA-256", second))).not.toEqual(
+      new Uint8Array(await crypto.subtle.digest("SHA-256", firstBytes)),
+    );
   });
 
   it("deletes the image with the session", async () => {

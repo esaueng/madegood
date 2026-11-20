@@ -135,6 +135,8 @@ export const ROUTE_BOX = { x: 540, y: 64, width: 596, height: 502 } as const;
 const MIN_SPAN_M = 300;
 /** Points closer than this to the last kept one (card px) are dropped. */
 const MIN_STEP_PX = 1.25;
+/** Most points the rasterizer sees, including isolated fixes at privacy gaps. */
+const MAX_CARD_POINTS = 2_048;
 
 const EARTH_RADIUS_M = 6_378_137;
 const rad = (deg: number) => (deg * Math.PI) / 180;
@@ -176,23 +178,25 @@ export type ProjectedRoute = {
 /**
  * Web Mercator projection of `runs`, north up, fitted and centered in `box`. Longitudes
  * are unwrapped from the first fix, so a route across the antimeridian stays in one piece.
+ * `canJoin` checks proposed shortcuts against the same rule that formed the input runs.
+ * If the result exceeds the point budget, the caller falls back to the brand card.
  */
 export function projectRoute(
   runs: readonly (readonly LatLon[])[],
   box: { x: number; y: number; width: number; height: number } = ROUTE_BOX,
+  canJoin?: (a: LatLon, b: LatLon) => boolean,
 ): ProjectedRoute {
-  const raw: [number, number][][] = [];
-  let reference: number | null = null;
+  type MercatorFix = [x: number, y: number, fix: LatLon];
+  const raw: MercatorFix[][] = [];
   let previousLon = 0;
   let unwrapped = 0;
   let [minX, minY, maxX, maxY] = [Infinity, Infinity, -Infinity, -Infinity];
   let latSum = 0;
   let count = 0;
   for (const run of runs) {
-    const out: [number, number][] = [];
+    const out: MercatorFix[] = [];
     for (const p of run) {
-      if (reference === null) {
-        reference = p.lon;
+      if (count === 0) {
         unwrapped = p.lon;
       } else {
         unwrapped += ((((p.lon - previousLon) % 360) + 540) % 360) - 180;
@@ -200,7 +204,7 @@ export function projectRoute(
       previousLon = p.lon;
       const x = rad(unwrapped);
       const y = -mercatorY(p.lat);
-      out.push([x, y]);
+      out.push([x, y, p]);
       minX = Math.min(minX, x);
       maxX = Math.max(maxX, x);
       minY = Math.min(minY, y);
@@ -220,21 +224,36 @@ export function projectRoute(
   const scale = Math.min(box.width / spanX, box.height / spanY);
   const cx = (minX + maxX) / 2;
   const cy = (minY + maxY) / 2;
-  const toPx = ([x, y]: [number, number]): [number, number] => [
+  const toPx = ([x, y]: MercatorFix): [number, number] => [
     box.x + box.width / 2 + (x - cx) * scale,
     box.y + box.height / 2 + (y - cy) * scale,
   ];
 
   const projected: [number, number][][] = [];
+  let pointCount = 0;
   for (const run of raw) {
-    const px = run.map(toPx);
-    const kept: [number, number][] = [px[0] as [number, number]];
-    for (let i = 1; i < px.length; i++) {
-      const p = px[i] as [number, number];
-      const last = kept[kept.length - 1] as [number, number];
-      if (Math.hypot(p[0] - last[0], p[1] - last[1]) >= MIN_STEP_PX || i === px.length - 1) {
-        kept.push(p);
+    const kept: [number, number][] = [];
+    let previous: MercatorFix | undefined;
+    let previousPx: [number, number] | undefined;
+    for (const [i, fix] of run.entries()) {
+      const point = toPx(fix);
+      const next = run[i + 1];
+      // Skip only when we can still draw safely from the last kept fix to the
+      // next one. A proposed shortcut spanning half the world or more may use
+      // a different longitude arc than the one checked by canJoin.
+      if (
+        previous &&
+        previousPx &&
+        next &&
+        Math.hypot(point[0] - previousPx[0], point[1] - previousPx[1]) < MIN_STEP_PX &&
+        (!canJoin || (Math.abs(next[0] - previous[0]) < Math.PI && canJoin(previous[2], next[2])))
+      ) {
+        continue;
       }
+      if (++pointCount > MAX_CARD_POINTS) return { runs: [], start: null, end: null };
+      kept.push(point);
+      previous = fix;
+      previousPx = point;
     }
     projected.push(kept);
   }
@@ -252,7 +271,7 @@ const r1 = (n: number) => Math.round(n * 10) / 10;
 function pathData(runs: [number, number][][]): string {
   return runs
     .filter((run) => run.length > 1)
-    .map((run) => run.map(([x, y], i) => `${i === 0 ? "M" : "L"}${r1(x)} ${r1(y)}`).join(""))
+    .map((run) => run.map(([x, y], i) => `${i === 0 ? "M" : "L"}${x} ${y}`).join(""))
     .join("");
 }
 

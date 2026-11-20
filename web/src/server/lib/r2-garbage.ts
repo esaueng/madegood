@@ -169,8 +169,14 @@ export async function collectR2Garbage(
 /**
  * Deletes an upload's own object if it never attached: the upload claims its own row like a
  * collector, so after an attach (row gone) or a collector's claim it deletes nothing, even
- * when the upload does not know whether its attach committed.
+ * when the upload does not know whether its attach committed. For reused keys, pass
+ * the reservation's creation time so this cannot claim a newer producer's entry.
  */
-export async function discardKey(db: Db, bucket: R2Bucket, key: string): Promise<boolean> {
-  return (await claimAndDelete(db.$client, bucket, [key])).length > 0;
+export async function discardKey(
+  db: Db,
+  bucket: R2Bucket,
+  key: string,
+  options?: { before: number },
+): Promise<boolean> {
+  return (await claimAndDelete(db.$client, bucket, [key], options)).length > 0;
 }
