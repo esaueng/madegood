@@ -41,7 +41,6 @@ extension SessionSelection {
     /// Pauses, retained-span cuts, GPS gaps and anchors, a missing or unreliable course
     /// (including on a rejected fix) and speeds too low for a course all end a run.
     func sailingObservationRuns() -> [[SailingObservation]] {
-        guard track.sport == .sailing else { return [] }
         let timeline = SessionReplayTimeline(replay: replay, recordedFixes: track.gps, endTime: duration)
         var unreliableCourses = track.gps.lazy.filter {
             $0.t.isFinite && !SailingManeuverDetector.reliableCourseAccuracy($0.courseAccuracy)
@@ -120,10 +119,13 @@ struct SailingManeuverDetector {
 
     private var run: [Observation] = []
     private(set) var maneuvers: [SailingManeuver] = []
+    private let maximumTurnAngle: Double
 
     /// Maneuvers in runs of observations, against a wind-from direction in degrees true.
-    static func detect(in runs: [[SailingObservation]], windFrom wind: Double) -> [SailingManeuver] {
-        var detector = SailingManeuverDetector()
+    static func detect(
+        in runs: [[SailingObservation]], windFrom wind: Double, maximumTurnAngle: Double = 180
+    ) -> [SailingManeuver] {
+        var detector = SailingManeuverDetector(maximumTurnAngle: maximumTurnAngle)
         for run in runs {
             for observation in run {
                 detector.append(
@@ -153,14 +155,16 @@ struct SailingManeuverDetector {
             smoothed[i].course = max(min(a, b), min(max(a, b), c))
         }
         for i in 1..<smoothed.count {
-            guard let maneuver = Self.maneuver(in: smoothed, crossingAt: i),
+            guard let maneuver = Self.maneuver(in: smoothed, crossingAt: i, maximumTurnAngle: maximumTurnAngle),
                 maneuvers.last.map({ $0.range.upperBound <= maneuver.range.lowerBound }) ?? true
             else { continue }
             maneuvers.append(maneuver)
         }
     }
 
-    private static func maneuver(in fixes: [Observation], crossingAt right: Int) -> SailingManeuver? {
+    private static func maneuver(
+        in fixes: [Observation], crossingAt right: Int, maximumTurnAngle: Double
+    ) -> SailingManeuver? {
         let before = fixes[right - 1]
         let after = fixes[right]
         let beforeHalf = (before.course / 180).rounded(.down)
@@ -186,7 +190,7 @@ struct SailingManeuverDetector {
         let end = fixes[departure]
         let turn = end.course - start.course
         guard end.t - start.t <= maximumTurnDuration,
-            abs(turn) > 60, abs(turn) < 180,
+            abs(turn) > 60, abs(turn) < maximumTurnAngle,
             (start.course - axis) * (end.course - axis) < 0
         else { return nil }
 

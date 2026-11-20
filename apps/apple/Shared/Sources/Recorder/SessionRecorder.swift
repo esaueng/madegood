@@ -46,6 +46,9 @@ final class SessionRecorder {
     /// Live paddle strokes for kayak, canoe and SUP (nil for other sports), updated about
     /// once a second; after a stop, the final values.
     private(set) var strokes: StrokeDetector.Metrics?
+    #if os(watchOS)
+        private(set) var windsurf: WindsurfAnalysis?
+    #endif
     /// Whether the last session's workout was saved to Apple Health.
     private(set) var savedToHealth = false
     /// Accepted positions for the live map, oldest first.
@@ -236,6 +239,9 @@ final class SessionRecorder {
         let liveStrokes = sport.isPaddling ? LiveStrokes(sport: sport, clock: clock) : nil
         self.liveStrokes = liveStrokes
         strokes = liveStrokes?.snapshot()
+        #if os(watchOS)
+            windsurf = nil
+        #endif
         trackPoints = []
         distanceAlert = nil
         let settings = UserSettings.settings(for: sport)
@@ -670,6 +676,17 @@ final class SessionRecorder {
         }
 
         let folder = folder
+        #if os(watchOS)
+            if stoppingSport == .windsurfing, let folder, let profile = engine?.profile {
+                // The transfer may remove the recording once it is inactive.
+                windsurf = await Task.detached(priority: .userInitiated) { () -> WindsurfAnalysis? in
+                    guard let session = try? RawSessionReader.read(folder: folder, includeMotion: false),
+                        let selection = try? SessionSelection(session: session, profile: profile)
+                    else { return nil }
+                    return selection.windsurfAnalysis()
+                }.value
+            }
+        #endif
         if let folder { RecordingTransfer.shared.markActive(folder, false) }
         location = nil
         motion = nil
