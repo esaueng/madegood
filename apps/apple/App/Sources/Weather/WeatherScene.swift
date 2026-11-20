@@ -439,28 +439,43 @@ private struct SceneDrawing {
         }
     }
 
-    private func drawBoat(_ context: inout GraphicsContext) {
-        let s = h * 0.42
-        let x = w * 0.78
-        let waterline = waveY(x, layer: 0)
-        let slope = (waveY(x + 6, layer: 0) - waveY(x - 6, layer: 0)) / 12
+    private var boatScale: Double { h * 0.42 }
+    private var boatX: Double { w * 0.78 }
+
+    /// Where the boat floats this frame: its waterline and its angle. It rides the swell
+    /// averaged over the hull (bow, middle, stern), so the short ripples don't jostle it,
+    /// and rocks slowly and only a little on top of its heel.
+    private func boatPose() -> (waterline: Double, y: Double, angle: Double) {
+        let s = boatScale
+        let x = boatX
+        let bow = waveY(x - s * 0.45, layer: 0)
+        let stern = waveY(x + s * 0.45, layer: 0)
+        let swell = (bow + 2 * waveY(x, layer: 0) + stern) / 4
+        // Follow most of the swell's rise and fall, not all of it.
+        let waterline = horizon + (swell - horizon) * 0.7
+        let pitch = atan((stern - bow) / (s * 0.9)) * 0.35
         let rock: Double
         switch rig {
-        case .furled: rock = sin(t * 2.6) * 0.2 + sin(t * 4.1) * 0.06
-        case .reefed: rock = sin(t * 2.2) * 0.07
-        case .slack: rock = sin(t * 0.8) * 0.015
-        case .drawing, .powered: rock = sin(t * 1.4) * 0.035
+        case .furled: rock = sin(t * 1.3) * 0.07
+        case .reefed: rock = sin(t * 1.1) * 0.035
+        case .slack: rock = sin(t * 0.6) * 0.01
+        case .drawing, .powered: rock = sin(t * 0.9) * 0.02
         }
-        let bob = sin(t * (rig == .slack ? 0.9 : 1.6)) * (rig == .slack ? 0.6 : 1.2)
-        let y = waterline + s * 0.06 + bob
-        let angle = atan(slope) * 0.8 + windSign * heel + rock
+        let bob = rig == .slack ? sin(t * 0.7) * 0.5 : 0
+        return (waterline, waterline + s * 0.06 + bob, pitch + windSign * heel + rock)
+    }
 
-        if rig == .powered || rig == .reefed { drawWake(&context, x: x, y: waterline, s: s) }
-        if rig == .slack { drawReflection(&context, x: x, y: waterline, s: s) }
+    private func drawBoat(_ context: inout GraphicsContext) {
+        let s = boatScale
+        let x = boatX
+        let pose = boatPose()
+
+        if rig == .powered || rig == .reefed { drawWake(&context, x: x, y: pose.waterline, s: s) }
+        if rig == .slack { drawReflection(&context, x: x, y: pose.waterline, s: s) }
 
         var boat = context
-        boat.translateBy(x: x, y: y)
-        boat.rotate(by: .radians(angle))
+        boat.translateBy(x: x, y: pose.y)
+        boat.rotate(by: .radians(pose.angle))
         if sky == .fog { boat.opacity = 0.7 }
         drawBoatShape(&boat, s: s)
     }
@@ -583,8 +598,8 @@ private struct SceneDrawing {
         let length = s * 0.2
         // 0 straight down … π/2 straight out downwind.
         let lift = (0.15 + strength * 1.42)
-        let flapRate = 2 + strength * 16
-        let flap = sin(t * flapRate) * (0.12 + (1 - strength) * 0.1)
+        let flapRate = 2 + strength * 7
+        let flap = sin(t * flapRate) * (0.08 + (1 - strength) * 0.06)
         let a = lift + flap
         let tip = CGPoint(x: masthead.x + windSign * sin(a) * length, y: masthead.y + cos(a) * length)
         let mid = CGPoint(
