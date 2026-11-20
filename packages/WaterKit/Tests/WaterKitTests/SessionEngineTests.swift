@@ -250,6 +250,7 @@ private func approx(_ a: Double?, _ b: Double, tolerance: Double = 0.01) -> Bool
         let engine = simulate(.sup, hr + [.event(SessionEvent(t: 5, type: .stop)), late])
         let m = engine.snapshot
         #expect(m.heartRate == 120)
+        #expect(m.heartRateTime == 2)
         #expect(m.heartRateAverage == 120)
         #expect(m.heartRateMax == 140)
         #expect(m.isFinished)

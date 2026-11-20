@@ -69,6 +69,34 @@ final class PhoneReplayUITests: XCTestCase {
     }
 
     @MainActor
+    func testHeartRateZonesRefreshAfterEditingSettings() {
+        let app = launchDemoHistory()
+        let history = app.tabBars.buttons["History"]
+        history.tap()
+        let sailing = app.buttons.matching(identifier: "session.row")
+            .containing(.staticText, identifier: "Sailing").firstMatch
+        XCTAssertTrue(sailing.waitForExistence(timeout: 15))
+        sailing.tap()
+
+        let maximum = app.staticTexts["session.heartRateZones.maximum"]
+        scrollTo(maximum, in: app, column: 0.08)
+        XCTAssertTrue(maximum.label.contains("190 bpm"))
+
+        app.tabBars.buttons["Settings"].tap()
+        let zones = app.buttons["Heart Rate Zones"]
+        scrollTo(zones, in: app)
+        zones.tap()
+        let stepper = app.steppers["settings.heartRateZones.maximum"]
+        XCTAssertTrue(stepper.waitForExistence(timeout: 5))
+        stepper.buttons["Increment"].tap()
+
+        history.tap()
+        let updated = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "label CONTAINS %@", "191 bpm"), object: maximum)
+        XCTAssertEqual(XCTWaiter().wait(for: [updated], timeout: 15), .completed)
+    }
+
+    @MainActor
     func testSelectWindowsAndSaveAndRestoreTrim() {
         let app = launchDemoHistory()
         app.tabBars.buttons["History"].tap()

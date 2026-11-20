@@ -18,6 +18,7 @@ recording.
 | Distance, moving time, elapsed time, average speed | yes | yes | yes |
 | Max speed 2 s and 10 s | yes | yes | yes |
 | Heart rate (current, average, max) | yes | yes | average and max |
+| Heart-rate zones (all sports) | watch: current zone | iPhone: time in each zone | — |
 | Laps | yes | yes | yes |
 | Windsurf speed categories | yes | yes | yes |
 | Strokes, stroke rate, distance per stroke, sides | yes | yes, from the raw recording | no |
@@ -421,6 +422,22 @@ These are cues, not metrics, but they follow fixed rules:
 Current heart rate is the latest reading. Average is the mean of the readings, and max
 the highest. Readings that are not positive and finite are ignored.
 
+**Heart-rate zones** apply to all sports. The default maximum of 190 bpm is a starting
+point. Set your own maximum (60–250 bpm) and optionally change the four thresholds in
+iPhone **Settings → Heart Rate Zones**. Maximum and thresholds sync independently with
+Apple Watch. By default, zones 2–5 start at 60%, 70%, 80% and 90% of maximum, respectively.
+Zone 1 covers all positive readings below 60%, and zone 5 includes readings above maximum.
+Custom thresholds are increasing whole percentages. The watch shows the current zone
+during recording while active and while the latest valid reading is at most 15 s old.
+
+**Time in zones** is an estimate calculated when opening the iPhone session detail, using
+the current settings. Each valid reading represents the interval until the next reading,
+provided both readings are valid and at most 15 s apart. The interval ends early at a manual
+or replayed auto-pause, and counting resumes with the first valid reading at or after
+resume. There is no time credited before the first reading, after the last, through sensor
+gaps, or across removed trim intervals. Sessions without a qualifying interval omit the
+breakdown.
+
 ## Session summary
 
 Track v1 stores the analysis as `summary`, with `analyzerVersion` (currently `1.1.0`,
@@ -440,7 +457,7 @@ and auto-lap events.
 
 ## Not computed yet
 
-PLAN §5 lists these; they have no definition here until they ship: heart-rate zones,
+PLAN §5 lists these; they have no definition here until they ship:
 windsurf planing time and gybe count, race start line (pinging the ends, distance and
 time to the line), the motorboat anchor alarm, and stroke-based intervals. Calories
 come from Apple Health's workout builder, not from MadeGood.
