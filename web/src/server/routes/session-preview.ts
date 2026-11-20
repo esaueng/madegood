@@ -145,25 +145,13 @@ export const sessionPreviewPage = new Hono<AppEnv>()
         headers: { location: BRAND_IMAGE.path, "cache-control": "no-store" },
       });
     if (!UUID.test(id)) return fallback();
-    const queue = c.env.POSTPROCESS;
-    const image = await ogImage(c.env, id, {
-      ifNoneMatch: c.req.header("if-none-match"),
-      enqueueOnMiss: queue ? () => queue.send({ v: 1, kind: "og", sessionId: id }) : undefined,
-      waitUntil: queue ? undefined : (work) => c.executionCtx.waitUntil(work),
-    }).catch((err) => {
+    const image = await ogImage(c.env, id, c.req.raw, (work) =>
+      c.executionCtx.waitUntil(work),
+    ).catch((err) => {
       console.error("Could not serve a route image.", err);
       return null;
     });
-    if (!image) return fallback();
-    const etag = `"${image.fingerprint}"`;
-    const headers = {
-      "content-type": "image/png",
-      etag,
-      // Visibility can change at any time: caches revalidate, and the check runs again.
-      "cache-control": "no-cache",
-      "x-content-type-options": "nosniff",
-    };
-    return new Response(image.body, { status: image.body === null ? 304 : 200, headers });
+    return image ?? fallback();
   })
   // Deeper paths under /s/ also reach the Worker; hand them to the SPA unchanged.
   .get("/s/*", (c) => c.env.ASSETS.fetch(c.req.raw));

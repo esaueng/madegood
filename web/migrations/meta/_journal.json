@@ -92,13 +92,6 @@
       "when": 1795096027982,
       "tag": "0012_r2_ledger_claims",
       "breakpoints": true
-    },
-    {
-      "idx": 13,
-      "version": "6",
-      "when": 1795153118089,
-      "tag": "0013_og_refresh_marker",
-      "breakpoints": true
     }
   ]
 }

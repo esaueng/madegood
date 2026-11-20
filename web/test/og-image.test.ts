@@ -2,13 +2,11 @@ import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test"
 import { env } from "cloudflare:workers";
 import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
-import { describe, expect, it } from "vitest";
-import { createApp } from "../src/server/app";
+import { describe, expect, it, vi } from "vitest";
 import { privacyZones, sessions, users } from "../src/server/db/schema";
-import { ogFingerprint, ogImageKey, syncOgImage } from "../src/server/lib/og-image";
-import { handlePostprocessBatch, processMessage } from "../src/server/lib/postprocess";
-import { collectR2Garbage, UPLOAD_GRACE_MS } from "../src/server/lib/r2-garbage";
+import { ogFingerprint } from "../src/server/lib/og-image";
 import { arcClearsZones } from "../src/server/lib/session-privacy";
+import { userPrefix } from "../src/server/lib/storage";
 import { distanceM, ZONE_MARGIN_M } from "../src/server/lib/voyage-sharing";
 import {
   CARD_HEIGHT,
@@ -86,12 +84,12 @@ async function shareSession(owner: SignIn, fixes: LatLon[], visibility = "public
 }
 
 /** Set up an already-processed track without a queue consumer racing the test. */
-async function processedSession(fixes = lineFixes(), zonesVersion = 0) {
+async function processedSession(fixes = lineFixes(), zonesVersion = 0, encode = JSON.stringify) {
   const owner = await signIn();
   const id = crypto.randomUUID();
-  const key = ogImageKey(owner.user.id, id);
-  const trackKey = key.replace(/og\.png$/, "track.v1.gz");
-  const object = await env.TRACKS.put(trackKey, await gzip(JSON.stringify(track(id, fixes))));
+  const prefix = `${userPrefix(owner.user.id)}sessions/${id}/`;
+  const trackKey = `${prefix}track.v1.gz`;
+  const object = await env.TRACKS.put(trackKey, await gzip(encode(track(id, fixes))));
   if (!object) throw new Error("missing test track");
   const [session] = await drizzle(env.DB)
     .insert(sessions)
@@ -112,29 +110,52 @@ async function processedSession(fixes = lineFixes(), zonesVersion = 0) {
     .returning();
   if (!session) throw new Error("missing test session");
   const fingerprint = await ogFingerprint(session, "nautical", zonesVersion);
-  return { id, key, trackKey, fingerprint, owner };
+  return { id, prefix, trackKey, fingerprint, owner, path: imagePath(id, fingerprint) };
 }
 
-function bucket(overrides: Partial<R2Bucket>): R2Bucket {
-  return {
-    get: env.TRACKS.get.bind(env.TRACKS),
-    head: env.TRACKS.head.bind(env.TRACKS),
-    put: env.TRACKS.put.bind(env.TRACKS),
-    delete: env.TRACKS.delete.bind(env.TRACKS),
-    list: env.TRACKS.list.bind(env.TRACKS),
-    ...overrides,
-  } as R2Bucket;
-}
+const imagePath = (id: string, fingerprint: string) => `/s/${id}/og.png?v=${fingerprint}`;
 
 const assets = {
   fetch: async () => new Response(SHELL, { headers: { "content-type": "text/html" } }),
 };
-const get = (path: string, headers: Record<string, string> = {}, bindings: Partial<Env> = {}) =>
-  sessionPreviewPage.request(
-    `${ORIGIN}${path}`,
+
+async function get(
+  path: string,
+  headers: Record<string, string> = {},
+  bindings: Partial<Env> = {},
+) {
+  const ctx = createExecutionContext();
+  const response = await sessionPreviewPage.request(
+    new URL(path, ORIGIN),
     { headers },
     { ...env, ASSETS: assets, ...bindings },
+    ctx,
   );
+  await waitOnExecutionContext(ctx);
+  return response;
+}
+
+async function expectBrand(response: Response) {
+  expect(response.status).toBe(302);
+  expect(Object.fromEntries(response.headers)).toEqual({
+    location: "/og-default.png",
+    "cache-control": "no-store",
+  });
+  expect(await response.text()).toBe("");
+}
+
+async function cachedImage(path: string) {
+  return caches.default.match(new URL(path, ORIGIN).href);
+}
+
+async function seedCache(path: string) {
+  const response = await get(path);
+  expect(response.status).toBe(200);
+  await response.body?.cancel();
+  const cached = await cachedImage(path);
+  expect(cached?.headers.get("cache-control")).toBe("public, max-age=300");
+  await cached?.body?.cancel();
+}
 
 async function waitFor<T>(probe: () => Promise<T | null | undefined | false>): Promise<T> {
   const deadline = Date.now() + 20_000;
@@ -146,26 +167,8 @@ async function waitFor<T>(probe: () => Promise<T | null | undefined | false>): P
   }
 }
 
-/** The session's image once post-processing made it available. */
-const imageOf = (id: string) =>
-  waitFor(async () => {
-    const response = await get(`/s/${id}/og.png`);
-    if (response.status === 200) return response;
-    await response.body?.cancel();
-    return null;
-  });
-
 const ogImageTag = (html: string) =>
   html.match(/property="og:image" content="([^"]+)"/)?.[1] ?? null;
-
-const stored = async (id: string) => {
-  const [row] = await drizzle(env.DB)
-    .select({ userId: sessions.userId })
-    .from(sessions)
-    .where(eq(sessions.id, id));
-  if (!row) throw new Error("no row");
-  return env.TRACKS.head(ogImageKey(row.userId, id));
-};
 
 function pngSize(bytes: Uint8Array) {
   const view = new DataView(bytes.buffer, bytes.byteOffset);
@@ -233,7 +236,8 @@ describe("route geometry", () => {
   });
 
   it("falls back when the route cannot fit the point budget without joining gaps", () => {
-    const runs = lineFixes(3_000).map((fix) => [fix]);
+    const runs = lineFixes(2_049).map((fix) => [fix]);
+    expect(projectRoute(runs.slice(0, 2_048)).runs.flat()).toHaveLength(2_048);
     expect(projectRoute(runs).start).toBeNull();
   });
 
@@ -250,318 +254,150 @@ describe("route geometry", () => {
 });
 
 describe("Open Graph route images", () => {
-  it.each(["private", "zone", "trim", "owner"] as const)(
-    "rechecks a cache hit when %s changes during the R2 read",
+  it("renders inline, uses the edge cache on a hit, and leaves only the source track in R2", async () => {
+    const { path, prefix, trackKey, fingerprint } = await processedSession();
+    const etag = `"${fingerprint}"`;
+    const read = vi.fn((key: string) => env.TRACKS.get(key));
+    const write = vi.fn(() => {
+      throw new Error("Unexpected R2 write");
+    });
+    const bindings = { TRACKS: { get: read, put: write } as unknown as R2Bucket };
+    const first = await get(path, {}, bindings);
+    expect(first.status).toBe(200);
+    expect(first.headers.get("cache-control")).toBe("public, max-age=0, must-revalidate");
+    expect(first.headers.get("content-type")).toBe("image/png");
+    expect(first.headers.get("etag")).toBe(etag);
+    const bytes = await first.arrayBuffer();
+    expect(pngSize(new Uint8Array(bytes))).toEqual({ width: CARD_WIDTH, height: CARD_HEIGHT });
+
+    const second = await get(`${path}&ignored=1`, {}, bindings);
+    expect(second.status).toBe(200);
+    expect(await second.arrayBuffer()).toEqual(bytes);
+    const conditional = await get(path, { "if-none-match": `"old", W/${etag}` }, bindings);
+    expect(conditional.status).toBe(304);
+    expect(conditional.headers.get("cache-control")).toBe("public, max-age=0, must-revalidate");
+    expect(conditional.headers.get("etag")).toBe(etag);
+    expect(conditional.body).toBeNull();
+    expect(read.mock.calls).toEqual([[trackKey]]);
+    expect(write).not.toHaveBeenCalled();
+    expect((await env.TRACKS.list({ prefix })).objects.map((object) => object.key)).toEqual([
+      trackKey,
+    ]);
+  });
+
+  it.each(["private", "deleted", "account-deleting", "stale"] as const)(
+    "returns the unknown-ID response for a %s request even with a cached PNG and matching ETag",
     async (change) => {
-      const { id, key, fingerprint, owner } = await processedSession();
-      await env.TRACKS.put(key, "old route", { customMetadata: { fp: fingerprint } });
-      const revoke = async () => {
-        if (change === "zone" || change === "owner") {
-          await drizzle(env.DB)
-            .update(users)
-            .set(change === "zone" ? { zonesVersion: 1 } : { deletedAt: Date.now() })
-            .where(eq(users.id, owner.user.id));
-        } else {
-          await drizzle(env.DB)
-            .update(sessions)
-            .set(
-              change === "private"
-                ? { visibility: "private" }
-                : { uploadRevision: 1, trackEtag: "trimmed", processedEtag: "trimmed" },
-            )
-            .where(eq(sessions.id, id));
-        }
-      };
-      const storage = bucket({
-        async get(name) {
-          const hit = await env.TRACKS.get(name);
-          await revoke();
-          return hit;
-        },
-        async head(name) {
-          const hit = await env.TRACKS.head(name);
-          await revoke();
-          return hit;
-        },
-      });
-      // Exercise both the body and conditional paths with the matching old fingerprint.
-      const headers: Record<string, string> =
-        change === "zone" || change === "trim" ? { "if-none-match": `"${fingerprint}"` } : {};
-      const response = await get(`/s/${id}/og.png`, headers, { TRACKS: storage });
-      expect(response.status).toBe(302);
-      expect(response.headers.get("location")).toBe("/og-default.png");
-    },
-  );
-
-  it("rejects a render when the track is trimmed during its R2 write", async () => {
-    const { id } = await processedSession();
-    const storage = bucket({
-      async put(name, value, options) {
-        const result = await env.TRACKS.put(name, value, options);
-        if (options?.customMetadata?.fp) {
-          await drizzle(env.DB)
-            .update(sessions)
-            .set({ uploadRevision: 1, trackEtag: "trimmed", processedEtag: "trimmed" })
-            .where(eq(sessions.id, id));
-        }
-        return result;
-      },
-    });
-    expect(await syncOgImage({ DB: env.DB, TRACKS: storage }, id)).not.toBe("current");
-  });
-
-  it("collects a late write after the session delete and immediate R2 cleanup failure", async () => {
-    const { id, key, owner } = await processedSession();
-    const storage = bucket({
-      async put(name, value, options) {
-        expect(name).toBe(key);
-        if (options?.customMetadata?.fp) {
-          const deleted = await createApp().request(
-            `${ORIGIN}/api/sessions/${id}`,
-            { method: "DELETE", headers: bearer(owner.accessToken) },
-            { ...env, TRACKS: storage },
-            createExecutionContext(),
-          );
-          expect(deleted.status).toBe(500);
-        }
-        return env.TRACKS.put(name, value, options);
-      },
-      async delete() {
-        throw new Error("transient R2 failure");
-      },
-    });
-    await expect(syncOgImage({ DB: env.DB, TRACKS: storage }, id)).rejects.toThrow(
-      "transient R2 failure",
-    );
-    expect((await env.TRACKS.head(key))?.httpMetadata?.contentType).toBe("image/png");
-    // Age the record past the upload grace and claim lease, as on a later cron pass.
-    await env.DB.prepare(
-      "UPDATE pending_r2_deletes SET created_at = 0, claimed_at = 0 WHERE key = ?",
-    )
-      .bind(key)
-      .run();
-    await collectR2Garbage(drizzle(env.DB), env.TRACKS, {
-      userId: owner.user.id,
-      before: Date.now() - UPLOAD_GRACE_MS,
-    });
-    expect(await env.TRACKS.head(key)).toBeNull();
-  });
-
-  it("collects an attached image when the session prefix listing fails", async () => {
-    const { id, key, fingerprint, owner } = await processedSession();
-    await env.TRACKS.put(key, "attached route", { customMetadata: { fp: fingerprint } });
-    const storage = bucket({
-      async list() {
-        throw new Error("transient R2 list failure");
-      },
-    });
-    const response = await createApp().request(
-      `${ORIGIN}/api/sessions/${id}`,
-      { method: "DELETE", headers: bearer(owner.accessToken) },
-      { ...env, TRACKS: storage },
-      createExecutionContext(),
-    );
-    expect(response.status).toBe(500);
-    expect((await get(`/s/${id}/og.png`)).status).toBe(302);
-    expect(await env.TRACKS.head(key)).not.toBeNull();
-
-    await collectR2Garbage(drizzle(env.DB), env.TRACKS, {
-      userId: owner.user.id,
-      before: Date.now() - UPLOAD_GRACE_MS,
-    });
-    expect(await env.TRACKS.head(key)).toBeNull();
-  });
-
-  it("cannot land a PNG after its expired reservation and R2 object are collected", async () => {
-    const { id, key, owner } = await processedSession();
-    const storage = bucket({
-      async put(name, value, options) {
-        if (options?.customMetadata?.fp) {
-          const deleted = await api(`/sessions/${id}`, {
-            method: "DELETE",
-            headers: bearer(owner.accessToken),
-          });
-          expect(deleted.status).toBe(204);
-          await env.DB.prepare("UPDATE pending_r2_deletes SET created_at = 0 WHERE key = ?")
-            .bind(key)
-            .run();
-          expect(
-            await collectR2Garbage(drizzle(env.DB), env.TRACKS, {
-              userId: owner.user.id,
-              before: Date.now() - UPLOAD_GRACE_MS,
-            }),
-          ).toBe(1);
-        }
-        return env.TRACKS.put(name, value, options);
-      },
-    });
-    expect(await syncOgImage({ DB: env.DB, TRACKS: storage }, id)).not.toBe("current");
-    expect(await env.TRACKS.head(key)).toBeNull();
-  });
-
-  it("renders on queue redelivery after a transient track read failure", async () => {
-    const { id, key, trackKey } = await processedSession();
-    let trackReads = 0;
-    const storage = bucket({
-      async get(name) {
-        if (name === trackKey && ++trackReads === 1) throw new Error("transient track read");
-        return env.TRACKS.get(name);
-      },
-    });
-    const decisions: string[] = [];
-    const deliver = (attempts: number) =>
-      handlePostprocessBatch(
-        {
-          queue: "madegood-postprocess",
-          metadata: { metrics: { backlogCount: 1, backlogBytes: 0 } },
-          messages: [
-            {
-              id,
-              timestamp: new Date(),
-              body: { v: 1, kind: "og", sessionId: id },
-              attempts,
-              ack: () => decisions.push("ack"),
-              retry: (options) => decisions.push(`retry in ${options?.delaySeconds}`),
-            },
-          ],
-          ackAll() {},
-          retryAll() {},
-        },
-        { ...env, TRACKS: storage },
-      );
-    await deliver(1);
-    await deliver(2);
-    expect(decisions).toEqual(["retry in 30", "ack"]);
-    expect(trackReads).toBe(2);
-    expect(await env.TRACKS.head(key)).not.toBeNull();
-  });
-
-  it.each(["failed", "abandoned", "claimed"])(
-    "recovers a %s image reservation on a later GET without a queue",
-    async (failure) => {
-      const { id, key, trackKey, owner } = await processedSession();
-      let trackReads = 0;
-      const storage = bucket({
-        async get(name) {
-          if (name === trackKey && ++trackReads === 1 && failure === "failed") {
-            throw new Error("transient track read");
-          }
-          return env.TRACKS.get(name);
-        },
-      });
-      const bindings = { ...env, ASSETS: assets, TRACKS: storage, POSTPROCESS: undefined };
-      if (failure === "failed") {
-        // Seed wind so the PATCH runs just one route-image attempt.
-        await drizzle(env.DB).update(sessions).set({ windJson: "{}" }).where(eq(sessions.id, id));
-        const ctx = createExecutionContext();
-        const response = await createApp().request(
-          `${ORIGIN}/api/sessions/${id}`,
-          json("PATCH", { visibility: "unlisted" }, owner.accessToken),
-          bindings,
-          ctx,
-        );
-        expect(response.status).toBe(200);
-        await waitOnExecutionContext(ctx);
-        expect(trackReads).toBe(1);
+      const { id, owner, fingerprint, path } = await processedSession();
+      await seedCache(path);
+      const db = drizzle(env.DB);
+      if (change === "private") {
+        const patch = json("PATCH", { visibility: "private" }, owner.accessToken);
+        expect((await api(`/sessions/${id}`, patch)).status).toBe(200);
+        expect(ogImageTag(await (await get(`/s/${id}`)).text())).toBe(`${ORIGIN}/og-default.png`);
+      } else if (change === "deleted") {
+        const deleted = await api(`/sessions/${id}`, {
+          method: "DELETE",
+          headers: bearer(owner.accessToken),
+        });
+        expect(deleted.status).toBe(204);
       } else {
-        await env.DB.prepare(
-          "INSERT INTO pending_r2_deletes (key, user_id, created_at, claim, claimed_at) VALUES (?, ?, 0, ?, 0)",
-        )
-          .bind(key, owner.user.id, failure === "claimed" ? "old claim" : null)
-          .run();
+        await db
+          .update(users)
+          .set(change === "account-deleting" ? { deletedAt: Date.now() } : { units: "metric" })
+          .where(eq(users.id, owner.user.id));
       }
-      const ctx = createExecutionContext();
-      const url = `${ORIGIN}/s/${id}/og.png`;
-      expect((await sessionPreviewPage.request(url, {}, bindings, ctx)).status).toBe(302);
-      await waitOnExecutionContext(ctx);
-      const refreshed = await sessionPreviewPage.request(url, {}, bindings, ctx);
-      expect(refreshed.status).toBe(200);
-      await refreshed.body?.cancel();
+
+      const cache = caches.default;
+      const match = vi.spyOn(cache, "match");
+      try {
+        await expectBrand(await get(path));
+        await expectBrand(await get(path, { "if-none-match": `"${fingerprint}"` }));
+        expect(match).not.toHaveBeenCalled();
+      } finally {
+        match.mockRestore();
+      }
+      const cached = await cachedImage(path);
+      expect(cached?.status).toBe(200);
+      await cached?.body?.cancel();
     },
   );
 
-  it("enqueues one refresh on concurrent cold requests without fetching the track", async () => {
-    const { id, key: imageKey, owner } = await processedSession();
-    const reads: string[] = [];
-    const storage = bucket({
-      async get(key) {
-        reads.push(key);
-        return env.TRACKS.get(key);
-      },
-    });
-    const path = `/s/${id}/og.png`;
-    const messages: unknown[] = [];
-    const bindings = {
-      TRACKS: storage,
-      POSTPROCESS: {
-        async send(message: unknown) {
-          messages.push(message);
-          return { metadata: { metrics: { backlogCount: messages.length, backlogBytes: 0 } } };
-        },
-        metrics: async () => {
-          throw new Error("unexpected queue metrics request");
-        },
-        sendBatch: async () => {
-          throw new Error("unexpected queue batch");
-        },
-      },
-    };
-    // An upload or visibility change can already hold the render lease without a queued refresh.
-    await env.DB.prepare(
-      "INSERT INTO pending_r2_deletes (key, user_id, created_at) VALUES (?, ?, ?)",
-    )
-      .bind(imageKey, owner.user.id, Date.now())
-      .run();
-    expect((await get(path, {}, bindings)).status).toBe(302);
-    expect(messages).toEqual([]);
-    await env.DB.prepare("DELETE FROM pending_r2_deletes WHERE key = ?").bind(imageKey).run();
-    reads.length = 0;
+  it.each(["body", "304"] as const)(
+    "rechecks eligibility before returning a cached %s",
+    async (kind) => {
+      const { id, fingerprint, path } = await processedSession();
+      await seedCache(path);
+      const cache = caches.default;
+      const originalMatch = cache.match.bind(cache);
+      const match = vi.spyOn(cache, "match").mockImplementation(async (key) => {
+        const hit = await originalMatch(key);
+        expect(hit?.status).toBe(200);
+        await drizzle(env.DB)
+          .update(sessions)
+          .set({ visibility: "private" })
+          .where(eq(sessions.id, id));
+        return hit;
+      });
+      try {
+        await expectBrand(
+          await get(path, kind === "304" ? { "if-none-match": `"${fingerprint}"` } : {}),
+        );
+        expect(match).toHaveBeenCalledOnce();
+      } finally {
+        match.mockRestore();
+      }
+    },
+  );
 
-    const results = await Promise.all(Array.from({ length: 12 }, () => get(path, {}, bindings)));
-    expect(results.map((res) => res.status)).toEqual(Array(12).fill(302));
-    expect(reads).toEqual(Array(12).fill(imageKey));
-    const message = { v: 1, kind: "og", sessionId: id };
-    expect(messages).toEqual([message]);
+  it.each(["body", "304"] as const)(
+    "rejects a cold %s if the track changes during rendering",
+    async (kind) => {
+      const { id, fingerprint, path } = await processedSession();
+      const read = vi.fn(async (key: string) => {
+        const object = await env.TRACKS.get(key);
+        await drizzle(env.DB)
+          .update(sessions)
+          .set({ uploadRevision: 1, trackEtag: "trimmed", processedEtag: "trimmed" })
+          .where(eq(sessions.id, id));
+        return object;
+      });
+      const headers: Record<string, string> =
+        kind === "304" ? { "if-none-match": `"${fingerprint}"` } : {};
+      await expectBrand(await get(path, headers, { TRACKS: { get: read } as unknown as R2Bucket }));
+      expect(read).toHaveBeenCalledOnce();
+      expect(await cachedImage(path)).toBeUndefined();
+    },
+  );
 
-    // If the job is lost, a later request can queue another after the marker ages out.
-    await drizzle(env.DB).update(sessions).set({ ogQueuedAt: 0 }).where(eq(sessions.id, id));
-    expect((await get(path, {}, bindings)).status).toBe(302);
-    expect(messages).toEqual([message, message]);
-    await processMessage(env, messages[1]);
-    const refreshed = await get(path);
-    expect(refreshed.status).toBe(200);
-    await refreshed.body?.cancel();
+  it("treats missing fingerprints and unknown or malformed IDs like the brand fallback", async () => {
+    const { id, fingerprint } = await processedSession();
+    for (const path of [
+      `/s/${id}/og.png`,
+      imagePath(crypto.randomUUID(), fingerprint),
+      imagePath("not-a-uuid", fingerprint),
+    ]) {
+      await expectBrand(await get(path, { "if-none-match": `"${fingerprint}"` }));
+    }
   });
 
-  it("remembers an over-budget route and keeps serving the brand fallback", async () => {
-    const { id, key } = await processedSession(lineFixes(20_001));
-    const path = `/s/${id}/og.png`;
-    await syncOgImage(env, id);
-    expect((await env.TRACKS.head(key))?.size).toBe(0);
-    expect((await get(path)).status).toBe(302);
-  });
-
-  it("lets only one overlapping producer read and render the track", async () => {
-    const { id, trackKey } = await processedSession();
-    let trackReads = 0;
-    let duplicate: Awaited<ReturnType<typeof syncOgImage>> | undefined;
-    const storage = bucket({
-      async get(key) {
-        if (key === trackKey && ++trackReads === 1) {
-          duplicate = await syncOgImage({ DB: env.DB, TRACKS: storage }, id);
-        }
-        return env.TRACKS.get(key);
-      },
-    });
-    expect(await syncOgImage({ DB: env.DB, TRACKS: storage }, id)).toBe("current");
-    expect(duplicate).not.toBe("current");
-    expect(trackReads).toBe(1);
+  it.each([
+    { limit: "fix count", fixes: 20_001, padding: 0 },
+    { limit: "inflated payload size", fixes: 100, padding: 2 * 1024 * 1024 },
+  ])("falls back above the $limit cap", async ({ fixes, padding }) => {
+    const { fingerprint, path } = await processedSession(
+      lineFixes(fixes),
+      0,
+      (document) => JSON.stringify(document) + " ".repeat(padding),
+    );
+    await expectBrand(await get(path, { "if-none-match": `"${fingerprint}"` }));
+    expect(await cachedImage(path)).toBeUndefined();
   });
 
   it("draws exactly the fixes outside privacy zones, with a gap across each zone", async () => {
     const zone = { lat: 500 * DEG_PER_M, lon: 0, radiusM: 150 };
     const fixes = lineFixes();
-    const { id, owner } = await processedSession(fixes, 1);
+    const { owner, path } = await processedSession(fixes, 1);
     await drizzle(env.DB).batch([
       drizzle(env.DB).update(users).set({ zonesVersion: 1 }).where(eq(users.id, owner.user.id)),
       drizzle(env.DB)
@@ -572,8 +408,7 @@ describe("Open Graph route images", () => {
           ...zone,
         }),
     ]);
-    expect(await syncOgImage(env, id)).toBe("current");
-    const response = await get(`/s/${id}/og.png`);
+    const response = await get(path);
     expect(response.status).toBe(200);
     const served = new Uint8Array(await response.arrayBuffer());
     expect(pngSize(served)).toEqual({ width: CARD_WIDTH, height: CARD_HEIGHT });
@@ -596,83 +431,36 @@ describe("Open Graph route images", () => {
     expect(servedHash).not.toEqual(await hash(whole));
   });
 
-  it("gives private sessions no image and only the brand card in the tags", async () => {
-    const owner = await signIn();
-    const id = await shareSession(owner, lineFixes(), "private");
-    // Processed, still nothing: the route answers like it does for an unknown session.
-    await waitFor(async () => {
-      const response = await api(`/sessions/${id}`, { headers: bearer(owner.accessToken) });
-      return ((await response.json()) as { processing: string }).processing === "done";
-    });
-    for (const target of [id, crypto.randomUUID(), "not-a-uuid"]) {
-      const response = await get(`/s/${target}/og.png`);
-      expect(response.status).toBe(302);
-      expect(response.headers.get("location")).toBe("/og-default.png");
-      expect(response.headers.get("cache-control")).toBe("no-store");
-    }
-    expect(await stored(id)).toBeNull();
-    const html = await (await get(`/s/${id}`)).text();
-    expect(ogImageTag(html)).toBe(`${ORIGIN}/og-default.png`);
-  });
-
-  it("serves the image while shared and deletes it once the session is private", async () => {
-    const owner = await signIn();
-    const id = await shareSession(owner, lineFixes(), "unlisted");
-    const response = await imageOf(id);
-    expect(response.headers.get("content-type")).toBe("image/png");
-    expect(response.headers.get("cache-control")).toBe("no-cache");
-    const etag = response.headers.get("etag") as string;
-    await response.body?.cancel();
-    const revalidated = await get(`/s/${id}/og.png`, { "if-none-match": etag });
-    expect(revalidated.status).toBe(304);
-    expect(await stored(id)).not.toBeNull();
-
-    const html = await (await get(`/s/${id}`)).text();
-    expect(ogImageTag(html)).toBe(`${ORIGIN}/s/${id}/og.png?v=${etag.replaceAll('"', "")}`);
-
-    const patch = json("PATCH", { visibility: "private" }, owner.accessToken);
-    expect((await api(`/sessions/${id}`, patch)).status).toBe(200);
-    expect((await get(`/s/${id}/og.png`)).status).toBe(302);
-    await waitFor(async () => (await stored(id)) === null);
-    expect(ogImageTag(await (await get(`/s/${id}`)).text())).toBe(`${ORIGIN}/og-default.png`);
-  });
-
   it("redraws the image under a new URL when a zone is added", async () => {
     const owner = await signIn();
-    const id = await shareSession(owner, lineFixes());
-    const first = await imageOf(id);
-    const firstTag = ogImageTag(await (await get(`/s/${id}`)).text());
-    const firstBytes = new Uint8Array(await first.arrayBuffer());
+    const id = await shareSession(owner, lineFixes(), "unlisted");
+    const imageTag = async () => ogImageTag(await (await get(`/s/${id}`)).text());
+    const firstTag = await waitFor(async () => {
+      const tag = await imageTag();
+      return tag?.includes("/og.png?v=") ? tag : null;
+    });
+    const first = await get(firstTag);
+    expect(first.status).toBe(200);
+    const firstBytes = await first.arrayBuffer();
 
-    // Mid-line, so the redrawn line has a gap (cutting an end off a straight line would
-    // refit to the same picture).
     const zone = { lat: 500 * DEG_PER_M, lon: 0, radiusM: 150 };
-    await api("/me/privacy-zones", json("POST", zone, owner.accessToken));
+    expect((await api("/me/privacy-zones", json("POST", zone, owner.accessToken))).status).toBe(
+      201,
+    );
     const secondTag = await waitFor(async () => {
-      const tag = ogImageTag(await (await get(`/s/${id}`)).text());
+      const tag = await imageTag();
       return tag !== firstTag && tag?.includes("/og.png?v=") ? tag : null;
     });
-    expect(secondTag).not.toBe(firstTag);
-    const second = new Uint8Array(await (await imageOf(id)).arrayBuffer());
-    expect(new Uint8Array(await crypto.subtle.digest("SHA-256", second))).not.toEqual(
-      new Uint8Array(await crypto.subtle.digest("SHA-256", firstBytes)),
-    );
-  });
-
-  it("deletes the image with the session", async () => {
-    const owner = await signIn();
-    const id = await shareSession(owner, lineFixes());
-    await (await imageOf(id)).body?.cancel();
-    const key = ogImageKey(owner.user.id, id);
-    expect(await env.TRACKS.head(key)).not.toBeNull();
-    await api(`/sessions/${id}`, { method: "DELETE", headers: bearer(owner.accessToken) });
-    expect(await env.TRACKS.head(key)).toBeNull();
+    await expectBrand(await get(firstTag));
+    const second = await get(secondTag);
+    expect(second.status).toBe(200);
+    expect(
+      new Uint8Array(await crypto.subtle.digest("SHA-256", await second.arrayBuffer())),
+    ).not.toEqual(new Uint8Array(await crypto.subtle.digest("SHA-256", firstBytes)));
   });
 
   it("puts the image, its size and alt text in the tags", async () => {
-    const owner = await signIn();
-    const id = await shareSession(owner, lineFixes());
-    await (await imageOf(id)).body?.cancel();
+    const { id } = await processedSession();
     const html = await (await get(`/s/${id}`)).text();
     const image = ogImageTag(html);
     expect(image).toMatch(new RegExp(`^${ORIGIN}/s/${id}/og\\.png\\?v=[0-9a-f]{16}$`));

@@ -2,7 +2,6 @@ import { z } from "@hono/zod-openapi";
 import { and, asc, eq, gt, isNotNull, isNull, lt, ne, or, type SQL, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
 import { privacyZones, type Session, sessions, users } from "../db/schema";
-import { syncOgImage } from "./og-image";
 import type { Zone } from "./session-privacy";
 import { parseGzippedJson, SHARED_TRACK_MAX_INFLATED_BYTES, TrackTooLarge } from "./track";
 import { boundsCenter, deriveTrack, InvalidTrack, type TrackDerived } from "./track-derived";
@@ -20,10 +19,6 @@ import { fetchWind, type StoredWind, WindTransientError, windRequest } from "./w
 // the version in the same D1 batch, so no box or time computed without a zone is ever
 // served after the zone exists, and queues one `user` message that requeues every
 // session whose public data is behind.
-//
-// Then it brings the session's Open Graph route image (lib/og-image.ts) in line: drawn for
-// shared sessions whose public data is current, deleted otherwise. On a cache miss the
-// public image route can enqueue a standalone image refresh.
 //
 // Memory: the track is inflated as a stream with the shared-track caps from #64
 // (SHARED_TRACK_MAX_INFLATED_BYTES, SHARED_TRACK_MAX_FIXES). A larger track is marked
@@ -44,12 +39,7 @@ export const UserMessage = z.object({
   userId: z.string().min(1),
   after: z.string().optional(),
 });
-const OgMessage = z.object({
-  v: z.literal(1),
-  kind: z.literal("og"),
-  sessionId: z.string().uuid(),
-});
-export const PostprocessMessage = z.union([UserMessage, SessionMessage, OgMessage]);
+export const PostprocessMessage = z.union([UserMessage, SessionMessage]);
 export type SessionMessage = z.infer<typeof SessionMessage>;
 export type UserMessage = z.infer<typeof UserMessage>;
 export type PostprocessMessage = z.infer<typeof PostprocessMessage>;
@@ -99,8 +89,7 @@ export type Outcome =
   | "too_large"
   | "invalid"
   | "invalid_message"
-  | "user_requeued"
-  | "og_synced";
+  | "user_requeued";
 
 export class RetryLater extends Error {}
 
@@ -160,10 +149,6 @@ export async function processMessage(
     await requeueUser(env, msg);
     return "user_requeued";
   }
-  if (msg.kind === "og") {
-    await syncOgImage(env, msg.sessionId);
-    return "og_synced";
-  }
   return processSession(env, msg, deps);
 }
 
@@ -174,20 +159,6 @@ export async function processSession(
   env: Pick<Env, "DB" | "TRACKS">,
   raw: unknown,
   deps: ProcessDeps = {},
-): Promise<Outcome> {
-  const outcome = await processSessionData(env, raw, deps);
-  if (outcome === "skipped_stale" || outcome === "invalid_message") return outcome;
-  const sessionId = (raw as SessionMessage).sessionId;
-  await syncOgImage(env, sessionId).catch((error: unknown) =>
-    console.warn("Could not update the route image.", error),
-  );
-  return outcome;
-}
-
-async function processSessionData(
-  env: Pick<Env, "DB" | "TRACKS">,
-  raw: unknown,
-  deps: ProcessDeps,
 ): Promise<Outcome> {
   const parsed = SessionMessage.safeParse(raw);
   if (!parsed.success) return "invalid_message";
@@ -451,7 +422,7 @@ export async function processInline(env: ProcessEnv, messages: PostprocessMessag
         const page = await staleSessions(db, message.userId, undefined, INLINE_USER_LIMIT);
         for (const row of page) await processSession(env, sessionMessage(message.userId, row));
       } else {
-        await processMessage(env, message);
+        await processSession(env, message);
       }
     } catch (error) {
       console.warn("Inline post-processing failed.", error);
