@@ -18,9 +18,13 @@ enum DemoHistory {
             guard arguments.contains(launchArgument) else { return }
             // Past sessions start mid-morning, local time, so History and the App Store
             // screenshots show a plausible time of day rather than whenever the test ran.
-            let morning = Calendar.current.startOfDay(for: Date()).timeIntervalSince1970 + 10.5 * 3_600
+            func morning(daysAgo days: Int) -> Double {
+                let calendar = Calendar.current
+                let date = calendar.date(byAdding: .day, value: -days, to: Date())!
+                return calendar.date(bySettingHour: 10, minute: 30, second: 0, of: date)!.timeIntervalSince1970
+            }
             seed(
-                id: "00000000-0000-4000-8000-00000000d001", sport: .sailing, start: morning - 2 * day, minutes: 48
+                id: "00000000-0000-4000-8000-00000000d001", sport: .sailing, start: morning(daysAgo: 2), minutes: 48
             ) { t in
                 // Upwind beats, wind from north: tack every 4 minutes, turning through the
                 // wind over 8 s and slower through each tack.
@@ -35,7 +39,7 @@ enum DemoHistory {
                 return (speed, (turning + 360).truncatingRemainder(dividingBy: 360))
             }
             seed(
-                id: "00000000-0000-4000-8000-00000000d002", sport: .kayak, start: morning - 9 * day, minutes: 35,
+                id: "00000000-0000-4000-8000-00000000d002", sport: .kayak, start: morning(daysAgo: 9), minutes: 35,
                 // Wrist motion for strokes: a little faster after the stop.
                 paddling: [.init(duration: 900, strokeRate: 66), .init(duration: 120, strokeRate: 0),
                            .init(duration: 1_080, strokeRate: 72)]
@@ -45,7 +49,7 @@ enum DemoHistory {
                 return (stopped ? 0 : 2.1 + 0.2 * sin(t / 23), 90 + 40 * sin(t / 600))
             }
             seed(
-                id: "00000000-0000-4000-8000-00000000d003", sport: .windsurfing, start: morning - 33 * day,
+                id: "00000000-0000-4000-8000-00000000d003", sport: .windsurfing, start: morning(daysAgo: 33),
                 minutes: 25
             ) { t in
                 // Reaching runs with planing bursts.

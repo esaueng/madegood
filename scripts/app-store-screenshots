@@ -217,25 +217,32 @@ def capture(device: Device, output: Path, work: Path) -> None:
             match = re.match(r"appstore (\S+?)(_\d+)*(_[0-9A-F-]{36})?(\.png)?$",
                              attachment.get("suggestedHumanReadableName", ""))
             if match:
+                if match.group(1) in found:
+                    fail(f"{device.key}: two screenshots named {match.group(1)!r}")
                 found[match.group(1)] = exported / attachment["exportedFileName"]
 
     missing = [name for name in device.shots if name not in found]
     extra = sorted(set(found) - set(device.shots))
     if missing or extra:
         fail(f"{device.key}: missing {missing or 'none'}, unexpected {extra or 'none'}")
-    folder = output / device.key
-    shutil.rmtree(folder, ignore_errors=True)
-    folder.mkdir(parents=True)
+    # Check every shot in a staging folder first, so a bad run never replaces a good set.
+    staging = work / f"{device.key}-staging"
+    shutil.rmtree(staging, ignore_errors=True)
+    staging.mkdir(parents=True)
     for name in device.shots:
-        target = folder / f"{name}.png"
+        target = staging / f"{name}.png"
         shutil.copyfile(found[name], target)
         if png_has_alpha(target):
             remove_alpha(target)
         size = png_size(target)
         if size != device.size or png_has_alpha(target):
-            fail(f"{target} is {size[0]} x {size[1]}{' with alpha' if png_has_alpha(target) else ''};"
-                 f" App Store Connect needs {device.size[0]} x {device.size[1]} without alpha")
-        print(f"  {target.relative_to(ROOT)}  {size[0]} x {size[1]}")
+            fail(f"{name}.png is {size[0]} x {size[1]}{' with alpha' if png_has_alpha(target) else ''};"
+                 f" App Store Connect needs {device.size[0]} x {device.size[1]} without alpha (see {target})")
+    folder = output / device.key
+    shutil.rmtree(folder, ignore_errors=True)
+    staging.rename(folder)
+    for name in device.shots:
+        print(f"  {folder / name}.png  {device.size[0]} x {device.size[1]}")
     simctl("status_bar", udid, "clear", check=False)
     simctl("shutdown", udid, check=False)
 
