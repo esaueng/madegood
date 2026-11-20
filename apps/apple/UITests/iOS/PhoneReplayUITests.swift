@@ -88,7 +88,7 @@ final class PhoneReplayUITests: XCTestCase {
         zones.tap()
         let stepper = app.steppers["settings.heartRateZones.maximum"]
         XCTAssertTrue(stepper.waitForExistence(timeout: 5))
-        stepper.buttons["Increment"].tap()
+        stepper.buttons["settings.heartRateZones.maximum-Increment"].tap()
 
         history.tap()
         let updated = XCTNSPredicateExpectation(
