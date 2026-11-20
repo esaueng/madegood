@@ -60,9 +60,12 @@ Cloudflare Worker run by the developer, with Apple's identity token (it carries 
 user identifier) and, if the user allows it, the name Apple shares. That request goes
 through Cloudflare on a first sign-in, before any account exists, and also when the
 sign-in then fails (invalid token, rate limit, an account still being deleted), so the
-IP handling below applies from the first attempt. A sign-in refused before that
-(an identity token that fails verification, the rate limit, or an account still being
-deleted) writes nothing to D1. Once it verifies, `signInAppleSubject`
+IP handling below applies from the first attempt. A sign-in refused for an identity
+token that fails verification or for the rate limit writes nothing to D1. One for an
+account still being deleted stores no new sign-in data, but after the 20-minute grace
+period it can retry the deletion and, if cleanup fails again, update that account's
+retry count and next retry time (`deletionAttempts`, `deletionNextAt`) before
+answering 409. Once it verifies, `signInAppleSubject`
 (`web/src/server/lib/account-deletion.ts`) commits the `users` row through
 `findOrCreateUser` (`web/src/server/auth/users.ts`) before `issueTokenPair` runs, so a
 sign-in that fails after that (writing the refresh token, or signing the access token,
@@ -378,8 +381,9 @@ needed: nothing uses those APIs.
   (shared sessions, tracks, route images, the profile and its link tags, live shares)
   answers as for an unknown resource from that moment (#135). It then removes the D1 rows
   (sessions, privacy zones, voyages and legs) and every R2 object, retrying on the
-  scheduled sweep until done (backoff from 1 minute, doubling to at most 6 hours before
-  a retry is eligible, then picked up by the 30-minute cron, 25 accounts per run; the
+  scheduled sweep until done (backoff from 1 minute, doubling to at most 512 minutes, 8 h 32 min, after
+  ten consecutive failures, before a retry is eligible, then picked up by the 30-minute
+  cron, 25 accounts per run; the
   policy therefore promises automatic retries, not an interval). The account record and
   deleted session IDs go last: no sooner than the 20-minute grace period
   (`DELETION_GRACE_MS`), and only once cleanup has succeeded and the pending-delete ledger

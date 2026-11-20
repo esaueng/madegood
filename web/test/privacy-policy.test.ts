@@ -93,7 +93,11 @@ describe("/privacy", () => {
     expect(text).not.toMatch(
       /If the sign-in fails, MadeGood stores nothing|failed sign-in stores nothing/,
     );
-    expect(text).toContain("the confirmation is not valid, there were too many attempts");
+    expect(text).toContain("the confirmation is not valid or there were too many attempts");
+    // Review of #133 at 6d1f5b0: a refused sign-in for an account being deleted can still
+    // retry the deletion and record the next retry time.
+    expect(text).not.toContain("or the account is still being deleted), MadeGood stores nothing");
+    expect(text).toContain("may retry finishing the deletion and note when to try again");
     expect(text).toContain("can still leave the account record");
     expect(text).toContain("MadeGood does not remove such a record on its own");
   });
