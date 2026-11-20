@@ -208,10 +208,17 @@ test sport metrics such as tacks or stroke rate.
 - **Age rating:** 4+ (no objectionable content; no unrestricted web access; no
   user-to-user communication).
 - **Export compliance:** `ITSAppUsesNonExemptEncryption = false` is set (HTTPS only).
-- **Screenshots:** the CI UI tests export screenshots of the synthetic `-demoSession`
-  data (`xcrun xcresulttool export attachments`). They are 1206 × 2622 (a 6.3-inch
-  iPhone); App Store Connect requires its current largest iPhone size, so run the UI
-  tests on that simulator for the submission set, and add Apple Watch screenshots.
-  Use demo data only, never a real session.
+- **Screenshots:** `scripts/app-store-screenshots` (after generating the Xcode project)
+  runs the `PhoneAppStoreScreenshots` and `WatchAppStoreScreenshots` UI test classes on
+  its own iPhone 18 Pro Max and Apple Watch Ultra 4 (49mm) simulators, with the status
+  bar set to 9:41, full battery and signal, and light appearance (watchOS simulators
+  allow no status bar override, so the watch clock shows the time of the run). It writes
+  `build/app-store-screenshots/iphone-6.9/NN-name.png` at 1320 × 2868 (iPhone with
+  Dynamic Island, large display) and `build/app-store-screenshots/watch-ultra/NN-name.png`
+  at 422 × 514 (Apple Watch Ultra 4 and 3), and fails if a shot is missing, the wrong
+  size or has an alpha channel. `--device iphone` or `--device watch` captures one set.
+  The shots use the synthetic demo data (`-demoSession`, `-demoHistory`, canned weather),
+  never a real session; the folder is gitignored, so upload the PNGs by hand. Check App
+  Store Connect's current list of required sizes before submitting.
 - **Description:** keep claims to what ships (see the website landing page), say "not
   for navigation", and leave out Voyages features that are not released.
