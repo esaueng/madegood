@@ -157,6 +157,9 @@ export const sessions = sqliteTable(
     publicTrackEndedAt: timestamp("public_track_ended_at"),
     /** users.zones_version the public_* columns were computed with; null when not computed. */
     publicZonesVersion: integer("public_zones_version"),
+    // Cold image misses share one queued refresh per fingerprint until the marker expires.
+    ogQueuedFingerprint: text("og_queued_fingerprint"),
+    ogQueuedAt: timestamp("og_queued_at"),
     createdAt: timestamp("created_at").notNull().default(sql`(unixepoch('subsec') * 1000)`),
     updatedAt: timestamp("updated_at").notNull().default(sql`(unixepoch('subsec') * 1000)`),
     deletedAt: timestamp("deleted_at"),

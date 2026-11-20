@@ -1,9 +1,22 @@
-import { and, eq, exists, isNotNull, isNull, ne, type SQL, sql } from "drizzle-orm";
+import {
+  and,
+  eq,
+  exists,
+  gt,
+  isNotNull,
+  isNull,
+  lte,
+  ne,
+  notExists,
+  or,
+  type SQL,
+  sql,
+} from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
 import { pendingR2Deletes, privacyZones, type Session, sessions, users } from "../db/schema";
 import { projectRoute, routeCardAlt, routeCardSvg, routeRuns, type Units } from "../og/card";
 import { svgToPng } from "../og/render";
-import { discardKey, recordKey } from "./r2-garbage";
+import { discardKey, UPLOAD_GRACE_MS } from "./r2-garbage";
 import { arcClearsZones, PRIVACY_GAP_EVENT, shareTrack, type Zone } from "./session-privacy";
 import { userPrefix } from "./storage";
 import { parseGzippedJson, TrackTooLarge } from "./track";
@@ -19,13 +32,30 @@ import { parseGzippedJson, TrackTooLarge } from "./track";
 // fingerprint of everything drawn (track ETag, zones version, sport, distance, duration,
 // units, renderer version) and is served only while that still matches the session, so a
 // new zone, a trimmed track (a new upload) or a units change cannot serve an old image.
-// A cache miss serves the brand fallback and asks the queue to refresh the route image.
+// A cache miss serves the brand fallback and schedules an image refresh.
 
 /** Bump when the card's design or route projection changes. */
 export const OG_RENDER_VERSION = 2;
 
 export const ogImageKey = (userId: string, sessionId: string) =>
   `${userPrefix(userId)}sessions/${sessionId}/og.png`;
+
+/** Record even an attached card before deleting its session. An in-flight reservation
+ * already records the same key and keeps its original grace period. */
+export function recordSessionOgKeys(
+  d1: D1Database,
+  where: string,
+  binds: unknown[],
+  now = Date.now(),
+): D1PreparedStatement {
+  return d1
+    .prepare(
+      `INSERT OR IGNORE INTO pending_r2_deletes (key, user_id, created_at)
+       SELECT 'users/' || user_id || '/sessions/' || id || '/og.png', user_id, ?
+       FROM sessions WHERE (${where})`,
+    )
+    .bind(now - UPLOAD_GRACE_MS - 1, ...binds);
+}
 
 type OgSession = Pick<
   Session,
@@ -153,6 +183,49 @@ function currentSession(db: Db, { session, units, zonesVersion }: OgState, condi
 const OG_MAX_INFLATED_BYTES = 2 * 1024 * 1024;
 const OG_MAX_INPUT_FIXES = 20_000;
 
+/** Keep a cold miss from sending another message while this fingerprint is queued or
+ * the session has a producer. A lost message or cancelled request can be retried later. */
+async function enqueueRefresh(
+  db: Db,
+  state: OgState,
+  key: string,
+  fingerprint: string,
+  send: () => Promise<unknown>,
+) {
+  const now = Date.now();
+  const running = db
+    .select({ key: pendingR2Deletes.key })
+    .from(pendingR2Deletes)
+    .where(
+      and(eq(pendingR2Deletes.key, key), gt(pendingR2Deletes.createdAt, now - UPLOAD_GRACE_MS)),
+    );
+  const marker = and(eq(sessions.ogQueuedFingerprint, fingerprint), eq(sessions.ogQueuedAt, now));
+  const reserved = await db
+    .update(sessions)
+    .set({ ogQueuedFingerprint: fingerprint, ogQueuedAt: now })
+    .where(
+      and(
+        eq(sessions.id, state.session.id),
+        exists(currentSession(db, state)),
+        notExists(running),
+        or(
+          sql`${sessions.ogQueuedFingerprint} IS NOT ${fingerprint}`,
+          lte(sessions.ogQueuedAt, now - UPLOAD_GRACE_MS),
+        ),
+      ),
+    );
+  if (reserved.meta.changes !== 1) return;
+  try {
+    await send();
+  } catch (error) {
+    await db
+      .update(sessions)
+      .set({ ogQueuedFingerprint: null, ogQueuedAt: null })
+      .where(and(eq(sessions.id, state.session.id), marker));
+    throw error;
+  }
+}
+
 /** Draws the route card from the shared copy of the track, or null if it cannot be read. */
 async function render(bucket: R2Bucket, state: OgState, zones: Zone[]): Promise<Uint8Array | null> {
   const { session } = state;
@@ -196,7 +269,11 @@ export type OgImage = { fingerprint: string; body: ReadableStream | null };
 export async function ogImage(
   env: OgEnv,
   sessionId: string,
-  options: { ifNoneMatch?: string; onMiss?: () => Promise<void> } = {},
+  options: {
+    ifNoneMatch?: string;
+    enqueueOnMiss?: () => Promise<unknown>;
+    waitUntil?: (work: Promise<unknown>) => void;
+  } = {},
 ): Promise<OgImage | null> {
   const db = drizzle(env.DB);
   const [state] = await activeSession(db, sessionId);
@@ -209,7 +286,17 @@ export async function ogImage(
   const matches = stored?.customMetadata?.fp === fingerprint;
   if (!matches || stored?.size === 0) {
     await body?.cancel();
-    if (!matches) await options.onMiss?.();
+    if (!matches) {
+      if (options.enqueueOnMiss) {
+        await enqueueRefresh(db, state, key, fingerprint, options.enqueueOnMiss);
+      } else {
+        options.waitUntil?.(
+          syncOgImage(env, sessionId).catch((error: unknown) =>
+            console.warn("Could not update the route image.", error),
+          ),
+        );
+      }
+    }
     return null;
   }
 
@@ -226,10 +313,9 @@ export async function ogImage(
 }
 
 /**
- * One producer at a time per session, even across isolates. The record doubles as a
- * reservation and survives a failed or late R2 write. The collector honors the same
- * grace period as track uploads, then retries failed deletes. A successful write
- * releases its reservation only while the session still matches the card we drew.
+ * One producer at a time per session, even across isolates. The ledger covers a put
+ * until the card is attached. Its grace period also acts as a lease, so a cancelled
+ * producer can be replaced without waiting for the collector.
  */
 export async function syncOgImage(
   env: OgEnv,
@@ -249,53 +335,74 @@ export async function syncOgImage(
   if (!fingerprint && !stored) return "none";
 
   const createdAt = Date.now();
-  const reserved = await recordKey(env.DB, key, userId, createdAt).run();
-  if (reserved.meta.changes !== 1) return "none";
+  const before = createdAt - UPLOAD_GRACE_MS;
+  const reserve = async () =>
+    (
+      await db
+        .insert(pendingR2Deletes)
+        .values({ key, userId, createdAt })
+        .onConflictDoUpdate({
+          target: pendingR2Deletes.key,
+          set: { createdAt },
+          setWhere: and(isNull(pendingR2Deletes.claim), lte(pendingR2Deletes.createdAt, before)),
+        })
+    ).meta.changes === 1;
+  if (!(await reserve())) {
+    // Finish an expired cleanup claim before trying again. This also works without cron.
+    if (!(await discardKey(db, env.TRACKS, key, { before })) || !(await reserve())) return "none";
+  }
   const reservation = and(
     eq(pendingR2Deletes.key, key),
     eq(pendingR2Deletes.createdAt, createdAt),
     isNull(pendingR2Deletes.claim),
   );
-
-  // Read the zones and the session together after taking the reservation. A producer
-  // may have finished since our first HEAD, or the session may have changed.
-  const [[state], zones] = await db.batch([
-    activeSession(db, sessionId, eq(sessions.userId, userId)),
-    db
-      .select({ lat: privacyZones.lat, lon: privacyZones.lon, radiusM: privacyZones.radiusM })
-      .from(privacyZones)
-      .where(eq(privacyZones.userId, userId)),
-  ]);
-  if (!state || !ogEligible(state.session, state.zonesVersion)) {
-    await discardKey(db, env.TRACKS, key, { before: createdAt });
-    return "deleted";
-  }
-  const fp = await ogFingerprint(state.session, state.units, state.zonesVersion);
-  if ((await env.TRACKS.head(key))?.customMetadata?.fp === fp) {
-    await db.delete(pendingR2Deletes).where(reservation);
-    return "current";
-  }
-
-  const png = await render(env.TRACKS, state, zones);
   const held = db.select({ key: pendingR2Deletes.key }).from(pendingR2Deletes).where(reservation);
-  if ((await currentSession(db, state, exists(held))).length === 0) {
+  const discard = async () => {
     await discardKey(db, env.TRACKS, key, { before: createdAt });
-    return "deleted";
-  }
-  // A zero-byte marker remembers routes that exceeded the image budget. It has the
-  // same lifetime as a card, and a changed fingerprint allows another attempt.
-  await env.TRACKS.put(key, png ?? new Uint8Array(), {
-    httpMetadata: png ? { contentType: "image/png" } : undefined,
-    customMetadata: { fp },
-  });
+    return "deleted" as const;
+  };
 
-  // Consume the ledger entry atomically with the D1 eligibility/fingerprint check.
-  // If deletion already swept the prefix, this leaves the late write collectable
-  // even when the following immediate cleanup fails.
-  const committed = await db
-    .delete(pendingR2Deletes)
-    .where(and(reservation, exists(currentSession(db, state))));
-  if (committed.meta.changes === 1) return "current";
-  await discardKey(db, env.TRACKS, key, { before: createdAt });
-  return "deleted";
+  try {
+    // A producer may have finished since our first HEAD, or the session may have changed.
+    const [[state], zones] = await db.batch([
+      activeSession(db, sessionId, eq(sessions.userId, userId)),
+      db
+        .select({ lat: privacyZones.lat, lon: privacyZones.lon, radiusM: privacyZones.radiusM })
+        .from(privacyZones)
+        .where(eq(privacyZones.userId, userId)),
+    ]);
+    if (!state || !ogEligible(state.session, state.zonesVersion)) return await discard();
+    const fp = await ogFingerprint(state.session, state.units, state.zonesVersion);
+    const current = currentSession(db, state);
+    const existing = await env.TRACKS.head(key);
+    if (existing?.customMetadata?.fp !== fp) {
+      const png = await render(env.TRACKS, state, zones);
+      const stillHeld = currentSession(db, state, exists(held));
+      if ((await stillHeld).length === 0) return await discard();
+
+      // Random bytes with no route data give this attempt a unique ETag.
+      // The final put can only replace that payload. If a delete, collector or newer
+      // producer removes it before a delayed put commits, R2 refuses the late PNG.
+      const fence = await env.TRACKS.put(key, crypto.randomUUID(), {
+        onlyIf: existing ? { etagMatches: existing.etag } : { etagDoesNotMatch: "*" },
+      });
+      if (!fence || (await stillHeld).length === 0) return await discard();
+      // A zero-byte marker remembers routes that exceeded the image budget.
+      const written = await env.TRACKS.put(key, png ?? new Uint8Array(), {
+        onlyIf: { etagMatches: fence.etag },
+        httpMetadata: png ? { contentType: "image/png" } : undefined,
+        customMetadata: { fp },
+      });
+      if (!written) return await discard();
+    }
+
+    // Consume the ledger entry atomically with the eligibility/fingerprint check.
+    const committed = await db.delete(pendingR2Deletes).where(and(reservation, exists(current)));
+    return committed.meta.changes === 1 ? "current" : await discard();
+  } catch (error) {
+    // Keep the durable cleanup record even when R2 may have accepted the write.
+    // Expiring this attempt lets a queue redelivery or later GET claim it immediately.
+    await db.update(pendingR2Deletes).set({ createdAt: 0 }).where(reservation);
+    throw error;
+  }
 }

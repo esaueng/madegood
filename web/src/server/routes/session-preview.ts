@@ -145,11 +145,11 @@ export const sessionPreviewPage = new Hono<AppEnv>()
         headers: { location: BRAND_IMAGE.path, "cache-control": "no-store" },
       });
     if (!UUID.test(id)) return fallback();
+    const queue = c.env.POSTPROCESS;
     const image = await ogImage(c.env, id, {
       ifNoneMatch: c.req.header("if-none-match"),
-      onMiss: async () => {
-        await c.env.POSTPROCESS?.send({ v: 1, kind: "og", sessionId: id });
-      },
+      enqueueOnMiss: queue ? () => queue.send({ v: 1, kind: "og", sessionId: id }) : undefined,
+      waitUntil: queue ? undefined : (work) => c.executionCtx.waitUntil(work),
     }).catch((err) => {
       console.error("Could not serve a route image.", err);
       return null;

@@ -1,10 +1,12 @@
+import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
 import { describe, expect, it } from "vitest";
+import { createApp } from "../src/server/app";
 import { privacyZones, sessions, users } from "../src/server/db/schema";
 import { ogFingerprint, ogImageKey, syncOgImage } from "../src/server/lib/og-image";
-import { processMessage } from "../src/server/lib/postprocess";
+import { handlePostprocessBatch, processMessage } from "../src/server/lib/postprocess";
 import { collectR2Garbage, UPLOAD_GRACE_MS } from "../src/server/lib/r2-garbage";
 import { arcClearsZones } from "../src/server/lib/session-privacy";
 import { distanceM, ZONE_MARGIN_M } from "../src/server/lib/voyage-sharing";
@@ -296,10 +298,12 @@ describe("Open Graph route images", () => {
     const storage = bucket({
       async put(name, value, options) {
         const result = await env.TRACKS.put(name, value, options);
-        await drizzle(env.DB)
-          .update(sessions)
-          .set({ uploadRevision: 1, trackEtag: "trimmed", processedEtag: "trimmed" })
-          .where(eq(sessions.id, id));
+        if (options?.customMetadata?.fp) {
+          await drizzle(env.DB)
+            .update(sessions)
+            .set({ uploadRevision: 1, trackEtag: "trimmed", processedEtag: "trimmed" })
+            .where(eq(sessions.id, id));
+        }
         return result;
       },
     });
@@ -311,12 +315,15 @@ describe("Open Graph route images", () => {
     const storage = bucket({
       async put(name, value, options) {
         expect(name).toBe(key);
-        const deleted = await api(`/sessions/${id}`, {
-          method: "DELETE",
-          headers: bearer(owner.accessToken),
-        });
-        expect(deleted.status).toBe(204);
-        expect(await env.TRACKS.head(key)).toBeNull();
+        if (options?.customMetadata?.fp) {
+          const deleted = await createApp().request(
+            `${ORIGIN}/api/sessions/${id}`,
+            { method: "DELETE", headers: bearer(owner.accessToken) },
+            { ...env, TRACKS: storage },
+            createExecutionContext(),
+          );
+          expect(deleted.status).toBe(500);
+        }
         return env.TRACKS.put(name, value, options);
       },
       async delete() {
@@ -326,7 +333,7 @@ describe("Open Graph route images", () => {
     await expect(syncOgImage({ DB: env.DB, TRACKS: storage }, id)).rejects.toThrow(
       "transient R2 failure",
     );
-    expect(await env.TRACKS.head(key)).not.toBeNull();
+    expect((await env.TRACKS.head(key))?.httpMetadata?.contentType).toBe("image/png");
     // Age the record past the upload grace and claim lease, as on a later cron pass.
     await env.DB.prepare(
       "UPDATE pending_r2_deletes SET created_at = 0, claimed_at = 0 WHERE key = ?",
@@ -340,8 +347,141 @@ describe("Open Graph route images", () => {
     expect(await env.TRACKS.head(key)).toBeNull();
   });
 
-  it("serves the brand fallback on cold requests without fetching the track", async () => {
-    const { id, key: imageKey } = await processedSession();
+  it("collects an attached image when the session prefix listing fails", async () => {
+    const { id, key, fingerprint, owner } = await processedSession();
+    await env.TRACKS.put(key, "attached route", { customMetadata: { fp: fingerprint } });
+    const storage = bucket({
+      async list() {
+        throw new Error("transient R2 list failure");
+      },
+    });
+    const response = await createApp().request(
+      `${ORIGIN}/api/sessions/${id}`,
+      { method: "DELETE", headers: bearer(owner.accessToken) },
+      { ...env, TRACKS: storage },
+      createExecutionContext(),
+    );
+    expect(response.status).toBe(500);
+    expect((await get(`/s/${id}/og.png`)).status).toBe(302);
+    expect(await env.TRACKS.head(key)).not.toBeNull();
+
+    await collectR2Garbage(drizzle(env.DB), env.TRACKS, {
+      userId: owner.user.id,
+      before: Date.now() - UPLOAD_GRACE_MS,
+    });
+    expect(await env.TRACKS.head(key)).toBeNull();
+  });
+
+  it("cannot land a PNG after its expired reservation and R2 object are collected", async () => {
+    const { id, key, owner } = await processedSession();
+    const storage = bucket({
+      async put(name, value, options) {
+        if (options?.customMetadata?.fp) {
+          const deleted = await api(`/sessions/${id}`, {
+            method: "DELETE",
+            headers: bearer(owner.accessToken),
+          });
+          expect(deleted.status).toBe(204);
+          await env.DB.prepare("UPDATE pending_r2_deletes SET created_at = 0 WHERE key = ?")
+            .bind(key)
+            .run();
+          expect(
+            await collectR2Garbage(drizzle(env.DB), env.TRACKS, {
+              userId: owner.user.id,
+              before: Date.now() - UPLOAD_GRACE_MS,
+            }),
+          ).toBe(1);
+        }
+        return env.TRACKS.put(name, value, options);
+      },
+    });
+    expect(await syncOgImage({ DB: env.DB, TRACKS: storage }, id)).not.toBe("current");
+    expect(await env.TRACKS.head(key)).toBeNull();
+  });
+
+  it("renders on queue redelivery after a transient track read failure", async () => {
+    const { id, key, trackKey } = await processedSession();
+    let trackReads = 0;
+    const storage = bucket({
+      async get(name) {
+        if (name === trackKey && ++trackReads === 1) throw new Error("transient track read");
+        return env.TRACKS.get(name);
+      },
+    });
+    const decisions: string[] = [];
+    const deliver = (attempts: number) =>
+      handlePostprocessBatch(
+        {
+          queue: "madegood-postprocess",
+          metadata: { metrics: { backlogCount: 1, backlogBytes: 0 } },
+          messages: [
+            {
+              id,
+              timestamp: new Date(),
+              body: { v: 1, kind: "og", sessionId: id },
+              attempts,
+              ack: () => decisions.push("ack"),
+              retry: (options) => decisions.push(`retry in ${options?.delaySeconds}`),
+            },
+          ],
+          ackAll() {},
+          retryAll() {},
+        },
+        { ...env, TRACKS: storage },
+      );
+    await deliver(1);
+    await deliver(2);
+    expect(decisions).toEqual(["retry in 30", "ack"]);
+    expect(trackReads).toBe(2);
+    expect(await env.TRACKS.head(key)).not.toBeNull();
+  });
+
+  it.each(["failed", "abandoned", "claimed"])(
+    "recovers a %s image reservation on a later GET without a queue",
+    async (failure) => {
+      const { id, key, trackKey, owner } = await processedSession();
+      let trackReads = 0;
+      const storage = bucket({
+        async get(name) {
+          if (name === trackKey && ++trackReads === 1 && failure === "failed") {
+            throw new Error("transient track read");
+          }
+          return env.TRACKS.get(name);
+        },
+      });
+      const bindings = { ...env, ASSETS: assets, TRACKS: storage, POSTPROCESS: undefined };
+      if (failure === "failed") {
+        // Seed wind so the PATCH runs just one route-image attempt.
+        await drizzle(env.DB).update(sessions).set({ windJson: "{}" }).where(eq(sessions.id, id));
+        const ctx = createExecutionContext();
+        const response = await createApp().request(
+          `${ORIGIN}/api/sessions/${id}`,
+          json("PATCH", { visibility: "unlisted" }, owner.accessToken),
+          bindings,
+          ctx,
+        );
+        expect(response.status).toBe(200);
+        await waitOnExecutionContext(ctx);
+        expect(trackReads).toBe(1);
+      } else {
+        await env.DB.prepare(
+          "INSERT INTO pending_r2_deletes (key, user_id, created_at, claim, claimed_at) VALUES (?, ?, 0, ?, 0)",
+        )
+          .bind(key, owner.user.id, failure === "claimed" ? "old claim" : null)
+          .run();
+      }
+      const ctx = createExecutionContext();
+      const url = `${ORIGIN}/s/${id}/og.png`;
+      expect((await sessionPreviewPage.request(url, {}, bindings, ctx)).status).toBe(302);
+      await waitOnExecutionContext(ctx);
+      const refreshed = await sessionPreviewPage.request(url, {}, bindings, ctx);
+      expect(refreshed.status).toBe(200);
+      await refreshed.body?.cancel();
+    },
+  );
+
+  it("enqueues one refresh on concurrent cold requests without fetching the track", async () => {
+    const { id, key: imageKey, owner } = await processedSession();
     const reads: string[] = [];
     const storage = bucket({
       async get(key) {
@@ -366,11 +506,28 @@ describe("Open Graph route images", () => {
         },
       },
     };
-    const results = await Promise.all([get(path, {}, bindings), get(path, {}, bindings)]);
-    expect(results.map((res) => res.status)).toEqual([302, 302]);
-    expect(reads).toEqual([imageKey, imageKey]);
-    expect(messages).toContainEqual({ v: 1, kind: "og", sessionId: id });
-    await processMessage(env, messages[0]);
+    // An upload or visibility change can already hold the render lease without a queued refresh.
+    await env.DB.prepare(
+      "INSERT INTO pending_r2_deletes (key, user_id, created_at) VALUES (?, ?, ?)",
+    )
+      .bind(imageKey, owner.user.id, Date.now())
+      .run();
+    expect((await get(path, {}, bindings)).status).toBe(302);
+    expect(messages).toEqual([]);
+    await env.DB.prepare("DELETE FROM pending_r2_deletes WHERE key = ?").bind(imageKey).run();
+    reads.length = 0;
+
+    const results = await Promise.all(Array.from({ length: 12 }, () => get(path, {}, bindings)));
+    expect(results.map((res) => res.status)).toEqual(Array(12).fill(302));
+    expect(reads).toEqual(Array(12).fill(imageKey));
+    const message = { v: 1, kind: "og", sessionId: id };
+    expect(messages).toEqual([message]);
+
+    // If the job is lost, a later request can queue another after the marker ages out.
+    await drizzle(env.DB).update(sessions).set({ ogQueuedAt: 0 }).where(eq(sessions.id, id));
+    expect((await get(path, {}, bindings)).status).toBe(302);
+    expect(messages).toEqual([message, message]);
+    await processMessage(env, messages[1]);
     const refreshed = await get(path);
     expect(refreshed.status).toBe(200);
     await refreshed.body?.cancel();

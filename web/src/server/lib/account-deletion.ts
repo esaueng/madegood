@@ -4,6 +4,7 @@ import { AccountDeleting } from "../auth/account-state";
 import { findOrCreateUser } from "../auth/users";
 import { pendingR2Deletes, type User, users } from "../db/schema";
 import { purgeAccountVoyages } from "../live/registry";
+import { recordSessionOgKeys } from "./og-image";
 import { collectR2Garbage, recordSessionTrackKeys, UPLOAD_GRACE_MS } from "./r2-garbage";
 import { deletePrefix, userPrefix } from "./storage";
 
@@ -84,6 +85,7 @@ export async function runAccountDeletion(
   const d1 = env.DB;
   await d1.batch([
     recordSessionTrackKeys(d1, "user_id = ?", [userId], now),
+    recordSessionOgKeys(d1, "user_id = ?", [userId], now),
     d1.prepare("DELETE FROM sessions WHERE user_id = ?").bind(userId),
     d1.prepare("DELETE FROM privacy_zones WHERE user_id = ?").bind(userId),
     d1.prepare("DELETE FROM voyages WHERE user_id = ?").bind(userId),

@@ -1,6 +1,7 @@
 import { and, eq, isNull } from "drizzle-orm";
 import type { drizzle } from "drizzle-orm/d1";
 import { pendingR2Deletes, type Session, sessions, users } from "../db/schema";
+import { recordSessionOgKeys } from "./og-image";
 import { CLEARED_DERIVED } from "./postprocess";
 import {
   collectKeys,
@@ -186,7 +187,7 @@ export async function insertSession(
 }
 
 /**
- * Deletes the caller's session row and records its track key in the same batch; with
+ * Deletes the caller's session row and records its R2 keys in the same batch; with
  * `tombstone` also writes the tombstone, only if a row was deleted. Returns whether one was.
  */
 export async function deleteSessionRow(
@@ -202,6 +203,7 @@ export async function deleteSessionRow(
   const results = await d1.batch([
     selectSessionTrackKeys(d1, where, [id, userId]),
     recordSessionTrackKeys(d1, where, [id, userId], now),
+    recordSessionOgKeys(d1, where, [id, userId], now),
     d1.prepare("DELETE FROM sessions WHERE id = ? AND user_id = ?").bind(id, userId),
     ...(options.tombstone
       ? [
@@ -215,7 +217,7 @@ export async function deleteSessionRow(
       : []),
   ]);
   await collectKeys(db, bucket, keysOf(results[0]));
-  return results[2]?.meta.changes === 1;
+  return results[3]?.meta.changes === 1;
 }
 
 export type StoreResult =

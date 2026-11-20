@@ -994,10 +994,10 @@ sessionRoutes.openapi(deleteRoute, async (c) => {
   const { id } = c.req.valid("param");
   const userId = c.var.userId;
   const db = drizzle(c.env.DB);
-  // The row goes first, with its track key recorded and the tombstone written in the same
-  // batch (lib/r2-garbage.ts), then the objects. A track upload attaches only to a live row
-  // and otherwise deletes its own object, so no upload overlapping the delete leaves a track.
-  // A later PUT for the ID gets 410 from the tombstone.
+  // The row goes first, with its track and image keys recorded and the tombstone written
+  // in the same batch (lib/session-upload.ts), then the objects. An overlapping upload
+  // can only attach to a live row and otherwise deletes its own object. A later PUT
+  // for the ID gets 410 from the tombstone.
   await deleteSessionRow(db, c.env.TRACKS, id, userId, { tombstone: true });
   await deletePrefix(c.env.TRACKS, `${userPrefix(userId)}sessions/${id}/`);
   // Recorded keys only once no upload can still be attaching them; this session's own
