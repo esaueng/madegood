@@ -1655,6 +1655,54 @@
         }
       }
     },
+    "/config": {
+      "get": {
+        "summary": "Public website configuration",
+        "tags": [
+          "meta"
+        ],
+        "responses": {
+          "200": {
+            "description": "The landing page's public download link, or null when unavailable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "download": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "url": {
+                          "type": "string",
+                          "format": "uri"
+                        },
+                        "store": {
+                          "type": "string",
+                          "enum": [
+                            "testflight",
+                            "app-store"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "url",
+                        "store"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "download"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/auth/apple": {
       "post": {
         "summary": "Sign in with Apple",

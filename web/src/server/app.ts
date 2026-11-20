@@ -2,6 +2,7 @@ import { OpenAPIHono } from "@hono/zod-openapi";
 import { HTTPException } from "hono/http-exception";
 import { apiError } from "./lib/errors";
 import { auth } from "./routes/auth";
+import { config } from "./routes/config";
 import { exportRoutes } from "./routes/exports";
 import { health } from "./routes/health";
 import { me } from "./routes/me";
@@ -19,6 +20,7 @@ export function createApp() {
   const api = new OpenAPIHono<AppEnv>();
 
   api.route("/", health);
+  api.route("/", config);
   api.route("/", auth);
   api.route("/", me);
   api.route("/", exportRoutes);

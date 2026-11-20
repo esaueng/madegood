@@ -33,6 +33,22 @@ Secrets and variables → Actions → Secrets, for example `https://<your-worker
 build. It is a secret rather than a variable so the log masks it (the host names your Workers
 subdomain), and failure logs redact it before upload. Without it, TestFlight builds show sync as not set up.
 
+## Publish the landing page download link
+
+1. Open the Cloudflare dashboard and go to **Workers & Pages** → **madegood** →
+   **Settings** → **Variables and Secrets**. For a self-hosted site, select its Worker.
+2. Add a **Text** variable named `DOWNLOAD_URL` and paste the public TestFlight invite
+   URL from `https://testflight.apple.com`. Select **Deploy** to apply the binding.
+3. Reload the landing page and check that both buttons read **Join the TestFlight beta**
+   and open the invite. When the app is live in the App Store, replace the value with
+   its `https://apps.apple.com` product URL, select **Deploy**, and check that both
+   buttons read **Download on the App Store**.
+
+Cloudflare deploys a new Worker version with the updated binding using the existing build.
+Wrangler preserves this dashboard setting on later deployments. Remove the variable or
+clear its value and select **Deploy** to restore the coming-soon text. The website only
+accepts HTTPS links to the two Apple hosts above.
+
 ## One-time setup (for a fork or a new team)
 
 1. In Certificates, Identifiers & Profiles, register explicit App IDs for
