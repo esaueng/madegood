@@ -51,7 +51,11 @@ let project = Project(
         // project's base settings define it, and that would override the xcconfig.
         base: ["SWIFT_VERSION": "6.0"],
         configurations: [
-            .debug(name: .debug, xcconfig: "Config/MadeGood.xcconfig"),
+            .debug(
+                name: .debug,
+                settings: ["SWIFT_ACTIVE_COMPILATION_CONDITIONS": "$(inherited) MADEGOOD_VOYAGES"],
+                xcconfig: "Config/MadeGood.xcconfig"
+            ),
             .release(name: .release, xcconfig: "Config/MadeGood.xcconfig"),
         ]
     ),

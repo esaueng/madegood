@@ -6,13 +6,20 @@ import WaterKit
 struct ContentView: View {
     @State private var controller = SessionController.shared
     @State private var library = SessionLibrary()
-    @State private var voyageRecorder = VoyageRecorder.shared
+    #if MADEGOOD_VOYAGES
+        @State private var voyageRecorder = VoyageRecorder.shared
+    #endif
     @State private var tab = AppTab.record
     @State private var anchorWatch = AnchorWatch.shared
     @State private var showingAnchorAlarm = false
     @Environment(SessionSync.self) private var sessionSync: SessionSync?
 
-    enum AppTab: Hashable { case record, voyages, history, settings }
+    enum AppTab: Hashable {
+        case record, history, settings
+        #if MADEGOOD_VOYAGES
+            case voyages
+        #endif
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -43,7 +50,9 @@ struct ContentView: View {
             }
         }
         .onAppear {
-            voyageRecorder.liveSharing = PrivateVoyageSync.shared?.liveSharing
+            #if MADEGOOD_VOYAGES
+                voyageRecorder.liveSharing = PrivateVoyageSync.shared?.liveSharing
+            #endif
             controller.onFinish = { _, _, _ in library.reload() }
             library.reload()
         }
@@ -68,9 +77,11 @@ struct ContentView: View {
             Tab("Record", systemImage: "record.circle", value: AppTab.record) {
                 RecordView(controller: controller, library: library, showHistory: { tab = .history })
             }
-            Tab("Voyages", systemImage: "sailboat", value: AppTab.voyages) {
-                VoyagesView(recorder: voyageRecorder)
-            }
+            #if MADEGOOD_VOYAGES
+                Tab("Voyages", systemImage: "sailboat", value: AppTab.voyages) {
+                    VoyagesView(recorder: voyageRecorder)
+                }
+            #endif
             Tab("History", systemImage: "list.bullet", value: AppTab.history) {
                 HistoryView(library: library)
             }
