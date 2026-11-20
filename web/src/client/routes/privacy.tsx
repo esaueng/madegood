@@ -43,21 +43,36 @@ function Privacy() {
       </header>
 
       <Section id="on-device" title="On your iPhone and Apple Watch">
-        <p>While you record a session, the apps use:</p>
+        <p>The apps use:</p>
         <ul>
           <li>
             <strong>Location</strong>, while you are recording, to measure your track, speed and
             course. The iPhone keeps recording with the screen off and shows the system location
-            indicator. If you turn on local conditions, the iPhone also reads its position while the
-            start screen is open (below).
+            indicator. Location is also used to ping the ends of a race start line during a
+            countdown, and to mark a man-overboard position and guide you back to it; on the iPhone,
+            a man-overboard mark keeps receiving location with the screen locked until you clear it.
+            If you turn on local conditions, the iPhone also reads its position while the start
+            screen is open (below).
           </li>
           <li>
-            <strong>Motion</strong> sensors during a session, to count paddle strokes.
+            <strong>The anchor alarm</strong> on the iPhone, only while you have it armed: it reads
+            your location in the background, with the screen locked and for as long as it stays
+            armed (often hours), and shows the system location indicator. It compares each position
+            with the anchor point and swing radius you chose, on the iPhone. With your permission
+            for Alarms, it schedules system alarms that sound if the boat drifts outside the circle
+            or if GPS stops updating. The anchor point, the radius and these positions stay on the
+            iPhone and are not uploaded, even with an account. Disarming stops background location
+            for the alarm and removes the saved anchor point.
           </li>
           <li>
-            <strong>Apple Health</strong>, with your permission: heart rate during a session, and
-            saving the session to Health as a workout with its route, for the sports where you turn
-            on Save to Health.
+            <strong>Motion</strong> sensors during a session, to count paddle strokes. The samples
+            are kept in the recording on your devices.
+          </li>
+          <li>
+            <strong>Apple Health</strong>, with your permission: heart rate during a session, shown
+            live and as time in heart-rate zones (worked out on your devices from a maximum heart
+            rate you set), and saving the session to Health as a workout with its route, for the
+            sports where you turn on Save to Health.
           </li>
         </ul>
         <p>
@@ -104,7 +119,8 @@ function Privacy() {
         <ul>
           <li>
             <strong>Identifiers:</strong> Apple's identifier for your sign-in, an account ID and a
-            handle, and your name if you shared it.
+            handle, and your name if you shared it. Your handle and name become public only on your
+            profile page, while you have a public session (see Sharing).
           </li>
           <li>
             <strong>Sessions:</strong> sport, times, distance, speeds, laps and other statistics,
@@ -183,6 +199,25 @@ function Privacy() {
           statistics, title and notes, but not your heart rate, and parts of the track inside your
           privacy zones are cut out.
         </p>
+        <ul>
+          <li>
+            <strong>Public profile.</strong> Once you have at least one public session, your profile
+            page (<code>/u/</code> and your handle) shows your handle, your name if you shared it,
+            your totals, and your public sessions with their sport, title, start time, duration,
+            distance and speeds. It never lists private or unlisted sessions. With no public
+            sessions, the page looks to others exactly like one that does not exist.
+          </li>
+          <li>
+            <strong>Link previews.</strong> When an unlisted or public session's link is posted in a
+            chat app or on a social site, that service fetches a preview: the session's title,
+            sport, distance, duration and top speed, and an image of the route with your privacy
+            zones cut out. The server draws the image when it is requested and keeps it in
+            Cloudflare's cache for at most five minutes; it is not stored with your data. Private
+            sessions get a generic MadeGood image. Your profile link previews with your name,
+            handle, number of public sessions and their total distance. Search engines may index
+            public sessions and your profile; unlisted sessions ask them not to.
+          </li>
+        </ul>
       </Section>
 
       <Section id="website" title="This website">
@@ -216,6 +251,12 @@ function Privacy() {
           Objects). Cloudflare keeps request logs, which include IP addresses and the addresses of
           the pages and API calls requested, for a limited time, to run and debug the service.
           MadeGood uses no other services and gives your data to no one else.
+        </p>
+        <p>
+          <strong>Rate limits.</strong> To slow down abuse, signing in and refreshing a sign-in are
+          limited per IP address (60 requests a minute), and uploads per account. Cloudflare counts
+          the requests over one-minute windows; MadeGood does not store the IP address. A request
+          over the limit is refused and can be retried a minute later.
         </p>
       </Section>
 

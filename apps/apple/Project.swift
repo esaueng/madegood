@@ -16,11 +16,11 @@ let versionKeys: [String: Plist.Value] = [
 /// app actually does with the permission.
 let usageKeys: [String: Plist.Value] = [
     "NSLocationWhenInUseUsageDescription":
-        "MadeGood records your track, speed and course while you record a session, including with the screen off.",
+        "MadeGood records your track, speed and course during a session, including with the screen off, and uses your position for start-line pings and man-overboard marks.",
     "NSMotionUsageDescription":
-        "MadeGood records motion during a session to count paddle strokes.",
+        "MadeGood records motion during a session to count paddle strokes. The samples stay in the recording on your devices.",
     "NSHealthShareUsageDescription":
-        "MadeGood reads your heart rate during a session to show it live and in your session summary.",
+        "MadeGood reads your heart rate during a session to show it live, with your heart-rate zone, and in your session summary.",
     "NSHealthUpdateUsageDescription":
         "MadeGood saves your sessions to Health as workouts, with the route and heart rate, if you turn on Save to Health.",
 ]
@@ -63,11 +63,11 @@ let project = Project(
             bundleId: "$(BUNDLE_ID_PREFIX)",
             deploymentTargets: iOSTarget,
             infoPlist: plist(versionKeys, usageKeys, [
-                // The iPhone also shows local conditions on its start screen.
+                // The iPhone also shows local conditions and runs the anchor alarm.
                 "NSLocationWhenInUseUsageDescription":
-                    "MadeGood records your track, speed, and course while you are on the water, shows local conditions, and watches for drift when you arm the anchor alarm.",
+                    "MadeGood records your track, speed and course during a session, including with the screen off. It also uses your position for start-line pings and man-overboard marks, for local conditions if you turn them on, and to watch for drift while the anchor alarm is armed.",
                 "NSAlarmKitUsageDescription":
-                    "MadeGood sounds an alarm if your boat drifts outside the swing radius you set.",
+                    "MadeGood sounds an alarm if your boat drifts outside the swing radius you set, or if GPS stops updating while the anchor alarm is armed.",
                 "UILaunchScreen": [:],
                 "UIRequiredDeviceCapabilities": ["arm64"],
                 "UISupportedInterfaceOrientations": ["UIInterfaceOrientationPortrait"],
