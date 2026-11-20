@@ -20,6 +20,9 @@ struct AnchorAlarmView: View {
             List {
                 Section {
                     status(position: position)
+                    if anchorWatch.hasStraySoundingAlarm {
+                        Button("Stop sounding alarm", systemImage: "bell.slash", action: anchorWatch.stopStraySoundingAlarm)
+                    }
                     if anchorWatch.locationBlocked || anchorWatch.alarmPermissionDenied || anchorWatch.alarmError {
                         Button("Open Settings", systemImage: "gearshape") {
                             if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }

@@ -48,6 +48,8 @@ final class AnchorWatch: NSObject {
     private var lastScheduleAttempt: ContinuousClock.Instant?
     private var evidenceStartedAt = ContinuousClock.now
     private var saved: SavedWatch?
+    private var driftCleanupPending = false
+    private var strayDriftSounding = false
 
     private(set) var watch: AnchorAlarm?
     private(set) var position: Position?
@@ -59,6 +61,7 @@ final class AnchorWatch: NSObject {
 
     var isViewing: Bool { viewerCount > 0 }
     var isAlarming: Bool { saved?.alertPending == true }
+    var hasStraySoundingAlarm: Bool { strayDriftSounding || gpsWatchdog.hasStraySoundingAlarm }
 
     private override init() {
         super.init()
@@ -82,10 +85,9 @@ final class AnchorWatch: NSObject {
             } else {
                 gpsWatchdog.start(restoring: true)
             }
-            Task { [weak self] in
-                for await _ in AlarmManager.shared.alarmUpdates {
-                    self?.reconcileSound()
-                }
+            gpsWatchdog.setActive(UIApplication.shared.applicationState == .active)
+            Task { [gpsWatchdog, weak self] in
+                await gpsWatchdog.observeAlarmChanges { self?.reconcileSound() }
             }
             Task { [weak self] in
                 for await _ in NotificationCenter.default.notifications(named: UIApplication.significantTimeChangeNotification) {
@@ -109,7 +111,18 @@ final class AnchorWatch: NSObject {
         updateLocationDemand()
         if locationRunning, !DemoFeed.isEnabled { location.startUpdatingLocation() }
         reconcileSound()
+        guard !DemoFeed.isEnabled else { return }
+        gpsWatchdog.setActive(true)
         gpsWatchdog.reconcile()
+    }
+
+    func becameInactive() {
+        gpsWatchdog.setActive(false)
+    }
+
+    func stopStraySoundingAlarm() {
+        if strayDriftSounding, !isAlarming { cancelSound() }
+        gpsWatchdog.stopStrayAlarms()
     }
 
     func beginSetup() {
@@ -177,7 +190,7 @@ final class AnchorWatch: NSObject {
         alarmError = false
         persist()
         cancelSound()
-        gpsWatchdog.stop()
+        if !DemoFeed.isEnabled { gpsWatchdog.stop() }
         updateLocationDemand()
     }
 
@@ -232,7 +245,12 @@ final class AnchorWatch: NSObject {
     private func ingest(point: AnchorAlarm.Point, accuracy: Double?, measuredAt: ContinuousClock.Instant) {
         if let position, measuredAt <= position.measuredAt { return }
         position = Position(point: point, accuracy: accuracy, measuredAt: measuredAt)
-        guard watch != nil, measuredAt >= evidenceStartedAt, position?.isFresh == true else { return }
+        if driftCleanupPending, !isAlarming { cancelSound() }
+        guard watch != nil, measuredAt >= evidenceStartedAt, position?.isFresh == true else {
+            // Even a fix that can't participate in monitoring can prompt cleanup.
+            if !DemoFeed.isEnabled { gpsWatchdog.renew(fixAge: 0, assessment: .unusable) }
+            return
+        }
 
         let elapsed = startedAt.duration(to: measuredAt).components
         let seconds = Double(elapsed.seconds) + Double(elapsed.attoseconds) / 1e18
@@ -240,6 +258,7 @@ final class AnchorWatch: NSObject {
             GPSFix(t: seconds, latitude: point.latitude, longitude: point.longitude, horizontalAccuracy: accuracy)
         ) else { return }
         if assessment == .driftConfirmed, !isAlarming {
+            strayDriftSounding = false
             saved?.alertPending = true
             persist()
         }
@@ -324,13 +343,20 @@ final class AnchorWatch: NSObject {
     }
 
     private func cancelSound() {
-        guard !DemoFeed.isEnabled,
-            let alarm = try? alarms.alarms.first(where: { $0.id == Self.soundID })
-        else { return }
-        if alarm.state == .alerting {
-            try? alarms.stop(id: Self.soundID)
-        } else {
-            try? alarms.cancel(id: Self.soundID)
+        guard !DemoFeed.isEnabled else { return }
+        do {
+            if let alarm = try alarms.alarms.first(where: { $0.id == Self.soundID }) {
+                strayDriftSounding = alarm.state == .alerting
+                if strayDriftSounding {
+                    try alarms.stop(id: Self.soundID)
+                } else {
+                    try alarms.cancel(id: Self.soundID)
+                }
+            }
+            strayDriftSounding = false
+            driftCleanupPending = false
+        } catch {
+            driftCleanupPending = true
         }
     }
 

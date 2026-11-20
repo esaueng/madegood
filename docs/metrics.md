@@ -432,19 +432,20 @@ A fix is clearly outside when its distance minus its reported horizontal accurac
 exceeds the radius. The alarm requires at least three distinct, consecutive clearly
 outside usable fixes spanning at least 10 s. A fix with unknown accuracy or accuracy
 worse than 25 m is ignored. A usable fix that fails the outside test ends the run.
-Time between fixes does not erase outside evidence. Cached positions older than 15 s
-do not enter the calculation. Acknowledging the drift alarm starts a new confirmation window.
+A gap longer than 120 s between usable fixes ends the run. Cached positions older than
+15 s do not enter the calculation. Acknowledging the drift alarm starts a new confirmation window.
 These readings are live only and do not change the session summary or track format.
 
 The iPhone keeps a separate GPS backup alarm. Its first deadline is 120 s after arming.
 Only usable fixes whose accuracy circle touches or overlaps the swing circle can renew
 it. A clearly outside fix leaves the backup due while the app confirms drift. After the
-first eligible fix, renewals are coalesced to one per 30 s of fix time. The backup can
-therefore sound up to about 30 s earlier than a deadline based on the most recent
-eligible fix. The system owns the alarm and can deliver it after the app stops receiving
-positions. While monitoring is running, significant clock changes and foreground
-reconciliation check the pending alarm against the monotonic deadline, which is saved
-for relaunch.
+first eligible fix, renewals are coalesced to one per 30 s of fix time. Each renewal
+sets a deadline 150 s after its fix, giving the most recent eligible fix at least
+120 s and up to 150 s before the backup is due. The system owns the alarm and can
+deliver it after the app stops receiving positions. Alarm changes, foreground checks,
+and a periodic check while the app is active restore a missing backup. Significant
+clock changes and foreground checks also reconcile the pending alarm against the
+monotonic deadline, which is saved for relaunch.
 
 ## Session summary
 

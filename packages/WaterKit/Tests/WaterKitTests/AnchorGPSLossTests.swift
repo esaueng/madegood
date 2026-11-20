@@ -61,13 +61,13 @@ struct AnchorGPSLossTests {
         let fixAt = armedAt + 2
         loss.recordFix(at: fixAt, assessment: .withinOrUncertain)
         let renewed = try #require(loss.request)
-        #expect(renewed.deadline == fixAt + 120)
+        #expect(renewed.deadline == fixAt + 150)
         #expect(renewed.generation == initial.generation)
 
         loss.recordFix(at: fixAt + 29, assessment: .withinOrUncertain)
         #expect(loss.request == renewed)
         loss.recordFix(at: fixAt + 30, assessment: .withinOrUncertain)
-        #expect(loss.request?.deadline == fixAt + 150)
+        #expect(loss.request?.deadline == fixAt + 180)
     }
 
     @Test func restoreCanKeepTheExistingSystemAlarmUntilAUsableFix() throws {
@@ -81,6 +81,20 @@ struct AnchorGPSLossTests {
         loss.recordFix(at: restoredAt + 1, assessment: .withinOrUncertain)
         #expect(loss.request?.preservesExistingAlarm == false)
     }
+
+    @Test func coalescedFixGetsAFullTimeoutEvenIfGPSDropsBeforeTheNextRenewal() throws {
+        var loss = AnchorGPSLoss()
+        loss.arm(at: 0)
+        loss.recordFix(at: 1, assessment: .withinOrUncertain)
+        let first = try #require(loss.request)
+        loss.recordFix(at: 29, assessment: .withinOrUncertain)
+
+        #expect(loss.request == first)
+        #expect(first.deadline >= 29 + AnchorGPSLoss.timeout)
+        #expect(first.deadline > 125)
+        loss.recordFix(at: 125, assessment: .withinOrUncertain)
+        #expect((loss.request?.deadline ?? 0) >= 125 + AnchorGPSLoss.timeout)
+    }
     @Test func healthyFixesRequireAtMost120RenewalsPerHour() {
         var loss = AnchorGPSLoss()
         loss.arm(at: 0)
@@ -90,7 +104,7 @@ struct AnchorGPSLossTests {
             loss.recordFix(at: Double(second), assessment: .withinOrUncertain)
             if loss.request != previous { renewals += 1 }
             let remaining = (loss.request?.deadline ?? 0) - Double(second)
-            #expect((90...120).contains(remaining))
+            #expect((120...150).contains(remaining))
         }
         #expect(renewals == 120)
     }

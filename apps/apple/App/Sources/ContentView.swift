@@ -16,7 +16,7 @@ struct ContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if anchorWatch.watch != nil, !anchorWatch.isViewing {
+            if anchorWatch.watch != nil || anchorWatch.hasStraySoundingAlarm, !anchorWatch.isViewing {
                 Button {
                     showingAnchorAlarm = true
                 } label: {
@@ -82,6 +82,7 @@ struct ContentView: View {
 
     private var anchorStatus: String {
         if anchorWatch.isAlarming { return "Anchor dragging" }
+        if anchorWatch.hasStraySoundingAlarm { return "Anchor alarm sounding" }
         if anchorWatch.gpsAlarmNeedsAttention { return "GPS backup alarm isn’t set" }
         if anchorWatch.locationBlocked || anchorWatch.alarmPermissionDenied {
             return "Anchor alarm limited"

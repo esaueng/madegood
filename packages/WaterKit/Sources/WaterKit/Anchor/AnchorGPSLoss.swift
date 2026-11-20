@@ -59,15 +59,17 @@ public struct AnchorGPSLoss: Sendable {
         request = nil
     }
 
-    /// The first usable fix near the circle resets the deadline. Coalesce later
-    /// renewals so the existing alarm can fire earlier if fixes stop. Clearly
+    /// The first usable fix near the circle resets the deadline. Allow one
+    /// renewal interval of slack so coalesced fixes get the full timeout. Clearly
     /// outside fixes leave the fallback due while drift is being confirmed.
     public mutating func recordFix(at time: Double, assessment: AnchorAlarm.FixAssessment) {
         guard assessment == .withinOrUncertain, let armedAt, time >= armedAt,
             lastRenewal.map({ time - $0 >= Self.renewalInterval }) ?? true
         else { return }
         lastRenewal = time
-        request = Request(generation: generation, deadline: time + Self.timeout, preservesExistingAlarm: false)
+        request = Request(
+            generation: generation, deadline: time + Self.timeout + Self.renewalInterval,
+            preservesExistingAlarm: false)
     }
 
     public func isCurrent(_ request: Request) -> Bool {

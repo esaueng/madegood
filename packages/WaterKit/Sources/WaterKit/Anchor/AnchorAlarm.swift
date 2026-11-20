@@ -6,6 +6,7 @@ public struct AnchorAlarm: Sendable {
     public static let maximumAccuracy = 25.0
     public static let confirmationDelay = 10.0
     public static let radiusRange = 10.0...500.0
+    private static let maximumEvidenceGap = 120.0
 
     public struct Point: Codable, Equatable, Sendable {
         public let latitude: Double
@@ -68,12 +69,15 @@ public struct AnchorAlarm: Sendable {
     }
 
     /// Classifies a fix for both drift evidence and GPS watchdog renewal.
-    /// Gaps between fixes leave the existing evidence in place.
+    /// Gaps longer than two minutes between usable fixes reset outside evidence.
     public mutating func assess(_ fix: GPSFix) -> FixAssessment {
         guard fix.t.isFinite, lastFixTime.map({ fix.t > $0 }) ?? true,
             let boat = Point(latitude: fix.latitude, longitude: fix.longitude),
             let accuracy = fix.horizontalAccuracy, (0...Self.maximumAccuracy).contains(accuracy)
         else { return .unusable }
+        if let lastFixTime, fix.t - lastFixTime > Self.maximumEvidenceGap {
+            resetEvidence()
+        }
         lastFixTime = fix.t
         guard isClearlyOutside(at: boat, accuracy: accuracy) else {
             resetEvidence()

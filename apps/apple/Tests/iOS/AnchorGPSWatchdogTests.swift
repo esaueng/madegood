@@ -152,6 +152,57 @@ final class AnchorGPSWatchdogTests: XCTestCase {
         XCTAssertTrue(watchdog.hasSystemAlarm)
     }
 
+    func testAlarmUpdatesRestoreCoverageWithoutGPSAndShowWhenItIsMissing() async throws {
+        let system = FakeAlarms()
+        let watchdog = system.makeWatchdog(retryDelay: .milliseconds(100))
+        let observer = Task { await watchdog.observeAlarmChanges() }
+        defer { observer.cancel() }
+        let initial = expectation(description: "initial watchdog installed")
+        system.onSchedule = { _ in initial.fulfill() }
+        watchdog.start()
+        await waitFor(initial)
+        let original = try XCTUnwrap(system.pending.values.first)
+
+        let failedReplacement = expectation(description: "alarm update attempted replacement")
+        let restored = expectation(description: "retry restored coverage")
+        system.failScheduleAttempts = [2]
+        system.onSchedule = { attempt in
+            XCTAssertFalse(watchdog.hasSystemAlarm)
+            if attempt == 2 {
+                failedReplacement.fulfill()
+            } else if attempt == 3 {
+                restored.fulfill()
+            }
+        }
+        system.pending.removeAll()
+        system.emitChange()
+
+        await waitFor(failedReplacement)
+        await waitFor(restored)
+        XCTAssertTrue(watchdog.hasSystemAlarm)
+        XCTAssertEqual(Array(system.pending.values), [original])
+    }
+
+    func testActiveTimerRecoversWhenAnAlarmUpdateIsMissed() async throws {
+        let system = FakeAlarms()
+        let watchdog = system.makeWatchdog(checkInterval: .milliseconds(25))
+        let initial = expectation(description: "initial watchdog installed")
+        system.onSchedule = { _ in initial.fulfill() }
+        watchdog.start()
+        watchdog.setActive(true)
+        defer { watchdog.setActive(false) }
+        await waitFor(initial)
+        let original = try XCTUnwrap(system.pending.values.first)
+
+        let restored = expectation(description: "periodic check restored coverage")
+        system.onSchedule = { _ in restored.fulfill() }
+        system.pending.removeAll()
+        await waitFor(restored)
+
+        XCTAssertTrue(watchdog.hasSystemAlarm)
+        XCTAssertEqual(Array(system.pending.values), [original])
+    }
+
     func testDisarmRetriesCancellationOfAnAlarmThatCompletesLate() async {
         let system = FakeAlarms()
         system.holdFirstSchedule = true
@@ -197,6 +248,99 @@ final class AnchorGPSWatchdogTests: XCTestCase {
         XCTAssertEqual(Array(system.pending.values), [system.wallTime.addingTimeInterval(120)])
     }
 
+    func testAlarmUpdateStopsSupersededWatchdogThatFiresAfterAGoodFix() async throws {
+        let system = FakeAlarms()
+        let watchdog = system.makeWatchdog(retryDelay: .seconds(30))
+        let observer = Task { await watchdog.observeAlarmChanges() }
+        defer { observer.cancel() }
+        let initial = expectation(description: "initial watchdog installed")
+        system.onSchedule = { _ in initial.fulfill() }
+        watchdog.start()
+        await waitFor(initial)
+        let original = try XCTUnwrap(system.pending.keys.first)
+
+        system.advance(by: 119.75)
+        system.removeFailures = 1
+        let failed = expectation(description: "couldn't remove the old watchdog")
+        system.onFailedRemove = { _ in failed.fulfill() }
+        system.onSchedule = nil
+        watchdog.renew(fixAge: 0, assessment: .withinOrUncertain)
+        await waitFor(failed)
+
+        system.advance(by: 0.25)
+        system.pending.removeValue(forKey: original)
+        system.sounding.insert(original)
+        let stopped = expectation(description: "stale alarm stopped before the scheduled retry")
+        system.onRemove = { id in
+            XCTAssertEqual(id, original)
+            stopped.fulfill()
+        }
+        system.emitChange()
+        await waitFor(stopped)
+
+        XCTAssertTrue(system.sounding.isEmpty)
+        XCTAssertEqual(system.pending.count, 1)
+        XCTAssertTrue(watchdog.hasSystemAlarm)
+    }
+
+    func testNextFixRetriesDisarmCleanupWithoutWaitingForBackoff() async throws {
+        let system = FakeAlarms()
+        let watchdog = system.makeWatchdog(retryDelay: .seconds(30))
+        let initial = expectation(description: "watchdog installed")
+        system.onSchedule = { _ in initial.fulfill() }
+        watchdog.start()
+        await waitFor(initial)
+        let original = try XCTUnwrap(system.pending.keys.first)
+
+        system.advance(by: 119.75)
+        system.removeFailures = 2
+        let failed = expectation(description: "immediate and queued disarm cancellations failed")
+        failed.expectedFulfillmentCount = 2
+        system.onFailedRemove = { _ in failed.fulfill() }
+        watchdog.stop()
+        await waitFor(failed)
+
+        let removed = expectation(description: "next fix retried disarm cleanup")
+        system.onRemove = { id in
+            XCTAssertEqual(id, original)
+            removed.fulfill()
+        }
+        watchdog.renew(fixAge: 0, assessment: .unusable)
+        await waitFor(removed)
+        XCTAssertTrue(system.pending.isEmpty)
+        XCTAssertFalse(watchdog.hasSystemAlarm)
+    }
+
+    func testForegroundFindsRingingStrayAndTheAppCanStopItIfCleanupFails() async throws {
+        let system = FakeAlarms()
+        let watchdog = system.makeWatchdog(retryDelay: .seconds(30))
+        let initial = expectation(description: "watchdog installed")
+        system.onSchedule = { _ in initial.fulfill() }
+        watchdog.start()
+        await waitFor(initial)
+        let original = try XCTUnwrap(system.pending.keys.first)
+
+        system.removeFailures = 3
+        let failed = expectation(description: "both disarm cancellations failed")
+        failed.expectedFulfillmentCount = 2
+        system.onFailedRemove = { _ in failed.fulfill() }
+        watchdog.stop()
+        await waitFor(failed)
+
+        system.pending.removeValue(forKey: original)
+        system.sounding.insert(original)
+        let foreground = expectation(description: "foreground tried to stop the ringing alarm")
+        system.onFailedRemove = { _ in foreground.fulfill() }
+        watchdog.reconcile()
+        await waitFor(foreground)
+        XCTAssertTrue(watchdog.hasStraySoundingAlarm)
+
+        watchdog.stopStrayAlarms()
+        XCTAssertTrue(system.sounding.isEmpty)
+        XCTAssertFalse(watchdog.hasStraySoundingAlarm)
+        XCTAssertFalse(watchdog.hasSystemAlarm)
+    }
+
     func testRenewalCancellationFailureKeepsReplacementAndRetriesCleanup() async {
         let system = FakeAlarms()
         let watchdog = system.makeWatchdog()
@@ -215,7 +359,7 @@ final class AnchorGPSWatchdogTests: XCTestCase {
 
         XCTAssertEqual(system.failedRemovals, 1)
         XCTAssertEqual(system.pendingAtSchedule, [0, 1])
-        XCTAssertEqual(Array(system.pending.values), [system.wallTime.addingTimeInterval(120)])
+        XCTAssertEqual(Array(system.pending.values), [system.wallTime.addingTimeInterval(150)])
     }
 
     func testClockRollbackReprojectsMonotonicDeadlineWithoutAUsableFix() async {
@@ -288,14 +432,17 @@ final class AnchorGPSWatchdogTests: XCTestCase {
         var onSnapshot: (() -> Void)?
         var onSchedule: ((Int) -> Void)?
         var onRemove: ((UUID) -> Void)?
+        var onFailedRemove: ((UUID) -> Void)?
         private var firstSchedule: CheckedContinuation<Void, Never>?
+        private let changes = AsyncStream<Void>.makeStream()
 
         func makeWatchdog(
-            defaults: UserDefaults? = nil, retryDelay: Duration = .milliseconds(20)
+            defaults: UserDefaults? = nil, retryDelay: Duration = .milliseconds(20),
+            checkInterval: Duration = .seconds(15)
         ) -> AnchorGPSWatchdog {
             AnchorGPSWatchdog(
                 system: driver, clock: { .init(uptime: self.uptime, wallTime: self.wallTime) },
-                defaults: defaults, retryDelay: retryDelay)
+                defaults: defaults, retryDelay: retryDelay, checkInterval: checkInterval)
         }
 
         func advance(by interval: TimeInterval) {
@@ -333,13 +480,21 @@ final class AnchorGPSWatchdogTests: XCTestCase {
                     if self.removeFailures > 0 {
                         self.removeFailures -= 1
                         self.failedRemovals += 1
+                        self.onFailedRemove?(id)
                         throw Failure.remove
                     }
                     self.pending.removeValue(forKey: id)
                     if mode == .any { self.sounding.remove(id) }
                     self.onRemove?(id)
+                },
+                observeChanges: { changed in
+                    for await _ in self.changes.stream { changed() }
                 }
             )
+        }
+
+        func emitChange() {
+            changes.continuation.yield()
         }
 
         func resumeFirstSchedule() {

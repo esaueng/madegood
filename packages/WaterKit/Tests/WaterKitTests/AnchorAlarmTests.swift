@@ -49,6 +49,15 @@ struct AnchorAlarmTests {
         #expect(alarm.ingest(fix(2 * interval, 50)) == true)
     }
 
+    @Test func outsideEvidenceExpiresAcrossAGPSGap() throws {
+        var alarm = try #require(AnchorAlarm(anchor: anchor, radius: 10))
+        #expect(alarm.assess(fix(0, 14, accuracy: 2)) == .outside)
+        #expect(alarm.assess(fix(5, 14, accuracy: 2)) == .outside)
+        #expect(alarm.assess(fix(605, 12, accuracy: 1)) == .outside)
+        #expect(alarm.assess(fix(610, 14, accuracy: 2)) == .outside)
+        #expect(alarm.assess(fix(615, 14, accuracy: 2)) == .driftConfirmed)
+    }
+
     @Test func usableFixOverlappingTheBoundaryBreaksEvidence() throws {
         var alarm = try #require(AnchorAlarm(anchor: anchor, radius: 30))
         #expect(alarm.ingest(fix(0, 50)) == false)

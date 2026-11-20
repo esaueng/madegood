@@ -60,6 +60,8 @@ struct MadeGoodApp: App {
                                 AnchorWatch.shared.becameActive()
                                 voyageSync?.kick()
                                 sessionSync?.kick()
+                            } else {
+                                AnchorWatch.shared.becameInactive()
                             }
                         }
                 }
