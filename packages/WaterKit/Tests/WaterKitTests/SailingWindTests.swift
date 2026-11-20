@@ -441,7 +441,7 @@ struct SyntheticCourse {
 
     static func beat(
         windFrom wind: Double, legs: [Double], halfAngle: Double = 45, speed: Double = 5, noise: Double = 3,
-        turn: Double = 6
+        turn: Double = 6, gybing: Bool? = nil
     ) -> SyntheticCourse {
         var course = SyntheticCourse()
         var position = (lat: 10.0, lon: -30.0)
@@ -453,14 +453,15 @@ struct SyntheticCourse {
         var t = 0.0
         // Starboard first: the wind on the right, so course = wind − angle.
         var side = -1.0
-        let type: EventType = halfAngle < 90 ? .tack : .gybe
+        let isGybe = gybing ?? (halfAngle >= 90)
+        let type: EventType = isGybe ? .gybe : .tack
         for (index, leg) in legs.enumerated() {
             var segment: [(course: Double, speed: Double)] = Array(
                 repeating: (wind + side * halfAngle, speed), count: Int(leg))
             if index < legs.count - 1 {
                 let from = wind + side * halfAngle
                 // Upwind turns go through the wind; downwind turns through the run.
-                let to = halfAngle < 90 ? wind - side * halfAngle : wind - side * halfAngle + side * 360
+                let to = wind - side * halfAngle + (isGybe ? side * 360 : 0)
                 for step in 0..<Int(turn) {
                     let fraction = Double(step) / turn
                     let dip = 1 - 0.5 * (1 - abs(fraction * 2 - 1))

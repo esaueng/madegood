@@ -10,6 +10,7 @@ public struct SessionReplay: Sendable {
     /// Post-session fixed-distance splits for kayak, canoe and SUP. Workout laps
     /// are in `metrics.laps` and `metrics.currentLap`.
     public let paddlingSplits: [PaddlingSplit]
+    let windsurfPlaning: WindsurfAnalysis.Planing?
 
     /// Open intervals on the replay clock whose samples were removed by a local edit.
     /// Both boundary instants of each interval are retained.
@@ -38,7 +39,8 @@ public struct SessionReplay: Sendable {
         // After the session, `SessionSelection.sailingAnalysis` analyzes sailing in one
         // pass; the live tracker's periodic refreshes are not needed here.
         profile.tracksSailing = false
-        var engine = SessionEngine(profile: profile, recordsMovement: track.sport.isPaddling)
+        var engine = SessionEngine(
+            profile: profile, recordsMovement: track.sport.isPaddling || track.sport == .windsurfing)
         // Events the engine generated live are stored with {"auto": true}. They are left
         // out here and regenerated; fed back in, an auto-pause would act as a manual one.
         let userEvents = track.events.filter { $0.data?["auto"] != .bool(true) }
@@ -64,7 +66,12 @@ public struct SessionReplay: Sendable {
         metrics = engine.snapshot
         self.fixes = fixes
         events = (userEvents + engine.generatedEvents).sorted { $0.t < $1.t }
-        paddlingSplits = PaddlingSplit.makeSplits(from: engine.movementIntervals ?? [])
+        let intervals = engine.movementIntervals ?? []
+        paddlingSplits = track.sport.isPaddling ? PaddlingSplit.makeSplits(from: intervals) : []
+        windsurfPlaning =
+            track.sport == .windsurfing
+            ? WindsurfAnalysis.Planing(fixes: fixes, intervals: intervals, threshold: profile.planingSpeedThreshold)
+            : nil
     }
 
     /// Version of the analysis that produced `summary` and the generated events. Bump it

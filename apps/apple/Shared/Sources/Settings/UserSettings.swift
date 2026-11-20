@@ -59,10 +59,12 @@ enum UserSettings {
         settings(for: sport).savesWorkout
     }
 
-    /// The sport's engine profile with the user's auto-pause choice applied.
+    /// The sport's analysis profile with the user's settings applied.
     static func profile(for sport: Sport) -> SportProfile {
         var profile = SportProfile.standard(for: sport)
-        profile.autoPause.enabled = settings(for: sport).autoPause
+        let settings = settings(for: sport)
+        profile.autoPause.enabled = settings.autoPause
+        profile.planingSpeedThreshold = settings.planingSpeedThreshold
         return profile
     }
 

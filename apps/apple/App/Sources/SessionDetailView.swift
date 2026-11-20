@@ -29,6 +29,7 @@ struct SessionDetailView: View {
         let selection: SessionSelection
         let replayData: SessionReplayView.Data
         let summary: SessionLibrary.Summary
+        let windsurf: WindsurfAnalysis?
 
         init(
             selection: SessionSelection, display: LiveDisplay, isTrimmed: Bool, trimUnavailable: Bool = false
@@ -39,6 +40,7 @@ struct SessionDetailView: View {
             replayData = SessionReplayView.Data(timeline: timeline, speedUnit: display.speed)
             summary = SessionLibrary.Summary(
                 selection: selection, isTrimmed: isTrimmed, trimUnavailable: trimUnavailable)
+            windsurf = selection.windsurfAnalysis()
         }
     }
 
@@ -258,6 +260,10 @@ struct SessionDetailView: View {
                 }
             }
             .padding(.vertical, 6)
+            if let windsurf = analysis.current.windsurf {
+                LabeledContent("Planing time", value: LiveDisplay.planing(windsurf.planing))
+                LabeledContent("Estimated gybes", value: windsurf.estimatedGybeCount.map(String.init) ?? "–")
+            }
         } header: {
             Text("Speed bests")
         } footer: {

@@ -18,6 +18,7 @@ struct WatchContentView: View {
         let sport: Sport
         let metrics: LiveMetrics
         var strokes: StrokeDetector.Metrics?
+        var windsurf: WindsurfAnalysis?
         var savedToHealth = false
     }
 
@@ -66,7 +67,8 @@ struct WatchContentView: View {
             controller.onFinish = { sport, metrics, folder in
                 if let metrics {
                     summary = Summary(
-                        sport: sport, metrics: metrics, strokes: recorder.strokes, savedToHealth: recorder.savedToHealth)
+                        sport: sport, metrics: metrics, strokes: recorder.strokes, windsurf: recorder.windsurf,
+                        savedToHealth: recorder.savedToHealth)
                 }
                 RecordingTransfer.shared.send(folder: folder)
                 reload()
@@ -939,6 +941,10 @@ private struct SummaryView: View {
                     ForEach(SpeedCategoryReadings(categories).rows.dropFirst(2)) { row in
                         Field(label: row.title, value: display.speed(row.value))
                     }
+                }
+                if let windsurf = summary.windsurf {
+                    Field(label: "Planing", value: LiveDisplay.planing(windsurf.planing))
+                    Field(label: "Est. gybes", value: windsurf.estimatedGybeCount.map(String.init) ?? "–")
                 }
                 if let live = metrics.sailing {
                     let sailing = SailingReadings(live)
