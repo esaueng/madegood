@@ -31,7 +31,13 @@ struct WeatherCard: View {
                 }
             case .loading, .ready:
                 if let now = weather.current {
-                    ConditionsCard(weather: now, sports: sports)
+                    VStack(alignment: .trailing, spacing: 4) {
+                        ConditionsCard(weather: now, sports: sports)
+                        if let attribution = AppleWeatherAttribution.available {
+                            AppleWeatherAttributionLink(attribution: attribution)
+                                .padding(.trailing, 8)
+                        }
+                    }
                 } else {
                     notice("Finding conditions where you are…", symbol: "location", action: nil, identifier: nil) {}
                 }
@@ -196,14 +202,11 @@ private struct ConditionsCard: View {
             Button("Refresh", systemImage: "arrow.clockwise") {
                 Task { await LocalWeather.shared.refresh(force: true) }
             }
-            Link(destination: URL(string: "https://open-meteo.com")!) {
-                Label("Weather data by Open-Meteo", systemImage: "info.circle")
-            }
             Button("Hide Conditions", systemImage: "eye.slash") { LocalWeather.shared.setEnabled(false) }
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(text.accessibilityLabel + ". " + ratingsLabel(text.outlook))
-        .accessibilityHint("Weather data by Open-Meteo. Not a marine forecast.")
+        .accessibilityHint("Not a marine forecast.")
         .accessibilityIdentifier("weather.card")
     }
 

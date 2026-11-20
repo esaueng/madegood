@@ -31,7 +31,10 @@ let healthKitEntitlements: [String: Plist.Value] = [
 ]
 let healthKit: Entitlements = .dictionary(healthKitEntitlements)
 let iPhoneEntitlements: Entitlements = .dictionary(
-    healthKitEntitlements.merging(["com.apple.developer.applesignin": ["Default"]]) { _, new in new }
+    healthKitEntitlements.merging([
+        "com.apple.developer.applesignin": ["Default"],
+        "com.apple.developer.weatherkit": true,
+    ]) { _, new in new }
 )
 
 func plist(_ parts: [String: Plist.Value]...) -> InfoPlist {

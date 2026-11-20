@@ -100,6 +100,14 @@ empty string in `vars`.
 Keep the `.p8` in a password manager or `~/.appstoreconnect/private_keys/`, never in the
 repository.
 
+## Enable Apple Weather on the iPhone App ID
+
+Before signing a build with WeatherKit, open **Certificates, Identifiers & Profiles**
+→ **Identifiers**, select the iPhone App ID, enable **WeatherKit** in both **App
+Capabilities** and **App Services**, then save. Xcode's automatic signing can refresh
+the provisioning profile with the new entitlement. This is a one-time step for each
+iPhone App ID. [Apple Developer instructions](https://developer.apple.com/help/account/identifiers/enable-app-capabilities/#Enable-WeatherKit)
+
 ## Building locally
 
 The same script runs on a Mac. After `tuist install && tuist generate --no-open` in

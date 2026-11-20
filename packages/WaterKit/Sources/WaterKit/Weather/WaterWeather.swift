@@ -1,7 +1,7 @@
 import Foundation
 
-/// Current conditions and the next few hours at one place, from Open-Meteo's forecast
-/// API. SI units: °C, m/s, metres, degrees true (wind *from*).
+/// Current conditions and the next few hours at one place, in °C, m/s, metres,
+/// and degrees true (wind *from*).
 public struct WeatherNow: Sendable, Equatable, Codable {
     public struct Hour: Sendable, Equatable, Codable {
         /// Start of the hour, unix seconds.
@@ -24,7 +24,7 @@ public struct WeatherNow: Sendable, Equatable, Codable {
     public var time: Double
     /// Air temperature at 2 m, °C.
     public var temperature: Double
-    /// WMO weather interpretation code (Open-Meteo `weather_code`).
+    /// WMO weather interpretation code.
     public var code: Int
     /// Mean 10 m wind, m/s.
     public var windSpeed: Double
@@ -55,70 +55,6 @@ public struct WeatherNow: Sendable, Equatable, Codable {
         self.visibility = visibility
         self.isDay = isDay
         self.hours = hours
-    }
-
-    public enum ParseError: Error, Equatable { case badResponse }
-
-    /// The variables a request asks for (`current=` and `hourly=`), matching `parse`.
-    public static let currentVariables =
-        "temperature_2m,weather_code,wind_speed_10m,wind_direction_10m,wind_gusts_10m,cloud_cover,visibility,is_day"
-    public static let hourlyVariables = "weather_code,wind_gusts_10m,precipitation_probability"
-
-    private struct Response: Decodable {
-        struct Current: Decodable {
-            var time: Double
-            var temperature_2m: Double?
-            var weather_code: Int?
-            var wind_speed_10m: Double?
-            var wind_direction_10m: Double?
-            var wind_gusts_10m: Double?
-            var cloud_cover: Double?
-            var visibility: Double?
-            var is_day: Int?
-        }
-        struct Hourly: Decodable {
-            var time: [Double]
-            var weather_code: [Int?]?
-            var wind_gusts_10m: [Double?]?
-            var precipitation_probability: [Double?]?
-        }
-        var current: Current
-        var hourly: Hourly?
-    }
-
-    /// Reads an Open-Meteo forecast answer (`wind_speed_unit=ms`, `timeformat=unixtime`).
-    public static func parse(_ data: Data) throws -> WeatherNow {
-        guard let response = try? JSONDecoder().decode(Response.self, from: data) else {
-            throw ParseError.badResponse
-        }
-        let current = response.current
-        guard let temperature = current.temperature_2m, temperature.isFinite,
-            let code = current.weather_code,
-            let speed = current.wind_speed_10m, speed.isFinite, speed >= 0,
-            let direction = current.wind_direction_10m, direction.isFinite
-        else { throw ParseError.badResponse }
-
-        var hours: [Hour] = []
-        if let hourly = response.hourly {
-            for (index, time) in hourly.time.enumerated() {
-                guard let code = hourly.weather_code?[safe: index] ?? nil else { continue }
-                let gust = (hourly.wind_gusts_10m?[safe: index] ?? nil).flatMap { $0.isFinite ? $0 : nil }
-                let rain = (hourly.precipitation_probability?[safe: index] ?? nil).flatMap { $0.isFinite ? $0 : nil }
-                hours.append(Hour(time: time, code: code, gust: gust, precipitationProbability: rain))
-            }
-        }
-        return WeatherNow(
-            time: current.time, temperature: temperature, code: code, windSpeed: speed,
-            windGust: current.wind_gusts_10m.flatMap { $0.isFinite && $0 >= 0 ? $0 : nil },
-            windFrom: direction.truncatingRemainder(dividingBy: 360) + (direction < 0 ? 360 : 0),
-            cloudCover: current.cloud_cover, visibility: current.visibility, isDay: (current.is_day ?? 1) != 0,
-            hours: hours.sorted { $0.time < $1.time })
-    }
-}
-
-extension Array {
-    fileprivate subscript(safe index: Int) -> Element? {
-        indices.contains(index) ? self[index] : nil
     }
 }
 
@@ -316,15 +252,11 @@ public struct WaterOutlook: Sendable, Equatable {
 
     /// The first thing worth knowing in the next three hours, if the current hour
     /// doesn't already show it: thunder, then gusts building to too windy, then rain.
-    ///
-    /// Open-Meteo's hourly gusts and precipitation probability describe the hour *before*
-    /// each timestamp, so the value stamped 15:00 covers 14:00–15:00. Every hourly value
-    /// is read that way (the weather code too, to warn early rather than late): a
-    /// warning starts at the beginning of that hour, or now if it has begun.
+    /// Each forecast timestamp starts the hour it describes.
     static func warning(_ weather: WeatherNow, sky: Sky) -> Warning? {
         let now = weather.time
-        let coming = weather.hours.filter { $0.time > now && $0.time - 3_600 <= now + lookahead }
-        func start(_ hour: WeatherNow.Hour) -> Double { max(hour.time - 3_600, now) }
+        let coming = weather.hours.filter { $0.time + 3_600 > now && $0.time <= now + lookahead }
+        func start(_ hour: WeatherNow.Hour) -> Double { max(hour.time, now) }
         if sky != .thunderstorm, let hour = coming.first(where: { Self.sky(code: $0.code) == .thunderstorm }) {
             return .thunder(at: start(hour))
         }

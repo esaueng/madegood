@@ -58,7 +58,7 @@ struct SettingsView: View {
                 } footer: {
                     Text(
                         "Wind and weather where you are, rated for your sports, on the start screen. Your position "
-                            + "is rounded to about 10 km and sent to Open-Meteo. A guide only, not a marine forecast.")
+                            + "is rounded to about 11 km and sent to Apple Weather. A guide only, not a marine forecast.")
                 }
 
                 Section {

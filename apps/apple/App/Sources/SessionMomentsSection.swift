@@ -16,16 +16,16 @@ struct SessionMomentsSection: View {
     /// Fetched forecasts and fetch state per query; only the one for the displayed
     /// selection is shown, so a trimmed or edited selection in another area or on another
     /// day asks again, and a late answer for an earlier selection stays with it.
-    @State private var forecasts = OpenMeteoForecasts()
+    @State private var forecasts = SessionWeatherForecasts()
 
-    private var forecastState: OpenMeteoForecasts.State { forecasts.state(for: forecastQuery) }
+    private var forecastState: SessionWeatherForecasts.State { forecasts.state(for: forecastQuery) }
 
-    private var forecastQuery: OpenMeteo.Query? {
-        OpenMeteo.query(track: presentation.selection.track, duration: presentation.selection.duration)
+    private var forecastQuery: SessionWeatherWind.Query? {
+        SessionWeatherWind.query(track: presentation.selection.track, duration: presentation.selection.duration)
     }
 
     /// The forecast for the displayed selection, if one has been fetched for it.
-    private var currentForecast: OpenMeteoWind? { forecasts.wind(for: forecastQuery) }
+    private var currentForecast: SessionWeatherWind? { forecasts.wind(for: forecastQuery) }
 
     private struct SailingRequest: Equatable {
         let source: SessionLibrary.Source
@@ -163,13 +163,13 @@ struct SessionMomentsSection: View {
                 "Wind axis ±\(spread)° from the two most-sailed courses \(legs)° apart; axis confidence \(confidence) %.")
             switch estimate.side {
             case .resolvedByPrior:
-                parts.append("Open-Meteo chose which side the wind came from.")
+                parts.append("Apple Weather chose which side the wind came from.")
             case .unresolved:
                 parts.append("Which side the wind came from is unknown, so tacks and gybes are not told apart.")
             case .priorInconclusive(let prior):
                 let forecast = Int(prior.rounded()) % 360
                 parts.append(
-                    "Open-Meteo's \(forecast)° is too far from both ends of the axis to choose a side, "
+                    "Apple Weather's \(forecast)° is too far from both ends of the axis to choose a side, "
                         + "so tacks and gybes are not told apart.")
             }
         }
@@ -179,21 +179,24 @@ struct SessionMomentsSection: View {
     @ViewBuilder
     private var forecastRow: some View {
         if let forecast = currentForecast {
-            LabeledContent("Open-Meteo wind") {
+            LabeledContent("Apple Weather wind") {
                 Text("\(Int(forecast.fromDegrees.rounded()) % 360)° · \(display.speed(forecast.speed))")
                     .monospacedDigit()
             }
             .accessibilityElement(children: .combine)
-            .accessibilityIdentifier("moments.openMeteo.result")
+            .accessibilityIdentifier("moments.appleWeather.result")
+            if let attribution = AppleWeatherAttribution.available {
+                AppleWeatherAttributionLink(attribution: attribution)
+            }
         } else if forecastQuery != nil {
             Button {
                 Task { await fetchForecast() }
             } label: {
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(forecastState == .failed ? "Open-Meteo unavailable. Try again" : "Compare with Open-Meteo")
+                        Text(forecastState == .failed ? "Apple Weather unavailable. Try again" : "Compare with Apple Weather")
                         // Said before the tap: what leaves the phone.
-                        Text("Sends the approximate area (~50 km) and dates")
+                        Text("Shares an approximate area (~11 km) and time range with Apple")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
@@ -203,7 +206,7 @@ struct SessionMomentsSection: View {
             }
             .disabled(forecastState == .loading)
             .accessibilityElement(children: .combine)
-            .accessibilityIdentifier("moments.openMeteo.fetch")
+            .accessibilityIdentifier("moments.appleWeather.fetch")
         }
     }
 
@@ -277,8 +280,8 @@ struct SessionMomentsSection: View {
     }
 
     private func loadCachedForecast() {
-        guard currentForecast == nil, !DemoFeed.isEnabled, let query = forecastQuery,
-            let cached = OpenMeteoCache.wind(for: query)
+        guard currentForecast == nil, AppleWeatherAttribution.available != nil, let query = forecastQuery,
+            let cached = PhoneWeather.shared.cachedWind(for: query)
         else { return }
         forecasts.complete(query, with: cached)
     }
@@ -288,18 +291,7 @@ struct SessionMomentsSection: View {
         guard let query = forecastQuery else { return }
         forecasts.start(query)
         do {
-            let result: OpenMeteoWind
-            if DemoFeed.isEnabled {
-                // UI tests never reach the network: a fixed answer, or a failure on request.
-                try await Task.sleep(for: .milliseconds(300))
-                if ProcessInfo.processInfo.arguments.contains("-demoOpenMeteoOffline") {
-                    throw URLError(.notConnectedToInternet)
-                }
-                result = OpenMeteoWind(fromDegrees: 10, speed: 6, hours: 2)
-            } else {
-                result = try await OpenMeteo.fetch(query)
-                OpenMeteoCache.store(result, for: query)
-            }
+            let result = try await PhoneWeather.shared.wind(for: query)
             forecasts.complete(query, with: result)
         } catch {
             forecasts.fail(query)
