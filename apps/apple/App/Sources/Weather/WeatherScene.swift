@@ -1,11 +1,12 @@
 import SwiftUI
 import WaterKit
 
-/// A little animated seascape for the conditions: the sky, sun or moon, clouds, rain,
+/// A small animated seascape for the conditions: the sky, sun or moon, clouds, rain,
 /// snow, fog and lightning; waves, whitecaps and wind streaks that grow with the wind;
-/// and a small sailboat whose rig shows the wind: slack sails in a calm, full and heeled
-/// in a breeze, reefed when it's strong, furled when it's too much. Still with Reduce
-/// Motion. Decorative: the card around it carries the words.
+/// and a sailboat whose rig shows the wind: slack sails in a calm, full and heeled in a
+/// breeze, reefed when it's strong, furled when it's too much. Kept to a few bold shapes
+/// so it reads at card size. Still with Reduce Motion. Decorative: the card around it
+/// carries the words.
 struct WeatherScene: View {
     let weather: WeatherNow
     let outlook: WaterOutlook
@@ -47,8 +48,10 @@ private struct SceneDrawing {
         drawSky(&context)
         if mood == .stormComing { drawStormBank(&context) }
         if night { drawStars(&context) }
-        if showsSun { night ? drawMoon(&context) : drawSun(&context) }
+        // Drifting clouds pass behind the sun or moon, so it never disappears.
         drawClouds(&context)
+        if showsSun { night ? drawMoon(&context) : drawSun(&context) }
+        if sky == .partlyCloudy, mood != .stormComing { drawParkedCloud(&context) }
         if stormy || mood == .stormComing { drawLightning(&context) }
         if windiness > 0.28 { drawWindStreaks(&context) }
         drawWater(&context)
@@ -61,7 +64,7 @@ private struct SceneDrawing {
     // MARK: Sky
 
     private var showsSun: Bool {
-        [.clear, .partlyCloudy].contains(sky)
+        [.clear, .partlyCloudy].contains(sky) && mood != .stormComing
     }
 
     private var skyColors: [Color] {
@@ -86,6 +89,14 @@ private struct SceneDrawing {
             Path(CGRect(origin: .zero, size: size)),
             with: .linearGradient(
                 Gradient(colors: skyColors), startPoint: .zero, endPoint: CGPoint(x: 0, y: horizon)))
+        // Thunder: a low, dark ceiling of cloud across the top, where the bolts come from.
+        if stormy {
+            context.fill(
+                Path(CGRect(x: 0, y: 0, width: w, height: h * 0.4)),
+                with: .linearGradient(
+                    Gradient(colors: [rgb(0.08, 0.07, 0.15).opacity(0.85), .clear]), startPoint: .zero,
+                    endPoint: CGPoint(x: 0, y: h * 0.4)))
+        }
         // A warm glow low on a sunny horizon.
         if !night, showsSun {
             context.fill(
@@ -96,71 +107,60 @@ private struct SceneDrawing {
         }
     }
 
-    /// A wall of dark cloud building on the horizon, upwind.
+    /// A wall of dark cloud building on the horizon, on the right where the eye goes
+    /// (the words sit on the left).
     private func drawStormBank(_ context: inout GraphicsContext) {
-        let fromRight = windSign < 0
-        let edge = fromRight ? w : 0
-        let start = CGPoint(x: fromRight ? w * 0.35 : w * 0.65, y: 0)
         context.fill(
             Path(CGRect(origin: .zero, size: CGSize(width: w, height: horizon))),
             with: .linearGradient(
                 Gradient(colors: [.clear, rgb(0.12, 0.1, 0.22).opacity(0.75)]),
-                startPoint: start, endPoint: CGPoint(x: edge, y: 0)))
+                startPoint: CGPoint(x: w * 0.45, y: 0), endPoint: CGPoint(x: w, y: 0)))
         let creep = sin(t * 0.4) * 4
-        for i in 0..<5 {
-            let x = fromRight ? w - Double(i) * w * 0.09 + creep : Double(i) * w * 0.09 - creep
-            let r = h * (0.16 - Double(i) * 0.018)
+        for i in 0..<3 {
+            let x = w * (0.97 - Double(i) * 0.12) + creep
+            let r = h * (0.17 - Double(i) * 0.03)
             cloud(&context, center: CGPoint(x: x, y: horizon - r * 0.7), scale: r / 20, color: rgb(0.2, 0.18, 0.3))
         }
     }
 
     private func drawStars(_ context: inout GraphicsContext) {
-        for i in 0..<22 {
-            let x = hash(i, 1) * w
-            let y = hash(i, 2) * horizon * 0.8
-            let twinkle = 0.45 + 0.55 * (0.5 + 0.5 * sin(t * (1.2 + hash(i, 3) * 2) + Double(i)))
-            let r = 0.7 + hash(i, 4) * 1.1
+        for i in 0..<7 {
+            let x = w * (0.32 + Double(i) * 0.075 + (hash(i, 1) - 0.5) * 0.05)
+            let y = horizon * (0.15 + hash(i, 2) * 0.6)
+            let twinkle = 0.6 + 0.4 * (0.5 + 0.5 * sin(t * (0.8 + hash(i, 3)) + Double(i)))
+            let r = 1.4 + hash(i, 4) * 0.8
             context.fill(
                 Path(ellipseIn: CGRect(x: x - r, y: y - r, width: r * 2, height: r * 2)),
                 with: .color(.white.opacity(twinkle * (wet ? 0.3 : 0.9))))
         }
     }
 
-    private var sunCenter: CGPoint { CGPoint(x: w * 0.93, y: h * 0.22) }
+    private var sunCenter: CGPoint { CGPoint(x: w * 0.9, y: h * 0.26) }
 
-    /// A smiling sun that turns its rays slowly and blinks now and then.
+    /// The sun: a warm disc and a slowly turning ring of rays.
     private func drawSun(_ context: inout GraphicsContext) {
         let c = sunCenter
         let r = h * 0.12
         context.fill(
-            Path(ellipseIn: CGRect(x: c.x - r * 2.6, y: c.y - r * 2.6, width: r * 5.2, height: r * 5.2)),
+            Path(ellipseIn: CGRect(x: c.x - r * 2.4, y: c.y - r * 2.4, width: r * 4.8, height: r * 4.8)),
             with: .radialGradient(
-                Gradient(colors: [rgb(1, 0.92, 0.55).opacity(0.55), .clear]), center: c, startRadius: r * 0.8,
-                endRadius: r * 2.6))
+                Gradient(colors: [rgb(1, 0.92, 0.55).opacity(0.5), .clear]), center: c, startRadius: r * 0.8,
+                endRadius: r * 2.4))
         var rays = Path()
-        for i in 0..<10 {
-            let a = Double(i) / 10 * 2 * .pi + t * 0.25
-            let pulse = 1 + 0.08 * sin(t * 2 + Double(i))
-            rays.move(to: CGPoint(x: c.x + cos(a) * r * 1.3, y: c.y + sin(a) * r * 1.3))
-            rays.addLine(to: CGPoint(x: c.x + cos(a) * r * 1.75 * pulse, y: c.y + sin(a) * r * 1.75 * pulse))
+        for i in 0..<8 {
+            let a = Double(i) / 8 * 2 * .pi + t * 0.15
+            rays.move(to: CGPoint(x: c.x + cos(a) * r * 1.35, y: c.y + sin(a) * r * 1.35))
+            rays.addLine(to: CGPoint(x: c.x + cos(a) * r * 1.75, y: c.y + sin(a) * r * 1.75))
         }
-        context.stroke(rays, with: .color(rgb(1, 0.85, 0.35)), style: StrokeStyle(lineWidth: 2.4, lineCap: .round))
+        context.stroke(rays, with: .color(rgb(1, 0.85, 0.35)), style: StrokeStyle(lineWidth: 3, lineCap: .round))
         context.fill(
             Path(ellipseIn: CGRect(x: c.x - r, y: c.y - r, width: r * 2, height: r * 2)),
             with: .linearGradient(
                 Gradient(colors: [rgb(1, 0.92, 0.45), rgb(1, 0.74, 0.25)]), startPoint: CGPoint(x: c.x, y: c.y - r),
                 endPoint: CGPoint(x: c.x, y: c.y + r)))
-        face(
-            &context, center: CGPoint(x: c.x, y: c.y + r * 0.08), size: r, expression: .happy, ink: rgb(0.55, 0.3, 0.05)
-        )
-        // Rosy cheeks.
-        for side in [-1.0, 1.0] {
-            let cheek = CGRect(x: c.x + side * r * 0.52 - r * 0.15, y: c.y + r * 0.22, width: r * 0.3, height: r * 0.18)
-            context.fill(Path(ellipseIn: cheek), with: .color(rgb(1, 0.5, 0.4).opacity(0.45)))
-        }
     }
 
-    /// A crescent moon with a sleepy face.
+    /// A crescent moon with a soft glow.
     private func drawMoon(_ context: inout GraphicsContext) {
         let c = sunCenter
         let r = h * 0.11
@@ -173,23 +173,19 @@ private struct SceneDrawing {
         moon = moon.subtracting(
             Path(ellipseIn: CGRect(x: c.x - r * 0.35, y: c.y - r * 1.15, width: r * 2, height: r * 2)))
         context.fill(moon, with: .color(rgb(0.96, 0.94, 0.82)))
-        // A closed eye and a small smile on the crescent's inner side.
-        var eye = Path()
-        eye.addArc(
-            center: CGPoint(x: c.x - r * 0.55, y: c.y - r * 0.1), radius: r * 0.13, startAngle: .degrees(20),
-            endAngle: .degrees(160), clockwise: false)
-        context.stroke(eye, with: .color(rgb(0.4, 0.38, 0.3)), lineWidth: 1.3)
     }
 
     // MARK: Clouds
 
     private var cloudCount: Int {
+        // A storm coming owns the right of the sky; no fair-weather clouds in front of it.
+        if mood == .stormComing { return 0 }
         switch sky {
-        case .clear: return night ? 0 : 1
-        case .partlyCloudy: return 3
-        case .overcast, .rain, .thunderstorm: return 5
-        case .drizzle, .snow: return 4
-        case .fog: return 2
+        case .clear: return 0
+        case .partlyCloudy: return 1
+        case .thunderstorm: return 2
+        case .overcast, .rain, .drizzle, .snow: return 3
+        case .fog: return 1
         }
     }
 
@@ -200,17 +196,7 @@ private struct SceneDrawing {
         case .drizzle, .fog: return rgb(0.78, 0.81, 0.85)
         case .snow: return rgb(0.93, 0.95, 0.97)
         case .rain: return rgb(0.55, 0.6, 0.68)
-        case .thunderstorm: return rgb(0.3, 0.28, 0.4)
-        }
-    }
-
-    private var cloudExpression: Expression? {
-        switch sky {
-        case .rain: .sad
-        case .thunderstorm: .grumpy
-        case .drizzle: .sleepy
-        case .snow: .content
-        case .clear, .partlyCloudy, .overcast, .fog: nil
+        case .thunderstorm: return rgb(0.18, 0.17, 0.27)
         }
     }
 
@@ -218,25 +204,25 @@ private struct SceneDrawing {
         let speed = 5 + weather.windSpeed * 2.4
         let span = w + 140
         for i in 0..<cloudCount {
-            let scale = 0.8 + hash(i, 7) * 0.7 + (wet ? 0.35 : 0)
+            let scale = stormy ? (1.15 + hash(i, 7) * 0.25) * 1.15 : 1 + hash(i, 7) * 0.4 + (wet ? 0.25 : 0)
             let base = hash(i, 8) * span + Double(i) * span / Double(max(cloudCount, 1))
             var x = (base + t * speed * windSign * (0.7 + hash(i, 9) * 0.6)).truncatingRemainder(dividingBy: span)
             if x < 0 { x += span }
             x -= 70
-            let y = h * (0.12 + hash(i, 10) * 0.28) + (wet ? -h * 0.04 : 0)
-            let center = CGPoint(x: x, y: y)
+            var y = h * (0.12 + hash(i, 10) * 0.28) + (wet ? -h * 0.04 : 0)
+            // Big storm clouds sit low enough that their tops stay on the card.
+            if stormy { y = max(h * 0.3, 21 * scale + 4) }
             // Clouds fade as they drift behind the words on the left.
             var layer = context
             layer.opacity = 0.15 + 0.85 * smoothstep(w * 0.3, w * 0.62, x)
-            // Darker underside first, for a little depth.
-            cloud(&layer, center: CGPoint(x: x + 1.5, y: y + 2.5), scale: scale, color: .black.opacity(0.08))
-            cloud(&layer, center: center, scale: scale, color: cloudColor)
-            if i == 0, let expression = cloudExpression {
-                face(
-                    &layer, center: CGPoint(x: x, y: y + 2 * scale), size: 9 * scale, expression: expression,
-                    ink: sky == .thunderstorm ? rgb(0.95, 0.9, 1) : rgb(0.25, 0.3, 0.4))
-            }
+            cloud(&layer, center: CGPoint(x: x, y: y), scale: scale, color: cloudColor)
         }
+    }
+
+    /// Partly cloudy: one small cloud lingers in front of the sun's lower-left, inside the card.
+    private func drawParkedCloud(_ context: inout GraphicsContext) {
+        let parked = CGPoint(x: w * 0.875 + sin(t * 0.2) * 2, y: h * 0.38)
+        cloud(&context, center: parked, scale: 0.65, color: cloudColor)
     }
 
     /// A puffy cloud about 64 × 30 points at `scale` 1.
@@ -256,120 +242,113 @@ private struct SceneDrawing {
     // MARK: Weather
 
     private func drawRain(_ context: inout GraphicsContext) {
-        let count = sky == .drizzle ? 26 : sky == .thunderstorm ? 70 : 50
-        let length = sky == .drizzle ? 5.0 : 11
+        let count = sky == .drizzle ? 24 : sky == .thunderstorm ? 30 : 22
+        let length = sky == .drizzle ? 10.0 : 16
         let slant = windSign * min(windiness, 1) * 0.45
         let fall = horizon + 10
         var drops = Path()
         for i in 0..<count {
             let speed = (sky == .drizzle ? 120 : 260) + hash(i, 11) * 80
-            let y = (hash(i, 12) * fall + t * speed).truncatingRemainder(dividingBy: fall)
-            var x = (hash(i, 13) * (w + 40) + slant * y).truncatingRemainder(dividingBy: w + 40)
-            if x < 0 { x += w + 40 }
-            x -= 20
+            let travelled = hash(i, 12) * fall + t * speed
+            let y = travelled.truncatingRemainder(dividingBy: fall)
+            // Each fall starts from a fresh spot, mostly over the scene on the right where
+            // drops show; a drop never jumps sideways mid-fall, it just slants off the edge.
+            let cycle = Int(travelled / fall) & 0xFFFF
+            let x = w * 0.3 - 20 + hash(i &+ cycle &* 97, 13) * (w * 0.7 + 40) + slant * y
             drops.move(to: CGPoint(x: x, y: y))
             drops.addLine(to: CGPoint(x: x - slant * length, y: y - length))
         }
         context.stroke(
-            drops, with: .color(.white.opacity(sky == .drizzle ? 0.45 : 0.55)),
-            style: StrokeStyle(lineWidth: sky == .drizzle ? 1 : 1.4, lineCap: .round))
-        // Little rings where drops land.
-        for i in 0..<8 {
-            let phase = (t * 1.4 + hash(i, 14)).truncatingRemainder(dividingBy: 1)
-            let x = hash(i, 15) * w
-            let y = horizon + 8 + hash(i, 16) * (h - horizon - 12)
-            let rx = 2 + phase * 7
-            context.stroke(
-                Path(ellipseIn: CGRect(x: x - rx, y: y - rx * 0.3, width: rx * 2, height: rx * 0.6)),
-                with: .color(.white.opacity((1 - phase) * 0.4)), lineWidth: 0.8)
-        }
+            drops, with: fadingOverWords(opacity: sky == .drizzle ? 0.75 : 0.6, under: 0.25),
+            style: StrokeStyle(lineWidth: 2, lineCap: .round))
     }
 
     private func drawSnow(_ context: inout GraphicsContext) {
-        for i in 0..<42 {
+        for i in 0..<16 {
             let fall = h + 10
             let speed = 14 + hash(i, 17) * 22
             let y = (hash(i, 18) * fall + t * speed).truncatingRemainder(dividingBy: fall) - 5
             var x = hash(i, 19) * w + sin(t * 1.3 + Double(i)) * 7 + t * windSign * weather.windSpeed * 1.5
-            x = x.truncatingRemainder(dividingBy: w)
-            if x < 0 { x += w }
-            let r = 1.2 + hash(i, 20) * 1.8
+            x = x.truncatingRemainder(dividingBy: w + 40)
+            if x < 0 { x += w + 40 }
+            x -= 20
+            let r = 2.2 + hash(i, 20) * 1.2
             context.fill(
                 Path(ellipseIn: CGRect(x: x - r, y: y - r, width: r * 2, height: r * 2)),
-                with: .color(.white.opacity(0.9)))
+                with: .color(.white.opacity(0.9 * (0.25 + 0.75 * smoothstep(w * 0.3, w * 0.6, x)))))
         }
     }
 
     private func drawFog(_ context: inout GraphicsContext) {
         var context = context
         context.addFilter(.blur(radius: h * 0.04))
-        for i in 0..<5 {
-            let y = h * (0.3 + Double(i) * 0.14)
+        for i in 0..<3 {
+            let y = h * (0.32 + Double(i) * 0.2)
             let drift = sin(t * 0.15 + Double(i) * 1.7) * w * 0.12
-            let band = CGRect(x: -w * 0.3 + drift, y: y, width: w * 1.6, height: h * 0.11)
+            let band = CGRect(x: -w * 0.3 + drift, y: y, width: w * 1.6, height: h * 0.14)
             context.fill(
-                Path(roundedRect: band, cornerRadius: h * 0.055),
+                Path(roundedRect: band, cornerRadius: h * 0.07),
                 with: .color(rgb(0.9, 0.92, 0.94).opacity(0.42 + 0.08 * sin(t * 0.5 + Double(i)))))
         }
     }
 
-    /// A bright flash and a bolt every few seconds; far off and faint when only coming.
+    /// Now and then a bolt and one soft flash that fades out; far off and faint when only
+    /// coming. Never a strobe.
     private func drawLightning(_ context: inout GraphicsContext) {
         let distant = !stormy
-        let period = distant ? 5.3 : 3.7
+        let period = distant ? 8.0 : 7.0
         let cycle = floor(t / period)
         let phase = t - cycle * period
-        let flashing = phase < 0.1 || (phase > 0.18 && phase < 0.26)
-        guard flashing else { return }
+        guard phase < 0.6 else { return }
         if !distant {
-            context.fill(Path(CGRect(origin: .zero, size: size)), with: .color(.white.opacity(0.28)))
+            context.fill(
+                Path(CGRect(origin: .zero, size: size)), with: .color(.white.opacity(0.18 * exp(-phase / 0.18))))
         }
+        guard phase < 0.15 else { return }
         let seed = Int(cycle) & 0xFFFF
-        let x0: Double
-        if distant {
-            x0 = windSign < 0 ? w * (0.8 + hash(seed, 21) * 0.15) : w * (0.05 + hash(seed, 21) * 0.15)
-        } else {
-            x0 = w * (0.15 + hash(seed, 21) * 0.5)
-        }
-        let top = distant ? horizon - h * 0.2 : h * 0.22
+        // Far off it strikes inside the storm bank behind the stern; near, it stays well
+        // clear of the boat.
+        let x0 = distant ? w * (0.88 + hash(seed, 21) * 0.07) : w * (0.42 + hash(seed, 21) * 0.14)
+        let top = distant ? horizon - h * 0.32 : 0
         let bottom = horizon
         var bolt = Path()
         bolt.move(to: CGPoint(x: x0, y: top))
         var x = x0
-        let steps = 5
+        let steps = 4
         for step in 1...steps {
-            x += (hash(seed + step, 22) - 0.5) * (distant ? 8 : 18)
+            x += (hash(seed + step, 22) - 0.5) * (distant ? 10 : 12)
             bolt.addLine(to: CGPoint(x: x, y: top + (bottom - top) * Double(step) / Double(steps)))
         }
         context.stroke(
-            bolt, with: .color(rgb(1, 0.95, 0.6).opacity(distant ? 0.7 : 1)),
-            style: StrokeStyle(lineWidth: distant ? 1.4 : 2.6, lineCap: .round, lineJoin: .round))
+            bolt, with: .color(rgb(1, 0.95, 0.6).opacity(distant ? 0.9 : 1)),
+            style: StrokeStyle(lineWidth: distant ? 2.2 : 2.6, lineCap: .round, lineJoin: .round))
     }
 
-    /// Cartoon gust lines, more and faster as the wind rises, each ending in a curl.
+    /// Long, gently bowed gust lines, more and faster as the wind rises.
     private func drawWindStreaks(_ context: inout GraphicsContext) {
-        let count = Int(2 + windiness * 6)
+        let count = Int(1 + windiness * 3)
         let speed = 90 + windiness * 140
         for i in 0..<count {
-            let length = 36 + hash(i, 23) * 40
+            let length = 60 + hash(i, 23) * 40
             let travel = w + length * 2
             let progress = ((t * speed / travel) + hash(i, 24)).truncatingRemainder(dividingBy: 1)
             let head = windSign > 0 ? -length + progress * travel : w + length - progress * travel
-            let y = h * (0.15 + hash(i, 25) * 0.4)
-            let alpha = sin(progress * .pi) * 0.55
-            var path = Path()
+            let y = h * (0.18 + Double(i) * 0.1 + hash(i, 25) * 0.06)
+            let alpha = sin(progress * .pi) * 0.5
             let tail = head - windSign * length
+            var path = Path()
             path.move(to: CGPoint(x: tail, y: y))
-            path.addQuadCurve(
-                to: CGPoint(x: head, y: y), control: CGPoint(x: (tail + head) / 2, y: y - 4 * sin(Double(i))))
-            // The curl.
-            let curl = 5.0
-            path.addArc(
-                center: CGPoint(x: head, y: y - curl), radius: curl, startAngle: .degrees(90),
-                endAngle: .degrees(windSign > 0 ? -60 : 240), clockwise: windSign < 0)
+            path.addQuadCurve(to: CGPoint(x: head, y: y), control: CGPoint(x: (tail + head) / 2, y: y - 5))
             context.stroke(
-                path, with: .color(.white.opacity(alpha)), style: StrokeStyle(lineWidth: 1.6, lineCap: .round))
+                path, with: fadingOverWords(opacity: alpha), style: StrokeStyle(lineWidth: 2, lineCap: .round))
         }
+    }
+
+    /// White that fades to `under` × `opacity` behind the words on the left of the card.
+    private func fadingOverWords(opacity: Double, under: Double = 0) -> GraphicsContext.Shading {
+        .linearGradient(
+            Gradient(colors: [.white.opacity(opacity * under), .white.opacity(opacity)]),
+            startPoint: CGPoint(x: w * 0.3, y: 0), endPoint: CGPoint(x: w * 0.6, y: 0))
     }
 
     // MARK: Water
@@ -396,7 +375,7 @@ private struct SceneDrawing {
 
     private func drawWater(_ context: inout GraphicsContext) {
         let colors = waterColors
-        for layer in [0.0, 1.0, 2.0] {
+        for layer in [0.0, 1.5] {
             var path = Path()
             path.move(to: CGPoint(x: 0, y: h))
             var x = 0.0
@@ -406,7 +385,7 @@ private struct SceneDrawing {
             }
             path.addLine(to: CGPoint(x: w, y: h))
             path.closeSubpath()
-            let shade = layer / 2
+            let shade = layer / 1.5
             context.fill(
                 path,
                 with: .linearGradient(
@@ -420,49 +399,49 @@ private struct SceneDrawing {
         if outlook.wind >= .fresh { drawWhitecaps(&context) }
     }
 
-    /// Sun glitter on calm water, under the sun.
+    /// The sun's path on calm water: one soft column of light under the sun, widening
+    /// toward the viewer and shimmering gently.
     private func drawGlitter(_ context: inout GraphicsContext) {
-        for i in 0..<9 {
-            let y = horizon + 6 + Double(i) * (h - horizon - 8) / 9
-            let spread = 6 + Double(i) * 3.2
-            let x = sunCenter.x + (hash(i, 26) - 0.5) * spread * 2
-            let width = (5 + hash(i, 27) * 9) * (0.6 + 0.4 * sin(t * 3 + Double(i)))
-            let rect = CGRect(x: x - width / 2, y: y, width: width, height: 1.5)
-            context.fill(Path(roundedRect: rect, cornerRadius: 0.75), with: .color(rgb(1, 0.95, 0.75).opacity(0.65)))
-        }
+        var glow = context
+        glow.addFilter(.blur(radius: 3))
+        glow.opacity = 0.75 + 0.15 * sin(t * 1.2)
+        let x = sunCenter.x
+        let top = horizon + 1
+        var column = Path()
+        column.move(to: CGPoint(x: x - 7, y: top))
+        column.addLine(to: CGPoint(x: x + 7, y: top))
+        column.addLine(to: CGPoint(x: x + 18, y: h))
+        column.addLine(to: CGPoint(x: x - 18, y: h))
+        column.closeSubpath()
+        glow.fill(
+            column,
+            with: .linearGradient(
+                Gradient(colors: [rgb(1, 0.97, 0.82).opacity(0.9), rgb(1, 0.97, 0.82).opacity(0)]),
+                startPoint: CGPoint(x: x, y: top), endPoint: CGPoint(x: x, y: h)))
     }
 
     private func drawWhitecaps(_ context: inout GraphicsContext) {
-        let count = outlook.wind >= .strong ? 12 : 7
+        let count = outlook.wind >= .strong ? 6 : 4
         let speed = 30 + windiness * 30
         for i in 0..<count {
-            let layer = Double(i % 3)
-            let life = 2.2
+            let layer = Double(i % 2) * 1.5
+            let life = 2.8
             let phase = (t / life + hash(i, 28)).truncatingRemainder(dividingBy: 1)
-            var x = (hash(i, 29) * w + t * speed * windSign).truncatingRemainder(dividingBy: w)
-            if x < 0 { x += w }
+            var x = (hash(i, 29) * (w + 40) + t * speed * windSign).truncatingRemainder(dividingBy: w + 40)
+            if x < 0 { x += w + 40 }
+            x -= 20
             let y = waveY(x, layer: layer)
-            let widthNow = (7 + hash(i, 30) * 8) * sin(phase * .pi)
+            let widthNow = (14 + hash(i, 30) * 8) * sin(phase * .pi)
             var cap = Path()
             cap.move(to: CGPoint(x: x - widthNow / 2, y: y + 1))
-            cap.addQuadCurve(to: CGPoint(x: x + widthNow / 2, y: y + 1), control: CGPoint(x: x, y: y - 3))
+            cap.addQuadCurve(to: CGPoint(x: x + widthNow / 2, y: y + 1), control: CGPoint(x: x, y: y - 4))
             context.stroke(
-                cap, with: .color(.white.opacity(0.85 * sin(phase * .pi))),
-                style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                cap, with: .color(.white.opacity(0.8 * sin(phase * .pi))),
+                style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
         }
     }
 
     // MARK: Boat
-
-    private var boatExpression: Expression {
-        switch mood {
-        case .thunderstorm, .stormComing, .tooWindy: .worried
-        case .glassy, .clearNight: .sleepy
-        case .sailingBreeze: .delighted
-        case .sunny, .partlyCloudy: .happy
-        case .rain, .drizzle, .fog, .cloudy, .snow: .meh
-        }
-    }
 
     /// How the boat is rigged for the conditions, so the wind reads at a glance.
     private enum Rig {
@@ -470,9 +449,9 @@ private struct SceneDrawing {
         case slack
         /// Sails drawing, a little heel.
         case drawing
-        /// Sails full and taut, well heeled, a bow wave and a wake.
+        /// Sails full and taut, well heeled, a wake.
         case powered
-        /// Main reefed down, heeled hard, spray off the bow.
+        /// Main reefed down, heeled well over, a longer wake.
         case reefed
         /// Too windy or thunder: sails furled, rocking at anchor.
         case furled
@@ -492,43 +471,52 @@ private struct SceneDrawing {
     private var heel: Double {
         switch rig {
         case .slack: 0
-        case .drawing: 0.1
-        case .powered: outlook.wind == .fresh ? 0.36 : 0.26
-        case .reefed: 0.4
+        case .drawing: 0.08
+        case .powered: outlook.wind == .fresh ? 0.26 : 0.2
+        case .reefed: 0.26
         case .furled: 0.05
         }
     }
 
-    private func drawBoat(_ context: inout GraphicsContext) {
-        let s = h * 0.42
-        let x = w * 0.78
-        let waterline = waveY(x, layer: 0)
-        let slope = (waveY(x + 6, layer: 0) - waveY(x - 6, layer: 0)) / 12
+    private var boatScale: Double { h * 0.42 }
+    private var boatX: Double { w * 0.78 }
+
+    /// Where the boat floats this frame: its waterline and its angle. It rides the swell
+    /// averaged over the hull (bow, middle, stern), so the short ripples don't jostle it,
+    /// and rocks slowly and only a little on top of its heel.
+    private func boatPose() -> (waterline: Double, y: Double, angle: Double) {
+        let s = boatScale
+        let x = boatX
+        let bow = waveY(x - s * 0.45, layer: 0)
+        let stern = waveY(x + s * 0.45, layer: 0)
+        let swell = (bow + 2 * waveY(x, layer: 0) + stern) / 4
+        // Follow most of the swell's rise and fall, less of it as the sea builds.
+        let waterline = horizon + (swell - horizon) * 0.7 / (1 + 0.6 * windiness)
+        let pitch = atan((stern - bow) / (s * 0.9)) * 0.35 / (1 + windiness)
         let rock: Double
         switch rig {
-        case .furled: rock = sin(t * 2.6) * 0.2 + sin(t * 4.1) * 0.06
-        case .reefed: rock = sin(t * 2.2) * 0.07
-        case .slack: rock = sin(t * 0.8) * 0.015
-        case .drawing, .powered: rock = sin(t * 1.4) * 0.035
+        case .furled: rock = sin(t * 0.8) * 0.035
+        case .reefed: rock = sin(t * 1.1) * 0.035
+        case .slack: rock = sin(t * 0.6) * 0.01
+        case .drawing, .powered: rock = sin(t * 0.9) * 0.02
         }
-        let bob = sin(t * (rig == .slack ? 0.9 : 1.6)) * (rig == .slack ? 0.6 : 1.2)
-        let y = waterline + s * 0.06 + bob
-        let angle = atan(slope) * 0.8 + windSign * heel + rock
+        let bob = rig == .slack ? sin(t * 0.7) * 0.5 : 0
+        return (waterline, waterline + s * 0.06 + bob, pitch + windSign * heel + rock)
+    }
 
-        if rig == .powered || rig == .reefed { drawWake(&context, x: x, y: waterline, s: s) }
-        if rig == .slack { drawReflection(&context, x: x, y: waterline, s: s) }
+    private func drawBoat(_ context: inout GraphicsContext) {
+        let s = boatScale
+        let x = boatX
+        let pose = boatPose()
+
+        if rig == .powered || rig == .reefed { drawWake(&context, x: x, y: pose.waterline, s: s) }
+        if rig == .slack { drawReflection(&context, x: x, y: pose.waterline, s: s) }
 
         var boat = context
-        boat.translateBy(x: x, y: y)
-        boat.rotate(by: .radians(angle))
+        boat.translateBy(x: x, y: pose.y)
+        boat.rotate(by: .radians(pose.angle))
         if sky == .fog { boat.opacity = 0.7 }
         drawBoatShape(&boat, s: s)
-
-        face(
-            &boat, center: CGPoint(x: -s * 0.05, y: s * 0.03), size: s * 0.16, expression: boatExpression,
-            ink: rgb(0.25, 0.1, 0.08))
-        if boatExpression == .sleepy { drawZs(&boat, origin: CGPoint(x: s * 0.2, y: -s * 0.3)) }
-        if rig == .reefed || rig == .furled || outlook.wind >= .fresh { drawSpray(&boat, s: s) }
     }
 
     /// Mast, boom, sails for the rig, pennant and hull, in the boat's own frame (origin at
@@ -546,16 +534,9 @@ private struct SceneDrawing {
                 $0.move(to: CGPoint(x: 0, y: -s * 0.08)); $0.addLine(to: masthead)
             },
             with: .color(wood), style: StrokeStyle(lineWidth: 2, lineCap: .round))
-        // Forestay to the bow.
-        boat.stroke(
-            Path {
-                $0.move(to: CGPoint(x: 0, y: -s * 0.95)); $0.addLine(to: CGPoint(x: -s * 0.5, y: -s * 0.1))
-            },
-            with: .color(wood.opacity(0.6)), lineWidth: 0.7)
-
         switch rig {
         case .slack:
-            // Hanging limp: the leech sags in, with a few creases, stirring a little.
+            // Hanging limp: the leech sags in, stirring a little.
             let stir = sin(t * 1.8) * s * 0.015
             var main = Path()
             main.move(to: CGPoint(x: s * 0.03, y: -s * 0.98))
@@ -563,15 +544,6 @@ private struct SceneDrawing {
             main.addLine(to: CGPoint(x: s * 0.03, y: -s * 0.18))
             main.closeSubpath()
             boat.fill(main, with: .color(sailColor.opacity(0.92)))
-            var creases = Path()
-            for i in 0..<3 {
-                let yy = -s * (0.36 + Double(i) * 0.16)
-                creases.move(to: CGPoint(x: s * 0.06, y: yy))
-                creases.addQuadCurve(
-                    to: CGPoint(x: s * (0.2 - Double(i) * 0.04), y: yy + s * 0.08),
-                    control: CGPoint(x: s * 0.16, y: yy + s * 0.01))
-            }
-            boat.stroke(creases, with: .color(.black.opacity(0.16)), lineWidth: 0.8)
             var jib = Path()
             jib.move(to: CGPoint(x: -s * 0.03, y: -s * 0.9))
             jib.addQuadCurve(
@@ -598,15 +570,6 @@ private struct SceneDrawing {
                     Gradient(colors: [sailColor, rgb(0.84, 0.87, 0.86)]), startPoint: CGPoint(x: 0, y: 0),
                     endPoint: CGPoint(x: s * 0.5, y: 0)))
             boat.stroke(main, with: .color(.black.opacity(0.12)), lineWidth: 0.8)
-            // Batten lines show the sail is pulling.
-            var battens = Path()
-            for i in 1...2 {
-                let f = Double(i) / 3
-                let yy = head + (gooseneck.y - head) * f
-                battens.move(to: CGPoint(x: s * 0.05, y: yy))
-                battens.addLine(to: CGPoint(x: s * (0.05 + 0.3 * f + belly * 0.4), y: yy + s * 0.02))
-            }
-            boat.stroke(battens, with: .color(.black.opacity(0.1)), lineWidth: 0.8)
             if rig == .reefed {
                 // The reefed-down sail bundled on the boom.
                 boat.fill(
@@ -626,25 +589,12 @@ private struct SceneDrawing {
             boat.fill(jib, with: .color(rgb(0.9, 0.93, 0.92)))
 
         case .furled:
-            // Sails stowed: the main lashed to the boom, the jib rolled on the forestay.
+            // Sails stowed: the main lashed to the boom, the jib taken down.
             boat.fill(
                 Path(
                     roundedRect: CGRect(x: s * 0.02, y: gooseneck.y - s * 0.09, width: s * 0.48, height: s * 0.09),
                     cornerRadius: s * 0.045),
                 with: .color(sailColor))
-            var ties = Path()
-            for i in 1...3 {
-                let xx = s * (0.02 + 0.12 * Double(i))
-                ties.move(to: CGPoint(x: xx, y: gooseneck.y - s * 0.09))
-                ties.addLine(to: CGPoint(x: xx, y: gooseneck.y))
-            }
-            boat.stroke(ties, with: .color(Theme.coral), lineWidth: 1.2)
-            boat.stroke(
-                Path {
-                    $0.move(to: CGPoint(x: -s * 0.04, y: -s * 0.86));
-                    $0.addLine(to: CGPoint(x: -s * 0.44, y: -s * 0.16))
-                },
-                with: .color(sailColor), style: StrokeStyle(lineWidth: 3, lineCap: .round))
         }
 
         // Boom.
@@ -681,8 +631,8 @@ private struct SceneDrawing {
         let length = s * 0.2
         // 0 straight down … π/2 straight out downwind.
         let lift = (0.15 + strength * 1.42)
-        let flapRate = 2 + strength * 16
-        let flap = sin(t * flapRate) * (0.12 + (1 - strength) * 0.1)
+        let flapRate = 2 + strength * 7
+        let flap = sin(t * flapRate) * (0.08 + (1 - strength) * 0.06)
         let a = lift + flap
         let tip = CGPoint(x: masthead.x + windSign * sin(a) * length, y: masthead.y + cos(a) * length)
         let mid = CGPoint(
@@ -698,25 +648,26 @@ private struct SceneDrawing {
         context.fill(pennant, with: .color(Theme.coral))
     }
 
-    /// Foam trailing from the stern and a bow wave, longer the harder it sails.
+    /// A wake fading out behind the stern, longer the harder it sails.
     private func drawWake(_ context: inout GraphicsContext, x: Double, y: Double, s: Double) {
-        let length = s * (rig == .reefed ? 1.6 : 1.1)
-        for line in 0..<3 {
-            let offset = Double(line) * 3
-            let dash = (t * 40).truncatingRemainder(dividingBy: 12)
-            var wake = Path()
-            wake.move(to: CGPoint(x: x + s * 0.5, y: y + 1 + offset))
-            wake.addQuadCurve(
-                to: CGPoint(x: x + s * 0.5 + length, y: y + 3 + offset * 1.6),
-                control: CGPoint(x: x + s * 0.5 + length * 0.5, y: y + offset))
-            context.stroke(
-                wake, with: .color(.white.opacity(0.45 - Double(line) * 0.12)),
-                style: StrokeStyle(lineWidth: 1.4, lineCap: .round, dash: [6, 6], dashPhase: -dash))
+        let length = s * (rig == .reefed ? 1.4 : 1)
+        let start = x + s * 0.45
+        // Starts at the hull's waterline and settles onto the wave surface as it trails, so
+        // it stays attached to the stern while the boat rides the damped swell.
+        var wake = Path()
+        for step in 0...12 {
+            let f = Double(step) / 12
+            let surface = waveY(start + f * length, layer: 0)
+            let blend = min(f * 2.5, 1)
+            let point = CGPoint(x: start + f * length, y: y + (surface - y) * blend + 1.5 + f * 2)
+            step == 0 ? wake.move(to: point) : wake.addLine(to: point)
         }
-        var bow = Path()
-        bow.move(to: CGPoint(x: x - s * 0.62, y: y + 2))
-        bow.addQuadCurve(to: CGPoint(x: x - s * 0.42, y: y - 2), control: CGPoint(x: x - s * 0.58, y: y - 5))
-        context.stroke(bow, with: .color(.white.opacity(0.8)), style: StrokeStyle(lineWidth: 2, lineCap: .round))
+        context.stroke(
+            wake,
+            with: .linearGradient(
+                Gradient(colors: [.white.opacity(0.6), .white.opacity(0)]), startPoint: CGPoint(x: start, y: y),
+                endPoint: CGPoint(x: start + length, y: y)),
+            style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
     }
 
     /// The boat mirrored in glassy water.
@@ -727,114 +678,6 @@ private struct SceneDrawing {
         mirror.scaleBy(x: 1, y: -0.55)
         mirror.opacity = 0.22
         drawBoatShape(&mirror, s: s)
-    }
-
-    /// Spray flying off the windward bow.
-    private func drawSpray(_ boat: inout GraphicsContext, s: Double) {
-        let count = rig == .furled ? 8 : 5
-        for i in 0..<count {
-            let phase = (t * 1.8 + Double(i) / Double(count)).truncatingRemainder(dividingBy: 1)
-            let px = -windSign * s * 0.55 - windSign * phase * s * 0.25 * (hash(i, 31) + 0.5)
-            let py = -s * 0.05 - sin(phase * .pi) * s * 0.28
-            let r = 1.1 + hash(i, 32) * 1.1
-            boat.fill(
-                Path(ellipseIn: CGRect(x: px - r, y: py - r, width: r * 2, height: r * 2)),
-                with: .color(.white.opacity(0.85 * (1 - phase))))
-        }
-    }
-
-    /// Little z's drifting up from a dozing boat.
-    private func drawZs(_ context: inout GraphicsContext, origin: CGPoint) {
-        for i in 0..<3 {
-            let phase = (t * 0.35 + Double(i) / 3).truncatingRemainder(dividingBy: 1)
-            let text = Text("z").font(.system(size: 7 + phase * 6, weight: .bold, design: .rounded))
-                .foregroundStyle(.white.opacity(sin(phase * .pi) * 0.9))
-            context.draw(
-                text, at: CGPoint(x: origin.x + phase * 14 + sin(phase * 6) * 3, y: origin.y - phase * 26))
-        }
-    }
-
-    // MARK: Faces
-
-    enum Expression { case happy, delighted, worried, sleepy, meh, sad, grumpy, content }
-
-    /// Two eyes and a mouth, `size` across, with a blink every few seconds.
-    private func face(
-        _ context: inout GraphicsContext, center c: CGPoint, size s: Double, expression: Expression, ink: Color
-    ) {
-        let eyeGap = s * 0.42
-        let eyeY = c.y - s * 0.12
-        let blink = (t + c.x * 0.01).truncatingRemainder(dividingBy: 4.3) < 0.13
-        let closed = expression == .sleepy || expression == .content || blink
-        for side in [-1.0, 1.0] {
-            let ex = c.x + side * eyeGap / 2
-            if closed {
-                var lid = Path()
-                if expression == .content {
-                    // Happy upturned arcs: ^ ^
-                    lid.addArc(
-                        center: CGPoint(x: ex, y: eyeY + s * 0.06), radius: s * 0.09, startAngle: .degrees(200),
-                        endAngle: .degrees(340), clockwise: false)
-                } else {
-                    lid.addArc(
-                        center: CGPoint(x: ex, y: eyeY - s * 0.04), radius: s * 0.09, startAngle: .degrees(20),
-                        endAngle: .degrees(160), clockwise: false)
-                }
-                context.stroke(lid, with: .color(ink), style: StrokeStyle(lineWidth: max(1, s * 0.07), lineCap: .round))
-            } else {
-                let r = expression == .worried ? s * 0.11 : s * 0.085
-                context.fill(
-                    Path(ellipseIn: CGRect(x: ex - r, y: eyeY - r * 1.15, width: r * 2, height: r * 2.3)),
-                    with: .color(ink))
-                if expression == .worried || expression == .delighted {
-                    let glint = r * 0.4
-                    context.fill(
-                        Path(ellipseIn: CGRect(x: ex - r * 0.2, y: eyeY - r * 0.8, width: glint, height: glint)),
-                        with: .color(.white))
-                }
-            }
-            if expression == .grumpy {
-                var brow = Path()
-                brow.move(to: CGPoint(x: ex - side * s * 0.14, y: eyeY - s * 0.26))
-                brow.addLine(to: CGPoint(x: ex + side * s * 0.08, y: eyeY - s * 0.15))
-                context.stroke(
-                    brow, with: .color(ink), style: StrokeStyle(lineWidth: max(1, s * 0.07), lineCap: .round))
-            }
-        }
-        let mouthY = c.y + s * 0.14
-        var mouth = Path()
-        let lineWidth = max(1, s * 0.07)
-        switch expression {
-        case .happy, .content:
-            mouth.addArc(
-                center: CGPoint(x: c.x, y: mouthY - s * 0.06), radius: s * 0.14, startAngle: .degrees(25),
-                endAngle: .degrees(155), clockwise: false)
-            context.stroke(mouth, with: .color(ink), style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
-        case .delighted:
-            mouth.move(to: CGPoint(x: c.x - s * 0.16, y: mouthY - s * 0.02))
-            mouth.addQuadCurve(
-                to: CGPoint(x: c.x + s * 0.16, y: mouthY - s * 0.02), control: CGPoint(x: c.x, y: mouthY + s * 0.26))
-            mouth.closeSubpath()
-            context.fill(mouth, with: .color(ink))
-        case .worried:
-            context.stroke(
-                Path(ellipseIn: CGRect(x: c.x - s * 0.06, y: mouthY - s * 0.02, width: s * 0.12, height: s * 0.15)),
-                with: .color(ink), lineWidth: lineWidth)
-        case .sleepy:
-            mouth.addArc(
-                center: CGPoint(x: c.x, y: mouthY - s * 0.02), radius: s * 0.07, startAngle: .degrees(30),
-                endAngle: .degrees(150), clockwise: false)
-            context.stroke(mouth, with: .color(ink), style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
-        case .meh:
-            mouth.move(to: CGPoint(x: c.x - s * 0.1, y: mouthY + s * 0.03))
-            mouth.addLine(to: CGPoint(x: c.x + s * 0.1, y: mouthY + s * 0.03))
-            context.stroke(mouth, with: .color(ink), style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
-        case .sad, .grumpy:
-            mouth.addArc(
-                center: CGPoint(x: c.x, y: mouthY + s * 0.12), radius: s * 0.12, startAngle: .degrees(215),
-                endAngle: .degrees(325), clockwise: false)
-            context.stroke(mouth, with: .color(ink), style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
-        }
     }
 
     // MARK: Helpers
