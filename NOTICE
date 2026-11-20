@@ -6,3 +6,11 @@ This product includes software developed by The MadeGood Authors
 listed in the project's Git history.
 
 Licensed under the Apache License, Version 2.0. See LICENSE.
+
+Third-party components bundled with the website's Worker:
+
+- Inter (https://github.com/rsms/inter), Copyright (c) 2016 The Inter Project
+  Authors, licensed under the SIL Open Font License 1.1. Latin subsets are in
+  web/src/server/og/fonts/ with the license text (OFL.txt).
+- resvg-wasm (https://github.com/thx/resvg-js), licensed under the Mozilla
+  Public License 2.0, used unmodified from npm.

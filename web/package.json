@@ -12,10 +12,12 @@
     "typecheck": "pnpm typegen && tsc -b",
     "test": "vitest run",
     "db:generate": "drizzle-kit generate",
-    "db:migrate:local": "wrangler d1 migrations apply DB --local"
+    "db:migrate:local": "wrangler d1 migrations apply DB --local",
+    "og:render": "node scripts/render-og.mjs"
   },
   "dependencies": {
     "@hono/zod-openapi": "1.6.3",
+    "@resvg/resvg-wasm": "2.6.2",
     "@tanstack/react-query": "5.107.1",
     "@tanstack/react-router": "1.170.46",
     "class-variance-authority": "0.7.1",

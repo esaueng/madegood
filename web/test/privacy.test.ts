@@ -12,7 +12,11 @@ import {
 } from "../src/server/lib/session-privacy";
 import { SHARED_TRACK_MAX_INFLATED_BYTES, TrackTooLarge } from "../src/server/lib/track";
 import { MAX_ZONES } from "../src/server/routes/privacy-zones";
-import { injectPreview, sessionPreviewPage } from "../src/server/routes/session-preview";
+import {
+  BRAND_IMAGE,
+  injectPreview,
+  sessionPreviewPage,
+} from "../src/server/routes/session-preview";
 import { api, bearer, type SignIn, signIn } from "./apple";
 
 // Synthetic data only (AGENTS.md): positions near 0,0 and dates in 2000.
@@ -435,14 +439,15 @@ describe("Open Graph tags on /s/:id", () => {
     await addZone(owner.accessToken, { lat: 0, lon: 0, radiusM: 5000 });
     const html = await page(id);
     expect(html).not.toMatch(/0\.000\d/);
-    expect(html).not.toMatch(/og:image|lat|lon/);
+    // The image URL names only the session and a hash (test/og-image.test.ts).
+    expect(html).not.toMatch(/lat|lon/);
   });
 
   it("keeps the shell's body and passes non-HTML responses through", async () => {
     const shell = new Response(SHELL, { headers: { "content-type": "text/html" } });
     const html = await injectPreview(
       shell,
-      { title: "T", description: "D", indexable: false },
+      { title: "T", description: "D", indexable: false, image: BRAND_IMAGE },
       "https://madegood.test/s/x",
     ).text();
     expect(html).toContain("<title>T · MadeGood</title>");
