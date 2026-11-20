@@ -8,6 +8,7 @@ import {
   legs,
   privacyZones,
   type Session,
+  sessionColumns,
   sessions,
   users,
   voyages,
@@ -58,7 +59,7 @@ const D1_IN = 50;
 const D1_IN_MAX = 90;
 /**
  * Upper bound of one session's document line, bytes: the stored summary (at most 64 KiB of
- * text, up to 3 bytes each in UTF-8), the wind (small) and every other field with worst-case
+ * text, up to 3 bytes each in UTF-8) and every other field with worst-case
  * escaping. A part reserves this per session before streaming its document; a session
  * that would exceed it is listed in errors.json instead.
  */
@@ -129,14 +130,6 @@ const legTrackKey = (userId: string, voyageId: string, legId: string) =>
 const encoder = new TextEncoder();
 const json = (value: unknown) => encoder.encode(`${JSON.stringify(value, null, 2)}\n`);
 const iso = (ms: number | null) => (ms === null ? null : new Date(ms).toISOString());
-const parseJson = (text: string | null): unknown => {
-  if (text === null) return null;
-  try {
-    return JSON.parse(text);
-  } catch {
-    return text;
-  }
-};
 const pad = (n: number) => String(n).padStart(4, "0");
 
 // ---------------------------------------------------------------------------------------
@@ -503,8 +496,6 @@ const sessionDocument = (s: SessionRow, trackName: string | null) => ({
   startGeohash: s.startGeohash,
   trackStartedAt: iso(s.trackStartedAt),
   trackEndedAt: iso(s.trackEndedAt),
-  summary: parseJson(s.summaryJson),
-  wind: parseJson(s.windJson),
   analyzerVersion: s.analyzerVersion,
   uploadRevision: s.uploadRevision,
   track: trackName,
@@ -523,15 +514,12 @@ const rawJson = (text: string | null): string => {
   }
 };
 
-/** One session's document as a compact JSON line, the stored summary and wind embedded raw. */
+/** One session's document as a compact JSON line, with the stored summary embedded raw. */
 export function sessionDocumentLine(s: SessionRow): string {
-  const {
-    summary: _summary,
-    wind: _wind,
-    ...fields
-  } = sessionDocument(s, s.trackKey ? `tracks/sessions/${s.id}.track.v1.gz` : null);
-  const head = JSON.stringify(fields);
-  return `${head.slice(0, -1)},"summary":${rawJson(s.summaryJson)},"wind":${rawJson(s.windJson)}}`;
+  const head = JSON.stringify(
+    sessionDocument(s, s.trackKey ? `tracks/sessions/${s.id}.track.v1.gz` : null),
+  );
+  return `${head.slice(0, -1)},"summary":${rawJson(s.summaryJson)}}`;
 }
 
 function toStream(chunks: AsyncGenerator<Uint8Array>): ReadableStream<Uint8Array> {
@@ -564,7 +552,7 @@ export async function* sessionDocumentChunks(
     const ids = item.ids.slice(i, i + D1_IN);
     calls.take();
     const rows = await db
-      .select()
+      .select(sessionColumns)
       .from(sessions)
       .where(
         and(eq(sessions.userId, userId), isNull(sessions.deletedAt), inArray(sessions.id, ids)),
@@ -770,7 +758,7 @@ The other parts hold:
 
 sessions/            Every session in your account (when the export started): times, sport,
                      title, notes, visibility, statistics, the analysis summary, the area and
-                     times worked out from the track, and the wind estimate. ${SESSIONS_PER_FILE} per
+                     times worked out from the track. ${SESSIONS_PER_FILE} per
                      file, a JSON array with one session per line.
 voyages/             Private voyages and their legs, if you synced any.
 tracks/sessions/     Each session's track as you uploaded it (gzipped JSON, track v1,

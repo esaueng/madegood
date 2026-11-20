@@ -118,8 +118,38 @@ A refresh token replayed within 30 s across the change counts as reuse and signs
 user out.
 
 Sign-in fetches Apple's public keys from `https://appleid.apple.com/auth/keys` and
-caches them in memory for an hour. No Apple private key is needed: the Worker only
-verifies identity tokens.
+caches them in memory for an hour. Sign in with Apple identity-token verification uses only public keys.
+
+### Enable WeatherKit wind
+
+Shared-session wind is optional. In the Apple Developer portal, open **Certificates,
+Identifiers & Profiles**. Under **Identifiers**, create a **Services ID** or choose
+one already registered to your team, and record its identifier. Under **Keys**,
+register a key with **WeatherKit** enabled, download its `.p8` file, and record
+its Key ID. Find your Team ID in the Apple Developer account's membership details.
+Use the same team for the key and Services ID. See [Apple's WeatherKit setup guide](https://developer.apple.com/documentation/weatherkitrestapi/request-authentication-for-weatherkit-rest-api).
+
+Set these four Worker secrets from `web/`:
+
+| Secret | Value |
+|---|---|
+| `WEATHERKIT_PRIVATE_KEY` | Entire downloaded `.p8` file, including the PEM delimiters |
+| `WEATHERKIT_KEY_ID` | Key ID shown for the WeatherKit key |
+| `WEATHERKIT_TEAM_ID` | Apple Developer Team ID |
+| `WEATHERKIT_SERVICE_ID` | Registered Services ID identifier |
+
+```sh
+pnpm exec wrangler secret put WEATHERKIT_PRIVATE_KEY < /path/to/key.p8
+pnpm exec wrangler secret put WEATHERKIT_KEY_ID
+pnpm exec wrangler secret put WEATHERKIT_TEAM_ID
+pnpm exec wrangler secret put WEATHERKIT_SERVICE_ID
+```
+
+Set them directly on each Worker that should fetch wind (add `--env preview` to
+enable it on the preview Worker). For local development use the same names in the
+gitignored `web/.dev.vars`, with the key quoted as multiline PEM or with escaped
+newlines. With any value missing, session detail responses omit wind. Upload
+post-processing runs independently of WeatherKit.
 
 ## Deploying
 
@@ -205,8 +235,7 @@ After a track upload (`PUT /api/sessions/:id/track`) the Worker sends a message 
 - the bounding box of the fixes others may see, with privacy zones cut out exactly as
   in the shared track, which is all anyone else ever gets;
 - the first and last GPS fix times: the whole track's for the owner, and separately
-  the first and last fix others may see, which is all they get;
-- for public and unlisted sessions only, hourly modelled wind from Open-Meteo.
+  the first and last fix others may see, which is all they get.
 
 The session's `processing` field reports `pending`, `done`, `too_large` or `invalid`.
 Tracks above the shared-track caps (8 MiB inflated or 500,000 fixes) are `too_large`
@@ -223,8 +252,8 @@ were replaced that way answers 412 `track_replaced`, never success, so the clien
 it again. A new upload or a newer revision clears the derived data at once.
 
 **Privacy zones.** Every zone change bumps the owner's `users.zones_version` in the same
-D1 batch and clears the public bounds, times and wind. Public data (wind included)
-records the version it was cut at, is written only while that version is still
+D1 batch and clears the public bounds and times. The public track data records the
+version it was cut at, is written only while that version is still
 current, and is served only while it matches, so nothing computed without a zone is
 shown once the zone exists. The change then queues one `user` message, which requeues
 that user's sessions 50 at a time (follow-up messages carry a cursor), and records it
@@ -234,8 +263,7 @@ sweep (`triggers.crons`, every 30 minutes) queues any that are left. Adding a zo
 cannot be queued is undone and answers 503; removing one answers 503 but needs no
 retry. Removing a zone that does not exist changes nothing.
 
-**Retries and dead letters.** A failure (D1, R2, an Open-Meteo outage or rate limit)
-is retried after 30 s, 1, 2, 4 and 8 minutes. After 5 retries the message moves to
+**Retries and dead letters.** A D1 or R2 failure is retried after 30 s, 1, 2, 4 and 8 minutes. After 5 retries the message moves to
 `madegood-postprocess-dlq`, which has no consumer: inspect it in the dashboard (Queues
 › madegood-postprocess-dlq) and, once the cause is fixed, either re-upload the track
 or send the message body back to `madegood-postprocess`. A dead letter holds only IDs (session,
@@ -251,24 +279,47 @@ reprocesses at most 20 sessions (a `waitUntil` gets about 30 s). The others show
 public data until their next upload or zone change. A self-hosted copy can drop the
 `queues` block the same way.
 
-### What is sent to Open-Meteo
+### What is sent to Apple Weather
 
-Wind is fetched only while a session is public or unlisted; private sessions never
-cause a request (sharing a session later queues the lookup). Visibility is read again
-right before each request, and the answer is stored only if the session is still
-shared. Each request to
-`api.open-meteo.com` (sessions that ended within 60 days) or `archive-api.open-meteo.com`
-(older ones) carries only:
+A session detail view can request wind from Apple while the session is Public or
+Unlisted and its privacy-cut bounds and fix times are current. The Worker checks
+visibility, account and session deletion, and the current track and zones before
+calling Apple and again before serving the result. A missing secret, unavailable
+result, timeout or rate limit leaves the session page available with wind omitted.
 
-- one position: the center of the session's **public** bounds, rounded to 0.1°
-  (about 11 km), so no point inside a privacy zone shapes it;
-- the UTC calendar dates of the first and last fix others may see (no time of day);
-- the fixed variables `wind_speed_10m,wind_direction_10m,wind_gusts_10m` with
-  `wind_speed_unit=ms`, `timeformat=unixtime`, `timezone=GMT`.
+Each GET to `weatherkit.apple.com/api/v1/weather/en/<latitude>/<longitude>` sends:
 
-No account, session ID, track, title or API key is sent. Open-Meteo's free API is for
-non-commercial use; a commercial deployment needs its own Open-Meteo plan. Wind is a
-model value for the area, shown as such, and not for navigation.
+- the center of the session's public track bounds, after privacy zone cuts, rounded
+  to a 0.1° grid (about 11 km);
+- `hourlyStart` and `hourlyEnd` as whole UTC-hour boundaries derived from the first
+  and last visible GPS fixes. The requested samples span the hour before the start
+  through the hour after the end, with an exclusive end boundary and WeatherKit's
+  historical and forecast limits;
+- `dataSets=forecastHourly`, `timezone=UTC`, and `Accept: application/json`;
+- `Cache-Control: no-cache` and `Pragma: no-cache`, added by the Worker runtime
+  to bypass its automatic HTTP cache;
+- a Bearer JWT containing the deployment's Apple key, team, and Services ID
+  identifiers and the token's issue and expiry times. The Worker signs the JWT
+  locally and retains the private key in its secret binding.
+
+The request carries no MadeGood account or session ID, track, title, exact fix
+coordinates or exact fix timestamps. Apple Weather supplies modelled values for
+the area. The session page displays these with Apple Weather attribution and the
+not-for-navigation label.
+
+The Worker holds the derived hourly wind result in `caches.default` for three hours
+solely to speed repeat views. The key uses the coarse cell and UTC hour range, so
+reloads, query strings, and other sessions in the same cell and range can reuse the
+entry. A lookup that returns no wind backs off for two minutes using an empty cache
+entry. Cache misses are limited to two per minute per cell and five per minute total
+at each Cloudflare location. These are approximate local limits. Apple's monthly
+quota is shared with the iPhone app. See [Apple's WeatherKit terms, Attachment 8](https://developer.apple.com/support/terms/apple-developer-program-license-agreement/#attachment-8)
+and [Workers rate limiting](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/).
+
+Wind from WeatherKit stays out of D1, R2, KV, and account exports. Migration 0013
+clears earlier wind estimates and retains the empty `sessions.wind_json` column
+so the D1 migration remains compatible with the previous Worker during rollout.
+It discards any legacy wind writes that finish between migration and deployment.
 
 ## Account export
 
@@ -288,7 +339,8 @@ Settings → Export all my data on the website runs a background job
   an attempt that lost its claim deletes only its own objects, and the job's cursor moves
   only from a committed part's listing. Documents come first (sessions in files of 250,
   looked up by the frozen IDs and written one compact JSON line per session, the stored
-  summary embedded as is), then tracks by their frozen key and ETag. A part stops at 500 MiB, 400 items or
+  summary embedded as is), then tracks by their frozen key and ETag. See
+  [Account export format](formats.md#account-export). A part stops at 500 MiB, 400 items or
   700 storage calls, then queues the next step. A track replaced since the snapshot is
   exported at its current version (noted in `manifest.json`); one that is gone, and a
   session document over 256 KiB, is listed in `errors.json`. The job reports how many
@@ -354,7 +406,7 @@ to `scripts/testflight` as a build setting.
 
 - D1 holds users (Apple's user identifier, a handle, an optional display name, units,
   default visibility), hashed refresh tokens, session metadata and summaries, data
-  derived from tracks (bounds, fix times, wind; see
+  derived from tracks (bounds and fix times; see
   [Upload post-processing](#upload-post-processing)), and privacy zones. R2 holds each session's gzipped track v1 under the user's prefix.
 - `DELETE /api/me` (with the account's ID in the body) marks the account deleting and
   revokes sign-ins and hides its shared sessions, profile and live voyage data at once.

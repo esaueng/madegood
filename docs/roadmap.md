@@ -76,7 +76,7 @@ screen reordering and conditions (#75, #90), brand and app icon (#83).
 | Task | Status | Pull requests |
 |---|---|---|
 | 1. Paddling stroke detection and sport page | ✅ | #59; stroke-based intervals: #102 |
-| 2. Sailing maneuvers, wind estimate (+ Open-Meteo), VMG, sport page | ✅ | #54, #67 |
+| 2. Sailing maneuvers, wind estimate (+ Apple Weather), VMG, sport page | ✅ | #54, #67 |
 | 3. Race countdown and start line | ✅ | countdown: #39, #40; start line: #77 |
 | 4. Windsurf speed categories and speed page | ✅ | #57; planing time and gybes: #100 |
 | 5. Motorboat profile: nm log, fuel estimate, anchor alarm | ✅ | #60; anchor alarm: #101 |
@@ -108,7 +108,7 @@ Also merged: heart-rate zones for every sport (#97).
 | 1. D1 schema, Drizzle, OpenAPI, Swift client codegen | ✅ | #34, #37 |
 | 2. Sign in with Apple (iOS + web), tokens, account deletion, data export | ✅ | #36, #63, #76; deletion: #78; export: #79 |
 | 3. iPhone sync: background upload queue, retries, status | ✅ | #65 |
-| 4. Upload endpoints, R2, queue consumer (wind, bbox) | ✅ | #37; consumer: #72 |
+| 4. Upload endpoints, R2, queue consumer (bounds, fix times) | ✅ | #37; consumer: #72 |
 | 5. Web dashboard, session page, profile, settings | ✅ | #63, #64, #86; profile `/u/:handle`: #95 |
 | 6. Visibility, privacy zones, Open Graph | ✅ | #64; route images: #96 |
 

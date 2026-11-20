@@ -706,8 +706,7 @@
           "source": {
             "type": "string",
             "enum": [
-              "open-meteo-forecast",
-              "open-meteo-archive"
+              "weatherkit"
             ]
           },
           "directionDeg": {
@@ -780,7 +779,7 @@
           "samples",
           "fetchedAt"
         ],
-        "description": "Modelled wind from Open-Meteo for the session's time and area, fetched only while the session is public or unlisted. Null when not fetched or not available."
+        "description": "Modelled wind looked up on a session detail view while the session is public or unlisted. Uses the visible track after privacy zone cuts. Null when not fetched or not available."
       },
       "PutSessionRequest": {
         "type": "object",
@@ -2902,7 +2901,7 @@
       "put": {
         "operationId": "putSessionTrack",
         "summary": "Upload a session's track file",
-        "description": "The body is the gzipped track v1 file (docs/formats.md), sent as `application/gzip` with no Content-Encoding, at most 8388608 bytes. PUT the session's metadata first, with the same `revision`. Repeating the upload replaces the file. The server then derives the session's bounds, track times and (for shared sessions) wind in the background; `processing` on the session reports progress.",
+        "description": "The body is the gzipped track v1 file (docs/formats.md), sent as `application/gzip` with no Content-Encoding, at most 8388608 bytes. PUT the session's metadata first, with the same `revision`. Repeating the upload replaces the file. The server then derives the session's bounds and track times in the background; `processing` on the session reports progress.",
         "tags": [
           "sessions"
         ],

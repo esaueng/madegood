@@ -1,4 +1,4 @@
-import { sql } from "drizzle-orm";
+import { getTableColumns, sql } from "drizzle-orm";
 import {
   foreignKey,
   index,
@@ -132,6 +132,7 @@ export const sessions = sqliteTable(
      * replace newer data, for example a track the user has since trimmed.
      */
     uploadRevision: integer("upload_revision").notNull().default(0),
+    // Kept empty after migration 0013 so the Worker can deploy without dropping a column.
     windJson: text("wind_json"),
     // Post-processing (lib/postprocess.ts). `trackEtag` is the attached track object's
     // ETag; the derived columns below belong to it once `processedEtag` equals it. Every
@@ -198,7 +199,11 @@ export const privacyZones = sqliteTable(
   (table) => [index("privacy_zones_user").on(table.userId)],
 );
 
-export type Session = typeof sessions.$inferSelect;
+// The legacy wind column is part of the storage schema only.
+const { windJson: _legacyWind, ...sessionColumns } = getTableColumns(sessions);
+
+export { sessionColumns };
+export type Session = Omit<typeof sessions.$inferSelect, "windJson">;
 export type RefreshToken = typeof refreshTokens.$inferSelect;
 export type PrivacyZone = typeof privacyZones.$inferSelect;
 

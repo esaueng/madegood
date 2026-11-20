@@ -1,6 +1,6 @@
 import { and, eq, isNull } from "drizzle-orm";
 import type { drizzle } from "drizzle-orm/d1";
-import { pendingR2Deletes, type Session, sessions, users } from "../db/schema";
+import { pendingR2Deletes, type Session, sessionColumns, sessions, users } from "../db/schema";
 import { logFailure } from "./logging";
 import { CLEARED_DERIVED } from "./postprocess";
 import {
@@ -125,7 +125,7 @@ export async function replaceSessionMetadata(
       if (!(await accountActive(db, userId))) return { kind: "missing" };
       continue;
     }
-    const [updated] = await db.select().from(sessions).where(own);
+    const [updated] = await db.select(sessionColumns).from(sessions).where(own);
     if (!updated) return { kind: "missing" };
     if (newer) {
       // The detached track goes now (its data may be what the user has trimmed away);
@@ -180,7 +180,7 @@ export async function insertSession(
     .run();
   if (result.meta.changes !== 1) return null;
   const [created] = await db
-    .select()
+    .select(sessionColumns)
     .from(sessions)
     .where(and(eq(sessions.id, id), eq(sessions.userId, userId)));
   return created ?? null;

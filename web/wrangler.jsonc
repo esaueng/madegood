@@ -62,6 +62,16 @@
       "name": "SESSION_UPLOAD_RATE_LIMIT",
       "namespace_id": "1002",
       "simple": { "limit": 1200, "period": 60 }
+    },
+    {
+      "name": "WEATHERKIT_CELL_LIMIT",
+      "namespace_id": "1005",
+      "simple": { "limit": 2, "period": 60 }
+    },
+    {
+      "name": "WEATHERKIT_MISS_LIMIT",
+      "namespace_id": "1006",
+      "simple": { "limit": 5, "period": 60 }
     }
   ],
   // Upload post-processing (src/server/lib/postprocess.ts, docs/self-hosting.md). A message
@@ -127,6 +137,16 @@
           "name": "SESSION_UPLOAD_RATE_LIMIT",
           "namespace_id": "1004",
           "simple": { "limit": 1200, "period": 60 }
+        },
+        {
+          "name": "WEATHERKIT_CELL_LIMIT",
+          "namespace_id": "1007",
+          "simple": { "limit": 2, "period": 60 }
+        },
+        {
+          "name": "WEATHERKIT_MISS_LIMIT",
+          "namespace_id": "1008",
+          "simple": { "limit": 5, "period": 60 }
         }
       ],
       // No queue: preview version uploads cannot set queue consumers. Without the binding
