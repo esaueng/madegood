@@ -12,6 +12,7 @@ public struct SessionReplay: Sendable {
     public let paddlingSplits: [PaddlingSplit]
     /// Observed moving steps for paddling analyses, excluding replay route gaps.
     let paddlingMovement: [SessionEngine.MovementInterval]
+    let windsurfPlaning: WindsurfAnalysis.Planing?
 
     /// Open intervals on the replay clock whose samples were removed by a local edit.
     /// Both boundary instants of each interval are retained.
@@ -40,7 +41,8 @@ public struct SessionReplay: Sendable {
         // After the session, `SessionSelection.sailingAnalysis` analyzes sailing in one
         // pass; the live tracker's periodic refreshes are not needed here.
         profile.tracksSailing = false
-        var engine = SessionEngine(profile: profile, recordsMovement: track.sport.isPaddling)
+        var engine = SessionEngine(
+            profile: profile, recordsMovement: track.sport.isPaddling || track.sport == .windsurfing)
         // Events the engine generated live are stored with {"auto": true}. They are left
         // out here and regenerated; fed back in, an auto-pause would act as a manual one.
         let userEvents = track.events.filter { $0.data?["auto"] != .bool(true) }
@@ -66,9 +68,14 @@ public struct SessionReplay: Sendable {
         metrics = engine.snapshot
         self.fixes = fixes
         events = (userEvents + engine.generatedEvents).sorted { $0.t < $1.t }
-        let movement = (engine.movementIntervals ?? []).filter { $0.duration <= SessionReplayTimeline.maxRouteGap }
-        paddlingMovement = movement
-        paddlingSplits = PaddlingSplit.makeSplits(from: movement)
+        let intervals = engine.movementIntervals ?? []
+        let movement = intervals.filter { $0.duration <= SessionReplayTimeline.maxRouteGap }
+        paddlingMovement = track.sport.isPaddling ? movement : []
+        paddlingSplits = track.sport.isPaddling ? PaddlingSplit.makeSplits(from: movement) : []
+        windsurfPlaning =
+            track.sport == .windsurfing
+            ? WindsurfAnalysis.Planing(fixes: fixes, intervals: intervals, threshold: profile.planingSpeedThreshold)
+            : nil
     }
 
     /// Version of the analysis that produced `summary` and the generated events. Bump it

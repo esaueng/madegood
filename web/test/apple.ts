@@ -56,8 +56,16 @@ export function identityToken(options: IdentityTokenOptions = {}) {
     .sign(options.key ?? appleKey.privateKey);
 }
 
-export const api = (path: string, init?: RequestInit) =>
-  exports.default.fetch(`https://madegood.test/api${path}`, init);
+export const api = (path: string, init?: RequestInit) => {
+  const headers = new Headers(init?.headers);
+  if (path.startsWith("/auth/") && !headers.has("CF-Connecting-IP")) {
+    // workerd tests have no Cloudflare ingress. Keep unrelated auth tests from sharing a
+    // budget, while allowing rate-limit tests to give a sequence of requests the same IP.
+    const id = crypto.randomUUID();
+    headers.set("CF-Connecting-IP", `2001:db8::${id.slice(0, 4)}:${id.slice(4, 8)}`);
+  }
+  return exports.default.fetch(`https://madegood.test/api${path}`, { ...init, headers });
+};
 
 export const postJson = (path: string, body: unknown, headers: Record<string, string> = {}) =>
   api(path, {

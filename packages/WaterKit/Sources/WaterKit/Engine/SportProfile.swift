@@ -11,10 +11,13 @@ public struct SportProfile: Sendable, Hashable {
     public var tracksSpeedCategories: Bool
     /// Whether the engine estimates wind and counts tacks and gybes (docs/metrics.md).
     public var tracksSailing: Bool
+    /// Windsurfing planing threshold, m/s.
+    public var planingSpeedThreshold: Double
 
     public init(
         sport: Sport, autoPause: AutoPause.Config, autoLapDistance: Double? = nil, savesWorkoutByDefault: Bool = true,
-        tracksSpeedCategories: Bool? = nil, tracksSailing: Bool? = nil
+        tracksSpeedCategories: Bool? = nil, tracksSailing: Bool? = nil,
+        planingSpeedThreshold: Double = SportSettings.defaultPlaningSpeedThreshold
     ) {
         self.sport = sport
         self.autoPause = autoPause
@@ -22,6 +25,7 @@ public struct SportProfile: Sendable, Hashable {
         self.savesWorkoutByDefault = savesWorkoutByDefault
         self.tracksSpeedCategories = tracksSpeedCategories ?? (sport == .windsurfing)
         self.tracksSailing = tracksSailing ?? (sport == .sailing)
+        self.planingSpeedThreshold = planingSpeedThreshold
     }
 
     /// Defaults from docs/PLAN.md §5: auto-pause is on for paddling and off for sailing,

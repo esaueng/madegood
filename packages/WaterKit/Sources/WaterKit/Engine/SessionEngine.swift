@@ -65,6 +65,8 @@ public struct LiveMetrics: Sendable, Hashable {
     public var latitude: Double?
     public var longitude: Double?
     public var heartRate: Double?
+    /// Time of the latest valid reading, on the session clock.
+    public fileprivate(set) var heartRateTime: Double? = nil
     public var heartRateAverage: Double?
     public var heartRateMax: Double?
     public var pauseState: PauseState
@@ -161,7 +163,7 @@ public struct SessionEngine: LiveAnalyzer {
     private var best2s: WindowBest?
     private var best10s: WindowBest?
     private var latestTime = 0.0
-    private var heartRate: Double?
+    private var heartRate: HRSample?
     private var heartRateSum = 0.0
     private var heartRateCount = 0
     private var heartRateMax: Double?
@@ -243,7 +245,8 @@ public struct SessionEngine: LiveAnalyzer {
             maxSpeed2s: best2s?.mean, maxSpeed10s: best10s?.mean,
             maxSpeed2sRange: best2s?.range, maxSpeed10sRange: best10s?.range, course: course,
             latitude: lastAccepted?.latitude, longitude: lastAccepted?.longitude,
-            heartRate: heartRate, heartRateAverage: heartRateCount > 0 ? heartRateSum / Double(heartRateCount) : nil,
+            heartRate: heartRate?.bpm, heartRateTime: heartRate?.t,
+            heartRateAverage: heartRateCount > 0 ? heartRateSum / Double(heartRateCount) : nil,
             heartRateMax: heartRateMax,
             pauseState: pauseState, laps: laps, currentLap: lap(endingAt: latestTime, isAuto: false),
             acceptedFixes: acceptedFixes, rejectedFixes: rejectedFixes, isFinished: finished,
@@ -442,7 +445,7 @@ public struct SessionEngine: LiveAnalyzer {
 
     private mutating func ingestHeartRate(_ sample: HRSample) {
         guard sample.bpm.isFinite, sample.bpm > 0 else { return }
-        heartRate = sample.bpm
+        heartRate = sample
         heartRateSum += sample.bpm
         heartRateCount += 1
         heartRateMax = max(heartRateMax ?? sample.bpm, sample.bpm)
