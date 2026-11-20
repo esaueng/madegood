@@ -126,6 +126,42 @@ import Testing
         }
     }
 
+    @Test func heartRateEditsMergeIndependentlyAndResetPropagates() {
+        let phone = Device(id: "phone")
+        let watch = Device(id: "watch")
+        let thresholds = [50, 60, 75, 90]
+        SettingsSync.save(
+            HeartRateZones(maximum: 200), now: 10, device: phone.id,
+            reading: phone.read, writing: phone.write)
+        SettingsSync.save(
+            HeartRateZones(thresholds: thresholds), now: 20, device: watch.id,
+            reading: watch.read, writing: watch.write)
+        let phoneSnapshot = phone.snapshot
+        #expect(phone.receive(watch.snapshot) == .appliedAndKeptLocalNewer)
+        #expect(watch.receive(phoneSnapshot) == .appliedAndKeptLocalNewer)
+        let merged = HeartRateZones(maximum: 200, thresholds: thresholds)
+        #expect(SettingsSync.heartRateZones(reading: phone.read) == merged)
+        #expect(SettingsSync.heartRateZones(reading: watch.read) == merged)
+
+        let old = watch.snapshot
+        SettingsSync.save(
+            HeartRateZones(maximum: 200), now: 30, device: watch.id,
+            reading: watch.read, writing: watch.write)
+        #expect(phone.receive(watch.snapshot) == .applied)
+        #expect(phone.receive(old) == .keptLocalNewer)
+        #expect(SettingsSync.heartRateZones(reading: phone.read) == HeartRateZones(maximum: 200))
+    }
+
+    @Test func legacySettingsCannotResetHeartRateSettings() {
+        let phone = Device(id: "phone")
+        let watch = LegacyBuild(id: "watch")
+        let zones = HeartRateZones(maximum: 200, thresholds: [50, 60, 75, 90])
+        SettingsSync.save(zones, now: 10, device: phone.id, reading: phone.read, writing: phone.write)
+        watch.edit(SportSettings.Key.countdown(.sailing), 3, at: 20)
+        #expect(phone.receive(watch.snapshot) == .applied)
+        #expect(SettingsSync.heartRateZones(reading: phone.read) == zones)
+    }
+
     // MARK: Local edits and migration
 
     /// An edit stamps only the settings it changes; saving the same values stamps nothing.

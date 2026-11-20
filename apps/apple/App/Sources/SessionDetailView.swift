@@ -8,6 +8,7 @@ struct SessionDetailView: View {
     let item: SessionLibrary.Item
     let library: SessionLibrary
 
+    @State private var settings = SettingsStore.shared
     @State private var analysis: Analysis?
     @State private var selectedReplayElapsed: Double?
     @State private var isPlaying = false
@@ -29,6 +30,8 @@ struct SessionDetailView: View {
         let selection: SessionSelection
         let replayData: SessionReplayView.Data
         let summary: SessionLibrary.Summary
+        let heartRateZones: HeartRateZones
+        let zoneDurations: [HeartRateZones.Zone: Double]
         let windsurf: WindsurfAnalysis?
 
         init(
@@ -38,6 +41,8 @@ struct SessionDetailView: View {
             let timeline = SessionReplayTimeline(
                 replay: selection.replay, recordedFixes: selection.track.gps, endTime: selection.duration)
             replayData = SessionReplayView.Data(timeline: timeline, speedUnit: display.speed)
+            heartRateZones = UserSettings.heartRateZones
+            zoneDurations = heartRateZones.durations(in: selection)
             summary = SessionLibrary.Summary(
                 selection: selection, isTrimmed: isTrimmed, trimUnavailable: trimUnavailable)
             windsurf = selection.windsurfAnalysis()
@@ -87,6 +92,9 @@ struct SessionDetailView: View {
             reloads += 1
         }
         .onReceive(NotificationCenter.default.publisher(for: UserSettings.didChangeRemotely)) { _ in
+            reloads += 1
+        }
+        .onChange(of: settings.heartRateZones) {
             reloads += 1
         }
         .onChange(of: analysis?.source) {
@@ -401,6 +409,26 @@ struct SessionDetailView: View {
                     .chartYScale(domain: .automatic(includesZero: false))
                     .chartXAxisLabel("min")
                     .frame(height: 140)
+                }
+            }
+
+            if !analysis.current.zoneDurations.isEmpty {
+                Section {
+                    ForEach(HeartRateZones.Zone.allCases, id: \.self) { zone in
+                        LabeledContent {
+                            Text(Formatting.elapsed(analysis.current.zoneDurations[zone, default: 0]))
+                                .monospacedDigit()
+                        } label: {
+                            Text("Zone \(zone.rawValue)")
+                        }
+                    }
+                } header: {
+                    Text("Time in heart rate zones")
+                } footer: {
+                    Text(
+                        "Based on a maximum of \(analysis.current.heartRateZones.maximum) bpm. Pauses and gaps in readings are excluded."
+                    )
+                    .accessibilityIdentifier("session.heartRateZones.maximum")
                 }
             }
 

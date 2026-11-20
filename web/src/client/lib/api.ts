@@ -69,6 +69,30 @@ export type SessionList = { sessions: Session[]; nextCursor: string | null };
 type Totals = { sessions: number; distanceM: number; movingS: number; durationS: number };
 export type MeStats = Totals & { bySport: (Totals & { sport: Sport })[] };
 
+/** A public session as a profile lists it (GET /api/users/:handle). */
+export type PublicSessionSummary = Pick<
+  Session,
+  | "id"
+  | "sport"
+  | "title"
+  | "startedAt"
+  | "durationS"
+  | "movingS"
+  | "distanceM"
+  | "maxSpeedMps"
+  | "avgSpeedMps"
+>;
+
+/** A user's public profile: totals and sessions cover public sessions only. */
+export type PublicProfile = {
+  handle: string;
+  displayName: string | null;
+  isOwner: boolean;
+  totals: MeStats;
+  sessions: PublicSessionSummary[];
+  nextCursor: string | null;
+};
+
 export class ApiError extends Error {
   constructor(
     readonly status: number,
@@ -173,6 +197,11 @@ export const fetchStats = () => apiJson<MeStats>("/me/stats");
 export const fetchSessions = (cursor: string | null) =>
   apiJson<SessionList>(
     `/sessions?limit=20${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
+  );
+
+export const fetchProfile = (handle: string, cursor: string | null) =>
+  apiJson<PublicProfile>(
+    `/users/${encodeURIComponent(handle)}?limit=20${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
   );
 
 export const fetchSession = (id: string) => apiJson<Session>(`/sessions/${encodeURIComponent(id)}`);

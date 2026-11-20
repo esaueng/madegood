@@ -6,6 +6,7 @@ import { optionalAuth, requireAuth } from "../auth/middleware";
 import { privacyZones, type Session, sessions, sessionTombstones, users } from "../db/schema";
 import { apiError, errorResponse } from "../lib/errors";
 import { enqueuePostprocess, ensureUserRequeued, publicIsCurrent } from "../lib/postprocess";
+import { limitSessionUpload, rateLimitedResponse } from "../lib/rate-limit";
 import { createRouter } from "../lib/router";
 import { SHARED_TRACK_MAX_FIXES, shareTrack } from "../lib/session-privacy";
 import {
@@ -396,16 +397,17 @@ function toSessionBody(
 }
 
 // Cursors are opaque to clients: base64url JSON of the last item's [startedAt, id].
+// Shared with GET /users/:handle (routes/users.ts), which pages in the same order.
 const Cursor = z.tuple([z.number().int(), z.string().regex(UUID_PATTERN)]);
 
-function encodeCursor(session: Session): string {
+export function encodeCursor(session: Pick<Session, "startedAt" | "id">): string {
   return btoa(JSON.stringify([session.startedAt, session.id]))
     .replaceAll("+", "-")
     .replaceAll("/", "_")
     .replace(/=+$/, "");
 }
 
-function decodeCursor(cursor: string): [number, string] | null {
+export function decodeCursor(cursor: string): [number, string] | null {
   try {
     const json = atob(cursor.replaceAll("-", "+").replaceAll("_", "/"));
     const parsed = Cursor.safeParse(JSON.parse(json));
@@ -475,7 +477,7 @@ const putRoute = createRoute({
     "detaches the stored track until the track for that revision is uploaded.",
   tags: ["sessions"],
   security,
-  middleware: [requireAuth] as const,
+  middleware: [requireAuth, limitSessionUpload] as const,
   request: {
     params: SessionParams,
     query: RevisionQuery,
@@ -495,6 +497,7 @@ const putRoute = createRoute({
     409: errorResponse("Another account has a session with this ID (`session_id_taken`)."),
     410: errorResponse("The caller deleted this session (`session_deleted`); it stays deleted."),
     412: revisionErrorResponse("The stored revision is newer than `revision` (`stale_revision`)."),
+    429: rateLimitedResponse,
   },
 });
 
@@ -531,7 +534,7 @@ const putTrackRoute = createRoute({
     "background; `processing` on the session reports progress.",
   tags: ["sessions"],
   security,
-  middleware: [requireAuth] as const,
+  middleware: [requireAuth, limitSessionUpload] as const,
   request: {
     params: SessionParams,
     query: RevisionQuery,
@@ -553,6 +556,7 @@ const putTrackRoute = createRoute({
         "revision replaced this one's bytes (`track_replaced`; upload again).",
     ),
     415: errorResponse(`The body is not sent as ${TRACK_CONTENT_TYPE}.`),
+    429: rateLimitedResponse,
     503: errorResponse(
       "The upload took too long and its object was collected (`upload_expired`; upload again), or " +
         "the track is stored but could not be queued for processing (`postprocess_unavailable`). " +

@@ -21,7 +21,7 @@ import Testing
 
         let analysis = selection.sailingAnalysis()
         #expect(analysis.windSource == .estimate)
-        expectMatches(analysis.maneuvers, labels: course.labels)
+        expectManeuversMatch(analysis.maneuvers, labels: course.labels)
         #expect(analysis.tackCount == course.labels.count)
         #expect(analysis.gybeCount == 0)
     }
@@ -50,7 +50,7 @@ import Testing
         #expect(abs(resolved.axisConfidence - unresolved.axisConfidence) < 1e-9)
 
         let analysis = selection.sailingAnalysis(windPrior: 50)
-        expectMatches(analysis.maneuvers, labels: course.labels)
+        expectManeuversMatch(analysis.maneuvers, labels: course.labels)
         #expect(analysis.gybeCount == course.labels.count)
         #expect(analysis.upwindVMG == nil)
         // Downwind VMG: 5 m/s at 140° true wind angle is 5 × cos 40° away from the wind.
@@ -412,23 +412,6 @@ import Testing
         #expect(post.count == 1)
         #expect(live == post.count)
         #expect(post.allSatisfy { !$0.range.contains(turn) })
-    }
-
-    // MARK: Helpers
-
-    private func expectMatches(_ maneuvers: [SailingManeuver], labels: [SessionEvent]) {
-        var unmatched = maneuvers
-        var matches = 0
-        for label in labels {
-            if let index = unmatched.firstIndex(where: {
-                $0.event.type == label.type && abs($0.event.t - label.t) <= 2 && $0.range.contains(label.t)
-            }) {
-                unmatched.remove(at: index)
-                matches += 1
-            }
-        }
-        #expect(Double(matches) / Double(labels.count) >= 0.95)
-        #expect(Double(unmatched.count) / Double(max(1, maneuvers.count)) < 0.05)
     }
 }
 

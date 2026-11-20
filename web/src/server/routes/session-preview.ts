@@ -1,7 +1,8 @@
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
 import { Hono } from "hono";
 import type { AppEnv } from "../app";
+import { HANDLE_PATTERN } from "../auth/users";
 import { sessions, users } from "../db/schema";
 
 // /s/:id is the SPA's session page. The Worker serves it (wrangler.jsonc
@@ -10,13 +11,25 @@ import { sessions, users } from "../db/schema";
 // private, deleted or unknown session gets the same generic tags, so the preview never
 // tells whether it exists. Tags never contain positions, bounds or times of day, and
 // there is no map image: a static map needs a renderer we do not run yet (PLAN §7 queue).
+//
+// /u/:handle, the public profile, works the same way: tags only while the profile is
+// visible to everyone (routes/users.ts: at least one public session), generic otherwise.
 
-type Preview = { title: string; description: string; indexable: boolean };
+/** `pageTitle` is the document title; without it, `title · MadeGood`. */
+type Preview = { title: string; description: string; indexable: boolean; pageTitle?: string };
 
 const SITE = "MadeGood";
+const SITE_DESCRIPTION = "Open-source tracking for sailing, paddling, and time on the water.";
 const GENERIC: Preview = {
   title: "A session on MadeGood",
-  description: "Open-source tracking for sailing, paddling, and time on the water.",
+  pageTitle: "A session on MadeGood",
+  description: SITE_DESCRIPTION,
+  indexable: false,
+};
+const GENERIC_PROFILE: Preview = {
+  title: "A profile on MadeGood",
+  pageTitle: "A profile on MadeGood",
+  description: SITE_DESCRIPTION,
   indexable: false,
 };
 
@@ -39,6 +52,9 @@ const UNITS = {
     speedUnit: "mph",
   },
 } as const;
+
+const distance = (m: number, units: keyof typeof UNITS) =>
+  `${(m * UNITS[units].distance).toFixed(2)} ${UNITS[units].distanceUnit}`;
 
 function duration(s: number): string {
   const total = Math.round(s);
@@ -71,7 +87,7 @@ export async function sessionPreview(db: D1Database, id: string): Promise<Previe
   const sport = SPORT_NAMES[row.sport];
   const parts: string[] = [sport];
   if (row.distanceM != null) {
-    parts.push(`${(row.distanceM * units.distance).toFixed(2)} ${units.distanceUnit}`);
+    parts.push(distance(row.distanceM, row.units));
   }
   if (row.durationS != null) parts.push(duration(row.durationS));
   if (row.maxSpeedMps != null) {
@@ -84,6 +100,40 @@ export async function sessionPreview(db: D1Database, id: string): Promise<Previe
   };
 }
 
+/** The preview for a profile; GENERIC_PROFILE unless the user has a public session. */
+export async function profilePreview(db: D1Database, rawHandle: string): Promise<Preview> {
+  const handle = rawHandle.toLowerCase();
+  if (!HANDLE_PATTERN.test(handle)) return GENERIC_PROFILE;
+  const [row] = await drizzle(db)
+    .select({
+      handle: users.handle,
+      displayName: users.displayName,
+      units: users.units,
+      count: sql<number>`count(${sessions.id})`,
+      distanceM: sql<number>`coalesce(sum(${sessions.distanceM}), 0)`,
+    })
+    .from(users)
+    .innerJoin(
+      sessions,
+      and(
+        eq(sessions.userId, users.id),
+        eq(sessions.visibility, "public"),
+        isNull(sessions.deletedAt),
+      ),
+    )
+    .where(and(eq(users.handle, handle), isNull(users.deletedAt)))
+    .groupBy(users.id);
+  if (!row || row.count === 0) return GENERIC_PROFILE;
+  const sessionCount = `${row.count} public ${row.count === 1 ? "session" : "sessions"}`;
+  const parts = [sessionCount];
+  if (row.distanceM > 0) parts.push(distance(row.distanceM, row.units));
+  return {
+    title: row.displayName ? `${row.displayName} (@${row.handle})` : `@${row.handle}`,
+    description: `${parts.join(" · ")} on MadeGood`,
+    indexable: true,
+  };
+}
+
 const escapeHtml = (text: string) =>
   text.replace(
     /[&<>"']/g,
@@ -92,7 +142,7 @@ const escapeHtml = (text: string) =>
 
 /** The SPA shell with the preview's title, description and Open Graph tags. */
 export function injectPreview(shell: Response, preview: Preview, url: string): Response {
-  const title = preview.title === GENERIC.title ? preview.title : `${preview.title} · ${SITE}`;
+  const title = preview.pageTitle ?? `${preview.title} · ${SITE}`;
   const meta = [
     ["property", "og:site_name", SITE],
     ["property", "og:type", "website"],
@@ -133,17 +183,38 @@ export function injectPreview(shell: Response, preview: Preview, url: string): R
   return new Response(rewritten.body, { status: 200, headers });
 }
 
+/** The SPA shell for `request` with `find`'s preview, or `fallback` if that fails. */
+async function previewPage(
+  env: Env,
+  request: Request,
+  find: () => Promise<Preview>,
+  fallback: Preview,
+): Promise<Response> {
+  const shell = await env.ASSETS.fetch(new URL("/", request.url));
+  if (!shell.ok || !shell.headers.get("content-type")?.includes("text/html")) return shell;
+  const url = new URL(request.url);
+  const preview = await find().catch((err) => {
+    // A preview is never worth a failed page: log it and fall back to the generic tags.
+    console.error(err);
+    return fallback;
+  });
+  return injectPreview(shell, preview, `${url.origin}${url.pathname}`);
+}
+
 export const sessionPreviewPage = new Hono<AppEnv>()
-  .get("/s/:id", async (c) => {
-    const shell = await c.env.ASSETS.fetch(new URL("/", c.req.url));
-    if (!shell.ok || !shell.headers.get("content-type")?.includes("text/html")) return shell;
-    const url = new URL(c.req.url);
-    const preview = await sessionPreview(c.env.DB, c.req.param("id")).catch((err) => {
-      // A preview is never worth a failed page: log it and fall back to the generic tags.
-      console.error(err);
-      return GENERIC;
-    });
-    return injectPreview(shell, preview, `${url.origin}${url.pathname}`);
-  })
+  .get("/s/:id", (c) =>
+    previewPage(c.env, c.req.raw, () => sessionPreview(c.env.DB, c.req.param("id")), GENERIC),
+  )
   // Deeper paths under /s/ also reach the Worker; hand them to the SPA unchanged.
   .get("/s/*", (c) => c.env.ASSETS.fetch(c.req.raw));
+
+export const profilePreviewPage = new Hono<AppEnv>()
+  .get("/u/:handle", (c) =>
+    previewPage(
+      c.env,
+      c.req.raw,
+      () => profilePreview(c.env.DB, c.req.param("handle")),
+      GENERIC_PROFILE,
+    ),
+  )
+  .get("/u/*", (c) => c.env.ASSETS.fetch(c.req.raw));
