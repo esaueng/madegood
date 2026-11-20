@@ -309,6 +309,10 @@ function Footer() {
         <Link to="/privacy" className={cn("underline underline-offset-2", linkFocus)}>
           Privacy
         </Link>
+        .{" "}
+        <Link to="/support" className={cn("underline underline-offset-2", linkFocus)}>
+          Support
+        </Link>
       </p>
       <ApiStatus />
     </footer>

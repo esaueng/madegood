@@ -65,12 +65,29 @@ function Account() {
   );
 }
 
+/** index.html's description, which every page without its own goes back to. */
+const SITE_DESCRIPTION = "Open-source tracking for sailing, paddling, and time on the water.";
+
+/** Pages with their own title and description. */
+const PAGE_META: Record<string, { title: string; description: string }> = {
+  "/support": {
+    title: "Support · MadeGood",
+    description:
+      "Help with MadeGood on iPhone and Apple Watch: contact, syncing from the watch, accounts, data export and deletion, sharing and permissions.",
+  },
+};
+
 function RootLayout() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   // The Worker puts a session's or profile's title into /s/:id and /u/:handle (Open Graph);
-  // those pages keep it current, and every other page goes back to the site name.
+  // those pages keep it current, and every other page sets its own or the site's.
   useEffect(() => {
-    if (!pathname.startsWith("/s/") && !pathname.startsWith("/u/")) document.title = "MadeGood";
+    if (pathname.startsWith("/s/") || pathname.startsWith("/u/")) return;
+    const page = PAGE_META[pathname];
+    document.title = page?.title ?? "MadeGood";
+    document
+      .querySelector('meta[name="description"]')
+      ?.setAttribute("content", page?.description ?? SITE_DESCRIPTION);
   }, [pathname]);
   return (
     <div className="min-h-dvh bg-background text-foreground">
