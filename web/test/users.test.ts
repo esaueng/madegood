@@ -1,5 +1,7 @@
+import { createExecutionContext } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
+import { createApp } from "../src/server/app";
 import { profilePreviewPage } from "../src/server/routes/session-preview";
 import { api, bearer, deleteMe, type SignIn, signIn } from "./apple";
 
@@ -187,6 +189,43 @@ describe("GET /api/users/:handle", () => {
       sessions: [],
       nextCursor: null,
     });
+  });
+
+  it("does the same database work for an unknown handle as for a hidden profile", async () => {
+    // Regression (PR #95 review): a second query only for existing accounts made a timing
+    // signal for which handles exist. Every request now reads in one batch.
+    const hidden = await profileUser("Never Shared");
+    await addSession(hidden, "private");
+    const trace = async (handle: string) => {
+      const calls: string[] = [];
+      const DB = new Proxy(env.DB, {
+        get(target, key) {
+          const value = Reflect.get(target, key, target);
+          if (typeof value !== "function") return value;
+          return (...args: unknown[]) => {
+            calls.push(key === "batch" ? `batch:${(args[0] as unknown[]).length}` : String(key));
+            return value.apply(target, args);
+          };
+        },
+      });
+      const bindings = {
+        DB,
+        TRACKS: env.TRACKS,
+        JWT_SIGNING_KEY: env.JWT_SIGNING_KEY,
+        APPLE_AUDIENCES: env.APPLE_AUDIENCES,
+      };
+      const response = await createApp().request(
+        `/api/users/${handle}`,
+        {},
+        bindings,
+        createExecutionContext(),
+      );
+      expect(response.status).toBe(404);
+      return calls;
+    };
+    const unknown = await trace(uniqueHandle());
+    expect(unknown.filter((call) => call.startsWith("batch"))).toEqual(["batch:3"]);
+    expect(await trace(hidden.handle)).toEqual(unknown);
   });
 
   it("is not found once the account is being deleted", async () => {

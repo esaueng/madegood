@@ -47,7 +47,8 @@ function ProfilePage() {
   }, [profile, query.isError]);
 
   if (query.isPending) return <p className="py-16 text-muted-foreground">Loading…</p>;
-  if (query.isError || !profile) {
+  // Only a failed first page replaces the profile; a failed "Load more" keeps what is shown.
+  if (!profile) {
     const missing = query.error instanceof ApiError && query.error.status === 404;
     return (
       <section className="mx-auto max-w-md py-24 text-center">
@@ -71,7 +72,7 @@ function ProfilePage() {
     );
   }
 
-  const sessions = query.data.pages.flatMap((page) => page.sessions);
+  const sessions = (query.data?.pages ?? []).flatMap((page) => page.sessions);
   return (
     <article className="grid gap-8 py-6">
       <ProfileHeader profile={profile} />
@@ -89,12 +90,21 @@ function ProfilePage() {
           </ul>
           {query.hasNextPage && (
             <div className="mt-4 text-center">
+              {query.isFetchNextPageError && !query.isFetchingNextPage && (
+                <p role="alert" className="mb-2 text-sm text-muted-foreground">
+                  Could not load more sessions.
+                </p>
+              )}
               <Button
                 variant="outline"
                 onClick={() => query.fetchNextPage()}
                 disabled={query.isFetchingNextPage}
               >
-                {query.isFetchingNextPage ? "Loading…" : "Load more"}
+                {query.isFetchingNextPage
+                  ? "Loading…"
+                  : query.isFetchNextPageError
+                    ? "Try again"
+                    : "Load more"}
               </Button>
             </div>
           )}

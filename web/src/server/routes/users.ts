@@ -136,18 +136,25 @@ userRoutes.openapi(profileRoute, async (c) => {
   if (!HANDLE_PATTERN.test(handle)) return notFound(c);
 
   const db = drizzle(c.env.DB);
-  const [user] = await db
+  // The account, the totals and the page are read in one batch: one round trip that D1
+  // runs as a single transaction. So an unknown handle and an account without public
+  // sessions cost the same (no timing difference reveals which accounts exist), and all
+  // three reads see the same state (no display name next to sessions a concurrent
+  // deletion or visibility change has already removed).
+  const account = and(eq(users.handle, handle), isNull(users.deletedAt));
+  const shown = and(account, eq(sessions.visibility, "public"), isNull(sessions.deletedAt));
+  // Newest first; the ID breaks ties, as in GET /sessions.
+  const page = after
+    ? or(
+        lt(sessions.startedAt, after[0]),
+        and(eq(sessions.startedAt, after[0]), lt(sessions.id, after[1])),
+      )
+    : undefined;
+  const userQuery = db
     .select({ id: users.id, handle: users.handle, displayName: users.displayName })
     .from(users)
-    .where(and(eq(users.handle, handle), isNull(users.deletedAt)));
-  if (!user) return notFound(c);
-
-  const shown = and(
-    eq(sessions.userId, user.id),
-    eq(sessions.visibility, "public"),
-    isNull(sessions.deletedAt),
-  );
-  const bySport = await db
+    .where(account);
+  const totalsQuery = db
     .select({
       sport: sessions.sport,
       sessions: sql<number>`count(*)`,
@@ -156,28 +163,11 @@ userRoutes.openapi(profileRoute, async (c) => {
       durationS: sql<number>`coalesce(sum(${sessions.durationS}), 0)`,
     })
     .from(sessions)
+    .innerJoin(users, eq(sessions.userId, users.id))
     .where(shown)
     .groupBy(sessions.sport)
     .orderBy(sessions.sport);
-  const isOwner = c.var.viewerId === user.id;
-  if (bySport.length === 0 && !isOwner) return notFound(c);
-
-  const totals = { sessions: 0, distanceM: 0, movingS: 0, durationS: 0 };
-  for (const row of bySport) {
-    totals.sessions += row.sessions;
-    totals.distanceM += row.distanceM;
-    totals.movingS += row.movingS;
-    totals.durationS += row.durationS;
-  }
-
-  // Newest first; the ID breaks ties, as in GET /sessions.
-  const page = after
-    ? or(
-        lt(sessions.startedAt, after[0]),
-        and(eq(sessions.startedAt, after[0]), lt(sessions.id, after[1])),
-      )
-    : undefined;
-  const rows = await db
+  const pageQuery = db
     .select({
       id: sessions.id,
       sport: sessions.sport,
@@ -190,9 +180,23 @@ userRoutes.openapi(profileRoute, async (c) => {
       avgSpeedMps: sessions.avgSpeedMps,
     })
     .from(sessions)
+    .innerJoin(users, eq(sessions.userId, users.id))
     .where(and(shown, page))
     .orderBy(desc(sessions.startedAt), desc(sessions.id))
     .limit(limit + 1);
+  const [[user], bySport, rows] = await db.batch([userQuery, totalsQuery, pageQuery]);
+  if (!user) return notFound(c);
+  const isOwner = c.var.viewerId === user.id;
+  if (bySport.length === 0 && !isOwner) return notFound(c);
+
+  const totals = { sessions: 0, distanceM: 0, movingS: 0, durationS: 0 };
+  for (const row of bySport) {
+    totals.sessions += row.sessions;
+    totals.distanceM += row.distanceM;
+    totals.movingS += row.movingS;
+    totals.durationS += row.durationS;
+  }
+
   const items = rows.slice(0, limit);
   const last = items.at(-1);
 
