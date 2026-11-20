@@ -21,9 +21,10 @@ final class SessionSyncDeletionTests: XCTestCase {
             apiRoot: URL(string: "https://synthetic.invalid/api")!, root: root, transport: transport,
             store: MemoryCredentials(), preferences: UserDefaults(suiteName: suite)!)
         sync.launch()
-        try await sync.account.signIn(identityToken: "synthetic-identity", displayName: nil)
+        try await sync.signIn(identityToken: "synthetic-identity", displayName: nil)
         await sync.accountDidChange()
-        sync.isEnabled = true
+        let turnedOn = await sync.turnOn()
+        XCTAssertTrue(turnedOn)
         try await waitUntil { !self.sync.preparing }
     }
 
@@ -134,6 +135,9 @@ private final class GatedTransport: SessionSyncTransport {
                 "accessToken": "synthetic-access", "refreshToken": "synthetic-refresh"}
                 """
             return (Data(body.utf8), response(request, 200))
+        }
+        if path == "/api/me", request.httpMethod == "GET" {
+            return (Data(#"{"defaultVisibility": "private"}"#.utf8), response(request, 200))
         }
         if path == "/api/me", request.httpMethod == "DELETE" {
             calls.append("DELETE")

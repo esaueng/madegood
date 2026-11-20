@@ -31,14 +31,20 @@
     private final class SyntheticSessionTransport: SessionSyncTransport {
         private var sessions: [String: String] = [:]
         private var refusedTracks: Set<String> = []
-        /// `-demoSessionVisibility unlisted|public`: the account's Visibility of new sessions.
-        private let defaultVisibility: String = {
+        /// `-demoSessionVisibility unlisted|public`: the account's Visibility of new sessions
+        /// at sign-in. `-demoSessionVisibilityLater public` changes it afterwards, as an edit
+        /// on the website would; `-demoSessionVisibilityOffline` makes `GET /me` fail.
+        private let defaultVisibility = SyntheticSessionTransport.argument("-demoSessionVisibility") ?? "private"
+        private lazy var laterVisibility = SyntheticSessionTransport.argument("-demoSessionVisibilityLater") ?? defaultVisibility
+        private let visibilityOffline = ProcessInfo.processInfo.arguments.contains("-demoSessionVisibilityOffline")
+
+        private static func argument(_ name: String) -> String? {
             let arguments = ProcessInfo.processInfo.arguments
-            guard let flag = arguments.firstIndex(of: "-demoSessionVisibility"), flag + 1 < arguments.count,
+            guard let flag = arguments.firstIndex(of: name), flag + 1 < arguments.count,
                 let value = NewSessionVisibility(rawValue: arguments[flag + 1])
-            else { return "private" }
+            else { return nil }
             return value.rawValue
-        }()
+        }
 
         func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
             try await Task.sleep(for: .milliseconds(300))
@@ -47,7 +53,7 @@
                     {
                         "user": {
                             "id": "synthetic-account", "handle": "synthetic", "displayName": null,
-                            "units": "metric", "defaultVisibility": "private", "createdAt": "2023-11-14T22:13:20.125Z"
+                            "units": "metric", "defaultVisibility": "\(defaultVisibility)", "createdAt": "2023-11-14T22:13:20.125Z"
                         },
                         "accessToken": "synthetic-access", "refreshToken": "synthetic-refresh"
                     }
@@ -55,7 +61,8 @@
                 return (Data(body.utf8), response(request, 200))
             }
             if request.httpMethod == "GET", request.url?.path == "/api/me", isAuthorized(request) {
-                return (Data(#"{"defaultVisibility": "\#(defaultVisibility)"}"#.utf8), response(request, 200))
+                if visibilityOffline { throw URLError(.notConnectedToInternet) }
+                return (Data(#"{"defaultVisibility": "\#(laterVisibility)"}"#.utf8), response(request, 200))
             }
             if request.httpMethod == "DELETE", request.url?.path == "/api/me", isAuthorized(request),
                 let body = request.httpBody,

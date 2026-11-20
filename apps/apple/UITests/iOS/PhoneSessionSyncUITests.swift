@@ -20,8 +20,12 @@ final class PhoneSessionSyncUITests: XCTestCase {
         let enable = app.switches["sessionSync.enabled"]
         scrollTo(enable, in: app)
         XCTAssertEqual(enable.value as? String, "0")
-        // The account's Visibility of new sessions is shown before the switch is turned on.
-        waitForLabel(element("sessionSync.visibility", in: app), "Visibility of new sessions, Private")
+        // The account's Visibility of new sessions is shown before the switch is turned on,
+        // with when it was checked (sign-in returned it) and the automatic-sharing note.
+        let visibility = element("sessionSync.visibility", in: app)
+        waitForLabel(visibility, "Visibility of new sessions, Private")
+        XCTAssertEqual(visibility.value as? String, "Last checked just now")
+        XCTAssertTrue(element("sessionSync.visibilityNotice", in: app).label.contains("Unlisted or Public"))
         enable.switches.firstMatch.tap()
         XCTAssertTrue(app.switches["sessionSync.wifiOnly"].waitForExistence(timeout: 5))
 
@@ -72,7 +76,7 @@ final class PhoneSessionSyncUITests: XCTestCase {
         XCTAssertEqual(enable.value as? String, "0")
     }
 
-    /// A Public account default is shown beside Sync sessions with a warning that new
+    /// A Public account default is shown beside Sync sessions with the note that new
     /// uploads are shared automatically (review of #133, finding 2).
     @MainActor
     func testSyncSwitchShowsAPublicAccountDefault() {
@@ -87,9 +91,53 @@ final class PhoneSessionSyncUITests: XCTestCase {
         scrollTo(visibility, in: app)
         waitForLabel(visibility, "Visibility of new sessions, Public")
         let notice = element("sessionSync.visibilityNotice", in: app)
-        XCTAssertTrue(notice.label.hasPrefix("New uploads will be public automatically"), notice.label)
+        XCTAssertTrue(notice.label.contains("If it’s Unlisted or Public, they’re shared that way automatically"), notice.label)
         XCTAssertTrue(notice.label.contains("Settings on madegood.app"), notice.label)
         attachScreenshot("Settings public visibility")
+    }
+
+    /// Changed to Public on the website after sign-in: turning on Sync sessions fetches the
+    /// value first, so the screen shows Public before anything can upload (review of #133).
+    @MainActor
+    func testTurningSyncOnShowsAVisibilityChangedOnTheWebsite() {
+        continueAfterFailure = false
+        let app = launchDemoHistory(extraArguments: ["-demoSessionSync", "-demoSessionVisibilityLater", "public"])
+        app.tabBars.buttons["Settings"].tap()
+        let signIn = app.buttons["sessionSync.demoSignIn"]
+        scrollTo(signIn, in: app)
+        signIn.tap()
+        XCTAssertTrue(element("sessionSync.signedIn", in: app).waitForExistence(timeout: 10))
+        let visibility = element("sessionSync.visibility", in: app)
+        scrollTo(visibility, in: app)
+        // The section's appearance check may already have caught the change; either way the
+        // switch must end with Public on screen.
+        let enable = app.switches["sessionSync.enabled"]
+        XCTAssertEqual(enable.value as? String, "0")
+        enable.switches.firstMatch.tap()
+        XCTAssertTrue(app.switches["sessionSync.wifiOnly"].waitForExistence(timeout: 10))
+        waitForLabel(visibility, "Visibility of new sessions, Public")
+        attachScreenshot("Settings visibility refreshed on sync")
+    }
+
+    /// Offline: the value can't be checked, so Sync sessions stays off.
+    @MainActor
+    func testSyncStaysOffWhenVisibilityCannotBeChecked() {
+        continueAfterFailure = false
+        let app = launchDemoHistory(extraArguments: ["-demoSessionSync", "-demoSessionVisibilityOffline"])
+        app.tabBars.buttons["Settings"].tap()
+        let signIn = app.buttons["sessionSync.demoSignIn"]
+        scrollTo(signIn, in: app)
+        signIn.tap()
+        XCTAssertTrue(element("sessionSync.signedIn", in: app).waitForExistence(timeout: 10))
+        let enable = app.switches["sessionSync.enabled"]
+        scrollTo(enable, in: app)
+        enable.switches.firstMatch.tap()
+        let message = element("sessionSync.message", in: app)
+        XCTAssertTrue(message.waitForExistence(timeout: 10))
+        XCTAssertTrue(message.label.hasPrefix("Couldn’t check your Visibility of new sessions"), message.label)
+        XCTAssertEqual(enable.value as? String, "0")
+        XCTAssertFalse(app.switches["sessionSync.wifiOnly"].exists)
+        attachScreenshot("Settings sync stays off offline")
     }
 
     /// Settings → Delete Account: confirmation first, then signed out with the recordings kept.

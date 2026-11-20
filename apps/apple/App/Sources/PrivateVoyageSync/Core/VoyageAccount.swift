@@ -46,7 +46,10 @@ final class VoyageAccount {
         }
     }
 
-    func signIn(identityToken: String, displayName: String?) async throws {
+    /// Returns the signed-in account as the server sent it, so a caller can use its settings
+    /// without another request. The binding is already set when this returns.
+    @discardableResult
+    func signIn(identityToken: String, displayName: String?) async throws -> Components.Schemas.User {
         guard binding == nil else { throw VoyageAccountError.alreadySignedIn }
         let attempt = UUID()
         generation = attempt
@@ -59,6 +62,7 @@ final class VoyageAccount {
                 binding: VoyageAccountBinding(accountID: response.user.id, signInID: UUID()),
                 tokens: VoyageTokenPair(accessToken: response.accessToken, refreshToken: response.refreshToken)
             ))
+        return response.user
     }
 
     func signOut() throws {
