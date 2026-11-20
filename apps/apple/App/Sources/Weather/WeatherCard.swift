@@ -48,7 +48,9 @@ struct WeatherCard: View {
             guard scenePhase == .active else { return }
             while !Task.isCancelled {
                 await weather.refresh()
-                try? await Task.sleep(for: .seconds(LocalWeather.refreshAfter))
+                // A restored answer can expire sooner than a full refresh interval.
+                let delay = weather.expiresAt?.timeIntervalSinceNow ?? PhoneWeather.conditionsLifetime
+                try? await Task.sleep(for: .seconds(max(0, delay)))
             }
         }
     }

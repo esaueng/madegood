@@ -9,6 +9,12 @@ struct SessionWeatherWind: Equatable, Sendable {
     let speed: Double
     let hours: Int
 
+    struct Comparison: Equatable, Sendable {
+        let wind: SessionWeatherWind
+        /// The earliest expiry among the hours used to produce this comparison.
+        let expiresAt: Date
+    }
+
     struct Query: Hashable, Sendable {
         let cell: WeatherGridCell
         let firstHour: Date
@@ -54,12 +60,24 @@ struct SessionWeatherWind: Equatable, Sendable {
 struct SessionWeatherForecasts: Equatable {
     enum State: Equatable { case idle, loading, failed }
 
-    private var results: [SessionWeatherWind.Query: SessionWeatherWind] = [:]
+    private static let resultLimit = 8
+    private var results: [SessionWeatherWind.Query: SessionWeatherWind.Comparison] = [:]
     private var loading: Set<SessionWeatherWind.Query> = []
     private var failed: Set<SessionWeatherWind.Query> = []
 
-    func wind(for query: SessionWeatherWind.Query?) -> SessionWeatherWind? {
+    var nextExpiry: Date? { results.values.map(\.expiresAt).min() }
+
+    func comparison(for query: SessionWeatherWind.Query?) -> SessionWeatherWind.Comparison? {
         query.flatMap { results[$0] }
+    }
+
+    func wind(for query: SessionWeatherWind.Query?, now: Date = .now) -> SessionWeatherWind? {
+        guard let result = comparison(for: query), now < result.expiresAt else { return nil }
+        return result.wind
+    }
+
+    mutating func prune(now: Date) {
+        results = results.filter { now < $0.value.expiresAt }
     }
 
     func state(for query: SessionWeatherWind.Query?) -> State {
@@ -73,10 +91,19 @@ struct SessionWeatherForecasts: Equatable {
         failed.remove(query)
     }
 
-    mutating func complete(_ query: SessionWeatherWind.Query, with wind: SessionWeatherWind) {
+    mutating func complete(
+        _ query: SessionWeatherWind.Query, with result: SessionWeatherWind.Comparison, now: Date = .now
+    ) {
         loading.remove(query)
         failed.remove(query)
-        results[query] = wind
+        prune(now: now)
+        guard now < result.expiresAt else { return }
+        if results[query] == nil, results.count == Self.resultLimit,
+            let earliest = results.min(by: { $0.value.expiresAt < $1.value.expiresAt })
+        {
+            results[earliest.key] = nil
+        }
+        results[query] = result
     }
 
     mutating func fail(_ query: SessionWeatherWind.Query) {
