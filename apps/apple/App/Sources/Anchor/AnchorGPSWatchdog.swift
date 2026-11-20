@@ -1,6 +1,7 @@
 import AlarmKit
 import Observation
 import SwiftUI
+import WaterKit
 
 /// A system alarm remains pending even when the app cannot receive a location callback.
 /// Renew with a second slot before removing the old one, so an interruption during the
@@ -8,92 +9,126 @@ import SwiftUI
 @MainActor
 @Observable
 final class AnchorGPSWatchdog {
-    private let manager = AlarmManager.shared
+    private let system: SystemAlarms
+    private var loss = AnchorGPSLoss()
     private var update: Task<Void, Never>?
-    private var generation = 0
-    private var lastAttempt: ContinuousClock.Instant?
+    private var applied: AnchorGPSLoss.Request?
+    private var lastAttempt: (request: AnchorGPSLoss.Request, time: ContinuousClock.Instant)?
     private(set) var schedulingFailed = false
 
-    struct Schedule {
-        static let ids = [
-            UUID(uuidString: "6D1D54FC-BB7A-41D6-80E7-E777EC3F9DAC")!,
-            UUID(uuidString: "898CF3F4-3EE4-4CF2-83B9-EFC5A017EB58")!,
-        ]
-        static let timeout: TimeInterval = 120
-        static let renewalInterval: TimeInterval = 15
+    struct SystemAlarms {
+        enum Removal { case pending, any }
 
-        let id: UUID
-        let deadline: Date
-
-        static func renewal(fixTime: Date, pending: [UUID: Date], sounding: Set<UUID>) -> Schedule? {
-            let deadline = fixTime.addingTimeInterval(timeout)
-            let current = pending.max { $0.value < $1.value }
-            if let current, abs(current.value.timeIntervalSince(deadline)) < renewalInterval { return nil }
-            guard
-                let replacement = ids.first(where: { pending[$0] == nil && !sounding.contains($0) })
-                    ?? ids.first(where: { $0 != current?.key && !sounding.contains($0) })
-                    // With the other slot already ringing, replace the pending one in place.
-                    ?? current?.key
-            else { return nil }
-            return Schedule(id: replacement, deadline: deadline)
+        struct Snapshot {
+            var pending: [UUID: Date] = [:]
+            var sounding: Set<UUID> = []
         }
+
+        var snapshot: @MainActor () throws -> Snapshot
+        var schedule: @MainActor (UUID, Date) async throws -> Void
+        var remove: @MainActor (UUID, Removal) throws -> Void
+
+        static let live = Self(
+            snapshot: {
+                var snapshot = Snapshot()
+                for alarm in try AlarmManager.shared.alarms where slots.contains(alarm.id) {
+                    if alarm.state == .alerting {
+                        snapshot.sounding.insert(alarm.id)
+                    } else if case .fixed(let deadline) = alarm.schedule {
+                        snapshot.pending[alarm.id] = deadline
+                    }
+                }
+                return snapshot
+            },
+            schedule: { id, deadline in
+                let configuration = anchorAlarmConfiguration(title: "Anchor GPS unavailable", deadline: deadline)
+                _ = try await AlarmManager.shared.schedule(id: id, configuration: configuration)
+            },
+            remove: { id, mode in
+                let manager = AlarmManager.shared
+                guard let alarm = try manager.alarms.first(where: { $0.id == id }) else { return }
+                if alarm.state == .alerting {
+                    if mode == .any { try manager.stop(id: id) }
+                } else {
+                    try manager.cancel(id: id)
+                }
+            }
+        )
     }
 
-    func renew(fixAge: Duration) {
-        guard update == nil, lastAttempt.map({ $0.duration(to: .now) >= .seconds(5) }) ?? true else { return }
-        lastAttempt = .now
-        let age = fixAge.components
-        let fixTime = Date.now.addingTimeInterval(-Double(age.seconds) - Double(age.attoseconds) / 1e18)
-        let generation = self.generation
+    // Stable IDs let a later launch preserve or clean up the system alarms.
+    private static let slots = [
+        UUID(uuidString: "6D1D54FC-BB7A-41D6-80E7-E777EC3F9DAC")!,
+        UUID(uuidString: "898CF3F4-3EE4-4CF2-83B9-EFC5A017EB58")!,
+    ]
+
+    init(system: SystemAlarms = .live) {
+        self.system = system
+    }
+
+    func start(restoring: Bool = false) {
+        loss.arm(at: .now, restoring: restoring)
+        reconcile()
+    }
+
+    func renew(fixAt time: ContinuousClock.Instant) {
+        loss.recordUsableFix(at: time)
+        reconcile()
+    }
+
+    func reconcile() {
+        guard let request = loss.request, request != applied, update == nil else { return }
+        if let lastAttempt, lastAttempt.request == request, lastAttempt.time.duration(to: .now) < .seconds(5) {
+            return
+        }
+        lastAttempt = (request, .now)
         update = Task {
-            defer { update = nil }
-            guard generation == self.generation else { return }
+            defer {
+                update = nil
+                // Work remains queued across an in-flight schedule, including a new
+                // arming with no fix to kick off its own update.
+                if loss.request != request { reconcile() }
+            }
+            guard loss.isCurrent(request) else { return }
+
+            var scheduledID: UUID?
             do {
-                let existing = try manager.alarms.filter { Schedule.ids.contains($0.id) }
-                var pending: [UUID: Date] = [:]
-                var sounding: Set<UUID> = []
-                for alarm in existing {
-                    if alarm.state == .alerting {
-                        sounding.insert(alarm.id)
-                    } else if case .fixed(let deadline) = alarm.schedule {
-                        pending[alarm.id] = deadline
-                    }
-                }
-                if let next = Schedule.renewal(fixTime: fixTime, pending: pending, sounding: sounding) {
-                    if pending[next.id] != nil { try manager.cancel(id: next.id) }
-                    let configuration = anchorAlarmConfiguration(
-                        title: "Anchor GPS unavailable", deadline: next.deadline)
-                    _ = try await AlarmManager.shared.schedule(id: next.id, configuration: configuration)
-                    guard generation == self.generation else {
-                        removeSystemAlarms()
+                let snapshot = try system.snapshot()
+                let current = snapshot.pending.max { $0.value < $1.value }?.key
+                if request.preservesExistingAlarm, current != nil || !snapshot.sounding.isEmpty {
+                    for id in snapshot.pending.keys where id != current { try system.remove(id, .pending) }
+                } else if let next = Self.slots.first(where: {
+                    snapshot.pending[$0] == nil && !snapshot.sounding.contains($0)
+                }) ?? Self.slots.first(where: { $0 != current && !snapshot.sounding.contains($0) }) ?? current {
+                    if snapshot.pending[next] != nil { try system.remove(next, .pending) }
+                    scheduledID = next
+                    let remaining = ContinuousClock.now.duration(to: request.deadline).components
+                    let delay = Double(remaining.seconds) + Double(remaining.attoseconds) / 1e18
+                    try await system.schedule(next, Date.now.addingTimeInterval(max(1, delay)))
+                    guard loss.isCurrent(request) else {
+                        try? system.remove(next, .any)
                         return
                     }
-                    for id in pending.keys where id != next.id { try manager.cancel(id: id) }
-                } else if pending.count > 1, let newest = pending.max(by: { $0.value < $1.value }) {
-                    for id in pending.keys where id != newest.key { try manager.cancel(id: id) }
+                    for id in snapshot.pending.keys where id != next { try system.remove(id, .pending) }
                 }
+                applied = request
                 schedulingFailed = false
             } catch {
-                if generation == self.generation { schedulingFailed = true }
+                if loss.isCurrent(request) {
+                    schedulingFailed = true
+                } else if let scheduledID {
+                    try? system.remove(scheduledID, .any)
+                }
             }
         }
     }
 
     func stop() {
-        generation += 1
+        loss.disarm()
+        applied = nil
         lastAttempt = nil
         schedulingFailed = false
-        removeSystemAlarms()
-    }
-
-    private func removeSystemAlarms() {
-        for alarm in (try? manager.alarms) ?? [] where Schedule.ids.contains(alarm.id) {
-            if alarm.state == .alerting {
-                try? manager.stop(id: alarm.id)
-            } else {
-                try? manager.cancel(id: alarm.id)
-            }
-        }
+        for id in Self.slots { try? system.remove(id, .any) }
     }
 }
 

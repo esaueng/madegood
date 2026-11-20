@@ -76,10 +76,12 @@ final class AnchorWatch: NSObject {
             self.watch = watch
         }
         refreshPermissions()
-        updateLocationDemand()
-        reconcileSound()
-        if watch == nil, !DemoFeed.isEnabled { gpsWatchdog.stop() }
         if !DemoFeed.isEnabled {
+            if watch == nil {
+                gpsWatchdog.stop()
+            } else {
+                gpsWatchdog.start(restoring: true)
+            }
             Task { [weak self] in
                 for await _ in AlarmManager.shared.alarmUpdates {
                     self?.reconcileSound()
@@ -89,10 +91,12 @@ final class AnchorWatch: NSObject {
                 for await _ in AlarmManager.shared.authorizationUpdates {
                     self?.refreshPermissions()
                     self?.reconcileSound()
-                    self?.renewGPSWatchdog()
+                    self?.gpsWatchdog.reconcile()
                 }
             }
         }
+        updateLocationDemand()
+        reconcileSound()
     }
 
     func becameActive() {
@@ -100,7 +104,7 @@ final class AnchorWatch: NSObject {
         updateLocationDemand()
         if locationRunning, !DemoFeed.isEnabled { location.startUpdatingLocation() }
         reconcileSound()
-        renewGPSWatchdog()
+        gpsWatchdog.reconcile()
     }
 
     func beginSetup() {
@@ -145,9 +149,9 @@ final class AnchorWatch: NSObject {
         evidenceStartedAt = .now
         saved = SavedWatch(point: anchor, radius: radius)
         watch = configured
+        if !DemoFeed.isEnabled { gpsWatchdog.start() }
         persist()
         updateLocationDemand()
-        renewGPSWatchdog()
     }
 
     func acknowledge() {
@@ -234,14 +238,9 @@ final class AnchorWatch: NSObject {
             persist()
         }
         if isAlarming { scheduleSoundIfNeeded() }
-        if position?.isUsable == true { renewGPSWatchdog() }
-    }
-
-    private func renewGPSWatchdog() {
-        guard watch != nil, !DemoFeed.isEnabled, !alarmPermissionDenied,
-            let position, position.isUsable
-        else { return }
-        gpsWatchdog.renew(fixAge: position.measuredAt.duration(to: .now))
+        if !DemoFeed.isEnabled, position?.isUsable == true {
+            gpsWatchdog.renew(fixAt: measuredAt)
+        }
     }
 
     private func persist() {
