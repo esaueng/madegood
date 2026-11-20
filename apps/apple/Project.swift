@@ -65,7 +65,9 @@ let project = Project(
             infoPlist: plist(versionKeys, usageKeys, [
                 // The iPhone also shows local conditions on its start screen.
                 "NSLocationWhenInUseUsageDescription":
-                    "MadeGood records your track, speed, and course while you are on the water, and shows the conditions where you are.",
+                    "MadeGood records your track, speed, and course while you are on the water, shows local conditions, and watches for drift when you arm the anchor alarm.",
+                "NSAlarmKitUsageDescription":
+                    "MadeGood sounds an alarm if your boat drifts outside the swing radius you set.",
                 "UILaunchScreen": [:],
                 "UIRequiredDeviceCapabilities": ["arm64"],
                 "UISupportedInterfaceOrientations": ["UIInterfaceOrientationPortrait"],
