@@ -21,11 +21,10 @@ final class PhoneMomentsUITests: XCTestCase {
 
         full.tap()
         let range = app.staticTexts["replay.range"]
-        let marker = element("replay.position", in: app)
         waitForLabel(range, "Split 1 · 0:00 to 6:34.333")
         XCTAssertEqual(range.value as? String, "2 highlighted route segments")
         XCTAssertEqual(app.staticTexts["stat.Elapsed"].label, "0:00")
-        XCTAssertEqual(marker.value as? String, "0:00")
+        XCTAssertEqual(element("replay.position", in: app).value as? String, "0:00")
         XCTAssertTrue(app.staticTexts["stat.GPS speed"].label.hasSuffix(" mph"))
 
         scrollTo(partial, in: app, column: 0.025)
@@ -34,7 +33,9 @@ final class PhoneMomentsUITests: XCTestCase {
         partial.tap()
         waitForLabel(range, "Split 2 (partial) · 6:34.333 to 10:00")
         XCTAssertEqual(app.staticTexts["stat.Elapsed"].label, "6:34.333")
-        XCTAssertEqual(marker.value as? String, "6:34.333")
+        // Moving the annotation can replace its accessibility element. Resolve it again
+        // instead of querying the snapshot from the first split.
+        XCTAssertEqual(element("replay.position", in: app).value as? String, "6:34.333")
     }
 
     @MainActor
