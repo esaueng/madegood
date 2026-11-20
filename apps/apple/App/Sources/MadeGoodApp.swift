@@ -29,8 +29,10 @@ struct MadeGoodApp: App {
         demoSeedFailed = false
         // HealthKit can launch the phone in the background to deliver a mirror.
         _ = WatchWorkoutMirror.shared
-        UserSettings.resetIfRequested()
+        UserSettings.resetIfRequested { WeatherDiskCache.shared.remove(.conditions) }
         UserSettings.migrate()
+        _ = PhoneWeather.shared
+        AppleWeatherAttribution.prune()
         _ = AnchorWatch.shared
         // Staging copies of an interrupted transfer are never part of a recording.
         RecordingStore.removeStaleStagingFiles()
@@ -61,6 +63,9 @@ struct MadeGoodApp: App {
                         .task(id: sessionSync?.account.binding) { await sessionSync?.accountDidChange() }
                         .onChange(of: scenePhase) { _, phase in
                             if phase == .active {
+                                PhoneWeather.shared.prune()
+                                AppleWeatherAttribution.prune()
+                                LocalWeather.shared.prune()
                                 AnchorWatch.shared.becameActive()
                                 #if MADEGOOD_VOYAGES
                                     voyageSync?.kick()
