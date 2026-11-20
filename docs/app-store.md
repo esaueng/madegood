@@ -104,31 +104,39 @@ Purpose strings (item 6, in `apps/apple/Project.swift`):
 
 ## Background location
 
-The iPhone app declares `UIBackgroundModes: location` and asks only for **When In Use**
-authorization (`NSLocationWhenInUseUsageDescription`). While a session or a Voyage leg
-is recording it holds a `CLBackgroundActivitySession`, which keeps When In Use location
-running with the screen off and shows the system location indicator. It never asks for
-Always and never uses significant-change, region monitoring or visits. Location stops
-when recording ends. The watch app uses the `workout-processing` background mode
-during its workout session instead.
+The iPhone app declares `UIBackgroundModes: location` and asks for **When In Use**
+authorization (`NSLocationWhenInUseUsageDescription`). A recording or Voyage leg
+holds a `CLBackgroundActivitySession`. The anchor alarm holds the same kind of
+session and enables standard background updates through `CLLocationManager` while
+armed, including when the boat is stationary. Both use the system background location
+indicator. The watch app
+uses `workout-processing` during its workout session.
 
-Draft justification for App Review:
+Draft justification for App Review
 
 > MadeGood records a GPS track of a session on the water. Users put the iPhone in a dry
-> bag, a pocket or a mount and turn the screen off, often for hours: a motorboat trip, a
-> sailing race, a long paddle. Recording must continue in the background for the track,
-> distance and speed to be correct. Location is used only while the user is recording
-> (they start and stop it explicitly), only with When In Use permission, and the system
-> shows the location indicator throughout. On Apple Watch, recording runs inside a
-> HealthKit workout session. Motorboat sessions are usually recorded on the iPhone
-> alone, without a watch.
+> bag, a pocket or a mount and turn the screen off, often for hours during a motorboat
+> trip, a sailing race or a long paddle. Recording must continue in the background for
+> the track, distance and speed to be correct. The user explicitly starts and stops
+> recording. MadeGood uses When In Use permission and the system shows the location
+> indicator throughout. On Apple Watch, recording runs inside a HealthKit workout session.
+> Motorboat sessions are usually recorded on the iPhone alone, without a watch.
+>
+> On iPhone, Record → Anchor alarm lets a boat operator explicitly arm a drift
+> warning at a chosen point and swing radius. The alarm is a supplementary boating
+> safety aid. It needs precise location while the screen is locked because the
+> boat may remain at anchor for hours and start to drift at any time. The iPhone
+> evaluates drift locally and uses the user's Alarms permission to sound a system
+> alarm on the Lock Screen. MadeGood uses When In Use location authorization and
+> shows the background location indicator while monitoring. Disarm ends background
+> location for the alarm and removes the stored anchor point. Checking the boat
+> remains the operator's responsibility.
 
-**Anchor alarm.** PLAN §5 and §11 plan an anchor alarm (alert when the boat drifts
-outside a radius, running in the background for hours), which is a recognized safety
-use. It is **not built yet**. Leave it out of the justification and the App Store
-description until it ships; when it does, add a paragraph describing the user-started
-alarm, its notification, and that it still uses When In Use with a background activity
-session.
+The drift detector needs a running app and usable GPS fixes. A pending system alarm warns if usable
+fixes stop arriving for about two minutes. Force-quitting stops drift monitoring
+until the app is reopened. The pending GPS loss alarm can still sound. The user
+controls the Alarms permission in Settings. Turning it off also disables Lock Screen
+sound for subsequent warnings.
 
 ## Account and deletion
 

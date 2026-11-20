@@ -29,6 +29,7 @@ struct MadeGoodApp: App {
         _ = WatchWorkoutMirror.shared
         UserSettings.resetIfRequested()
         UserSettings.migrate()
+        _ = AnchorWatch.shared
         // Staging copies of an interrupted transfer are never part of a recording.
         RecordingStore.removeStaleStagingFiles()
         // Prepared copies for sharing of recordings deleted since (or by an older build).
@@ -56,6 +57,7 @@ struct MadeGoodApp: App {
                         .task(id: sessionSync?.account.binding) { await sessionSync?.accountDidChange() }
                         .onChange(of: scenePhase) { _, phase in
                             if phase == .active {
+                                AnchorWatch.shared.becameActive()
                                 voyageSync?.kick()
                                 sessionSync?.kick()
                             }

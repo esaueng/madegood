@@ -421,6 +421,26 @@ These are cues, not metrics, but they follow fixed rules:
 Current heart rate is the latest reading. Average is the mean of the readings, and max
 the highest. Readings that are not positive and finite are ignored.
 
+## Anchor alarm
+
+The iPhone measures great-circle distance (m) and initial bearing (degrees true)
+from the most recent position to the selected anchor point. Bearing is omitted at
+the anchor itself. The swing radius is stored in metres and displayed in metres or
+feet according to the motorboat distance setting. The circle is not for navigation.
+
+A fix is clearly outside when its distance minus its reported horizontal accuracy
+exceeds the radius. The alarm requires at least three distinct, consecutive clearly
+outside usable fixes spanning at least 10 s. A fix with unknown accuracy or accuracy
+worse than 25 m is ignored. A usable fix that fails the outside test or a gap exceeding
+45 s between usable fixes ends the run. Cached positions older than 15 s do not enter
+the calculation. Acknowledging the drift alarm starts a new confirmation window.
+These readings are live only and do not change the session summary or track format.
+
+The iPhone keeps a separate GPS loss alarm scheduled about two minutes after the latest
+usable fix. Renewals replace the pending alarm after at least 15 s of progress, so the
+GPS loss alarm can sound roughly 20 s early. The system owns the scheduled alarm and can
+deliver it after the app stops receiving positions.
+
 ## Session summary
 
 Track v1 stores the analysis as `summary`, with `analyzerVersion` (currently `1.1.0`,
@@ -442,6 +462,6 @@ and auto-lap events.
 
 PLAN §5 lists these; they have no definition here until they ship: heart-rate zones,
 windsurf planing time and gybe count, race start line (pinging the ends, distance and
-time to the line), the motorboat anchor alarm, and stroke-based intervals. Calories
-come from Apple Health's workout builder, not from MadeGood.
+time to the line), and stroke-based intervals. Apple Health's workout builder supplies
+calories.
 

@@ -8,23 +8,38 @@ struct ContentView: View {
     @State private var library = SessionLibrary()
     @State private var voyageRecorder = VoyageRecorder.shared
     @State private var tab = AppTab.record
+    @State private var anchorWatch = AnchorWatch.shared
+    @State private var showingAnchorAlarm = false
     @Environment(SessionSync.self) private var sessionSync: SessionSync?
 
     enum AppTab: Hashable { case record, voyages, history, settings }
 
     var body: some View {
-        TabView(selection: $tab) {
-            Tab("Record", systemImage: "record.circle", value: AppTab.record) {
-                RecordView(controller: controller, library: library, showHistory: { tab = .history })
+        VStack(spacing: 0) {
+            if anchorWatch.watch != nil, !anchorWatch.isViewing {
+                Button {
+                    showingAnchorAlarm = true
+                } label: {
+                    Label(anchorStatus, systemImage: anchorWatch.isAlarming ? "exclamationmark.triangle.fill" : "scope")
+                        .font(.subheadline.weight(.semibold))
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(anchorWatch.isAlarming ? Color.red : Color.accentColor)
+                .background(.regularMaterial)
+                .accessibilityIdentifier("anchor.banner")
             }
-            Tab("Voyages", systemImage: "sailboat", value: AppTab.voyages) {
-                VoyagesView(recorder: voyageRecorder)
-            }
-            Tab("History", systemImage: "list.bullet", value: AppTab.history) {
-                HistoryView(library: library)
-            }
-            Tab("Settings", systemImage: "gearshape", value: AppTab.settings) {
-                SettingsView()
+            tabs
+        }
+        .sheet(isPresented: $showingAnchorAlarm) {
+            NavigationStack {
+                AnchorAlarmView()
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Done") { showingAnchorAlarm = false }
+                        }
+                    }
             }
         }
         .onAppear {
@@ -46,6 +61,31 @@ struct ContentView: View {
                 if isRecording { WatchWorkoutMirror.shared.seedDemoIfRequested() }
             }
         #endif
+    }
+
+    private var tabs: some View {
+        TabView(selection: $tab) {
+            Tab("Record", systemImage: "record.circle", value: AppTab.record) {
+                RecordView(controller: controller, library: library, showHistory: { tab = .history })
+            }
+            Tab("Voyages", systemImage: "sailboat", value: AppTab.voyages) {
+                VoyagesView(recorder: voyageRecorder)
+            }
+            Tab("History", systemImage: "list.bullet", value: AppTab.history) {
+                HistoryView(library: library)
+            }
+            Tab("Settings", systemImage: "gearshape", value: AppTab.settings) {
+                SettingsView()
+            }
+        }
+    }
+
+    private var anchorStatus: String {
+        if anchorWatch.isAlarming { return "Anchor dragging" }
+        if anchorWatch.locationBlocked || anchorWatch.alarmPermissionDenied || anchorWatch.gpsAlarmNeedsAttention {
+            return "Anchor alarm limited"
+        }
+        return "Anchor alarm armed"
     }
 }
 
@@ -230,6 +270,10 @@ private struct StartView: View {
                     moved.move(fromOffsets: from, toOffset: to)
                     store.reorderStartList(current: sports, to: moved)
                 }
+            }
+
+            if !store[.motorboating].isHidden {
+                Section { AnchorAlarmLink() }
             }
 
             // The one-time offer sits under the sports so it never pushes them down.
