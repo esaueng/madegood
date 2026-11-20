@@ -397,16 +397,17 @@ function toSessionBody(
 }
 
 // Cursors are opaque to clients: base64url JSON of the last item's [startedAt, id].
+// Shared with GET /users/:handle (routes/users.ts), which pages in the same order.
 const Cursor = z.tuple([z.number().int(), z.string().regex(UUID_PATTERN)]);
 
-function encodeCursor(session: Session): string {
+export function encodeCursor(session: Pick<Session, "startedAt" | "id">): string {
   return btoa(JSON.stringify([session.startedAt, session.id]))
     .replaceAll("+", "-")
     .replaceAll("/", "_")
     .replace(/=+$/, "");
 }
 
-function decodeCursor(cursor: string): [number, string] | null {
+export function decodeCursor(cursor: string): [number, string] | null {
   try {
     const json = atob(cursor.replaceAll("-", "+").replaceAll("_", "/"));
     const parsed = Cursor.safeParse(JSON.parse(json));
