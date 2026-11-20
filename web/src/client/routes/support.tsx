@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect } from "react";
-import { SupportPage } from "@/components/support-page";
+import { questionId, SupportPage } from "@/components/support-page";
 
 export const Route = createFileRoute("/support")({
   component: Support,
@@ -9,7 +9,7 @@ export const Route = createFileRoute("/support")({
 function Support() {
   // Open the question a link points at, such as /support#delete-account.
   useEffect(() => {
-    const id = decodeURIComponent(window.location.hash.slice(1));
+    const id = questionId(window.location.hash);
     const target = id ? document.getElementById(id) : null;
     if (target instanceof HTMLDetailsElement) {
       target.open = true;

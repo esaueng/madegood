@@ -5,6 +5,16 @@ import type { ReactNode } from "react";
 // The App Store support page (/support). Answer only from what ships: each answer names the
 // screens and labels the apps and this website use today. Check them when those change.
 
+/** The question ID a URL fragment such as "#delete-account" names; "" if none or malformed. */
+export function questionId(hash: string): string {
+  try {
+    return decodeURIComponent(hash.replace(/^#/, ""));
+  } catch {
+    // A malformed fragment such as "#%" opens nothing; the page stays usable.
+    return "";
+  }
+}
+
 export const SUPPORT_EMAIL = "support@madegood.app";
 const GITHUB_URL = "https://github.com/esaueng/madegood";
 const ISSUES_URL = `${GITHUB_URL}/issues`;
@@ -114,8 +124,9 @@ export function SupportPage() {
 
           <Question id="account" title="Do I need an account?">
             <p>
-              No. You can record, review and export sessions on your iPhone and Apple Watch without
-              an account or a connection.
+              No. You can record on your iPhone and Apple Watch, and review and export sessions on
+              your iPhone, without an account or a connection. The watch hands each session to the
+              iPhone, where the export controls are.
             </p>
             <p>
               An account is optional. It lets you sync sessions to this website to browse, replay
@@ -170,10 +181,12 @@ export function SupportPage() {
 
           <Question id="sharing" title="How do sharing, public profiles and privacy zones work?">
             <p>
-              Every session is private until you change it. To share one, sign in on this website,
-              open the session and set its <Path>Visibility</Path>: <em>Unlisted</em> (anyone with
-              the link) or <em>Public</em> (anyone). Others see the track, statistics, title and
-              notes, never your heart rate. Settings sets the visibility of new sessions.
+              Sessions are private unless you choose otherwise. To share one, sign in on this
+              website, open the session and set its <Path>Visibility</Path>: <em>Unlisted</em>{" "}
+              (anyone with the link) or <em>Public</em> (anyone). Others see the track, statistics,
+              title and notes, never your heart rate. Settings sets the visibility new sessions get
+              when they upload: it starts as private, and if you change it to Unlisted or Public,
+              new sessions are shared that way automatically.
             </p>
             <p>
               Your public profile lists your name, handle and the sessions you make public, with
@@ -181,7 +194,9 @@ export function SupportPage() {
               open it until you have a public session.
             </p>
             <p>
-              Privacy zones hide places such as home or your usual launch spot. In{" "}
+              Privacy zones hide the parts of your track near places such as home or your usual
+              launch spot. They don't change a session's title or notes, so leave places out of
+              those if you share it. In{" "}
               <Link to="/settings" className={`${link} ${focusRing}`}>
                 Settings
               </Link>{" "}
