@@ -6,9 +6,8 @@ import WaterKit
 /// Current conditions where the iPhone is, for the start screen. Off until the user turns
 /// it on (the start screen asks once; Settings > Weather after that).
 ///
-/// What is sent: the phone's position rounded to 0.1° (about 10 km) and the variables
-/// asked for, to Open-Meteo, with no key, cookies or identifiers. The position itself is
-/// never stored; the last answer is, so the card draws at once on the next launch.
+/// The iPhone sends Apple Weather a 0.1° grid cell. The last answer is saved without
+/// coordinates so the card draws at once on the next launch.
 @MainActor
 @Observable
 final class LocalWeather {
@@ -38,9 +37,6 @@ final class LocalWeather {
     private let location = OneShotLocation()
     private var refreshing = false
     private let defaults = UserDefaults.standard
-    #if DEBUG
-        private var isDemo = false
-    #endif
 
     var isEnabled: Bool { choice == true }
 
@@ -50,33 +46,18 @@ final class LocalWeather {
         return weather
     }
 
-    private struct Saved: Codable {
-        var weather: WeatherNow
-        var fetchedAt: Date
-    }
-
     private init() {
         choice = defaults.object(forKey: UserSettings.Key.localWeather) as? Bool
-        if let data = defaults.data(forKey: UserSettings.Key.lastWeather),
-            let saved = try? JSONDecoder().decode(Saved.self, from: data)
+        if AppleWeatherAttribution.available != nil,
+            let data = defaults.data(forKey: UserSettings.Key.lastWeather),
+            let saved = try? JSONDecoder().decode(PhoneWeather.Conditions.self, from: data)
         {
             weather = saved.weather
             fetchedAt = saved.fetchedAt
         }
         #if DEBUG
-            let arguments = ProcessInfo.processInfo.arguments
-            if let index = arguments.firstIndex(of: "-demoWeather"), index + 1 < arguments.count {
-                isDemo = true
-                choice = true
-                weather = DemoWeather.sample(arguments[index + 1], now: .now)
-                fetchedAt = .now
-                status = .ready
-                return
-            }
-            // UI tests never reach the network or prompt for location unless asked.
-            if arguments.contains(DemoFeed.launchArgument) {
-                isDemo = true
-                choice = nil
+            if DemoWeatherProvider.isEnabled {
+                choice = DemoWeatherProvider.mood == nil ? nil : true
                 weather = nil
                 fetchedAt = nil
             }
@@ -87,7 +68,11 @@ final class LocalWeather {
     /// Turns local conditions on or off. On asks for location if it hasn't been asked.
     func setEnabled(_ enabled: Bool) {
         choice = enabled
-        defaults.set(enabled, forKey: UserSettings.Key.localWeather)
+        #if DEBUG
+            if !DemoWeatherProvider.isEnabled { defaults.set(enabled, forKey: UserSettings.Key.localWeather) }
+        #else
+            defaults.set(enabled, forKey: UserSettings.Key.localWeather)
+        #endif
         if enabled {
             Task { await refresh(force: true) }
         } else {
@@ -98,12 +83,6 @@ final class LocalWeather {
     /// Fetches new conditions unless the last ones are recent (or `force`).
     func refresh(force: Bool = false) async {
         guard isEnabled, !refreshing else { return }
-        #if DEBUG
-            if isDemo {
-                status = weather == nil ? .failed : .ready
-                return
-            }
-        #endif
         if !force, let fetchedAt, Date.now.timeIntervalSince(fetchedAt) < Self.refreshAfter, weather != nil {
             status = .ready
             return
@@ -112,67 +91,46 @@ final class LocalWeather {
         defer { refreshing = false }
         if current == nil { status = .loading }
 
-        switch await location.requestAuthorization() {
-        case .denied, .restricted:
-            status = .noLocation
-            return
-        default: break
-        }
         do {
-            let position = try await location.position()
-            // The user may have turned this off while the fix was pending: send nothing.
+            let cell = try await weatherCell()
+            // The user may have turned this off while the fix was pending.
             guard isEnabled else { return }
-            let weather = try await OpenMeteo.fetchCurrent(latitude: position.latitude, longitude: position.longitude)
+            let answer = try await PhoneWeather.shared.current(at: cell, force: force)
             guard isEnabled else { return }
-            self.weather = weather
-            fetchedAt = .now
-            if let data = try? JSONEncoder().encode(Saved(weather: weather, fetchedAt: .now)) {
+            weather = answer.weather
+            fetchedAt = answer.fetchedAt
+            #if DEBUG
+                if DemoWeatherProvider.isEnabled {
+                    status = .ready
+                    return
+                }
+            #endif
+            if let data = try? JSONEncoder().encode(answer) {
                 defaults.set(data, forKey: UserSettings.Key.lastWeather)
             }
             status = .ready
         } catch OneShotLocation.Failure.denied {
-            status = .noLocation
+            if isEnabled { status = .noLocation }
         } catch {
-            status = current == nil ? .failed : .ready
+            if isEnabled { status = current == nil ? .failed : .ready }
         }
     }
-}
 
-// MARK: - Request
-
-extension OpenMeteo {
-    /// Current conditions are asked for at this resolution: the forecast grid is a few km,
-    /// so 0.1° (about 10 km) loses little and keeps the exact position on the phone.
-    static let currentStep = 0.1
-
-    static func roundCurrent(_ degrees: Double) -> Double {
-        (degrees / currentStep).rounded() * currentStep
-    }
-
-    /// Current conditions and the next six hours at the rounded position.
-    static func currentRequest(latitude: Double, longitude: Double) -> URLRequest {
-        var components = URLComponents(string: "https://api.open-meteo.com/v1/forecast")!
-        components.queryItems = [
-            URLQueryItem(name: "latitude", value: String(format: "%.1f", roundCurrent(latitude))),
-            URLQueryItem(name: "longitude", value: String(format: "%.1f", roundCurrent(longitude))),
-            URLQueryItem(name: "current", value: WeatherNow.currentVariables),
-            URLQueryItem(name: "hourly", value: WeatherNow.hourlyVariables),
-            URLQueryItem(name: "forecast_hours", value: "6"),
-            URLQueryItem(name: "wind_speed_unit", value: "ms"),
-            URLQueryItem(name: "timeformat", value: "unixtime"),
-            URLQueryItem(name: "timezone", value: "GMT"),
-        ]
-        var request = URLRequest(url: components.url!, timeoutInterval: 15)
-        request.httpShouldHandleCookies = false
-        return request
-    }
-
-    static func fetchCurrent(latitude: Double, longitude: Double) async throws -> WeatherNow {
-        let session = URLSession(configuration: .ephemeral)
-        defer { session.finishTasksAndInvalidate() }
-        let (data, response) = try await session.data(for: currentRequest(latitude: latitude, longitude: longitude))
-        guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw Failure.badResponse }
-        return try WeatherNow.parse(data)
+    private func weatherCell() async throws -> WeatherGridCell {
+        #if DEBUG
+            if DemoWeatherProvider.isEnabled {
+                return WeatherGridCell(latitude: 0, longitude: 0)!
+            }
+        #endif
+        switch await location.requestAuthorization() {
+        case .denied, .restricted: throw OneShotLocation.Failure.denied
+        default: break
+        }
+        let position = try await location.position()
+        guard let cell = WeatherGridCell(latitude: position.latitude, longitude: position.longitude) else {
+            throw OneShotLocation.Failure.unavailable
+        }
+        return cell
     }
 }
 
@@ -263,8 +221,36 @@ final class OneShotLocation: NSObject, CLLocationManagerDelegate {
 #if DEBUG
     /// Canned conditions for UI tests and screenshots: launch with `-demoWeather <mood>`
     /// (a `WaterOutlook.Mood` raw value). No network, no location prompt.
-    enum DemoWeather {
-        static func sample(_ mood: String, now: Date) -> WeatherNow? {
+    struct DemoWeatherProvider: PhoneWeatherProviding {
+        static var isEnabled: Bool {
+            let arguments = ProcessInfo.processInfo.arguments
+            return DemoFeed.isEnabled || mood != nil
+                || arguments.contains(DemoHistory.launchArgument) || arguments.contains("-demoMoments")
+        }
+
+        static var mood: String? {
+            let arguments = ProcessInfo.processInfo.arguments
+            guard let index = arguments.firstIndex(of: "-demoWeather"), index + 1 < arguments.count else { return nil }
+            return arguments[index + 1]
+        }
+
+        func current(at cell: WeatherGridCell) async throws -> WeatherNow {
+            guard let weather = Self.sample(Self.mood ?? "sunny", now: .now) else {
+                throw PhoneWeather.Failure.unavailable
+            }
+            return weather
+        }
+
+        func hourlyWind(at cell: WeatherGridCell, during interval: DateInterval) async throws -> [WeatherWindHour] {
+            try await Task.sleep(for: .milliseconds(300))
+            if ProcessInfo.processInfo.arguments.contains("-demoWeatherOffline") {
+                throw URLError(.notConnectedToInternet)
+            }
+            return stride(from: interval.start.timeIntervalSince1970, to: interval.end.timeIntervalSince1970, by: 3_600)
+                .map { WeatherWindHour(date: Date(timeIntervalSince1970: $0), fromDegrees: 10, speed: 6) }
+        }
+
+        private static func sample(_ mood: String, now: Date) -> WeatherNow? {
             let t = now.timeIntervalSince1970
             let hour = (t / 3_600).rounded(.down) * 3_600
             func hours(_ codes: [Int], gusts: [Double] = [], rain: [Double] = []) -> [WeatherNow.Hour] {

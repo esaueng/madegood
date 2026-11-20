@@ -1,6 +1,7 @@
 import { and, eq, isNull } from "drizzle-orm";
 import type { drizzle } from "drizzle-orm/d1";
 import { pendingR2Deletes, type Session, sessions, users } from "../db/schema";
+import { logFailure } from "./logging";
 import { CLEARED_DERIVED } from "./postprocess";
 import {
   collectKeys,
@@ -59,7 +60,7 @@ export async function collectUserGarbage(db: Db, bucket: R2Bucket, userId: strin
       limit: 100,
     });
   } catch (error) {
-    console.warn("Could not collect old track objects; the scheduled sweep retries.", error);
+    logFailure("track_garbage_collect_failed", error);
   }
 }
 
@@ -347,7 +348,7 @@ export async function recordLegacyLeftovers(
     await d1.batch(leftovers.map((key) => recordKey(d1, key, userId, now)));
     await collectKeys(db, bucket, leftovers);
   } catch (error) {
-    console.warn("Could not clean up older track objects; the next upload retries.", error);
+    logFailure("track_upload_cleanup_failed", error);
   }
 }
 

@@ -5,6 +5,7 @@ import type { Context } from "hono";
 import { type AuthEnv, requireAuth } from "../auth/middleware";
 import { type PrivacyZone, privacyZones, users } from "../db/schema";
 import { apiError, errorResponse } from "../lib/errors";
+import { logFailure } from "../lib/logging";
 import { ensureUserRequeued } from "../lib/postprocess";
 import { createRouter } from "../lib/router";
 
@@ -189,7 +190,7 @@ export const privacyZoneRoutes = createRouter<AuthEnv>()
       // change (data cut with this zone must not outlive it); its reprocessing stays
       // marked pending (users.zones_queued_version) for the next upload, zone change or
       // scheduled sweep, so nothing stays hidden for good.
-      console.error("Could not queue reprocessing after adding a zone.", error);
+      logFailure("privacy_zone_add_queue_failed", error);
       await c.env.DB.batch([
         ...zonesChanged(c.env.DB, userId, id),
         c.env.DB.prepare("DELETE FROM privacy_zones WHERE id = ? AND user_id = ?").bind(id, userId),
@@ -215,7 +216,7 @@ export const privacyZoneRoutes = createRouter<AuthEnv>()
     try {
       await ensureUserRequeued(c.env, c.executionCtx, userId);
     } catch (error) {
-      console.error("Could not queue reprocessing after removing a zone.", error);
+      logFailure("privacy_zone_remove_queue_failed", error);
       return unavailable(c);
     }
     return c.body(null, 204);

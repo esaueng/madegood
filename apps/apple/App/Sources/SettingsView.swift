@@ -8,6 +8,7 @@ struct SettingsView: View {
     @State private var store = SettingsStore.shared
     @State private var weather = LocalWeather.shared
     @AppStorage(UserSettings.Key.appearance) private var appearance: Appearance = .system
+    @AppStorage(UserSettings.Key.showManOverboardButton) private var showManOverboardButton = false
     @State private var exportingAll = false
     /// Progress of preparing Export All Recordings, 0 to 1.
     @State private var exportAllProgress = 0.0
@@ -57,7 +58,7 @@ struct SettingsView: View {
                 } footer: {
                     Text(
                         "Wind and weather where you are, rated for your sports, on the start screen. Your position "
-                            + "is rounded to about 10 km and sent to Open-Meteo. A guide only, not a marine forecast.")
+                            + "is rounded to about 11 km and sent to Apple Weather. A guide only, not a marine forecast.")
                 }
 
                 Section {
@@ -77,6 +78,11 @@ struct SettingsView: View {
                     Text("Appearance")
                 } footer: {
                     Text("System follows your iPhone. The watch app is always dark.")
+                }
+
+                Section("Safety") {
+                    Toggle("Show Man Overboard (MOB) Button", isOn: $showManOverboardButton)
+                        .accessibilityIdentifier("settings.showManOverboardButton")
                 }
 
                 SessionSyncSection()

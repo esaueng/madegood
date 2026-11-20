@@ -4,6 +4,7 @@ import { Hono } from "hono";
 import type { AppEnv } from "../app";
 import { HANDLE_PATTERN } from "../auth/users";
 import { sessions, users } from "../db/schema";
+import { logFailure } from "../lib/logging";
 import { ogImage, ogInfo } from "../lib/og-image";
 import {
   BRAND_CARD_ALT,
@@ -194,7 +195,7 @@ async function previewPage(
   const url = new URL(request.url);
   const preview = await find().catch((err) => {
     // A preview is never worth a failed page: log it and fall back to the generic tags.
-    console.error(err);
+    logFailure("preview_tags_failed", err);
     return fallback;
   });
   return injectPreview(shell, preview, `${url.origin}${url.pathname}`);
@@ -217,7 +218,7 @@ export const sessionPreviewPage = new Hono<AppEnv>()
     const image = await ogImage(c.env, id, c.req.raw, (work) =>
       c.executionCtx.waitUntil(work),
     ).catch((err) => {
-      console.error("Could not serve a route image.", err);
+      logFailure("og_image_failed", err);
       return null;
     });
     return image ?? fallback();

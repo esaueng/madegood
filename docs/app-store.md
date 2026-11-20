@@ -33,7 +33,7 @@ crash reporting, and links no data with other companies' data for advertising. N
 `NSUserTrackingUsageDescription`, no IDFA.
 
 **Without an account** (the default), nothing leaves the device except an optional
-Open-Meteo request (below) and what the user chooses to send to Apple Health or to
+Apple Weather request (below) and what the user chooses to send to Apple Health or to
 share as a file. Apple's definition of "collected" covers data sent off the device to
 the developer or its partners, so with sync off the app collects nothing.
 
@@ -55,22 +55,19 @@ financial info, sensitive info, device ID, advertising data, audio, raw wrist mo
 (the 100 Hz motion stream never leaves the phone unless the user shares a raw recording
 file themselves).
 
-**Open-Meteo.** Only when the user taps "Compare with Open-Meteo" in a sailing
-session's detail, the phone sends Open-Meteo the selection's mean position rounded to
-0.5° (about 50 km) and its UTC start and end dates, with no account, key, cookies or
-identifiers (docs/metrics.md). It answers the request in real time and is not linked to
-the user. Since #72 the **server** also asks Open-Meteo, automatically, for unlisted
+**Apple Weather.** On-device local conditions and the optional sailing wind comparison
+use WeatherKit with coordinates rounded to a 0.1° grid.
+
+**Server-side Open-Meteo.** Since #72 the server asks Open-Meteo automatically, for unlisted
 and public sessions only: the center of the session's zone-cut bounds rounded to 0.1°
 (about 11 km) and the UTC dates, nothing else (`web/src/server/lib/wind.ts`); the answer
-is stored with the session. The privacy policy describes both. Proposed: not declared as collected (it is not retained for the developer),
+is stored with the session. Proposed: not declared as collected (it is not retained for the developer),
 but described in the privacy policy. Confirm.
 
 **Local conditions.** Off until the user taps Show on the start screen (or turns on
-Settings > Weather > Local Conditions). Then, while the start screen is open and at
-most every 15 minutes, the phone sends Open-Meteo's forecast API its position rounded
-to 0.1° (about 10 km), again with no account, key, cookies or identifiers. The
-position is not stored; the last answer is kept on the phone. It uses the existing
-When In Use location permission, whose iPhone prompt now mentions local conditions.
+Settings > Weather > Local Conditions). The last answer is kept on the phone. It uses
+the existing When In Use location permission, whose iPhone prompt mentions local
+conditions.
 
 **Anchor alarm.** The anchor point, swing radius and GPS fixes stay on the iPhone
 (`AnchorWatch`); nothing about the alarm is sent anywhere, with or without an

@@ -12,6 +12,7 @@ import {
   users,
   voyages,
 } from "../db/schema";
+import { logFailure } from "./logging";
 import { deletePrefix, userPrefix } from "./storage";
 import { type ZipEntry, zipStream } from "./zip";
 
@@ -397,7 +398,7 @@ export async function sendExportStep(
     let next: ExportMessage | null = message;
     while (next && Date.now() - started < 20_000) next = await runExportStep(env, next);
   };
-  if (ctx) ctx.waitUntil(run().catch((error) => console.error("Export step failed.", error)));
+  if (ctx) ctx.waitUntil(run().catch((error) => logFailure("export_inline_failed", error)));
   else await run();
 }
 
@@ -1026,7 +1027,7 @@ export async function handleExportBatch(batch: MessageBatch<unknown>, env: Env):
   for (const message of batch.messages) {
     const parsed = ExportMessage.safeParse(message.body);
     if (!parsed.success) {
-      console.warn("Dropping a malformed export message.");
+      logFailure("export_message_invalid");
       message.ack();
       continue;
     }
@@ -1035,7 +1036,7 @@ export async function handleExportBatch(batch: MessageBatch<unknown>, env: Env):
       if (next) await sendExportStep(env, null, next);
       message.ack();
     } catch (error) {
-      console.error("Export step failed; retrying.", error);
+      logFailure("export_step_retry", error);
       message.retry({ delaySeconds: 30 * message.attempts });
     }
   }

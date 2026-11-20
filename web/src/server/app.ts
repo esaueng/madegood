@@ -1,7 +1,9 @@
 import { OpenAPIHono } from "@hono/zod-openapi";
 import { HTTPException } from "hono/http-exception";
 import { apiError } from "./lib/errors";
+import { logFailure } from "./lib/logging";
 import { auth } from "./routes/auth";
+import { config } from "./routes/config";
 import { exportRoutes } from "./routes/exports";
 import { health } from "./routes/health";
 import { me } from "./routes/me";
@@ -19,6 +21,7 @@ export function createApp() {
   const api = new OpenAPIHono<AppEnv>();
 
   api.route("/", health);
+  api.route("/", config);
   api.route("/", auth);
   api.route("/", me);
   api.route("/", exportRoutes);
@@ -60,7 +63,7 @@ export function createApp() {
       return apiError(c, 400, "invalid_request", err.message);
     }
     if (err instanceof HTTPException && err.status < 500) return err.getResponse();
-    console.error(err);
+    logFailure("request_failed", err);
     return apiError(c, 500, "internal");
   });
 

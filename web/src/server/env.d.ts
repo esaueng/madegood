@@ -10,8 +10,13 @@ interface WorkerSecrets {
   VOYAGE_PRIVATE_LOCAL?: string;
 }
 
-interface Env extends WorkerSecrets {}
+interface DashboardVars {
+  /** Public Apple download link, set on the Worker in the Cloudflare dashboard. */
+  DOWNLOAD_URL?: string;
+}
+
+interface Env extends WorkerSecrets, DashboardVars {}
 
 declare namespace Cloudflare {
-  interface Env extends WorkerSecrets {}
+  interface Env extends WorkerSecrets, DashboardVars {}
 }

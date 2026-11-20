@@ -165,6 +165,16 @@ final class PhoneWeatherUITests: XCTestCase {
         attachScreenshot("storm coming")
     }
 
+    func testShowLoadsConditionsWithoutAPermissionPrompt() {
+        let app = launchDemoApp()
+        let show = app.buttons["weather.enable"]
+        XCTAssertTrue(show.waitForExistence(timeout: 15))
+        show.tap()
+        let card = app.descendants(matching: .any)["weather.card"]
+        XCTAssertTrue(card.waitForExistence(timeout: 15))
+        XCTAssertTrue(card.label.contains("Sailing:"), card.label)
+    }
+
     /// Without a choice the card offers to turn on; Not now hides it for good.
     func testOfferCanBeDeclined() {
         let app = launchDemoApp()

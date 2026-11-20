@@ -2,8 +2,9 @@ import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from "c
 import { env, exports } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/server/app";
-import type { VoyageViewerState } from "../src/server/lib/voyage-sharing";
-import { liveVoyage } from "../src/server/live/registry";
+import { requestAccountDeletion } from "../src/server/lib/account-deletion";
+import { hashSlug, type VoyageViewerState } from "../src/server/lib/voyage-sharing";
+import { liveVoyage, locateShare } from "../src/server/live/registry";
 import type { Position } from "../src/server/live/voyage-live";
 import { api, bearer, deleteMe, postJson, signIn } from "./apple";
 
@@ -128,6 +129,27 @@ afterEach(() => {
 });
 
 describe("local voyage transport", () => {
+  it("treats the live link as unknown once the owner is marked for deletion", async () => {
+    const voyage = await setup();
+    const time = clock();
+    const slug = await voyage.issue();
+    time.at(100);
+    expect((await voyage.ingest([position(time.start + 100, 1)])).status).toBe(200);
+    expect(await snapshot(slug)).toMatchObject({ status: "available" });
+    const hash = await hashSlug(slug);
+    expect(await locateShare(env.DB, hash)).toMatchObject({ userId: voyage.userId });
+
+    // Pause after the lock, before the purge can remove any of the voyage data.
+    expect(await requestAccountDeletion(env.DB, voyage.userId)).toBe(true);
+    expect(await locateShare(env.DB, hash)).toBeNull();
+    const init = { headers: { Upgrade: "websocket" } };
+    const actual = await api(shareURL(slug), init);
+    const unknown = await api(shareURL("a".repeat(43)), init);
+    expect(actual.status).toBe(unknown.status);
+    expect(Object.fromEntries(actual.headers)).toEqual(Object.fromEntries(unknown.headers));
+    expect(await actual.json()).toEqual(await unknown.json());
+  });
+
   it("keeps viewer routes unavailable in a preview without a live namespace", async () => {
     const previewEnv = { ...env, VOYAGE_LIVE_LOCAL: "1" };
     Reflect.deleteProperty(previewEnv, "VOYAGE_LIVE");

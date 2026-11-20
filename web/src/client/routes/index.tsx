@@ -11,7 +11,7 @@ import {
   Watch,
 } from "lucide-react";
 import { buttonVariants } from "@/components/ui/button";
-import { fetchHealth } from "@/lib/api";
+import { type DownloadLink, fetchHealth, fetchSiteConfig } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/")({
@@ -19,10 +19,10 @@ export const Route = createFileRoute("/")({
 });
 
 const GITHUB_URL = "https://github.com/esaueng/madegood";
-
-// Set this to the public TestFlight or App Store link once there is one. Until then the
-// page shows the release status as text and links nowhere.
-const DOWNLOAD_URL: string | null = null;
+const releaseText = {
+  testflight: "MadeGood is in beta on TestFlight.",
+  "app-store": "MadeGood is available on the App Store.",
+};
 
 // The shared button focus ring (ring/50) is too faint on this page's surfaces; the
 // landing page's calls to action use a foreground-colored ring with an offset instead
@@ -115,6 +115,9 @@ const watchShots = [
 ];
 
 function Home() {
+  const { data, isPending } = useQuery({ queryKey: ["site-config"], queryFn: fetchSiteConfig });
+  const download = isPending ? undefined : (data?.download ?? null);
+
   return (
     <>
       <section aria-labelledby="hero-title" className="py-16 sm:py-24">
@@ -127,7 +130,7 @@ function Home() {
           and your sessions are private unless you share them.
         </p>
         <div className="mt-8 flex flex-wrap gap-3">
-          <DownloadButton />
+          <DownloadButton download={download} />
           <a href={GITHUB_URL} className={cta({ variant: "outline" })}>
             <Code aria-hidden />
             View on GitHub
@@ -207,12 +210,14 @@ function Home() {
           Get MadeGood
         </h2>
         <p className="mt-2 max-w-xl text-muted-foreground">
-          {DOWNLOAD_URL
-            ? "MadeGood is in beta on TestFlight. It needs iOS 26 and, for the watch app, watchOS 26."
-            : "MadeGood is coming soon to TestFlight and the App Store. It will need iOS 26 and, for the watch app, watchOS 26. Until then you can build it yourself from the source."}
+          {download
+            ? `${releaseText[download.store]} It needs iOS 26 and, for the watch app, watchOS 26.`
+            : isPending
+              ? "MadeGood needs iOS 26 and, for the watch app, watchOS 26."
+              : "MadeGood is coming soon to TestFlight and the App Store. It will need iOS 26 and, for the watch app, watchOS 26. Until then you can build it yourself from the source."}
         </p>
         <div className="mt-6 flex flex-wrap gap-3">
-          <DownloadButton />
+          <DownloadButton download={download} />
           <a href={GITHUB_URL} className={cta({ variant: "outline" })}>
             <ExternalLink aria-hidden />
             Source on GitHub
@@ -229,12 +234,12 @@ function Home() {
   );
 }
 
-function DownloadButton() {
-  if (DOWNLOAD_URL) {
+function DownloadButton({ download }: { download: DownloadLink | null | undefined }) {
+  if (download) {
     return (
-      <a href={DOWNLOAD_URL} className={cta()}>
+      <a href={download.url} className={cta()}>
         <Download aria-hidden />
-        Join the beta
+        {download.store === "testflight" ? "Join the TestFlight beta" : "Download on the App Store"}
       </a>
     );
   }
@@ -243,7 +248,9 @@ function DownloadButton() {
   return (
     <p className="inline-flex h-10 items-center gap-2 rounded-md border border-dashed px-4 text-sm font-medium text-foreground">
       <Download className="size-4" aria-hidden />
-      Coming soon to TestFlight and the App Store
+      {download === undefined
+        ? "Checking download availability…"
+        : "Coming soon to TestFlight and the App Store"}
     </p>
   );
 }
@@ -301,6 +308,10 @@ function Footer() {
         .{" "}
         <Link to="/privacy" className={cn("underline underline-offset-2", linkFocus)}>
           Privacy
+        </Link>
+        .{" "}
+        <Link to="/support" className={cn("underline underline-offset-2", linkFocus)}>
+          Support
         </Link>
       </p>
       <ApiStatus />

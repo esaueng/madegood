@@ -5,6 +5,7 @@ import type { Context } from "hono";
 import { optionalAuth, requireAuth } from "../auth/middleware";
 import { privacyZones, type Session, sessions, sessionTombstones, users } from "../db/schema";
 import { apiError, errorResponse } from "../lib/errors";
+import { logFailure } from "../lib/logging";
 import { enqueuePostprocess, ensureUserRequeued, publicIsCurrent } from "../lib/postprocess";
 import { limitSessionUpload, rateLimitedResponse } from "../lib/rate-limit";
 import { createRouter } from "../lib/router";
@@ -421,13 +422,14 @@ const notFound = (c: Context) => apiError(c, 404, "not_found", "No such session.
 const unknownUser = (c: Context) =>
   apiError(c, 401, "unauthorized", "The account no longer exists.");
 
-/** A live (not deleted) session by ID, whoever owns it. */
-async function findSession(db: ReturnType<typeof drizzle>, id: string) {
-  const [session] = await db
-    .select()
+/** Read the session and its owner's sharing state in the same D1 snapshot. */
+async function findReadableSession(db: ReturnType<typeof drizzle>, id: string) {
+  const [row] = await db
+    .select({ session: sessions, zonesVersion: users.zonesVersion })
     .from(sessions)
+    .innerJoin(users, and(eq(users.id, sessions.userId), isNull(users.deletedAt)))
     .where(and(eq(sessions.id, id), isNull(sessions.deletedAt)));
-  return session;
+  return row;
 }
 
 /** Owners see everything; others see public and unlisted sessions. Private ones 404. */
@@ -507,8 +509,9 @@ const getRoute = createRoute({
   operationId: "getSession",
   summary: "A session",
   description:
-    "The owner always sees it. Anyone else, signed in or not, sees only public and " +
-    "unlisted sessions; a private one is reported as not found.",
+    "For an active account, the owner can see any of their sessions. Other viewers see " +
+    "only public and unlisted sessions. Once account deletion starts, its sessions are " +
+    "reported as not found.",
   tags: ["sessions"],
   security: optionalSecurity,
   middleware: [optionalAuth] as const,
@@ -748,15 +751,10 @@ sessionRoutes.openapi(putRoute, async (c) => {
 
 sessionRoutes.openapi(getRoute, async (c) => {
   const { id } = c.req.valid("param");
-  const db = drizzle(c.env.DB);
-  const session = await findSession(db, id);
-  if (!session || !canView(session, c.var.viewerId)) return notFound(c);
-  if (session.userId === c.var.viewerId) return c.json(toSessionBody(session, c.var.viewerId), 200);
-  const [owner] = await db
-    .select({ zonesVersion: users.zonesVersion })
-    .from(users)
-    .where(eq(users.id, session.userId));
-  return c.json(toSessionBody(session, c.var.viewerId, owner?.zonesVersion), 200);
+  const viewerId = c.var.viewerId;
+  const row = await findReadableSession(drizzle(c.env.DB), id);
+  if (!row || !canView(row.session, viewerId)) return notFound(c);
+  return c.json(toSessionBody(row.session, viewerId, row.zonesVersion), 200);
 });
 
 sessionRoutes.openapi(putTrackRoute, async (c) => {
@@ -780,10 +778,11 @@ sessionRoutes.openapi(putTrackRoute, async (c) => {
 
   const revision = c.req.valid("query").revision ?? 0;
   if (await isTombstoned(db, userId, id)) return sessionDeleted(c);
-  const session = await findSession(db, id);
-  if (!session || session.userId !== userId) {
-    return notFound(c);
-  }
+  const [session] = await db
+    .select({ uploadRevision: sessions.uploadRevision })
+    .from(sessions)
+    .where(and(eq(sessions.id, id), eq(sessions.userId, userId), isNull(sessions.deletedAt)));
+  if (!session) return notFound(c);
   if (session.uploadRevision !== revision) {
     return revisionError(
       c,
@@ -816,7 +815,7 @@ sessionRoutes.openapi(putTrackRoute, async (c) => {
     // Collected before it could attach, possibly before the put landed: delete this
     // upload's own object (best effort; recorded again if that fails).
     await discardUpload(db, c.env.TRACKS, key, userId).catch((error) =>
-      console.warn("Could not delete an expired upload now; it stays recorded.", error),
+      logFailure("track_upload_expired_cleanup_failed", error),
     );
     return apiError(
       c,
@@ -857,7 +856,7 @@ sessionRoutes.openapi(putTrackRoute, async (c) => {
       { v: 1, sessionId: id, userId, revision, etag: stored.etag },
     ]);
   } catch (error) {
-    console.error("Could not queue post-processing.", error);
+    logFailure("postprocess_queue_failed", error);
     return apiError(
       c,
       503,
@@ -868,7 +867,7 @@ sessionRoutes.openapi(putTrackRoute, async (c) => {
 
   // A zone change whose reprocessing could not be queued earlier is retried here.
   await ensureUserRequeued(c.env, c.executionCtx, userId).catch((error) =>
-    console.warn("Could not queue a pending zone change.", error),
+    logFailure("postprocess_zone_change_queue_failed", error),
   );
 
   if (stored.replaced) {
@@ -890,7 +889,7 @@ sessionRoutes.openapi(getTrackRoute, async (c) => {
   const { id } = c.req.valid("param");
   const viewerId = c.var.viewerId;
   const db = drizzle(c.env.DB);
-  const session = await findSession(db, id);
+  const session = (await findReadableSession(db, id))?.session;
   if (!session || !canView(session, viewerId)) return notFound(c);
 
   const object = session.trackKey ? await c.env.TRACKS.get(session.trackKey) : null;
@@ -923,6 +922,9 @@ sessionRoutes.openapi(getTrackRoute, async (c) => {
     const gzipped = await new Response(
       new Blob([JSON.stringify(shared)]).stream().pipeThrough(new CompressionStream("gzip")),
     ).arrayBuffer();
+    // Deletion can remove the zones after this request obtained the R2 object. Recheck
+    // the owner before sending a projection that may have used the emptied zone list.
+    if (!(await accountActive(db, session.userId))) return notFound(c);
     return new Response(gzipped, {
       headers: {
         "content-type": TRACK_CONTENT_TYPE,
@@ -978,7 +980,7 @@ sessionRoutes.openapi(patchRoute, async (c) => {
         { v: 1, sessionId: id, userId, revision: session.uploadRevision, etag: session.trackEtag },
       ]);
     } catch (error) {
-      console.warn("Could not queue the wind lookup.", error);
+      logFailure("wind_lookup_queue_failed", error);
     }
   }
   return c.json(toSessionBody(session, userId), 200);

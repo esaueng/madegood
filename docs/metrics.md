@@ -256,7 +256,7 @@ direction is the time-weighted circular mean of courses within ±17.5°, and the
 the direction midway between the two legs.
 
 The legs fix the wind's axis, not its side: two legs 90° apart are as consistent with
-beating as with gybing downwind. A prior picks the side, the Open-Meteo direction when
+beating as with gybing downwind. A prior picks the side, the Apple Weather direction when
 the user has fetched it, but only when it lies within 60° of one end of the axis (and
 so at least 120° from the other). A forecast further from both, across the axis, is
 inconclusive and decides nothing. Without a side (no prior, or an inconclusive one)
@@ -315,22 +315,18 @@ runs. After the session the analysis is one pass over the selection.
 `waterkit-replay` prints the wind axis, the maneuver count and VMG along the axis for
 sailing recordings (it has no prior).
 
-### Open-Meteo
+### Apple Weather
 
-Session detail on the iPhone can fetch Open-Meteo's modelled 10 m wind for a sailing
-session, only when the user taps "Compare with Open-Meteo"; the button says beforehand
-that it sends the approximate area (~50 km) and dates. The watch never calls the
-network. The result is shown beside the estimate and used as its prior. It is kept on
-the phone keyed by the request (rounded position, dates, the session's hours and the
-variables), so a selection trimmed to another area or day asks again.
+The iPhone fetches hourly modelled wind only when the user taps “Compare with Apple
+Weather” in a sailing session. The button discloses that the request shares the
+approximate area and hourly time range with Apple. The mean position of the selected
+fixes is snapped to a 0.1° × 0.1° grid (about 11 km per side at the equator).
 
-Sent to Open-Meteo, with no API key, cookies or identifiers: the mean position of the
-selection's fixes rounded to 0.5° (about 50 km; the models' grids are coarse anyway),
-its UTC start and end dates (whole days), and the requested variables. Sessions that ended more than 7 days ago
-use the historical archive API, newer ones the forecast API. The direction is the
-speed-weighted circular mean of the hourly values from the hour before the start to
-the hour after the end; the speed is their mean. Offline or on any error, the detail
-keeps the track's own estimate and offers to try again.
+The speed is the mean in m/s, and direction is the speed-weighted circular mean in
+degrees true, measured from where the wind comes. It samples available values from
+the hour before the start through the hour after the end, using WeatherKit's hourly
+history from August 1, 2021. Cached observations are reused by grid cell and hour.
+Offline or on error, the detail keeps the track's own estimate and offers to try again.
 
 ## Start line
 
