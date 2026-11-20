@@ -43,7 +43,7 @@ public struct PaddlingSplit: Sendable, Hashable {
             ranges = []
         }
 
-        for interval in intervals where interval.duration <= SessionReplayTimeline.maxRouteGap {
+        for interval in intervals {
             var start = interval.elapsedRange.lowerBound
             let end = interval.elapsedRange.upperBound
             var remaining = interval.distance

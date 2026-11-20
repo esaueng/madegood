@@ -6,6 +6,7 @@ struct SessionMomentsSection: View {
     let source: SessionLibrary.Source
     let display: LiveDisplay
     let highlightedTitle: String?
+    let strokeIntervals: [PaddlingStrokeInterval]
     let windChanged: () -> Void
     let select: (SessionReplayView.Highlight) -> Void
 
@@ -59,6 +60,30 @@ struct SessionMomentsSection: View {
                 Text("Moments")
             } footer: {
                 Text("Splits every 1 km of moving distance.")
+            }
+        }
+        if !strokeIntervals.isEmpty {
+            Section {
+                ForEach(strokeIntervals, id: \.index) { interval in
+                    let title =
+                        interval.isComplete
+                        ? "Stroke interval \(interval.index)" : "Stroke interval \(interval.index) (partial)"
+                    let strokes = interval.strokeCount == 1 ? "1 stroke" : "\(interval.strokeCount) strokes"
+                    let detail =
+                        interval.movingTime > 0
+                        ? "\(strokes) · \(display.distance(interval.distance)) · \(Formatting.elapsed(interval.movingTime)) moving"
+                        : strokes
+                    momentRow(title, id: "strokeInterval.\(interval.index)", detail: detail) {
+                        select(
+                            SessionReplayView.Highlight(
+                                title: title, range: interval.elapsedRange, ranges: interval.movingRanges,
+                                data: presentation.replayData))
+                    }
+                }
+            } header: {
+                Text("Stroke intervals")
+            } footer: {
+                Text("Intervals every \(PaddlingStrokeInterval.targetStrokeCount) detected strokes.")
             }
         }
     }

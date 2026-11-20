@@ -8,8 +8,8 @@ Live metrics come from `SessionEngine`, which runs on the watch or phone during 
 session and only uses data it has already seen. Samples with a non-finite time are
 ignored. Session detail on the iPhone replays the recording through the same engine
 (`SessionReplay`), so live and after-session values match, and adds analyses that need
-the whole track: sailing maneuvers and wind, paddling splits, and strokes from the raw
-recording.
+the whole track: sailing maneuvers and wind, paddling distance splits, and stroke
+analysis from the raw recording.
 
 ## Where each metric is shown
 
@@ -22,6 +22,7 @@ recording.
 | Windsurf speed categories | yes | yes | yes |
 | Strokes, stroke rate, distance per stroke, sides | yes | yes, from the raw recording | no |
 | Paddling 1 km splits | no | yes (replay) | no |
+| Paddling 100-stroke intervals | no | yes (replay, from the raw recording) | no |
 | Sailing wind axis, VMG, tacks and gybes | yes | yes | no |
 | Motorboat trip log, engine time, fuel estimate | yes | yes | no (the website shows the distance) |
 
@@ -134,8 +135,7 @@ moving ranges. Replay can seek to the lower bound and highlight each moving rang
 separately, preserving gaps between spans. A middle cut ends the current moving range
 but keeps the same split counter. Time and distance from the cut do not contribute.
 The bounds use the selected track's clock, including when a trim rebases it. Split
-results are computed for replay and are absent from the saved summary. Stroke-based
-intervals are not built yet.
+results are computed for replay and are absent from the saved summary.
 
 ## Strokes
 
@@ -186,6 +186,24 @@ anchors, like the motion stream.
 **Trims.** Kayak cycles are expanded into their two strokes first, then each stroke is kept
 if its own time is inside a retained range. Rates use the cycles inside the retained
 ranges, and a period counts only when both of its ends are in the same range.
+
+**Stroke intervals.** For kayak, canoe and SUP, replay groups detected strokes in
+chronological order into consecutive sets of 100. Each result has a 1-based index,
+stroke count, and completion flag. The first interval starts at the beginning of the
+selected recording. Each interval ends at its last counted stroke, which is also the
+start boundary of the next interval. A nonempty remainder is shown as partial.
+Trimming restarts the count on the selected clock. A middle cut omits removed strokes
+and keeps the same counter across the gap. The count follows the stroke pause rules
+above, so a slow stroke can count even when GPS auto-pauses.
+
+Moving time, distance and route highlights use the same observed steps as distance
+splits, clipped to the interval's elapsed bounds. Distance is interpolated linearly
+within a step at a stroke boundary. Pauses, cuts and GPS outages separate the moving
+ranges. With no observed movement an interval still has a count and elapsed bounds.
+The iPhone lists stroke intervals alongside the stroke chart and distance splits.
+Selecting one seeks replay to its start and highlights its moving ranges when
+available. The intervals are derived from raw motion and are absent from the saved
+summary.
 
 **Accuracy.** No labeled paddling recordings exist yet, so the PLAN §5 targets (count
 within ±3 %, rate within ±2 SPM) are checked in `StrokeDetectorTests` against
@@ -442,6 +460,6 @@ and auto-lap events.
 
 PLAN §5 lists these; they have no definition here until they ship: heart-rate zones,
 windsurf planing time and gybe count, race start line (pinging the ends, distance and
-time to the line), the motorboat anchor alarm, and stroke-based intervals. Calories
+time to the line), and the motorboat anchor alarm. Calories
 come from Apple Health's workout builder, not from MadeGood.
 

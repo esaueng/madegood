@@ -32,6 +32,8 @@ public struct StrokeAnalysis: Sendable, Hashable {
     public let sideSwitches: Int
     /// Share of strokes on side 0 (canoe, SUP), 0–1; nil for kayak or without strokes.
     public let sideBalance: Double?
+    /// Fixed-count intervals on the replay clock, available when analyzing a selection.
+    public private(set) var strokeIntervals: [PaddlingStrokeInterval] = []
 
     public var strokeCount: Int { strokes.count }
 
@@ -192,5 +194,10 @@ public struct StrokeAnalysis: Sendable, Hashable {
         self.init(
             detection: detection, sport: sport, distance: selection.replay.metrics.distance,
             retained: selection.retainedRanges, clock: { selection.replayTime(forSourceTime: $0) })
+        if sport.isPaddling {
+            strokeIntervals = PaddlingStrokeInterval.makeIntervals(
+                strokes: strokes, movement: selection.replay.paddlingMovement,
+                start: selection.replayRanges[0].lowerBound)
+        }
     }
 }
