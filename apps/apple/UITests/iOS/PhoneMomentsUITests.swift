@@ -8,13 +8,13 @@ final class PhoneMomentsUITests: XCTestCase {
     @MainActor
     func testPaddlingSplitsUseDisplayUnitsAndHighlightSeparateMovingSpans() {
         let app = launchDemoApp(extraArguments: [
-            "-demoMoments", "-demoOmitMapKit", "-demoHistoryNamespace", UUID().uuidString,
+            "-demoMoments", "-demoHistoryNamespace", UUID().uuidString,
             "-settings.distanceUnit.kayak", "mi", "-settings.speedUnit.kayak", "mph",
         ])
         openSession("Kayak", in: app)
 
         let full = app.buttons["moments.split.1"]
-        scrollTo(full, in: app)
+        scrollTo(full, in: app, column: 0.025)
         waitForLabel(full, "Split 1, 0.62 mi · 5:33 moving · 6.7 mph")
         let partial = app.buttons["moments.split.2"]
         XCTAssertFalse(app.buttons["moments.wind.edit"].exists)
@@ -28,7 +28,7 @@ final class PhoneMomentsUITests: XCTestCase {
         XCTAssertEqual(marker.value as? String, "0:00")
         XCTAssertTrue(app.staticTexts["stat.GPS speed"].label.hasSuffix(" mph"))
 
-        scrollTo(partial, in: app)
+        scrollTo(partial, in: app, column: 0.025)
         waitForLabel(partial, "Split 2 (partial), 0.38 mi · 3:25 moving · 6.7 mph")
         XCTAssertFalse(app.buttons["moments.split.3"].exists)
         partial.tap()
