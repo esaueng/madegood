@@ -281,9 +281,11 @@ class VoyageLaunchDelegate: NSObject, UIApplicationDelegate {
     }
 
     static func restoreActiveLeg(isReplayDemo: Bool, using restore: () -> Void) {
-        guard !isReplayDemo else { return }
-        // Recreate the location sessions promptly for an authorized, unfinished leg.
-        // Core Location can deliver queued fixes after any kind of process launch.
-        restore()
+        #if MADEGOOD_VOYAGES
+            guard !isReplayDemo else { return }
+            // Recreate the location sessions promptly for an authorized, unfinished leg.
+            // Core Location can deliver queued fixes after any kind of process launch.
+            restore()
+        #endif
     }
 }

@@ -150,7 +150,7 @@ one public address at madegood.app (#85), Cloudflare IDs from secrets (#84).
 
 | Task | Status | Pull requests |
 |---|---|---|
-| 1. Voyage/leg models, multi-day recording, auto departure/arrival | 🟡 | offline leg recording with recovery: #53. No adaptive sampling or auto departure/arrival yet |
+| 1. Voyage/leg models, multi-day recording, auto departure/arrival | 🟡 | offline leg recording with recovery: #53. No adaptive sampling or auto departure/arrival yet. Voyages are hidden in Release builds until Phase 5 ships (#138) |
 | 2. Log entry UI, hourly entries, barometer, stats, PDF/CSV | ⬜ | |
 | 3. Voyages sync, D1 tables, web voyage page | 🟡 | private sync of completed legs, local opt-in only: #55 (docs/private-voyage-sync.md) |
 | 4. Routes and waypoints, navigation data, OpenSeaMap, offline regions | ⬜ | |
