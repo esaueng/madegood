@@ -399,15 +399,25 @@ private struct SceneDrawing {
         if outlook.wind >= .fresh { drawWhitecaps(&context) }
     }
 
-    /// A few broad streaks of sun glitter on calm water, under the sun.
+    /// The sun's path on calm water: one soft column of light under the sun, widening
+    /// toward the viewer and shimmering gently.
     private func drawGlitter(_ context: inout GraphicsContext) {
-        for i in 0..<4 {
-            let y = horizon + 5 + Double(i) * (h - horizon - 8) / 4
-            let x = sunCenter.x + (hash(i, 26) - 0.5) * Double(i + 1) * 8
-            let width = (12 + Double(i) * 6) * (0.75 + 0.25 * sin(t * 1.5 + Double(i)))
-            let rect = CGRect(x: x - width / 2, y: y, width: width, height: 2.5)
-            context.fill(Path(roundedRect: rect, cornerRadius: 1.25), with: .color(rgb(1, 0.95, 0.75).opacity(0.6)))
-        }
+        var glow = context
+        glow.addFilter(.blur(radius: 3))
+        glow.opacity = 0.75 + 0.15 * sin(t * 1.2)
+        let x = sunCenter.x
+        let top = horizon + 1
+        var column = Path()
+        column.move(to: CGPoint(x: x - 7, y: top))
+        column.addLine(to: CGPoint(x: x + 7, y: top))
+        column.addLine(to: CGPoint(x: x + 18, y: h))
+        column.addLine(to: CGPoint(x: x - 18, y: h))
+        column.closeSubpath()
+        glow.fill(
+            column,
+            with: .linearGradient(
+                Gradient(colors: [rgb(1, 0.97, 0.82).opacity(0.9), rgb(1, 0.97, 0.82).opacity(0)]),
+                startPoint: CGPoint(x: x, y: top), endPoint: CGPoint(x: x, y: h)))
     }
 
     private func drawWhitecaps(_ context: inout GraphicsContext) {
@@ -439,7 +449,7 @@ private struct SceneDrawing {
         case slack
         /// Sails drawing, a little heel.
         case drawing
-        /// Sails full and taut, well heeled, a bow wave and a wake.
+        /// Sails full and taut, well heeled, a wake.
         case powered
         /// Main reefed down, heeled well over, a longer wake.
         case reefed
@@ -579,20 +589,11 @@ private struct SceneDrawing {
             boat.fill(jib, with: .color(rgb(0.9, 0.93, 0.92)))
 
         case .furled:
-            // Sails stowed: the main lashed to the boom, the jib rolled on the forestay.
+            // Sails stowed: the main lashed to the boom, the jib taken down.
             boat.fill(
                 Path(
                     roundedRect: CGRect(x: s * 0.02, y: gooseneck.y - s * 0.09, width: s * 0.48, height: s * 0.09),
                     cornerRadius: s * 0.045),
-                with: .color(sailColor))
-            // The rolled jib: a slim wedge along the forestay, widest at the foot.
-            boat.fill(
-                Path {
-                    $0.move(to: CGPoint(x: -s * 0.04, y: -s * 0.86))
-                    $0.addLine(to: CGPoint(x: -s * 0.466, y: -s * 0.175))
-                    $0.addLine(to: CGPoint(x: -s * 0.414, y: -s * 0.145))
-                    $0.closeSubpath()
-                },
                 with: .color(sailColor))
         }
 
@@ -647,23 +648,23 @@ private struct SceneDrawing {
         context.fill(pennant, with: .color(Theme.coral))
     }
 
-    /// A wake trailing from the stern and a bow wave, longer the harder it sails.
+    /// A wake fading out behind the stern, longer the harder it sails.
     private func drawWake(_ context: inout GraphicsContext, x: Double, y: Double, s: Double) {
         let length = s * (rig == .reefed ? 1.4 : 1)
+        let start = x + s * 0.45
+        // Lies on the water: follows the wave surface, spreading a little as it trails.
         var wake = Path()
-        wake.move(to: CGPoint(x: x + s * 0.5, y: y + 2))
-        wake.addQuadCurve(
-            to: CGPoint(x: x + s * 0.5 + length, y: y + 5), control: CGPoint(x: x + s * 0.5 + length * 0.5, y: y + 1))
+        for step in 0...12 {
+            let f = Double(step) / 12
+            let point = CGPoint(x: start + f * length, y: waveY(start + f * length, layer: 0) + 1.5 + f * 2)
+            step == 0 ? wake.move(to: point) : wake.addLine(to: point)
+        }
         context.stroke(
             wake,
             with: .linearGradient(
-                Gradient(colors: [.white.opacity(0.6), .white.opacity(0)]), startPoint: CGPoint(x: x + s * 0.5, y: y),
-                endPoint: CGPoint(x: x + s * 0.5 + length, y: y)),
-            style: StrokeStyle(lineWidth: 2, lineCap: .round))
-        var bow = Path()
-        bow.move(to: CGPoint(x: x - s * 0.62, y: y + 2))
-        bow.addQuadCurve(to: CGPoint(x: x - s * 0.42, y: y - 2), control: CGPoint(x: x - s * 0.58, y: y - 5))
-        context.stroke(bow, with: .color(.white.opacity(0.8)), style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                Gradient(colors: [.white.opacity(0.6), .white.opacity(0)]), startPoint: CGPoint(x: start, y: y),
+                endPoint: CGPoint(x: start + length, y: y)),
+            style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
     }
 
     /// The boat mirrored in glassy water.
