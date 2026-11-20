@@ -3,7 +3,8 @@
 The iPhone app, with the watch app and widget extensions inside it, goes to TestFlight
 from GitHub Actions ([`testflight.yml`](../.github/workflows/testflight.yml)). It uses
 `xcodebuild` and automatic signing with an App Store Connect API key, so there are no
-certificates, profiles or fastlane setup to maintain.
+profiles or fastlane setup to maintain. The one certificate it needs is a long-lived Apple
+Development identity stored as a secret (step 5 below).
 
 ## Shipping a build
 
@@ -53,6 +54,25 @@ subdomain), and failure logs redact it before upload. Without it, TestFlight bui
    | `APP_STORE_CONNECT_KEY_ID` | The key's ID |
    | `APP_STORE_CONNECT_ISSUER_ID` | Issuer ID shown above the keys |
    | `APP_STORE_CONNECT_API_KEY` | Contents of the `.p8`: `gh secret set APP_STORE_CONNECT_API_KEY < AuthKey_XXXX.p8` |
+
+5. Store one Apple Development identity for archiving. Each runner starts with an empty
+   keychain, and without an identity automatic signing creates a new Apple Development
+   certificate on every run, until the account reaches Apple's limit and archiving fails
+   ("Your account has reached the maximum number of certificates"). Create the certificate
+   once (Xcode → Settings → Accounts → Manage Certificates → + → Apple Development, or
+   from a CSR in Certificates, Identifiers & Profiles), export it with its private key as
+   a `.p12` with a password, then:
+
+   ```sh
+   base64 -i signing.p12 | gh secret set APPLE_SIGNING_P12
+   gh secret set APPLE_SIGNING_P12_PASSWORD
+   ```
+
+   The workflow imports it into a throwaway keychain and deletes that keychain after the
+   run; the export step still signs with the cloud-managed distribution certificate. The
+   certificate expires after a year: make a new one, update both secrets, and revoke the
+   old certificate. If runs already filled the account, revoke the extra Apple Development
+   certificates named "Created via API" first.
 
    A fork with its own prefix also sets `BUNDLE_ID_PREFIX` (see
    `apps/apple/Config/Local.xcconfig.example`); the workflow would need it passed as a

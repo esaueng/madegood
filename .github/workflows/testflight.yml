@@ -7,8 +7,9 @@ name: TestFlight
 # Runs when someone with write access starts it (Actions > TestFlight > Run workflow) or
 # pushes a version tag (v0.2.0, ...). Each build's version is the major.minor from
 # MadeGood.xcconfig plus the commit count, so it goes up with every merge. Uses scripts/testflight with these repository
-# secrets: APPLE_TEAM_ID, APP_STORE_CONNECT_KEY_ID, APP_STORE_CONNECT_ISSUER_ID and
-# APP_STORE_CONNECT_API_KEY (the .p8 contents). See docs/self-hosting.md.
+# secrets: APPLE_TEAM_ID, APP_STORE_CONNECT_KEY_ID, APP_STORE_CONNECT_ISSUER_ID,
+# APP_STORE_CONNECT_API_KEY (the .p8 contents), and APPLE_SIGNING_P12 with
+# APPLE_SIGNING_P12_PASSWORD (an Apple Development identity). See docs/self-hosting.md.
 
 on:
   workflow_dispatch:
@@ -71,6 +72,60 @@ jobs:
           umask 077
           printf '%s\n' "$KEY" > "$RUNNER_TEMP/AuthKey.p8"
 
+      # Each runner starts with an empty keychain. Without a signing identity, automatic
+      # signing creates a new Apple Development certificate on every run until the account
+      # hits Apple's limit and archiving fails. So the runner imports one long-lived
+      # certificate (APPLE_SIGNING_P12, base64 .p12, with APPLE_SIGNING_P12_PASSWORD) into
+      # a throwaway keychain, and Xcode reuses it. Distribution signing at export still
+      # uses Apple's cloud-managed certificate.
+      - name: Install the signing certificate
+        env:
+          P12: ${{ secrets.APPLE_SIGNING_P12 }}
+          P12_PASSWORD: ${{ secrets.APPLE_SIGNING_P12_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [ -z "$P12" ] || [ -z "$P12_PASSWORD" ]; then
+            echo "::error::Set the APPLE_SIGNING_P12 and APPLE_SIGNING_P12_PASSWORD secrets (docs/self-hosting.md); without them every run creates a new Apple Development certificate."
+            exit 1
+          fi
+          umask 077
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          keychain_password="$(openssl rand -hex 24)"
+          printf '%s' "$P12" | base64 --decode > "$RUNNER_TEMP/signing.p12"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$RUNNER_TEMP/signing.p12" -k "$keychain" -P "$P12_PASSWORD" \
+            -f pkcs12 -T /usr/bin/codesign -T /usr/bin/security -T /usr/bin/xcodebuild
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain" > /dev/null
+          # Put it first in the search list, keeping the runner's own keychains after it.
+          existing=()
+          while IFS= read -r line; do
+            line="${line#"${line%%[![:space:]]*}"}"
+            existing+=("${line//\"/}")
+          done < <(security list-keychains -d user)
+          security list-keychains -d user -s "$keychain" "${existing[@]}"
+          rm -f "$RUNNER_TEMP/signing.p12"
+          security find-identity -v -p codesigning "$keychain" | grep -q "Apple Development" \
+            || { echo "::error::APPLE_SIGNING_P12 holds no Apple Development identity."; exit 1; }
+          subject="$(security find-certificate -c "Apple Development" -p "$keychain" \
+            | openssl x509 -noout -subject -nameopt multiline,utf8)"
+          common_name="$(printf '%s\n' "$subject" | sed -n 's/^ *commonName *= *//p')"
+          team="$(printf '%s\n' "$subject" | sed -n 's/^ *organizationalUnitName *= *//p')"
+          # The certificate names its holder ("Apple Development: <name> (<id>)"). Mask it in
+          # the console and save it for the log redaction below; the repository is public.
+          holder="${common_name#Apple Development: }"
+          for value in "$common_name" "$holder" "${holder% (*}"; do
+            [ -n "$value" ] || continue
+            echo "::add-mask::$value"
+            printf '%s\n' "$value" >> "$RUNNER_TEMP/signing-redact"
+          done
+          # An identity from another team can't sign for DEVELOPMENT_TEAM, and Xcode would
+          # then create yet another certificate.
+          [ -n "$team" ] && [ "$team" = "$APPLE_TEAM_ID" ] \
+            || { echo "::error::APPLE_SIGNING_P12 is not a certificate of the APPLE_TEAM_ID team."; exit 1; }
+          echo "Signing identity: installed"
+
       # Build numbers must increase across every upload, including re-runs of older
       # runs, so they come from the UTC clock (YYYYMMDD.HHMMSS) rather than the run number.
       - name: Choose the build number
@@ -92,6 +147,12 @@ jobs:
         if: always()
         run: rm -f "$RUNNER_TEMP/AuthKey.p8"
 
+      - name: Remove the signing keychain
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/signing.p12"
+
       # The repository is public and artifacts are not masked like the console, so take
       # the account identifiers out of the logs before uploading them.
       - name: Redact the logs
@@ -106,8 +167,13 @@ jobs:
           # The API URL's host names the deployer's Workers subdomain; redact it in any form.
           api_host="${MADEGOOD_API_URL#*://}"
           api_host="${api_host%%/*}"
+          # The signing certificate's holder name and ID (written by the install step).
+          identity=()
+          if [ -f "$RUNNER_TEMP/signing-redact" ]; then
+            while IFS= read -r line; do identity+=("$line"); done < "$RUNNER_TEMP/signing-redact"
+          fi
           for log in "$RUNNER_TEMP"/testflight/*.log; do
-            for value in "$APPLE_TEAM_ID" "$APP_STORE_CONNECT_KEY_ID" "$APP_STORE_CONNECT_ISSUER_ID" "$MADEGOOD_API_URL" "$api_host"; do
+            for value in "$APPLE_TEAM_ID" "$APP_STORE_CONNECT_KEY_ID" "$APP_STORE_CONNECT_ISSUER_ID" "$MADEGOOD_API_URL" "$api_host" ${identity[@]+"${identity[@]}"}; do
               [ -n "$value" ] || continue
               VALUE="$value" perl -pi -e 's/\Q$ENV{VALUE}\E/[redacted]/g' "$log"
             done
