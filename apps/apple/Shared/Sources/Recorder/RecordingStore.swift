@@ -6,7 +6,7 @@ enum RecordingStore {
     static var demoNamespace: UUID? {
         #if DEBUG
             let arguments = ProcessInfo.processInfo.arguments
-            if arguments.contains("-demoHistory"),
+            if arguments.contains("-demoHistory") || arguments.contains("-demoMoments"),
                 let index = arguments.firstIndex(of: "-demoHistoryNamespace"),
                 arguments.indices.contains(index + 1)
             {

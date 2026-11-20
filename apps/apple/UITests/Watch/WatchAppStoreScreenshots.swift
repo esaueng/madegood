@@ -3,7 +3,7 @@ import XCTest
 /// The Apple Watch App Store screenshot set, from the synthetic demo session (`-demoSession`
 /// with `-demoTacks`: a beat with the wind from north). `scripts/app-store-screenshots` runs
 /// this class on the largest watch simulator and exports the attachments named
-/// `appstore NN-name`; CI runs it too, so the tour keeps working as the screens change.
+/// `appstore NN-name`.
 /// watchOS simulators have no status bar override, so the clock shows the time of the run.
 final class WatchAppStoreScreenshots: XCTestCase {
     override func setUp() {

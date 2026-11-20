@@ -8,9 +8,10 @@ final class PhoneMomentsUITests: XCTestCase {
     @MainActor
     func testPaddlingSplitsUseDisplayUnitsAndHighlightSeparateMovingSpans() {
         let app = launchDemoApp(extraArguments: [
-            "-demoMoments", "-settings.distanceUnit.kayak", "mi", "-settings.speedUnit.kayak", "mph",
+            "-demoMoments", "-demoOmitMapKit", "-demoHistoryNamespace", UUID().uuidString,
+            "-settings.distanceUnit.kayak", "mi", "-settings.speedUnit.kayak", "mph",
         ])
-        openSession("Kayak", movingTime: "8:59", in: app)
+        openSession("Kayak", in: app)
 
         let full = app.buttons["moments.split.1"]
         scrollTo(full, in: app)
@@ -38,8 +39,10 @@ final class PhoneMomentsUITests: XCTestCase {
 
     @MainActor
     func testSailingValidatesLocalWindAndSeeksToTheCrossing() {
-        let app = launchDemoApp(extraArguments: ["-demoMoments"])
-        openSession("Sailing", movingTime: "1:00", in: app)
+        let app = launchDemoApp(extraArguments: [
+            "-demoMoments", "-demoOmitMapKit", "-demoHistoryNamespace", UUID().uuidString,
+        ])
+        openSession("Sailing", in: app)
 
         let wind = app.buttons["moments.wind.edit"]
         let maneuver = app.buttons["moments.maneuver.0"]
@@ -88,15 +91,15 @@ final class PhoneMomentsUITests: XCTestCase {
     }
 
     @MainActor
-    private func openSession(_ sport: String, movingTime: String, in app: XCUIApplication) {
+    private func openSession(_ sport: String, in app: XCUIApplication) {
         app.tabBars.buttons["History"].tap()
         let filter = app.buttons["history.sportFilter"]
         XCTAssertTrue(filter.waitForExistence(timeout: 5))
         filter.tap()
         app.buttons[sport].tap()
         let row = app.buttons.matching(identifier: "session.row")
-            .containing(.staticText, identifier: sport)
-            .containing(.staticText, identifier: movingTime).firstMatch
+            .containing(.staticText, identifier: sport).firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 15))
         scrollTo(row, in: app)
         row.tap()
     }

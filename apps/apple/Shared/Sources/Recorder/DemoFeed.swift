@@ -15,6 +15,12 @@ enum DemoFeed {
         #endif
     }
 
+    // Metrics and trim tests can bypass the simulator's MapKit renderer. Map interaction
+    // tests and screenshots still use the basemap.
+    static var omitMapKit: Bool {
+        isEnabled && ProcessInfo.processInfo.arguments.contains("-demoOmitMapKit")
+    }
+
     // One fix per real second, on the same clock as user events and metadata: a faster
     // simulated clock made saved recordings disagree with themselves (events and
     // `endedAt` behind the fixes).
