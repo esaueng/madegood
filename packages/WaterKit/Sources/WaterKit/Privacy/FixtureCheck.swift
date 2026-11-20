@@ -233,7 +233,9 @@ public enum FixtureCheck {
 
     static let labelsSources: Set<String> = ["video", "manual-count", "instruments", "synthetic"]
     static let labelsLicenses: Set<String> = ["CC-BY-4.0", "CC0-1.0"]
-    static let labelsTruthFields: Set<String> = ["strokes", "maneuvers", "windDirectionDeg", "distanceM"]
+    static let labelsTruthFields: Set<String> = [
+        "strokes", "strokeRateSPM", "maneuvers", "windDirectionDeg", "distanceM",
+    ]
 
     /// labels.json must match the documented schema exactly (fixtures/README.md). Its
     /// `description` is the only free text, and people review it.
@@ -262,7 +264,8 @@ public enum FixtureCheck {
         guard let truthValue = object["truth"] else { return problems }
         guard case .object(let truth) = truthValue else { return problems + ["\(context): truth must be an object"] }
         problems += unknownKeys(Set(truth.keys), allowed: labelsTruthFields, context: "\(context) truth")
-        for key in ["strokes", "windDirectionDeg", "distanceM"] where truth[key] != nil && !isNumber(truth[key]) {
+        for key in ["strokes", "strokeRateSPM", "windDirectionDeg", "distanceM"]
+        where truth[key] != nil && !isNumber(truth[key]) {
             problems.append("\(context): truth.\(key) must be a number")
         }
         if let maneuvers = truth["maneuvers"] {

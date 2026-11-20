@@ -138,6 +138,12 @@ final class VoyageAccount {
                 try persist(VoyageCredentials(binding: expected, tokens: tokens))
             } catch {
                 guard generation == attempt else { throw VoyageAccountError.accountChanged }
+                if case .http(429, "rate_limited"?, _) = error as? VoyageAPIError {
+                    // The Worker rate-limits before rotating the token. Restore it and
+                    // let the caller retry with the server's delay.
+                    try persist(current)
+                    throw error
+                }
                 invalidate()
                 throw VoyageAccountError.signInRequired
             }

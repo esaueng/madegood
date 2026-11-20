@@ -1,4 +1,4 @@
-import { env, exports } from "cloudflare:workers";
+import { env } from "cloudflare:workers";
 import { decodeJwt, SignJWT } from "jose";
 import { describe, expect, it } from "vitest";
 import { hashRefreshToken } from "../src/server/auth/tokens";
@@ -28,7 +28,7 @@ const start = (next?: string) =>
   });
 
 async function callback(fields: Record<string, string>, cookie?: string) {
-  return exports.default.fetch(`${ORIGIN}/api/auth/web/apple/callback`, {
+  return api("/auth/web/apple/callback", {
     method: "POST",
     redirect: "manual",
     headers: {
