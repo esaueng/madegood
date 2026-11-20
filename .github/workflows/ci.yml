@@ -20,10 +20,16 @@ permissions:
   contents: read
 
 concurrency:
-  # PR runs share a group per PR, so a new push cancels the superseded run. Every other
-  # run (main, merge queue, manual) gets its own group, so none is cancelled or dropped
-  # while pending.
-  group: ${{ github.event_name == 'pull_request' && format('ci-pr-{0}', github.event.pull_request.number) || format('ci-run-{0}', github.run_id) }}
+  # PR runs share a group per PR, and pushes to main share one group, so a newer push
+  # cancels the superseded run. A main run tests everything before it, and the macOS
+  # jobs it starts (including the UI tests) would otherwise queue one behind another on
+  # the single xcode-27 runner, ahead of pull request builds. Deploys run from
+  # deploy.yml, so cancelling a CI run never skips a deploy. Merge queue and manual runs
+  # get their own group, so none is cancelled or dropped while pending.
+  group: >-
+    ${{ github.event_name == 'pull_request' && format('ci-pr-{0}', github.event.pull_request.number)
+    || (github.event_name == 'push' && github.ref == 'refs/heads/main') && 'ci-main'
+    || format('ci-run-{0}', github.run_id) }}
   cancel-in-progress: true
 
 jobs:
