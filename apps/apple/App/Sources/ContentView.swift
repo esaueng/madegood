@@ -97,6 +97,7 @@ private struct RecordView: View {
     let controller: SessionController
     let library: SessionLibrary
     let showHistory: () -> Void
+    @AppStorage(UserSettings.Key.showManOverboardButton) private var showManOverboardButton = false
     @State private var manOverboard = ManOverboard.shared
     @State private var showingManOverboard = false
 
@@ -141,7 +142,9 @@ private struct RecordView: View {
                     } else if WatchWorkoutMirror.shared.isAttached {
                         VStack(spacing: 16) {
                             WatchWorkoutStatus(snapshot: nil, connected: true)
-                            PhoneManOverboardControl(show: showManOverboard)
+                            if showManOverboardButton {
+                                PhoneManOverboardControl(show: showManOverboard)
+                            }
                         }
                         .padding()
                         .navigationTitle("On Watch")
@@ -160,6 +163,8 @@ private struct RecordView: View {
                 }
             }
         }
+        // The start screen pushed from an inline mark gives way to the countdown or recording.
+        .id(showsManOverboardInline)
         .sheet(isPresented: $showingManOverboard) {
             NavigationStack {
                 ManOverboardScreen(
@@ -207,6 +212,8 @@ private struct StartView: View {
     let library: SessionLibrary
     let showHistory: () -> Void
     let showManOverboard: () -> Void
+    @AppStorage(UserSettings.Key.showManOverboardButton) private var showManOverboardButton = false
+    @State private var manOverboard = ManOverboard.shared
     @State private var store = SettingsStore.shared
     @State private var weather = LocalWeather.shared
     @State private var settingsSport: Sport?
@@ -242,11 +249,19 @@ private struct StartView: View {
                 WatchWorkoutStatus(snapshot: lastConfirmed, connected: false)
             }
 
-            // MOB before any session too: someone can fall in while getting under way.
-            PhoneManOverboardControl(show: showManOverboard)
+            if showManOverboardButton || manOverboard.isActive {
+                Group {
+                    if showManOverboardButton {
+                        PhoneManOverboardControl(show: showManOverboard)
+                    } else {
+                        ManOverboardCard(
+                            manOverboard: manOverboard, sport: controller.sport ?? .sailing, open: showManOverboard)
+                    }
+                }
                 .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
                 .listRowSeparator(.hidden)
                 .listRowBackground(Color.clear)
+            }
 
             Section {
                 ForEach(sports, id: \.self) { sport in
@@ -533,6 +548,8 @@ private struct PhoneCountdownView: View {
     let controller: SessionController
     let countdown: SessionController.Countdown
     let showManOverboard: () -> Void
+    @AppStorage(UserSettings.Key.showManOverboardButton) private var showManOverboardButton = false
+    @State private var manOverboard = ManOverboard.shared
     @State private var startLine = StartLineController.shared
 
     private var hasStartLine: Bool { countdown.sport == .sailing }
@@ -605,8 +622,12 @@ private struct PhoneCountdownView: View {
                     }
                     .font(.headline)
                     .labelStyle(.titleAndIcon)
-                    // Above the start line panel, so it is always in reach.
-                    PhoneManOverboardControl(show: showManOverboard)
+                    if showManOverboardButton {
+                        // Above the start line panel, so it is always in reach.
+                        PhoneManOverboardControl(show: showManOverboard)
+                    } else if manOverboard.isActive {
+                        ManOverboardCard(manOverboard: manOverboard, sport: countdown.sport, open: showManOverboard)
+                    }
                     if hasStartLine {
                         StartLinePanel(
                             startLine: startLine, remaining: countdown.timer.remaining(at: now),
@@ -636,6 +657,7 @@ private struct LiveView: View {
     let library: SessionLibrary
     @State private var banner: SessionRecorder.DistanceAlertEvent?
     let showManOverboard: () -> Void
+    @AppStorage(UserSettings.Key.showManOverboardButton) private var showManOverboardButton = false
     @State private var manOverboard = ManOverboard.shared
     @State private var startLine = StartLineController.shared
     @ScaledMetric(relativeTo: .largeTitle) private var primarySize = 64.0
@@ -728,8 +750,10 @@ private struct LiveView: View {
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if let recorder {
-                LiveControls(recorder: recorder, sport: sport, display: display, showManOverboard: showManOverboard)
-            } else {
+                LiveControls(
+                    recorder: recorder, sport: sport, display: display, showManOverboard: showManOverboard,
+                    showManOverboardButton: showManOverboardButton)
+            } else if showManOverboardButton {
                 // The watch owns a mirrored recording, but MOB still works from here.
                 PhoneManOverboardControl(show: showManOverboard)
                     .padding(.horizontal)
@@ -1050,6 +1074,7 @@ private struct LiveControls: View {
     let sport: Sport
     let display: LiveDisplay
     let showManOverboard: () -> Void
+    let showManOverboardButton: Bool
     @State private var saving = false
 
     var body: some View {
@@ -1087,16 +1112,20 @@ private struct LiveControls: View {
             .buttonBorderShape(.capsule)
             .font(.body.weight(.semibold))
 
-            // Pause and MOB side by side, or stacked when large text doesn't fit.
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 10) {
-                    pauseButton
-                    manOverboardButton.frame(width: 132)
+            if showManOverboardButton {
+                // Pause and MOB side by side, or stacked when large text doesn't fit.
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 10) {
+                        pauseButton
+                        manOverboardButton.frame(width: 132)
+                    }
+                    VStack(spacing: 10) {
+                        pauseButton
+                        manOverboardButton
+                    }
                 }
-                VStack(spacing: 10) {
-                    pauseButton
-                    manOverboardButton
-                }
+            } else {
+                pauseButton
             }
         }
     }
@@ -1172,8 +1201,9 @@ private struct LiveControls: View {
             }
             .buttonBorderShape(.capsule)
             .font(.title3.weight(.bold))
-            // Still on the water while paused: MOB stays one hold away.
-            manOverboardButton
+            if showManOverboardButton {
+                manOverboardButton
+            }
         }
         .padding(16)
         .background(.background.secondary, in: .rect(cornerRadius: 24, style: .continuous))
