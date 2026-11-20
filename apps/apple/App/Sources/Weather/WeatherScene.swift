@@ -249,12 +249,12 @@ private struct SceneDrawing {
         var drops = Path()
         for i in 0..<count {
             let speed = (sky == .drizzle ? 120 : 260) + hash(i, 11) * 80
-            let y = (hash(i, 12) * fall + t * speed).truncatingRemainder(dividingBy: fall)
-            // Mostly over the scene on the right, where they show; a few drift behind the words.
-            let span = w * 0.7 + 40
-            var x = (hash(i, 13) * span + slant * y).truncatingRemainder(dividingBy: span)
-            if x < 0 { x += span }
-            x += w * 0.3 - 20
+            let travelled = hash(i, 12) * fall + t * speed
+            let y = travelled.truncatingRemainder(dividingBy: fall)
+            // Each fall starts from a fresh spot, mostly over the scene on the right where
+            // drops show; a drop never jumps sideways mid-fall, it just slants off the edge.
+            let cycle = Int(travelled / fall) & 0xFFFF
+            let x = w * 0.3 - 20 + hash(i &+ cycle &* 97, 13) * (w * 0.7 + 40) + slant * y
             drops.move(to: CGPoint(x: x, y: y))
             drops.addLine(to: CGPoint(x: x - slant * length, y: y - length))
         }
@@ -652,11 +652,14 @@ private struct SceneDrawing {
     private func drawWake(_ context: inout GraphicsContext, x: Double, y: Double, s: Double) {
         let length = s * (rig == .reefed ? 1.4 : 1)
         let start = x + s * 0.45
-        // Lies on the water: follows the wave surface, spreading a little as it trails.
+        // Starts at the hull's waterline and settles onto the wave surface as it trails, so
+        // it stays attached to the stern while the boat rides the damped swell.
         var wake = Path()
         for step in 0...12 {
             let f = Double(step) / 12
-            let point = CGPoint(x: start + f * length, y: waveY(start + f * length, layer: 0) + 1.5 + f * 2)
+            let surface = waveY(start + f * length, layer: 0)
+            let blend = min(f * 2.5, 1)
+            let point = CGPoint(x: start + f * length, y: y + (surface - y) * blend + 1.5 + f * 2)
             step == 0 ? wake.move(to: point) : wake.addLine(to: point)
         }
         context.stroke(
