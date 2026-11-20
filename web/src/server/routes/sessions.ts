@@ -5,6 +5,7 @@ import type { Context } from "hono";
 import { optionalAuth, requireAuth } from "../auth/middleware";
 import { privacyZones, type Session, sessions, sessionTombstones, users } from "../db/schema";
 import { apiError, errorResponse } from "../lib/errors";
+import { syncOgImage } from "../lib/og-image";
 import { enqueuePostprocess, ensureUserRequeued, publicIsCurrent } from "../lib/postprocess";
 import { createRouter } from "../lib/router";
 import { SHARED_TRACK_MAX_FIXES, shareTrack } from "../lib/session-privacy";
@@ -976,6 +977,15 @@ sessionRoutes.openapi(patchRoute, async (c) => {
     } catch (error) {
       console.warn("Could not queue the wind lookup.", error);
     }
+  }
+  // Sharing draws the route image now rather than on its first request; making a session
+  // private deletes it (lib/og-image.ts). The image route checks visibility regardless.
+  if (body.visibility !== undefined) {
+    c.executionCtx.waitUntil(
+      syncOgImage(c.env, id).catch((error: unknown) =>
+        console.warn("Could not update the route image.", error),
+      ),
+    );
   }
   return c.json(toSessionBody(session, userId), 200);
 });

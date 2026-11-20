@@ -2,6 +2,7 @@ import { z } from "@hono/zod-openapi";
 import { and, asc, eq, gt, isNotNull, isNull, lt, ne, or, type SQL, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
 import { privacyZones, type Session, sessions, users } from "../db/schema";
+import { syncOgImage } from "./og-image";
 import type { Zone } from "./session-privacy";
 import { parseGzippedJson, SHARED_TRACK_MAX_INFLATED_BYTES, TrackTooLarge } from "./track";
 import { boundsCenter, deriveTrack, InvalidTrack, type TrackDerived } from "./track-derived";
@@ -19,6 +20,10 @@ import { fetchWind, type StoredWind, WindTransientError, windRequest } from "./w
 // the version in the same D1 batch, so no box or time computed without a zone is ever
 // served after the zone exists, and queues one `user` message that requeues every
 // session whose public data is behind.
+//
+// Then it brings the session's Open Graph route image (lib/og-image.ts) in line: drawn for
+// shared sessions whose public data is current, deleted otherwise. A failure there never
+// fails the message; the image's first request draws it instead.
 //
 // Memory: the track is inflated as a stream with the shared-track caps from #64
 // (SHARED_TRACK_MAX_INFLATED_BYTES, SHARED_TRACK_MAX_FIXES). A larger track is marked
@@ -159,6 +164,20 @@ export async function processSession(
   env: Pick<Env, "DB" | "TRACKS">,
   raw: unknown,
   deps: ProcessDeps = {},
+): Promise<Outcome> {
+  const outcome = await processSessionData(env, raw, deps);
+  if (outcome === "skipped_stale" || outcome === "invalid_message") return outcome;
+  const sessionId = (raw as SessionMessage).sessionId;
+  await syncOgImage(env, sessionId).catch((error: unknown) =>
+    console.warn("Could not update the route image; its first request draws it.", error),
+  );
+  return outcome;
+}
+
+async function processSessionData(
+  env: Pick<Env, "DB" | "TRACKS">,
+  raw: unknown,
+  deps: ProcessDeps,
 ): Promise<Outcome> {
   const parsed = SessionMessage.safeParse(raw);
   if (!parsed.success) return "invalid_message";
