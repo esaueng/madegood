@@ -3,7 +3,7 @@ import { drizzle } from "drizzle-orm/d1";
 import { Hono } from "hono";
 import type { AppEnv } from "../app";
 import { HANDLE_PATTERN } from "../auth/users";
-import { sessions, users } from "../db/schema";
+import { sessionColumns, sessions, users } from "../db/schema";
 import { logFailure } from "../lib/logging";
 import { ogImage, ogInfo } from "../lib/og-image";
 import {
@@ -65,7 +65,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export async function sessionPreview(db: D1Database, id: string): Promise<Preview> {
   if (!UUID.test(id)) return GENERIC;
   const [row] = await drizzle(db)
-    .select({ session: sessions, units: users.units, zonesVersion: users.zonesVersion })
+    .select({ session: sessionColumns, units: users.units, zonesVersion: users.zonesVersion })
     .from(sessions)
     .innerJoin(users, and(eq(users.id, sessions.userId), isNull(users.deletedAt)))
     .where(and(eq(sessions.id, id.toLowerCase()), isNull(sessions.deletedAt)));

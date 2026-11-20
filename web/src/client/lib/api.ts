@@ -47,7 +47,7 @@ export type Session = {
   trackEndedAt: string | null;
   /** Modelled wind, for public and unlisted sessions only. */
   wind: {
-    source: "weatherkit" | "open-meteo-forecast" | "open-meteo-archive";
+    source: "weatherkit";
     directionDeg: number | null;
     speedMps: number | null;
     gustMps: number | null;

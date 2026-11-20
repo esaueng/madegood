@@ -108,7 +108,7 @@ Also merged: heart-rate zones for every sport (#97).
 | 1. D1 schema, Drizzle, OpenAPI, Swift client codegen | ✅ | #34, #37 |
 | 2. Sign in with Apple (iOS + web), tokens, account deletion, data export | ✅ | #36, #63, #76; deletion: #78; export: #79 |
 | 3. iPhone sync: background upload queue, retries, status | ✅ | #65 |
-| 4. Upload endpoints, R2, queue consumer (wind, bbox) | ✅ | #37; consumer: #72 |
+| 4. Upload endpoints, R2, queue consumer (bounds, fix times) | ✅ | #37; consumer: #72 |
 | 5. Web dashboard, session page, profile, settings | ✅ | #63, #64, #86; profile `/u/:handle`: #95 |
 | 6. Visibility, privacy zones, Open Graph | ✅ | #64; route images: #96 |
 

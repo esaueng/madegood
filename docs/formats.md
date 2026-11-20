@@ -458,6 +458,16 @@ Limits while one device runs an older build:
 
 ---
 
+## Account export
+
+Account exports use an unversioned ZIP layout with a `manifest.json` index and
+session documents in `sessions/sessions-*.json`. Newly generated session documents
+omit the legacy `wind` field. WeatherKit wind is fetched on shared session views
+and stays out of the archive. Exported track files retain their original track format
+and version. See [how export jobs work](self-hosting.md#account-export).
+
+---
+
 ## Privacy
 
 Both formats contain precise locations and times. Before a recording goes into

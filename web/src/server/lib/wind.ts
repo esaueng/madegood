@@ -2,10 +2,11 @@ import { z } from "@hono/zod-openapi";
 import { importPKCS8, SignJWT } from "jose";
 import { readBody } from "./track";
 
-const WEATHERKIT_URL = "https://weatherkit.apple.com/api/v1/weather/en";
+const WEATHERKIT_PATH = "/api/v1/weather/en";
+const WEATHERKIT_URL = `https://weatherkit.apple.com${WEATHERKIT_PATH}`;
 const TOKEN_LIFETIME_SECONDS = 60 * 60;
 const TOKEN_REFRESH_SECONDS = 30;
-const TIMEOUT_MS = 10_000;
+const TIMEOUT_MS = 3_000;
 const HOUR_MS = 3_600_000;
 const MAX_SESSION_HOURS = 8 * 24;
 const MAX_SAMPLES = MAX_SESSION_HOURS + 3;
@@ -20,38 +21,18 @@ const WindValues = z.object({
 });
 const WindSample = WindValues.extend({ t: z.number().int() });
 const WindResult = WindValues.extend({
-  status: z.literal("ok"),
+  source: z.literal("weatherkit"),
   samples: z.array(WindSample),
   fetchedAt: z.number().int(),
 });
-// Keep the original source values readable for unversioned rows and existing API clients.
-const LEGACY_WIND_SOURCES = ["open-meteo-forecast", "open-meteo-archive"] as const;
-const WEATHERKIT_SOURCE = "weatherkit";
-export const WindSource = z.enum([...LEGACY_WIND_SOURCES, WEATHERKIT_SOURCE]);
-const WeatherKitWind = WindResult.extend({ v: z.literal(1), source: z.literal(WEATHERKIT_SOURCE) });
-const ReadableWind = z.union([
-  WindResult.extend({ v: z.undefined().optional(), source: z.enum(LEGACY_WIND_SOURCES) }),
-  WeatherKitWind,
-]);
+/** Direction is wind FROM in degrees true. Speeds are m/s. */
+export type SessionWind = z.infer<typeof WindResult>;
 
-/** Stored in sessions.wind_json. Direction is wind FROM in degrees true. Speeds are m/s. */
-export type StoredWind =
-  | z.infer<typeof WeatherKitWind>
-  | { v: 1; status: "unavailable"; reason: string; fetchedAt: number };
+/** Short-lived edge cache for repeat views and brief backoff when Apple has no data. */
+const WIND_TTL_SECONDS = 3 * 3600;
+const UNAVAILABLE_TTL_SECONDS = 120;
 
-export function readStoredWind(json: string | null): z.infer<typeof ReadableWind> | null {
-  if (json === null) return null;
-  try {
-    return ReadableWind.safeParse(JSON.parse(json)).data ?? null;
-  } catch {
-    return null;
-  }
-}
-
-/** Network failures, timeouts, 429 and 5xx: worth retrying later. */
-export class WindTransientError extends Error {}
-
-export type WeatherKitCredentials = {
+type WeatherKitCredentials = {
   privateKey: string;
   keyId: string;
   teamId: string;
@@ -119,13 +100,6 @@ const WeatherKitHourly = z.object({
     .optional(),
 });
 
-export const unavailableWind = (reason: string, now: number): StoredWind => ({
-  v: 1,
-  status: "unavailable",
-  reason,
-  fetchedAt: now,
-});
-
 const floorHour = (ms: number) => Math.floor(ms / HOUR_MS) * HOUR_MS;
 // Mirror WaterKit's WeatherGridCell, including ties away from zero, the poles and ±180°.
 const gridIndex = (degrees: number) => Math.sign(degrees) * Math.round(Math.abs(degrees) * 10);
@@ -159,39 +133,30 @@ export function windRequest(
   return url;
 }
 
-/** Throws WindTransientError when a retry may help; otherwise returns modelled wind or unavailable. */
+/** Reads only the modelled wind fields used by the session API. */
 export async function fetchWind(
   token: string,
   url: URL,
   fetcher: typeof fetch = fetch,
   now = Date.now(),
-): Promise<StoredWind> {
-  let bytes: Uint8Array | null;
+): Promise<SessionWind | null> {
+  let parsed: z.infer<typeof WeatherKitHourly>;
   try {
     const response = await fetcher(url, {
       headers: { accept: "application/json", authorization: `Bearer ${token}` },
+      cache: "no-store",
       redirect: "manual",
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
     if (!response.ok) {
       await response.body?.cancel();
-      if (response.status === 429 || response.status >= 500) {
-        throw new WindTransientError(`WeatherKit answered ${response.status}`);
-      }
-      return unavailableWind(`http_${response.status}`, now);
+      return null;
     }
-    bytes = await readBody(response.body, RESPONSE_MAX_BYTES);
-  } catch (error) {
-    if (error instanceof WindTransientError) throw error;
-    throw new WindTransientError("WeatherKit request failed");
-  }
-  if (!bytes) return unavailableWind("response_too_large", now);
-
-  let parsed: z.infer<typeof WeatherKitHourly>;
-  try {
+    const bytes = await readBody(response.body, RESPONSE_MAX_BYTES);
+    if (!bytes) return null;
     parsed = WeatherKitHourly.parse(JSON.parse(new TextDecoder().decode(bytes)));
   } catch {
-    return unavailableWind("unexpected_response", now);
+    return null;
   }
 
   const from = Date.parse(url.searchParams.get("hourlyStart") ?? "");
@@ -208,7 +173,7 @@ export async function fetchWind(
     });
     if (samples.length === MAX_SAMPLES) break;
   }
-  if (samples.length === 0) return unavailableWind("no_data", now);
+  if (samples.length === 0) return null;
 
   // Vector mean of the "from" directions, weighted by speed; mean of the speeds.
   let [u, v, sum, count, gust] = [0, 0, 0, 0, null as number | null];
@@ -229,8 +194,6 @@ export async function fetchWind(
       ? null
       : Number((((((Math.atan2(u, v) * 180) / Math.PI) % 360) + 360) % 360).toFixed(1)) % 360;
   return {
-    v: 1,
-    status: "ok",
     source: "weatherkit",
     directionDeg,
     speedMps: count > 0 ? Number((sum / count).toFixed(2)) : null,
@@ -238,4 +201,49 @@ export async function fetchWind(
     samples,
     fetchedAt: now,
   };
+}
+
+type WindEnv = Pick<Env, "CANONICAL_ORIGIN" | "WEATHERKIT_CELL_LIMIT" | "WEATHERKIT_MISS_LIMIT">;
+
+/** URL comes only from windRequest. Neither the viewer nor the session ID is part of the key. */
+export async function cachedWind(
+  env: WindEnv,
+  credentials: WeatherKitCredentials,
+  url: URL,
+  stillShared: () => Promise<boolean>,
+): Promise<SessionWind | null> {
+  const cell = url.pathname.slice(WEATHERKIT_PATH.length);
+  const start = url.searchParams.get("hourlyStart");
+  const end = url.searchParams.get("hourlyEnd");
+  try {
+    // A reserved API path keeps the cache entry separate from routes that serve assets.
+    const key = new URL(
+      `/api/_weatherkit-cache/v1${cell}/${start}/${end}`,
+      env.CANONICAL_ORIGIN || "https://madegood.app",
+    ).href;
+    const cache = caches.default;
+    const cached = await cache.match(key);
+    if (cached) return WindResult.nullable().safeParse(await cached.json()).data ?? null;
+
+    // Reuse across sessions with the same cell and hours. Guard misses by cell (across
+    // hour ranges) and across all cells, including during cold starts and Apple outages.
+    if (!(await env.WEATHERKIT_CELL_LIMIT.limit({ key: cell })).success) return null;
+    if (!(await env.WEATHERKIT_MISS_LIMIT.limit({ key: "shared-wind" })).success) return null;
+    const token = await weatherKitToken(credentials, Date.now());
+    // Finish the async cache, rate limit and signing work before checking the track again.
+    if (!token || !(await stillShared())) return null;
+    const wind = await fetchWind(token, url);
+    const ttl = wind ? WIND_TTL_SECONDS : UNAVAILABLE_TTL_SECONDS;
+    await cache
+      .put(
+        key,
+        Response.json(wind, {
+          headers: { "cache-control": `public, max-age=${ttl}` },
+        }),
+      )
+      .catch(() => {});
+    return wind;
+  } catch {
+    return null;
+  }
 }

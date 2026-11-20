@@ -1,11 +1,6 @@
 import { decodeProtectedHeader, exportPKCS8, generateKeyPair, jwtVerify } from "jose";
-import { describe, expect, it, vi } from "vitest";
-import {
-  fetchWind,
-  WindTransientError,
-  weatherKitToken,
-  windRequest,
-} from "../src/server/lib/wind";
+import { describe, expect, it } from "vitest";
+import { fetchWind, weatherKitToken, windRequest } from "../src/server/lib/wind";
 
 const now = Date.parse("2022-02-01T00:00:00Z");
 const hour = 3_600_000;
@@ -114,8 +109,6 @@ describe("WeatherKit hourly wind", () => {
       });
     };
     expect(await fetchWind("test-token", url, fetcher, now)).toEqual({
-      v: 1,
-      status: "ok",
       source: "weatherkit",
       directionDeg: 0,
       speedMps: 6.67,
@@ -129,13 +122,13 @@ describe("WeatherKit hourly wind", () => {
     });
   });
 
-  it.each([429, 502])("retries HTTP %s", async (status) => {
+  it.each([400, 401, 403, 404, 429, 502])("omits wind for HTTP %s", async (status) => {
     await expect(
       fetchWind("test-token", url, async () => new Response("", { status }), now),
-    ).rejects.toThrow(WindTransientError);
+    ).resolves.toBeNull();
   });
 
-  it("retries network errors during fetch and while reading the response", async () => {
+  it("omits wind for network errors during fetch and while reading the response", async () => {
     const offline = async () => {
       throw new TypeError("network");
     };
@@ -148,28 +141,13 @@ describe("WeatherKit hourly wind", () => {
         }),
       );
     for (const fetcher of [offline, brokenBody]) {
-      await expect(fetchWind("test-token", url, fetcher, now)).rejects.toThrow(WindTransientError);
+      await expect(fetchWind("test-token", url, fetcher, now)).resolves.toBeNull();
     }
   });
 
-  it.each([400, 401, 403, 404])("stores HTTP %s as permanently unavailable", async (status) => {
-    expect(
-      await fetchWind("test-token", url, async () => new Response("", { status }), now),
-    ).toEqual({
-      v: 1,
-      status: "unavailable",
-      reason: `http_${status}`,
-      fetchedAt: now,
-    });
-  });
-
-  it("classifies invalid credentials, malformed responses and missing hours as permanent", async () => {
-    const fetcher = vi.fn<typeof fetch>(async () => Response.json({}));
+  it("omits wind for invalid credentials, malformed responses and missing hours", async () => {
     expect(await weatherKitToken({ ...credentials, privateKey: "malformed" }, now)).toBeNull();
-    expect(await fetchWind("test-token", url, fetcher, now)).toMatchObject({
-      status: "unavailable",
-      reason: "no_data",
-    });
+    expect(await fetchWind("test-token", url, async () => Response.json({}), now)).toBeNull();
     expect(
       await fetchWind(
         "test-token",
@@ -177,6 +155,6 @@ describe("WeatherKit hourly wind", () => {
         async () => Response.json({ forecastHourly: { hours: 1 } }),
         now,
       ),
-    ).toMatchObject({ status: "unavailable", reason: "unexpected_response" });
+    ).toBeNull();
   });
 });

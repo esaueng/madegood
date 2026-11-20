@@ -1,16 +1,10 @@
-import {
-  createExecutionContext,
-  createMessageBatch,
-  getQueueResult,
-  waitOnExecutionContext,
-} from "cloudflare:test";
+import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { and, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
 import { describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/server/app";
 import { sessions, users } from "../src/server/db/schema";
-import worker from "../src/server/index";
 import {
   enqueuePostprocess,
   handlePostprocessBatch,
@@ -33,8 +27,7 @@ import {
   InvalidTrack,
   lonRange,
 } from "../src/server/lib/track-derived";
-import { api, bearer, type SignIn, signIn } from "./apple";
-import { steadyWest } from "./weatherkit";
+import { api, bearer, type SignIn, signIn, weatherKitRequests } from "./apple";
 
 // Synthetic data only (AGENTS.md): positions near 0,0 and dates in 2022.
 const START = "2022-01-01T10:00:00.000Z";
@@ -133,10 +126,6 @@ async function waitUntilProcessed(
   }
 }
 
-const noFetch = vi.fn<typeof fetch>(async () => {
-  throw new Error("unexpected fetch");
-});
-
 describe("derived track data", () => {
   it("finds the smallest longitude range, across the antimeridian too", () => {
     expect(lonRange(Float64Array.from([10, -5, 3]))).toEqual({ west: -5, east: 10 });
@@ -203,6 +192,25 @@ describe("upload post-processing", { timeout: 30_000 }, () => {
     expect((await row(id)).startGeohash).toBe("s0000");
   });
 
+  it("does not ask Apple during shared uploads or when sharing", async () => {
+    const owner = await signIn();
+    await drizzle(env.DB)
+      .update(users)
+      .set({ defaultVisibility: "unlisted" })
+      .where(eq(users.id, owner.user.id));
+    const id = crypto.randomUUID();
+    const before = weatherKitRequests.length;
+    await upload(owner, id, track(id, line(10)));
+    const result = await processSession(env, await messageFor(id));
+    expect(["processed", "skipped_done"]).toContain(result);
+    expect(
+      await (
+        await api(`/sessions/${id}`, json("PATCH", { visibility: "public" }, owner.accessToken))
+      ).json(),
+    ).toMatchObject({ processing: "done", wind: null });
+    expect(weatherKitRequests).toHaveLength(before);
+  });
+
   it("gives others only the bounds of what the shared track shows, and fetches wind", async () => {
     const owner = await signIn();
     const zone = await api(
@@ -218,7 +226,7 @@ describe("upload post-processing", { timeout: 30_000 }, () => {
     );
     expect(patch.status).toBe(200);
 
-    const mine = await waitUntilProcessed(owner.accessToken, id, (s) => s.wind !== null);
+    const mine = await waitUntilProcessed(owner.accessToken, id);
     expect((mine.bounds as { south: number }).south).toBe(0);
     const theirs = await getSession(null, id);
     expect((theirs.bounds as { south: number }).south).toBeGreaterThan(300 * DEG_PER_M);
@@ -229,84 +237,13 @@ describe("upload post-processing", { timeout: 30_000 }, () => {
     });
   });
 
-  it("acks a shared session without WeatherKit secrets and leaves wind unset", async () => {
-    const owner = await signIn();
-    const id = crypto.randomUUID();
-    await upload(owner, id, track(id, line(10)));
-    await waitUntilProcessed(owner.accessToken, id);
-    await drizzle(env.DB)
-      .update(sessions)
-      .set({ visibility: "unlisted" })
-      .where(eq(sessions.id, id));
-    const batch = createMessageBatch("madegood-postprocess", [
-      { id: "unconfigured", timestamp: new Date(), attempts: 1, body: await messageFor(id) },
-    ]);
-    await handlePostprocessBatch(
-      batch,
-      { ...env, WEATHERKIT_SERVICE_ID: undefined },
-      {
-        fetch: noFetch,
-      },
-    );
-    const result = await getQueueResult(batch, createExecutionContext());
-    expect(result.explicitAcks).toEqual(["unconfigured"]);
-    expect(result.retryMessages).toEqual([]);
-    expect(noFetch).not.toHaveBeenCalled();
-    expect((await row(id)).windJson).toBeNull();
-  });
-
-  it("serves wind from unversioned session rows with its original source", async () => {
-    const owner = await signIn();
-    const id = crypto.randomUUID();
-    await upload(owner, id, track(id, line(10)));
-    await waitUntilProcessed(owner.accessToken, id);
-    const sample = { t: START_MS, directionDeg: 270, speedMps: 5, gustMps: null };
-    const stored = {
-      status: "ok",
-      source: "open-meteo-archive",
-      directionDeg: 270,
-      speedMps: 5,
-      gustMps: null,
-      samples: [sample],
-      fetchedAt: START_MS,
-    };
-    await drizzle(env.DB)
-      .update(sessions)
-      .set({ visibility: "unlisted", windJson: JSON.stringify(stored) })
-      .where(eq(sessions.id, id));
-    expect((await getSession(null, id)).wind).toEqual({
-      source: stored.source,
-      directionDeg: 270,
-      speedMps: 5,
-      gustMps: null,
-      samples: [{ ...sample, t: START }],
-      fetchedAt: START,
-    });
-    expect(await processSession(env, await messageFor(id), { fetch: noFetch })).toBe(
-      "skipped_done",
-    );
-    expect(noFetch).not.toHaveBeenCalled();
-  });
-
-  it("never asks for wind for a private session", async () => {
-    const owner = await signIn();
-    const id = crypto.randomUUID();
-    await upload(owner, id, track(id, line(10)));
-    await waitUntilProcessed(owner.accessToken, id);
-    const message = await messageFor(id);
-    await drizzle(env.DB).update(sessions).set({ processedEtag: null }).where(eq(sessions.id, id));
-    expect(await processSession(env, message, { fetch: noFetch })).toBe("processed");
-    expect(noFetch).not.toHaveBeenCalled();
-    expect((await row(id)).windJson).toBeNull();
-  });
-
   it("drops duplicates, stale revisions, replaced tracks and deleted sessions", async () => {
     const owner = await signIn();
     const id = crypto.randomUUID();
     await upload(owner, id, track(id, line(10)), 1);
     const first = await messageFor(id);
     await waitUntilProcessed(owner.accessToken, id);
-    expect(await processSession(env, first, { fetch: noFetch })).toBe("skipped_done");
+    expect(await processSession(env, first)).toBe("skipped_done");
 
     // A newer revision clears the derived data at once, before its own track arrives.
     const put = await api(`/sessions/${id}?revision=2`, json("PUT", metadata, owner.accessToken));
@@ -317,20 +254,18 @@ describe("upload post-processing", { timeout: 30_000 }, () => {
       trackStartedAt: null,
     });
     expect((await row(id)).minLat).toBeNull();
-    expect(await processSession(env, first, { fetch: noFetch })).toBe("skipped_stale");
+    expect(await processSession(env, first)).toBe("skipped_stale");
 
     await upload(owner, id, track(id, line(20)), 2);
     const second = await messageFor(id);
     expect(second.etag).not.toBe(first.etag);
-    expect(await processSession(env, { ...second, etag: first.etag }, { fetch: noFetch })).toBe(
-      "skipped_stale",
-    );
+    expect(await processSession(env, { ...second, etag: first.etag })).toBe("skipped_stale");
 
     expect(
       (await api(`/sessions/${id}`, { method: "DELETE", headers: bearer(owner.accessToken) }))
         .status,
     ).toBe(204);
-    expect(await processSession(env, second, { fetch: noFetch })).toBe("skipped_stale");
+    expect(await processSession(env, second)).toBe("skipped_stale");
     expect(await processSession(env, { nonsense: true })).toBe("invalid_message");
   });
 
@@ -364,69 +299,34 @@ describe("upload post-processing", { timeout: 30_000 }, () => {
     expect([r.publicMinLat, r.publicZonesVersion]).toEqual([null, null]);
     expect((await getSession(null, id)).bounds).toBeNull();
 
-    expect((await row(id)).windJson).toBeNull();
     const theirs = await waitUntilProcessed(null, id, (s) => s.bounds !== null);
     expect((theirs.bounds as { south: number }).south).toBeGreaterThan(300 * DEG_PER_M);
-    // Wind is public data too: cleared with the zone change, then fetched again.
-    const refetched = await waitUntilProcessed(null, id, (s) => s.wind !== null);
-    expect(refetched.wind).toMatchObject({ directionDeg: 270 });
   });
 
-  it("asks for wind when a processed session is shared later", async () => {
+  it("acks finished messages and retries failed track processing with backoff", async () => {
     const owner = await signIn();
     const id = crypto.randomUUID();
     await upload(owner, id, track(id, line(10)));
     await waitUntilProcessed(owner.accessToken, id);
-    expect((await row(id)).windJson).toBeNull();
-    await api(`/sessions/${id}`, json("PATCH", { visibility: "public" }, owner.accessToken));
-    const shared = await waitUntilProcessed(owner.accessToken, id, (s) => s.wind !== null);
-    expect(shared.wind).toMatchObject({ directionDeg: 270 });
-  });
-
-  it("acks finished messages and retries failed wind lookups with backoff", async () => {
-    const owner = await signIn();
-    const id = crypto.randomUUID();
-    await upload(owner, id, track(id, line(10)));
-    await waitUntilProcessed(owner.accessToken, id);
-    // Shared, but with the wind lookup still to do.
-    await drizzle(env.DB)
-      .update(sessions)
-      .set({ visibility: "public", windJson: null })
-      .where(and(eq(sessions.id, id)));
     const message = await messageFor(id);
-
-    // A batch whose acks and retries are recorded, with their retry delays.
-    const calls: unknown[] = [];
-    const fake = (msgId: string, attempts: number, body: unknown) => ({
-      id: msgId,
-      timestamp: new Date(),
-      attempts,
-      body,
-      ack: () => calls.push(["ack", msgId]),
-      retry: (options?: QueueRetryOptions) => calls.push(["retry", msgId, options?.delaySeconds]),
-    });
-    const failing = {
-      queue: "madegood-postprocess",
-      messages: [fake("a", 3, message), fake("b", 1, { bad: 1 })],
+    const ack = vi.fn();
+    const retry = vi.fn();
+    const batch = {
+      messages: [{ id: "retry", attempts: 3, body: message, ack, retry }],
     } as unknown as MessageBatch<unknown>;
-    const outage = vi.fn<typeof fetch>(async () => new Response("", { status: 503 }));
-    await handlePostprocessBatch(failing, env, { fetch: outage });
-    expect(calls).toEqual([
-      ["retry", "a", 120],
-      ["ack", "b"],
-    ]);
-    expect(outage).toHaveBeenCalledOnce();
-    expect((await row(id)).windJson).toBeNull();
-    expect([1, 2, 5, 10].map(retryDelaySeconds)).toEqual([30, 60, 480, 3600]);
+    const brokenTracks = {
+      get: async () => {
+        throw new Error("R2 unavailable");
+      },
+    } as unknown as R2Bucket;
+    await handlePostprocessBatch(batch, env);
+    expect(ack).toHaveBeenCalledOnce();
+    expect(retry).not.toHaveBeenCalled();
 
-    // The Worker's own queue handler, with WeatherKit answering again.
-    const retried = createMessageBatch("madegood-postprocess", [
-      { id: "c", timestamp: new Date(), attempts: 4, body: message },
-    ]);
-    const ctx2 = createExecutionContext();
-    await worker.queue(retried, env);
-    expect((await getQueueResult(retried, ctx2)).explicitAcks).toEqual(["c"]);
-    expect(JSON.parse((await row(id)).windJson ?? "null")).toMatchObject({ status: "ok" });
+    await drizzle(env.DB).update(sessions).set({ processedEtag: null }).where(eq(sessions.id, id));
+    await handlePostprocessBatch(batch, { ...env, TRACKS: brokenTracks });
+    expect(retry).toHaveBeenCalledExactlyOnceWith({ delaySeconds: 120 });
+    expect([1, 2, 5, 10].map(retryDelaySeconds)).toEqual([30, 60, 480, 3600]);
   });
 
   it("processes after the response when there is no queue binding", async () => {
@@ -467,8 +367,6 @@ describe("review of #72", { timeout: 30_000 }, () => {
     await drizzle(env.DB).update(sessions).set({ processedEtag: null }).where(eq(sessions.id, id));
     let added = false;
     const outcome = await processSession(env, message, {
-      // Shared, and the zone change clears its wind, so it asks again.
-      fetch: async (input) => steadyWest(new URL(String(input))),
       hooks: {
         afterDerive: async () => {
           if (added) return;
@@ -505,7 +403,7 @@ describe("review of #72", { timeout: 30_000 }, () => {
     expect([theirs.bounds, theirs.trackStartedAt]).toEqual([null, null]);
     expect(south(await getSession(owner.accessToken, id))).toBe(0);
     // processedEtag still matches, yet the message recomputes instead of skipping.
-    expect(await processSession(env, await messageFor(id), { fetch: noFetch })).toBe("processed");
+    expect(await processSession(env, await messageFor(id))).toBe("processed");
     expect(south(await getSession(null, id))).toBe(0);
   });
 
@@ -556,41 +454,8 @@ describe("review of #72", { timeout: 30_000 }, () => {
     expect(await env.TRACKS.head(keyB)).toBeNull();
     expect(await env.TRACKS.head(original)).toBeNull();
     const message = await messageFor(id);
-    expect(await processSession(env, message, { fetch: noFetch })).toBe("processed");
+    expect(await processSession(env, message)).toBe("processed");
     expect((await row(id)).trackEndedAt).toBe(START_MS + 190_000);
-  });
-
-  it("does not ask for wind once the session is made private", async () => {
-    const owner = await signIn();
-    const id = crypto.randomUUID();
-    await upload(owner, id, track(id, line(10)));
-    await waitUntilProcessed(owner.accessToken, id);
-    const message = await messageFor(id);
-    const share = (visibility: "public" | "private") =>
-      drizzle(env.DB)
-        .update(sessions)
-        .set({ visibility, windJson: null })
-        .where(eq(sessions.id, id));
-
-    // Private between the snapshot and the request: no request at all.
-    await share("public");
-    expect(
-      await processSession(env, message, {
-        fetch: noFetch,
-        hooks: { beforeWind: () => share("private").then(() => undefined) },
-      }),
-    ).toBe("skipped_done");
-    expect(noFetch).not.toHaveBeenCalled();
-
-    // Private while the request is in flight: the answer is not stored.
-    await share("public");
-    const slow = vi.fn<typeof fetch>(async (input) => {
-      await share("private");
-      return steadyWest(new URL(String(input)));
-    });
-    await processSession(env, message, { fetch: slow });
-    expect(slow).toHaveBeenCalledOnce();
-    expect((await row(id)).windJson).toBeNull();
   });
 
   it("fans a zone change out through one user message, page by page", async () => {
@@ -668,7 +533,7 @@ describe("review of #72", { timeout: 30_000 }, () => {
     await waitUntilProcessed(owner.accessToken, id);
     await drizzle(env.DB)
       .update(sessions)
-      .set({ publicZonesVersion: null, visibility: "public", windJson: "{}" })
+      .set({ publicZonesVersion: null, visibility: "public" })
       .where(eq(sessions.id, id));
     await processInline({ DB: env.DB, TRACKS: env.TRACKS }, [
       { v: 1, kind: "user", userId: owner.user.id },
@@ -708,51 +573,6 @@ describe("scoped re-check of #72", { timeout: 30_000 }, () => {
     return m;
   };
 
-  it("never serves wind from before a zone change, nor stores one fetched across it", async () => {
-    const owner = await signIn();
-    const id = crypto.randomUUID();
-    await upload(owner, id, track(id, line(100)));
-    await api(`/sessions/${id}`, json("PATCH", { visibility: "public" }, owner.accessToken));
-    await waitUntilProcessed(null, id, (s) => s.wind !== null);
-
-    // Stale public data (a zone change not yet applied to the row): no wind for others.
-    const r = await row(id);
-    await drizzle(env.DB)
-      .update(users)
-      .set({ zonesVersion: (r.publicZonesVersion ?? 0) + 1 })
-      .where(eq(users.id, owner.user.id));
-    expect((await getSession(null, id)).wind).toBeNull();
-    expect((await getSession(owner.accessToken, id)).wind).not.toBeNull();
-
-    // A zone added while WeatherKit answers: the answer is not stored.
-    await drizzle(env.DB)
-      .update(sessions)
-      .set({ publicZonesVersion: null, windJson: null })
-      .where(eq(sessions.id, id));
-    await drizzle(env.DB)
-      .update(users)
-      .set({
-        zonesVersion: r.publicZonesVersion ?? 0,
-        zonesQueuedVersion: r.publicZonesVersion ?? 0,
-      })
-      .where(eq(users.id, owner.user.id));
-    let added = false;
-    const racing = vi.fn<typeof fetch>(async (input) => {
-      if (!added) {
-        added = true;
-        expect((await addZone(owner.accessToken)).status).toBe(201);
-      }
-      return steadyWest(new URL(String(input)));
-    });
-    await processSession(env, await messageFor(id), { fetch: racing });
-    expect(racing).toHaveBeenCalled();
-    const after = await row(id);
-    expect(
-      after.windJson === null || after.publicZonesVersion === (await marker(owner.user.id)).version,
-    ).toBe(true);
-    if (after.windJson !== null) expect(after.publicMinLat).toBeGreaterThan(300 * DEG_PER_M);
-  });
-
   it("uses the visible fixes to build the WeatherKit time range", async () => {
     const owner = await signIn();
     expect((await addZone(owner.accessToken)).status).toBe(201);
@@ -761,18 +581,10 @@ describe("scoped re-check of #72", { timeout: 30_000 }, () => {
     const doc = { ...track(id, line(100)), startedAt: "2022-01-01T23:57:00.000Z" };
     await upload(owner, id, doc);
     await waitUntilProcessed(owner.accessToken, id);
-    await drizzle(env.DB)
-      .update(sessions)
-      .set({ visibility: "public", windJson: null })
-      .where(eq(sessions.id, id));
-    const urls: URL[] = [];
-    const capture = vi.fn<typeof fetch>(async (input) => {
-      const url = new URL(String(input));
-      urls.push(url);
-      return steadyWest(url);
-    });
-    await processSession(env, await messageFor(id), { fetch: capture });
-    expect(urls.map((u) => u.searchParams.get("hourlyStart"))).toEqual([
+    await drizzle(env.DB).update(sessions).set({ visibility: "public" }).where(eq(sessions.id, id));
+    const before = weatherKitRequests.length;
+    expect((await getSession(null, id)).wind).toMatchObject({ source: "weatherkit" });
+    expect(weatherKitRequests.slice(before).map((u) => u.searchParams.get("hourlyStart"))).toEqual([
       "2022-01-01T23:00:00.000Z",
     ]);
   });

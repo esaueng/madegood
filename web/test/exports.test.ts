@@ -155,11 +155,13 @@ describe("account export jobs", () => {
     const a = await sessionWithTrack(owner, new Uint8Array([0x1f, 0x8b, 1, 2, 3]));
     const bare = crypto.randomUUID();
     await sql(
-      "insert into sessions (id, user_id, sport, started_at, summary_json) values (?, ?, 'sup', ?, ?)",
+      `insert into sessions (id, user_id, sport, started_at, summary_json, wind_json)
+       values (?, ?, 'sup', ?, ?, ?)`,
       bare,
       owner.user.id,
       START_MS + 1,
       JSON.stringify({ distance: 5000 }),
+      JSON.stringify({ source: "open-meteo-archive", speedMps: 5 }),
     );
     await sessionWithTrack(other, new Uint8Array([9]));
     await sql(
@@ -226,6 +228,7 @@ describe("account export jobs", () => {
     const sessions = parse(data, "sessions/sessions-0001.json") as Record<string, unknown>[];
     expect(sessions.map((s) => s.id)).toEqual([a.id, bare]);
     expect(sessions[1]).toMatchObject({ summary: { distance: 5000 }, track: null });
+    expect(sessions.every((s) => !("wind" in s))).toBe(true);
     expect(data[2]?.data).toEqual(new Uint8Array([0x1f, 0x8b, 1, 2, 3]));
   });
 

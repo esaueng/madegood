@@ -135,7 +135,7 @@ function zonesChanged(db: D1Database, userId: string, zoneId: string) {
       .prepare(
         `UPDATE sessions SET public_min_lat = NULL, public_min_lon = NULL,
            public_max_lat = NULL, public_max_lon = NULL, public_track_started_at = NULL,
-           public_track_ended_at = NULL, public_zones_version = NULL, wind_json = NULL
+           public_track_ended_at = NULL, public_zones_version = NULL
          WHERE user_id = ? AND ${exists}`,
       )
       .bind(userId, zoneId, userId),

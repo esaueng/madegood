@@ -17,13 +17,18 @@ const jwks = {
 
 const realFetch = globalThis.fetch;
 export const jwksRequests: string[] = [];
+export const weatherKitRequests: URL[] = [];
 vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
   const url = input instanceof Request ? input.url : String(input);
   if (url === "https://appleid.apple.com/auth/keys") {
     jwksRequests.push(url);
     return Response.json(jwks);
   }
-  if (new URL(url).hostname === "weatherkit.apple.com") return steadyWest(new URL(url));
+  if (new URL(url).hostname === "weatherkit.apple.com") {
+    const request = new URL(url);
+    weatherKitRequests.push(request);
+    return steadyWest(request);
+  }
   return realFetch(input, init);
 });
 

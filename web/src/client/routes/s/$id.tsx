@@ -137,7 +137,13 @@ function Header({ session }: { session: Session }) {
   const change = useMutation({
     mutationFn: (visibility: Visibility) => updateSession(session.id, { visibility }),
     onSuccess: (updated) => {
-      queryClient.setQueryData(["session", session.id], updated);
+      const key = ["session", session.id];
+      // PATCH updates visibility. The detail view refreshes the wind for shared sessions.
+      queryClient.setQueryData<Session>(key, (previous) => ({
+        ...updated,
+        wind: updated.visibility === "private" ? null : (previous?.wind ?? null),
+      }));
+      queryClient.invalidateQueries({ queryKey: key, exact: true });
       queryClient.invalidateQueries({ queryKey: ["sessions"] });
     },
   });

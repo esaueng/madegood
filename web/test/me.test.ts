@@ -281,7 +281,7 @@ describe("DELETE /api/me", () => {
     expect((await env.TRACKS.list({ prefix: `users/${id}/` })).objects).toHaveLength(0);
   });
 
-  it("drops queued post-processing for a deleting account without fetching wind", async () => {
+  it("drops queued post-processing for a deleting account", async () => {
     const session = await signIn();
     const sessionId = crypto.randomUUID();
     const key = `users/${session.user.id}/sessions/${sessionId}/track.v1.gz`;
@@ -293,14 +293,14 @@ describe("DELETE /api/me", () => {
       .bind(sessionId, session.user.id, key, object.etag)
       .run();
     expect((await deleteMe(session.accessToken, { finish: false })).status).toBe(202);
-    const fetchSpy = vi.fn(async () => new Response("{}"));
-    const outcome = await processMessage(
-      env,
-      { v: 1, sessionId, userId: session.user.id, revision: 0, etag: object.etag },
-      { fetch: fetchSpy as unknown as typeof fetch },
-    );
+    const outcome = await processMessage(env, {
+      v: 1,
+      sessionId,
+      userId: session.user.id,
+      revision: 0,
+      etag: object.etag,
+    });
     expect(outcome).toBe("skipped_stale");
-    expect(fetchSpy).not.toHaveBeenCalled();
     expect(await processMessage(env, { v: 1, kind: "user", userId: session.user.id })).not.toBe(
       "processed",
     );

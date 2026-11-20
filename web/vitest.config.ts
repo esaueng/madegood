@@ -13,6 +13,7 @@ export default defineConfig(async () => {
       cloudflareTest({
         wrangler: { configPath: "./wrangler.jsonc" },
         miniflare: {
+          d1Databases: { TEST_MIGRATION_DB: "test-migration-db" },
           // Deliver post-processing messages at once instead of after wrangler.jsonc's
           // 5 s batch window, so tests that wait for the consumer stay fast.
           queueConsumers: {

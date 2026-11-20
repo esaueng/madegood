@@ -3,7 +3,14 @@ import { and, desc, eq, isNull, lt, or, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
 import type { Context } from "hono";
 import { optionalAuth, requireAuth } from "../auth/middleware";
-import { privacyZones, type Session, sessions, sessionTombstones, users } from "../db/schema";
+import {
+  privacyZones,
+  type Session,
+  sessionColumns,
+  sessions,
+  sessionTombstones,
+  users,
+} from "../db/schema";
 import { apiError, errorResponse } from "../lib/errors";
 import { logFailure } from "../lib/logging";
 import { enqueuePostprocess, ensureUserRequeued, publicIsCurrent } from "../lib/postprocess";
@@ -33,7 +40,8 @@ import {
   TrackTooLarge,
   trackKey,
 } from "../lib/track";
-import { readStoredWind, WindSource } from "../lib/wind";
+import { boundsCenter } from "../lib/track-derived";
+import { cachedWind, type SessionWind, weatherKitCredentials, windRequest } from "../lib/wind";
 
 type SessionsEnv = {
   Bindings: Env;
@@ -188,7 +196,7 @@ const BoundsBody = z
 const nullableNumber = z.number().nullable();
 const WindBody = z
   .object({
-    source: WindSource,
+    source: z.literal("weatherkit"),
     directionDeg: nullableNumber.openapi({
       description: "Mean direction the wind blows from, degrees true.",
     }),
@@ -248,8 +256,8 @@ const SessionBody = z
     }),
     wind: WindBody.nullable().openapi({
       description:
-        "Modelled wind for the session's time and area, fetched only while " +
-        "the session is public or unlisted. Null when not fetched or not available.",
+        "Modelled wind looked up on a session detail view while the session is public or unlisted. " +
+        "Uses the visible track after privacy zone cuts. Null when not fetched or not available.",
     }),
     isOwner: z.boolean().openapi({ description: "Whether the caller owns the session." }),
     createdAt: isoTime,
@@ -339,9 +347,7 @@ function boundsOf(session: Session, owner: boolean): z.infer<typeof BoundsBody> 
   return { south, west, north, east };
 }
 
-function windOf(session: Session): z.infer<typeof WindBody> | null {
-  const wind = readStoredWind(session.windJson);
-  if (!wind) return null;
+function windBody(wind: SessionWind): z.infer<typeof WindBody> {
   return {
     source: wind.source,
     directionDeg: wind.directionDeg,
@@ -360,6 +366,7 @@ function toSessionBody(
   session: Session,
   viewerId: string | null,
   ownerZonesVersion?: number | null,
+  wind: SessionWind | null = null,
 ): z.infer<typeof SessionBody> {
   const owner = session.userId === viewerId;
   const processed = processingState(session) === "done";
@@ -388,8 +395,7 @@ function toSessionBody(
     bounds: shown ? boundsOf(session, owner) : null,
     trackStartedAt: shown && startedAt !== null ? iso(startedAt) : null,
     trackEndedAt: shown && endedAt !== null ? iso(endedAt) : null,
-    // Wind is public data cut with the zones too: others see it only while current.
-    wind: owner || publicIsCurrent(session, ownerZonesVersion) ? windOf(session) : null,
+    wind: wind && windBody(wind),
     isOwner: owner,
     createdAt: iso(session.createdAt),
     updatedAt: iso(session.updatedAt),
@@ -424,11 +430,29 @@ const unknownUser = (c: Context) =>
 /** Read the session and its owner's sharing state in the same D1 snapshot. */
 async function findReadableSession(db: ReturnType<typeof drizzle>, id: string) {
   const [row] = await db
-    .select({ session: sessions, zonesVersion: users.zonesVersion })
+    .select({ session: sessionColumns, zonesVersion: users.zonesVersion })
     .from(sessions)
     .innerJoin(users, and(eq(users.id, sessions.userId), isNull(users.deletedAt)))
     .where(and(eq(sessions.id, id), isNull(sessions.deletedAt)));
   return row;
+}
+
+/** Both owners and other viewers use the public track for wind. */
+function sharedWindRequest(
+  { session, zonesVersion }: NonNullable<Awaited<ReturnType<typeof findReadableSession>>>,
+  now: number,
+): URL | null {
+  if (
+    session.visibility === "private" ||
+    processingState(session) !== "done" ||
+    !publicIsCurrent(session, zonesVersion)
+  )
+    return null;
+  const box = boundsOf(session, false);
+  const startedAt = session.publicTrackStartedAt;
+  const endedAt = session.publicTrackEndedAt;
+  if (!box || startedAt === null || endedAt === null) return null;
+  return windRequest(boundsCenter(box), { startedAt, endedAt }, now);
 }
 
 /** Owners see everything; others see public and unlisted sessions. Private ones 404. */
@@ -532,7 +556,7 @@ const putTrackRoute = createRoute({
     `The body is the gzipped track v1 file (docs/formats.md), sent as \`${TRACK_CONTENT_TYPE}\` ` +
     `with no Content-Encoding, at most ${TRACK_MAX_BYTES} bytes. PUT the session's metadata ` +
     "first, with the same `revision`. Repeating the upload replaces the file. The server then " +
-    "derives the session's bounds, track times and (for shared sessions) wind in the " +
+    "derives the session's bounds and track times in the " +
     "background; `processing` on the session reports progress.",
   tags: ["sessions"],
   security,
@@ -658,7 +682,7 @@ sessionRoutes.openapi(listRoute, async (c) => {
       )
     : undefined;
   const rows = await drizzle(c.env.DB)
-    .select()
+    .select(sessionColumns)
     .from(sessions)
     .where(and(owned, live, page))
     .orderBy(desc(sessions.startedAt), desc(sessions.id))
@@ -751,9 +775,34 @@ sessionRoutes.openapi(putRoute, async (c) => {
 sessionRoutes.openapi(getRoute, async (c) => {
   const { id } = c.req.valid("param");
   const viewerId = c.var.viewerId;
-  const row = await findReadableSession(drizzle(c.env.DB), id);
+  const db = drizzle(c.env.DB);
+  const row = await findReadableSession(db, id);
   if (!row || !canView(row.session, viewerId)) return notFound(c);
-  return c.json(toSessionBody(row.session, viewerId, row.zonesVersion), 200);
+  c.header("Cache-Control", "private, no-store");
+
+  const now = Date.now();
+  const url = sharedWindRequest(row, now);
+  const credentials = weatherKitCredentials(c.env);
+  if (!url || !credentials) {
+    return c.json(toSessionBody(row.session, viewerId, row.zonesVersion), 200);
+  }
+
+  const matches = (current: typeof row) =>
+    current.zonesVersion === row.zonesVersion &&
+    current.session.processedEtag === row.session.processedEtag &&
+    sharedWindRequest(current, now)?.href === url.href;
+  const wind = await cachedWind(c.env, credentials, url, async () => {
+    const current = await findReadableSession(db, id);
+    return current !== undefined && matches(current);
+  });
+
+  // The session, track or privacy zones can change while the cache or Apple answers.
+  const current = await findReadableSession(db, id);
+  if (!current || !canView(current.session, viewerId)) return notFound(c);
+  return c.json(
+    toSessionBody(current.session, viewerId, current.zonesVersion, matches(current) ? wind : null),
+    200,
+  );
 });
 
 sessionRoutes.openapi(putTrackRoute, async (c) => {
@@ -846,7 +895,7 @@ sessionRoutes.openapi(putTrackRoute, async (c) => {
   }
 
   // Post-processing (lib/postprocess.ts) reads the whole track, checks `v` and `sessionId`,
-  // derives the bounds and times, and fetches wind for shared sessions. A failed send is a
+  // derives the bounds and times. A failed send is a
   // 503: the client repeats the upload, which is idempotent and queues it again.
   // Always for the ETag R2 holds, so the stored track is processed even when this upload
   // lost a race with another one of the same revision.
@@ -963,25 +1012,15 @@ sessionRoutes.openapi(patchRoute, async (c) => {
     sql`EXISTS (SELECT 1 FROM users WHERE users.id = ${userId} AND users.deleted_at IS NULL)`,
   );
   if (Object.keys(changes).length === 0) {
-    const [session] = await db.select().from(sessions).where(mine);
+    const [session] = await db.select(sessionColumns).from(sessions).where(mine);
     return session ? c.json(toSessionBody(session, userId), 200) : notFound(c);
   }
   const [session] = await db
     .update(sessions)
     .set({ ...changes, updatedAt: Date.now() })
     .where(mine)
-    .returning();
+    .returning(sessionColumns);
   if (!session) return notFound(c);
-  // Wind is fetched only for sessions others can see; sharing one queues the lookup.
-  if (session.visibility !== "private" && session.windJson === null && session.trackEtag) {
-    try {
-      await enqueuePostprocess(c.env, c.executionCtx, [
-        { v: 1, sessionId: id, userId, revision: session.uploadRevision, etag: session.trackEtag },
-      ]);
-    } catch (error) {
-      logFailure("wind_lookup_queue_failed", error);
-    }
-  }
   return c.json(toSessionBody(session, userId), 200);
 });
 
