@@ -431,6 +431,20 @@ describe("Open Graph route images", () => {
     expect(servedHash).not.toEqual(await hash(whole));
   });
 
+  it("never serves a previous owner's image or ETag for a reused session ID", async () => {
+    // Regression (PR #96 review): zones versions are per account, so the same session ID,
+    // track bytes and zones version under another account must not match the old image.
+    const { id, path, fingerprint } = await processedSession();
+    await seedCache(path);
+    const next = await signIn();
+    await drizzle(env.DB).update(sessions).set({ userId: next.user.id }).where(eq(sessions.id, id));
+    await expectBrand(await get(path));
+    await expectBrand(await get(path, { "if-none-match": `"${fingerprint}"` }));
+    const [moved] = await drizzle(env.DB).select().from(sessions).where(eq(sessions.id, id));
+    if (!moved) throw new Error("missing test session");
+    expect(await ogFingerprint(moved, "nautical", 0)).not.toBe(fingerprint);
+  });
+
   it("redraws the image under a new URL when a zone is added", async () => {
     const owner = await signIn();
     const id = await shareSession(owner, lineFixes(), "unlisted");

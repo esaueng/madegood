@@ -47,8 +47,14 @@ export async function ogFingerprint(
   units: Units,
   zonesVersion: number,
 ): Promise<string> {
+  // The owner and session ID are part of it: zones versions are per account, so a session
+  // ID reused by another account after deletion (same track bytes, same zones version)
+  // must never match an image or ETag drawn for the previous owner's zones.
   const input = JSON.stringify([
     OG_RENDER_VERSION,
+    s.userId,
+    s.id,
+    s.trackKey,
     s.trackEtag,
     zonesVersion,
     s.sport,
