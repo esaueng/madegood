@@ -3,7 +3,7 @@ import Observation
 import WaterKit
 
 /// The recordings on this phone, newest first. Summaries and History previews share
-/// a background analysis and cache keyed by the recording, auto-pause setting and trim.
+/// a background analysis and cache keyed by the recording, analysis settings and trim.
 @MainActor
 @Observable
 final class SessionLibrary {
@@ -49,6 +49,7 @@ final class SessionLibrary {
         var entry: RecordingStore.Entry
         var autoPause: Bool
         var savedTrim: SavedTrim
+        var planingSpeedThreshold = SportSettings.defaultPlaningSpeedThreshold
 
         func analyze() -> LoadedSession? {
             guard let session = try? RawSessionReader.read(folder: entry.folder, includeMotion: false),
@@ -56,6 +57,7 @@ final class SessionLibrary {
             else { return nil }
             var profile = SportProfile.standard(for: session.meta.sport)
             profile.autoPause.enabled = autoPause
+            profile.planingSpeedThreshold = planingSpeedThreshold
             guard let original = try? SessionSelection(session: session, profile: profile) else { return nil }
             let trimmed = savedTrim.trim.flatMap {
                 try? SessionSelection(session: session, trim: $0, profile: profile)
@@ -200,8 +202,10 @@ final class SessionLibrary {
         } catch {
             savedTrim = .unreadable
         }
+        let profile = UserSettings.profile(for: meta.sport)
         return Source(
-            entry: entry, autoPause: UserSettings.profile(for: meta.sport).autoPause.enabled, savedTrim: savedTrim)
+            entry: entry, autoPause: profile.autoPause.enabled, savedTrim: savedTrim,
+            planingSpeedThreshold: profile.planingSpeedThreshold)
     }
 
     /// Serializes track-file writes, so the freshness check and the write happen together.

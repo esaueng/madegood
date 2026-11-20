@@ -32,6 +32,7 @@ struct SessionDetailView: View {
         let summary: SessionLibrary.Summary
         let heartRateZones: HeartRateZones
         let zoneDurations: [HeartRateZones.Zone: Double]
+        let windsurf: WindsurfAnalysis?
 
         init(
             selection: SessionSelection, display: LiveDisplay, isTrimmed: Bool, trimUnavailable: Bool = false
@@ -44,6 +45,7 @@ struct SessionDetailView: View {
             zoneDurations = heartRateZones.durations(in: selection)
             summary = SessionLibrary.Summary(
                 selection: selection, isTrimmed: isTrimmed, trimUnavailable: trimUnavailable)
+            windsurf = selection.windsurfAnalysis()
         }
     }
 
@@ -266,6 +268,10 @@ struct SessionDetailView: View {
                 }
             }
             .padding(.vertical, 6)
+            if let windsurf = analysis.current.windsurf {
+                LabeledContent("Planing time", value: LiveDisplay.planing(windsurf.planing))
+                LabeledContent("Estimated gybes", value: windsurf.estimatedGybeCount.map(String.init) ?? "–")
+            }
         } header: {
             Text("Speed bests")
         } footer: {

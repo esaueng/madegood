@@ -400,8 +400,33 @@ if needed. A span never crosses an interval of more than 10 s between fixes (the
 | Alpha 500 | The fastest 500 m span whose start position is within 50 m of the fix where it ends. The start position is interpolated between fixes, the short way round across the antimeridian. It may start at a GPS re-anchor, where position jumped, but not before it, even when the anchor fix has no speed (speed is then interpolated across it) |
 
 Pauses do not stop the categories, as for the max speeds; GPS gaps do. `waterkit-replay`
-reports the same values, computed over the engine's accepted fixes. Planing time
-and gybe count (PLAN §5) are not computed yet.
+reports the same values, computed over the engine's accepted fixes.
+
+**Planing time** estimates time above the user's Windsurfing → Planing speed
+setting (default 5 m/s, about 9.7 kn). The setting syncs between iPhone and Watch and
+is stored in m/s. Speed is linearly interpolated between consecutive accepted
+Doppler readings. A run must stay above the threshold for at least 3 s, and the
+whole run counts once it qualifies. The 3 s minimum filters out brief spikes
+without a second speed threshold. Manual and auto-pauses, cuts, GPS re-anchors,
+gaps over 5 s, and fixes without usable speed break a run. The percentage is
+of active time with usable Doppler intervals, including observed time below
+the threshold. It is blank without usable intervals. iPhone detail uses the
+current setting, including for older sessions and trims. The Watch summary
+uses the setting from the start of the recording.
+
+**Estimated gybes** reuse sailing's course-over-ground detector, including its
+stable approach and departure legs and Doppler speed dip. For windsurfing, the
+two dominant headings may be 65–170° apart in the course histogram. They must
+account for at least half of the course time observed at 3 m/s or faster. The
+detector checks both possible ends of the wind axis and allows turns under
+240° (sailing uses 180°), since a gybe from an upwind reach can take the longer
+arc. If turns cluster around just one end of the axis, that end is assumed
+downwind and those turns count. The count is blank when there is too little
+evidence for the axis or qualifying turns cross both ends. This assumption can
+mistake upwind tacks for gybes and miss turns on other headings or between
+reciprocal reaches.
+The count is independent of the user's planing threshold and has been checked
+against synthetic tracks.
 
 ## Start countdown and distance alerts
 
@@ -491,7 +516,6 @@ and auto-lap events.
 ## Not computed yet
 
 PLAN §5 lists these; they have no definition here until they ship:
-windsurf planing time and gybe count, race start line (pinging the ends, distance and
-time to the line), and stroke-based intervals. Apple Health's workout builder supplies
-calories.
+Race start line (pinging the ends, distance and time to the line) and stroke-based
+intervals. Apple Health's workout builder supplies calories.
 

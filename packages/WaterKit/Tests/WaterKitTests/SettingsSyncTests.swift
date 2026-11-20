@@ -4,6 +4,31 @@ import Testing
 
 /// Two-way settings sync with a version per setting (PR #39 reviews, PR #62 reviews).
 @Suite struct SettingsSyncTests {
+    @Test func planingThresholdSyncsByKeyIncludingResetToDefault() {
+        let phone = Device(id: "phone")
+        let watch = Device(id: "watch")
+        let sport = Sport.windsurfing
+        let key = SportSettings.Key.planingSpeedThreshold
+        #expect(watch.settings(sport).planingSpeedThreshold == 5)
+
+        phone.edit(sport, at: 10) { $0.planingSpeedThreshold = 6.5 }
+        watch.edit(sport, at: 11) { $0.speedUnit = .kilometresPerHour }
+        _ = phone.receive(watch.snapshot)
+        _ = watch.receive(phone.snapshot)
+        #expect(watch.settings(sport).planingSpeedThreshold == 6.5)
+        #expect(phone.settings(sport).speedUnit == .kilometresPerHour)
+
+        let beforeReset = phone.snapshot
+        watch.edit(sport, at: 12) { $0.planingSpeedThreshold = SportSettings.defaultPlaningSpeedThreshold }
+        _ = phone.receive(watch.snapshot)
+        _ = watch.receive(beforeReset)
+        #expect(phone.settings(sport).planingSpeedThreshold == 5)
+        #expect(watch.settings(sport).planingSpeedThreshold == 5)
+        #expect(phone.stamp(key) == watch.stamp(key))
+        #expect(phone.stamp(key) != nil)
+        #expect(phone.snapshot[key] == nil)
+    }
+
     /// A device running a build with per-setting versions.
     final class Device {
         let id: String
