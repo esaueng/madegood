@@ -118,6 +118,26 @@ extension XCTestCase {
             XCTAssertTrue(allow.waitForExistence(timeout: 10), "No location prompt", file: file, line: line)
             allow.tap()
         }
+
+        /// The recording tab can request location on launch. Answer that prompt if
+        /// it interrupts navigation, or require the prompt when the leg starts.
+        @MainActor
+        func allowLocationWhileUsing(
+            during startLeg: () -> Void, file: StaticString = #filePath, line: UInt = #line
+        ) {
+            var accepted = false
+            let monitor = addUIInterruptionMonitor(withDescription: "Location permission") { alert in
+                guard alert.label.hasSuffix("to use your location?") else { return false }
+                let allow = alert.buttons["Allow While Using App"]
+                guard allow.exists else { return false }
+                allow.tap()
+                accepted = true
+                return true
+            }
+            defer { removeUIInterruptionMonitor(monitor) }
+            startLeg()
+            if !accepted { allowLocationWhileUsing(file: file, line: line) }
+        }
     #endif
 
     /// Waits until the element's label equals `label`.

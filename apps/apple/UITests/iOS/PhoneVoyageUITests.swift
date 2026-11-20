@@ -12,20 +12,21 @@ final class PhoneVoyageUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchEnvironment["MADEGOOD_TEST_VOYAGES"] = UUID().uuidString
         resetLocationPermission(app)
-        launchFresh(app)
-        openVoyages(in: app)
-        app.buttons["New Voyage"].tap()
-        let form = app.alerts["New Voyage"]
-        let field = form.textFields.firstMatch
-        XCTAssertTrue(field.waitForExistence(timeout: 10))
-        field.tap()
-        field.typeText(name)
-        form.buttons["Create"].tap()
+        allowLocationWhileUsing(during: {
+            launchFresh(app)
+            openVoyages(in: app)
+            app.buttons["New Voyage"].tap()
+            let form = app.alerts["New Voyage"]
+            let field = form.textFields.firstMatch
+            XCTAssertTrue(field.waitForExistence(timeout: 10))
+            field.tap()
+            field.typeText(name)
+            form.buttons["Create"].tap()
 
-        let start = app.buttons["Start Leg"]
-        XCTAssertTrue(start.waitForExistence(timeout: 10))
-        start.tap()
-        allowLocationWhileUsing()
+            let start = app.buttons["Start Leg"]
+            XCTAssertTrue(start.waitForExistence(timeout: 10))
+            start.tap()
+        })
         simulatePosition(longitude: -30)
         let lastFix = element("voyage.lastSavedPosition", in: app)
         XCTAssertTrue(lastFix.waitForExistence(timeout: 20))
