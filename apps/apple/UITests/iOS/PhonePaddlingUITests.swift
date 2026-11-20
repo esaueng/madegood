@@ -40,7 +40,7 @@ final class PhonePaddlingUITests: XCTestCase {
 
     func testSessionDetailStrokes() {
         for appearance in ["light", "dark"] {
-            let app = launchDemoHistory(extraArguments: ["-app.appearance", appearance])
+            let app = launchDemoHistory(extraArguments: ["-demoOmitMapKit", "-app.appearance", appearance])
             app.tabBars.buttons["History"].tap()
             let rows = app.buttons.matching(identifier: "session.row")
             let kayak = rows.containing(.staticText, identifier: "Kayak").firstMatch

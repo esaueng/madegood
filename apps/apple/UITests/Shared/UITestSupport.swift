@@ -63,6 +63,15 @@ extension XCTestCase {
         add(attachment)
     }
 
+    /// Saves an App Store screenshot, named `appstore <name>` so
+    /// `scripts/app-store-screenshots` can pick it out of the test results.
+    func attachAppStoreScreenshot(_ name: String) {
+        let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot(), quality: .original)
+        attachment.name = "appstore \(name)"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
     /// Any element with this accessibility identifier.
     func element(_ identifier: String, in app: XCUIApplication) -> XCUIElement {
         app.descendants(matching: .any)[identifier].firstMatch
@@ -75,18 +84,18 @@ extension XCTestCase {
         _ element: XCUIElement, in app: XCUIApplication, column: CGFloat = 0.5,
         file: StaticString = #filePath, line: UInt = #line
     ) {
+        let window = app.windows.firstMatch
         // An element can exist before it has a usable frame (a lazy row still off screen, or
         // a slow simulator mid-layout); asking for hittability then fails the test, so
         // scroll until its frame is inside the window first.
         func reachable() -> Bool {
-            guard element.exists, !element.frame.isEmpty,
-                app.windows.firstMatch.frame.intersects(element.frame)
-            else { return false }
-            return element.isHittable
+            guard element.exists else { return false }
+            let frame = element.frame
+            return !frame.isEmpty && window.frame.intersects(frame) && element.isHittable
         }
-        for _ in 0..<8 where !reachable() {
+        for _ in 0..<8 {
+            if reachable() { return }
             // A slow drag, like a finger: the watch ignores XCUITest's quick swipes.
-            let window = app.windows.firstMatch
             let low = window.coordinate(withNormalizedOffset: CGVector(dx: column, dy: 0.8))
             let high = window.coordinate(withNormalizedOffset: CGVector(dx: column, dy: 0.35))
             low.press(forDuration: 0.05, thenDragTo: high, withVelocity: .slow, thenHoldForDuration: 0.1)

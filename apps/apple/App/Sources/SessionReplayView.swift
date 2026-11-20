@@ -513,7 +513,7 @@ private struct SessionReplayMap: View {
 
     var body: some View {
         Group {
-            if DemoOffWater.storage != nil {
+            if DemoOffWater.storage != nil || DemoFeed.omitMapKit {
                 offlineRoute
             } else {
                 basemap
@@ -570,6 +570,13 @@ private struct SessionReplayMap: View {
         }
         .background(.quaternary)
         .accessibilityLabel("Synthetic route")
+        .accessibilityChildren {
+            if selection.position != nil {
+                Text("Replay position")
+                    .accessibilityValue(time)
+                    .accessibilityIdentifier("replay.position")
+            }
+        }
     }
 
     private var basemap: some View {

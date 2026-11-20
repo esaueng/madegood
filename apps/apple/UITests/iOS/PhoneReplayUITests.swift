@@ -98,7 +98,7 @@ final class PhoneReplayUITests: XCTestCase {
 
     @MainActor
     func testSelectWindowsAndSaveAndRestoreTrim() {
-        let app = launchDemoHistory()
+        let app = launchDemoHistory(extraArguments: ["-demoOmitMapKit"])
         app.tabBars.buttons["History"].tap()
         let sailingRows = app.buttons.matching(identifier: "session.row")
             .containing(.staticText, identifier: "Sailing")
@@ -138,16 +138,13 @@ final class PhoneReplayUITests: XCTestCase {
         let play = app.buttons["replay.playPause"]
         XCTAssertTrue(play.isHittable)
         let beforePlaying = elapsed.label
-        // Playback updates the chart continuously. Compare the settled snapshots
-        // and allow another interval if the simulator hasn't published a tick yet.
-        for interval in [1.5, 2.5] {
-            play.tap()
-            waitForLabel(play, "Pause")
-            Thread.sleep(forTimeInterval: interval)
-            play.tap()
-            waitForLabel(play, "Play")
-            if secondsInTime(elapsed.label) > secondsInTime(beforePlaying) { break }
-        }
+        play.tap()
+        waitForLabel(play, "Pause")
+        let advanced = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "label != %@", beforePlaying), object: elapsed)
+        XCTAssertEqual(XCTWaiter.wait(for: [advanced], timeout: 10), .completed)
+        play.tap()
+        waitForLabel(play, "Play")
         XCTAssertGreaterThan(secondsInTime(elapsed.label), secondsInTime(beforePlaying))
 
         let lap = app.buttons["replay.lap.1"]
@@ -213,7 +210,7 @@ final class PhoneReplayUITests: XCTestCase {
 
     @MainActor
     func testRemoveMiddleSegmentAndRestoreOriginal() {
-        let app = launchDemoHistory()
+        let app = launchDemoHistory(extraArguments: ["-demoOmitMapKit"])
         app.tabBars.buttons["History"].tap()
         let sailingRows = app.buttons.matching(identifier: "session.row").containing(.staticText, identifier: "Sailing")
         let sailing = sailingRows.containing(.staticText, identifier: "48:00").firstMatch
@@ -247,9 +244,9 @@ final class PhoneReplayUITests: XCTestCase {
         XCTAssertTrue(trimmedSailing.waitForExistence(timeout: 15))
         scrollTo(trimmedSailing, in: app)
         trimmedSailing.tap()
+        // The interval appears at the top once the saved trim loads.
         let cut = element("replay.removedInterval", in: app)
-        scrollTo(cut, in: app)
-        XCTAssertTrue(cut.exists)
+        XCTAssertTrue(cut.waitForExistence(timeout: 10))
         let duration = app.staticTexts["stat.Total time"]
         scrollTo(duration, in: app)
         XCTAssertEqual(duration.label, "32:00")

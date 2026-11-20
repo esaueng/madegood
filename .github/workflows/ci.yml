@@ -20,10 +20,16 @@ permissions:
   contents: read
 
 concurrency:
-  # PR runs share a group per PR, so a new push cancels the superseded run. Every other
-  # run (main, merge queue, manual) gets its own group, so none is cancelled or dropped
-  # while pending.
-  group: ${{ github.event_name == 'pull_request' && format('ci-pr-{0}', github.event.pull_request.number) || format('ci-run-{0}', github.run_id) }}
+  # PR runs share a group per PR, and pushes to main share one group, so a newer push
+  # cancels the superseded run. A main run tests everything before it, and the macOS
+  # jobs it starts (including the UI tests) would otherwise queue one behind another on
+  # the single xcode-27 runner, ahead of pull request builds. Deploys run from
+  # deploy.yml, so cancelling a CI run never skips a deploy. Merge queue and manual runs
+  # get their own group, so none is cancelled or dropped while pending.
+  group: >-
+    ${{ github.event_name == 'pull_request' && format('ci-pr-{0}', github.event.pull_request.number)
+    || (github.event_name == 'push' && github.ref == 'refs/heads/main') && 'ci-main'
+    || format('ci-run-{0}', github.run_id) }}
   cancel-in-progress: true
 
 jobs:
@@ -204,15 +210,24 @@ jobs:
             ${{ runner.temp }}/MadeGood.xcresult
           retention-days: 7
 
-  # 45-60 minutes of macOS time (the iPhone step alone, build included, passed 35 minutes
-  # once the motorboat and paddling tests landed), so not on pull requests and not part of
-  # `CI`.
+  # The watch suite can run and publish its own results even if the iPhone suite fails or
+  # times out. Neither suite gates `CI`.
   apple-ui-tests:
-    name: iOS + watchOS UI tests
+    name: ${{ matrix.device }} UI tests
     needs: changes
     if: needs.changes.outputs.apple == 'true' && contains(fromJSON('["push", "workflow_dispatch"]'), github.event_name)
     runs-on: xcode-27
     timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - device: iPhone
+            platform: iOS
+            simulator-prefix: iPhone
+          - device: Watch
+            platform: watchOS
+            simulator-prefix: Apple Watch
     env:
       DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
       TUIST_DISABLE_ANALYTICS: "1"
@@ -235,51 +250,59 @@ jobs:
           tuist install
           tuist generate --no-open
 
-      # Runner images change which simulators exist, so pick the newest available
-      # iPhone and Apple Watch instead of naming one.
-      - name: Pick simulators
-        id: sims
-        run: |
-          echo "iphone=$(../../scripts/pick-simulator iOS iPhone)" >> "$GITHUB_OUTPUT"
-          echo "watch=$(../../scripts/pick-simulator watchOS 'Apple Watch')" >> "$GITHUB_OUTPUT"
-
-      # Cold-booting the watch simulator inside `xcodebuild test` made the first app
-      # launch time out ("Application info provider returned nil"). Boot both now, in
-      # parallel, and wait until each has finished booting.
-      - name: Boot simulators
+      - name: Pick simulator
+        id: simulator
         env:
-          IPHONE: ${{ steps.sims.outputs.iphone }}
-          WATCH: ${{ steps.sims.outputs.watch }}
+          PLATFORM: ${{ matrix.platform }}
+          SIMULATOR_PREFIX: ${{ matrix.simulator-prefix }}
         run: |
-          xcrun simctl bootstatus "$IPHONE" -b & iphone=$!
-          xcrun simctl bootstatus "$WATCH" -b & watch=$!
-          wait "$iphone"
-          wait "$watch"
+          udid=$(../../scripts/pick-simulator "$PLATFORM" "$SIMULATOR_PREFIX")
+          echo "udid=$udid" >> "$GITHUB_OUTPUT"
 
-      # The tests launch the apps with -demoSession: a synthetic route, no GPS, Health
-      # or permission prompts. Ad-hoc signing keeps the apps' entitlements.
+      # XCTest boots the iPhone clones itself. Preboot the watch destination because
+      # launching the watch app timed out when XCTest had to cold boot the simulator.
+      - name: Boot watch simulator
+        if: matrix.platform == 'watchOS'
+        env:
+          SIMULATOR_UDID: ${{ steps.simulator.outputs.udid }}
+        run: xcrun simctl bootstatus "$SIMULATOR_UDID" -b
+
+      # The demo recordings use a synthetic route and need no GPS or Health permissions.
+      # Ad-hoc signing keeps the apps' entitlements.
       - name: iPhone UI tests
+        if: matrix.platform == 'iOS'
+        env:
+          SIMULATOR_UDID: ${{ steps.simulator.outputs.udid }}
         run: |
           set -o pipefail
+          # Two simulator clones run independent test classes concurrently. The App Store
+          # tours run separately via scripts/app-store-screenshots.
           xcodebuild test -workspace MadeGood.xcworkspace -scheme MadeGood \
-            -destination "id=${{ steps.sims.outputs.iphone }}" -only-testing:MadeGoodUITests \
-            -derivedDataPath "$RUNNER_TEMP/DerivedData" -resultBundlePath "$RUNNER_TEMP/iPhoneUITests.xcresult" \
+            -destination "id=$SIMULATOR_UDID" -only-testing:MadeGoodUITests \
+            -skip-testing:MadeGoodUITests/PhoneAppStoreScreenshots \
+            -parallel-testing-enabled YES -parallel-testing-worker-count 2 \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" -resultBundlePath "$RUNNER_TEMP/UITests.xcresult" \
             CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual \
-            | grep --line-buffered -E '(error|warning):|Test Case|\*\* TEST'
+            2>&1 | tee "$RUNNER_TEMP/ui-tests.log" \
+            | grep --line-buffered -E '(error|warning):|Test [Cc]ase|\*\* TEST'
 
       # One retry absorbs the watch simulator's occasional failed launch; a test still has
       # to pass on its own run.
       - name: Watch UI tests
+        if: matrix.platform == 'watchOS'
         env:
+          SIMULATOR_UDID: ${{ steps.simulator.outputs.udid }}
           # Passed to the test runner as CI: skips tests the CI simulator cannot run.
           TEST_RUNNER_CI: "1"
         run: |
           set -o pipefail
           xcodebuild test -workspace MadeGood.xcworkspace -scheme MadeGoodWatch \
-            -destination "id=${{ steps.sims.outputs.watch }}" -only-testing:MadeGoodWatchUITests \
+            -destination "id=$SIMULATOR_UDID" -only-testing:MadeGoodWatchUITests \
+            -skip-testing:MadeGoodWatchUITests/WatchAppStoreScreenshots \
             -retry-tests-on-failure -test-iterations 2 \
-            -derivedDataPath "$RUNNER_TEMP/DerivedData" -resultBundlePath "$RUNNER_TEMP/WatchUITests.xcresult" \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" -resultBundlePath "$RUNNER_TEMP/UITests.xcresult" \
             CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual \
+            2>&1 | tee "$RUNNER_TEMP/ui-tests.log" \
             | grep --line-buffered -E '(error|warning):|Test Case|\*\* TEST'
 
       # Screenshots for reviewing UI changes (synthetic demo data only).
@@ -287,10 +310,10 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: apple-ui-test-results
+          name: apple-ui-test-results-${{ matrix.device }}
           path: |
-            ${{ runner.temp }}/iPhoneUITests.xcresult
-            ${{ runner.temp }}/WatchUITests.xcresult
+            ${{ runner.temp }}/UITests.xcresult
+            ${{ runner.temp }}/ui-tests.log
           retention-days: 7
 
   web:
