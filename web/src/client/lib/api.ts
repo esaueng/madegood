@@ -180,6 +180,14 @@ export async function fetchHealth(): Promise<Health> {
   return response.json();
 }
 
+export type DownloadLink = { url: string; store: "testflight" | "app-store" };
+
+export async function fetchSiteConfig(): Promise<{ download: DownloadLink | null }> {
+  const response = await fetch("/api/config");
+  if (!response.ok) throw await failure(response);
+  return response.json();
+}
+
 /** Whether this browser expects a web session (the server's script-readable `mg_web` hint). */
 export const hasWebSession = () => hint() !== "none";
 
