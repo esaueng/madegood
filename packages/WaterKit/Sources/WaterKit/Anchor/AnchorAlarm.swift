@@ -4,6 +4,8 @@ import Foundation
 /// bearings in degrees true, and fix timestamps in seconds on the caller's monotonic clock.
 public struct AnchorAlarm: Sendable {
     public static let maximumAccuracy = 25.0
+    // Treat optimistic GPS estimates as at least this uncertain near the boundary.
+    private static let minimumOutsideAccuracy = 5.0
     public static let confirmationFixCount = 3
     public static let snoozeDuration = 120.0
     public static let radiusRange = 10.0...500.0
@@ -57,7 +59,7 @@ public struct AnchorAlarm: Sendable {
     }
 
     public func isClearlyOutside(at boat: Point, accuracy: Double) -> Bool {
-        reading(at: boat).distance - accuracy > radius
+        reading(at: boat).distance - max(accuracy, Self.minimumOutsideAccuracy) > radius
     }
 
     /// Returns true when a run first confirms drift.
@@ -75,7 +77,7 @@ public struct AnchorAlarm: Sendable {
         else { return .unusable }
         lastFixTime = fix.t
         let distance = reading(at: boat).distance
-        guard distance - accuracy > radius else {
+        guard distance - max(accuracy, Self.minimumOutsideAccuracy) > radius else {
             if distance + accuracy < radius {
                 isDrifting = false
                 outsideCount = 0

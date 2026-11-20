@@ -39,7 +39,7 @@ struct AnchorAlarmTests {
         #expect(alarm.snoozeDeadline(afterStopAt: 4) == 124)
         alarm.ingest(fix(10, 33))
         #expect(alarm.snoozeDeadline(afterStopAt: 10) == 130)
-        alarm.ingest(fix(11, 2))
+        alarm.ingest(fix(11, 28, accuracy: 1))
         #expect(alarm.snoozeDeadline(afterStopAt: 12) == nil)
         #expect(alarm.ingest(fix(13, 50)) == false)
         #expect(alarm.ingest(fix(14, 50)) == false)
@@ -54,11 +54,11 @@ struct AnchorAlarmTests {
         #expect(alarm.ingest(fix(2 * interval, 50)) == true)
     }
 
-    @Test func isolatedOptimisticFixAfterAGapDoesNotConfirmDrift() throws {
+    @Test func threeOptimisticFixesNearTheBoundaryDoNotConfirmDrift() throws {
         var alarm = try #require(AnchorAlarm(anchor: anchor, radius: 10))
-        #expect(alarm.assess(fix(0, 2, accuracy: 2)) == .withinOrUncertain)
-        #expect(alarm.assess(fix(605, 12, accuracy: 1)) == .outside)
-        #expect(alarm.assess(fix(610, 2, accuracy: 2)) == .withinOrUncertain)
+        for time in [0.0, 150, 300] {
+            #expect(alarm.assess(fix(time, 12, accuracy: 1)) == .withinOrUncertain)
+        }
         #expect(!alarm.isDrifting)
     }
 

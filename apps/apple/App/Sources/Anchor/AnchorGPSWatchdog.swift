@@ -8,7 +8,7 @@ import WaterKit
 @MainActor
 @Observable
 final class AnchorGPSWatchdog {
-    private let system: SystemAlarms
+    private let system: AnchorSystemAlarms
     private var loss = AnchorGPSLoss()
     private var knownAlarms = AnchorGPSLoss.Alarms()
     private var update: Task<Void, Never>?
@@ -43,42 +43,6 @@ final class AnchorGPSWatchdog {
     private static let storageKey = "anchorWatch.watchdog"
     private enum ScheduleError: Error { case noFreeSlot }
 
-    struct SystemAlarms {
-        typealias Snapshot = AnchorGPSLoss.Alarms
-
-        var snapshot: @MainActor () throws -> Snapshot
-        var schedule: @MainActor (UUID, Date) async throws -> Void
-        var cancelPending: @MainActor (UUID) throws -> Bool
-        var stopSounding: @MainActor (UUID) throws -> Bool
-        var observeChanges: @MainActor (@MainActor (Snapshot) -> Void) async -> Void
-
-        @MainActor
-        private static func snapshot(of alarms: [Alarm]) -> Snapshot {
-            var snapshot = Snapshot()
-            for alarm in alarms where slots.contains(alarm.id) {
-                if alarm.state == .alerting {
-                    snapshot.sounding.insert(alarm.id)
-                } else if alarm.state == .scheduled, case .fixed(let deadline) = alarm.schedule {
-                    snapshot.pending[alarm.id] = deadline
-                }
-            }
-            return snapshot
-        }
-
-        static let live = Self(
-            snapshot: { try snapshot(of: AlarmManager.shared.alarms) },
-            schedule: { id, deadline in
-                let configuration = anchorAlarmConfiguration(id: id, title: "Check anchor and GPS", deadline: deadline)
-                _ = try await AlarmManager.shared.schedule(id: id, configuration: configuration)
-            },
-            cancelPending: { try cancelPendingAnchorAlarm(id: $0) },
-            stopSounding: { try stopSoundingAnchorAlarm(id: $0) },
-            observeChanges: { changed in
-                for await alarms in AlarmManager.shared.alarmUpdates { changed(snapshot(of: alarms)) }
-            }
-        )
-    }
-
     // Stable IDs survive relaunch. The third slot allows renewal while an old
     // alarm is still sounding and another is pending.
     private static let slots = [
@@ -88,13 +52,13 @@ final class AnchorGPSWatchdog {
     ]
 
     init(
-        system: SystemAlarms = .live,
+        system: AnchorSystemAlarms? = nil,
         clock: @escaping () -> ClockReading = { .live },
         defaults: UserDefaults? = .standard,
         retryDelay: Duration = .seconds(1),
         checkInterval: Duration = .seconds(60)
     ) {
-        self.system = system
+        self.system = system ?? .live(slots: Self.slots, title: "Check anchor and GPS")
         self.clock = clock
         self.defaults = defaults
         self.retryDelay = retryDelay
@@ -123,17 +87,18 @@ final class AnchorGPSWatchdog {
         enqueueReconciliation()
     }
 
-    func observeAlarmChanges(onChange: @MainActor () -> Void = {}) async {
+    func observeAlarmChanges(onChange: @MainActor (AnchorSystemAlarms.Snapshot) -> Void = { _ in }) async {
         await system.observeChanges { snapshot in
+            let sounding = snapshot.sounding.intersection(Self.slots)
             // Keep alerting transitions even when an async schedule delays a
             // fresh read until after the user has already tapped Stop.
-            if !snapshot.sounding.isSubset(of: knownAlarms.sounding) {
-                knownAlarms.sounding.formUnion(snapshot.sounding)
+            if !sounding.isSubset(of: knownAlarms.sounding) {
+                knownAlarms.sounding.formUnion(sounding)
                 persistDeadline()
             }
-            hasSoundingAlarm = !snapshot.sounding.isEmpty
+            hasSoundingAlarm = !sounding.isEmpty
             enqueueReconciliation()
-            onChange()
+            onChange(snapshot)
         }
     }
 
@@ -236,7 +201,7 @@ final class AnchorGPSWatchdog {
     }
 
     private func reconcileOnce() async throws {
-        let snapshot: SystemAlarms.Snapshot
+        let snapshot: AnchorSystemAlarms.Snapshot
         do {
             snapshot = try system.snapshot()
         } catch {
@@ -257,7 +222,7 @@ final class AnchorGPSWatchdog {
                 loss.adoptLegacyAlarm(remaining: fallback.value.timeIntervalSince(now.wallTime), at: now.uptime)
             }
         }
-        if !snapshot.stoppedAlarms(since: knownAlarms, wallTime: now.wallTime).isEmpty {
+        if !snapshot.stoppedAlarms(since: knownAlarms).isEmpty {
             loss.snooze(at: now.uptime)
             changed = true
         }
@@ -292,8 +257,11 @@ final class AnchorGPSWatchdog {
         reconcileRequested = true
     }
 
-    private func cancelPending(in snapshot: SystemAlarms.Snapshot, keeping id: UUID?) throws {
+    private func cancelPending(in snapshot: AnchorSystemAlarms.Snapshot, keeping id: UUID?) throws {
         for other in snapshot.pendingToCancel(keeping: id) {
+            guard let deadline = snapshot.pending[other],
+                canCancelPendingAnchorAlarm(deadline: deadline, now: clock().wallTime)
+            else { continue }
             if try system.cancelPending(other), knownAlarms.pending.removeValue(forKey: other) != nil {
                 persistDeadline()
             }
@@ -308,15 +276,57 @@ final class AnchorGPSWatchdog {
     }
 }
 
+struct AnchorSystemAlarms {
+    typealias Snapshot = AnchorGPSLoss.Alarms
+
+    var snapshot: @MainActor () throws -> Snapshot
+    var schedule: @MainActor (UUID, Date) async throws -> Void
+    var cancelPending: @MainActor (UUID) throws -> Bool
+    var stopSounding: @MainActor (UUID) throws -> Bool
+    var observeChanges: @MainActor (@MainActor (Snapshot) -> Void) async -> Void
+
+    @MainActor
+    private static func snapshot(of alarms: [Alarm], slots: [UUID]? = nil) -> Snapshot {
+        var snapshot = Snapshot()
+        for alarm in alarms where slots?.contains(alarm.id) ?? true {
+            if alarm.state == .alerting {
+                snapshot.sounding.insert(alarm.id)
+            } else if alarm.state == .scheduled, case .fixed(let deadline) = alarm.schedule {
+                snapshot.pending[alarm.id] = deadline
+            }
+        }
+        return snapshot
+    }
+
+    static func live(slots: [UUID], title: LocalizedStringResource) -> Self {
+        Self(
+            snapshot: { try snapshot(of: AlarmManager.shared.alarms, slots: slots) },
+            schedule: { id, deadline in
+                let configuration = anchorAlarmConfiguration(id: id, title: title, deadline: deadline)
+                _ = try await AlarmManager.shared.schedule(id: id, configuration: configuration)
+            },
+            cancelPending: { try cancelPendingAnchorAlarm(id: $0) },
+            stopSounding: { try stopSoundingAnchorAlarm(id: $0) },
+            observeChanges: { changed in
+                for await alarms in AlarmManager.shared.alarmUpdates { changed(snapshot(of: alarms)) }
+            }
+        )
+    }
+}
+
+func canCancelPendingAnchorAlarm(deadline: Date, now: Date) -> Bool {
+    // AlarmKit offers no atomic check-and-cancel. Leave a 10 s margin for
+    // app preemption and daemon latency between the snapshot and cancellation.
+    deadline.timeIntervalSince(now) > 10
+}
+
 @MainActor
 @discardableResult
 func cancelPendingAnchorAlarm(id: UUID) throws -> Bool {
     let manager = AlarmManager.shared
     guard let alarm = try manager.alarms.first(where: { $0.id == id }),
         alarm.state == .scheduled, case .fixed(let deadline) = alarm.schedule,
-        // AlarmKit fetches a state snapshot. Let imminent alarms fire to give
-        // the daemon time to handle cancellation before the alert can start.
-        deadline.timeIntervalSinceNow > 1
+        canCancelPendingAnchorAlarm(deadline: deadline, now: .now)
     else { return false }
     try manager.cancel(id: id)
     return true

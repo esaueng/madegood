@@ -42,6 +42,7 @@ struct AnchorAlarmView: View {
                         LabeledContent("Bearing to anchor", value: bearing(reading?.bearing))
                             .accessibilityIdentifier("anchor.bearing")
                         LabeledContent("Swing radius", value: length(watch.radius, unit: unit))
+                            .accessibilityIdentifier("anchor.armedRadius")
                         accuracyRow(position?.accuracy, unit: unit)
                     }
                 } else {

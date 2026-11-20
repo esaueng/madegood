@@ -1,6 +1,8 @@
 import Foundation
 import XCTest
 
+import WaterKit
+
 @testable import MadeGood
 
 @MainActor
@@ -301,7 +303,7 @@ final class AnchorGPSWatchdogTests: XCTestCase {
         XCTAssertTrue(system.stoppedByApp.isEmpty)
     }
 
-    func testTimerSnoozesWhenBothAlarmUpdatesWereMissed() async throws {
+    func testTimerReinstallsAnOverdueAlarmThatDisappearedWithoutAlerting() async {
         let system = FakeAlarms()
         let watchdog = system.makeWatchdog(checkInterval: .milliseconds(25))
         let initial = expectation(description: "initial watchdog installed")
@@ -313,10 +315,10 @@ final class AnchorGPSWatchdogTests: XCTestCase {
 
         system.advance(by: 121)
         system.pending.removeAll()
-        let snoozed = expectation(description: "periodic check installed snooze")
-        system.onSchedule = { _ in snoozed.fulfill() }
-        await waitFor(snoozed)
-        XCTAssertEqual(Array(system.pending.values), [system.wallTime.addingTimeInterval(120)])
+        let reinstalled = expectation(description: "periodic check restored overdue alarm")
+        system.onSchedule = { _ in reinstalled.fulfill() }
+        await waitFor(reinstalled)
+        XCTAssertEqual(Array(system.pending.values), [system.wallTime.addingTimeInterval(1)])
     }
 
     func testSnapshotFailureAndOldAlarmRingingDuringRenewalKeepBothAlarms() async throws {
@@ -468,6 +470,82 @@ final class AnchorGPSWatchdogTests: XCTestCase {
         XCTAssertTrue(restored.hasSystemAlarm)
     }
 
+    func testRenewalAndDisarmNeverIssueCancelWithinTenSeconds() async throws {
+        let system = FakeAlarms()
+        let watchdog = system.makeWatchdog()
+        let initial = expectation(description: "initial watchdog installed")
+        system.onSchedule = { _ in initial.fulfill() }
+        watchdog.start()
+        await waitFor(initial)
+        let original = try XCTUnwrap(system.pending.keys.first)
+
+        system.advance(by: 110)
+        let replacing = expectation(description: "replacement installed")
+        system.onSchedule = { _ in replacing.fulfill() }
+        watchdog.renew(fixAge: 0, assessment: .withinOrUncertain)
+        await waitFor(replacing)
+
+        XCTAssertEqual(system.pendingAtSchedule, [0, 1])
+        XCTAssertFalse(system.cancelAttempts.contains(original))
+        XCTAssertNotNil(system.pending[original])
+        watchdog.stop()
+        XCTAssertFalse(system.cancelAttempts.contains(original))
+        XCTAssertEqual(Set(system.pending.keys), [original])
+    }
+
+    func testDriftSnoozeReprojectsAfterRollbackAndOverlappingFix() async throws {
+        let system = FakeAlarms()
+        let suite = "AnchorDriftAlarmTests.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        // Restore a watch whose three outside fixes already confirmed drift.
+        let saved = Data("""
+            {"point":{"latitude":0,"longitude":0},"radius":10,
+             "confirmedOutside":true,"alertPending":true}
+            """.utf8)
+        defaults.set(saved, forKey: "anchorWatch.configuration")
+        system.sounding = [AnchorWatch.soundID]
+        let gpsSystem = FakeAlarms()
+        let gpsWatchdog = gpsSystem.makeWatchdog()
+        let backup = expectation(description: "GPS backup scheduled")
+        gpsSystem.onSchedule = { _ in backup.fulfill() }
+        gpsWatchdog.start()
+        await waitFor(backup)
+        gpsSystem.onSchedule = nil
+        let watch = AnchorWatch(
+            system: system.driver, clock: { .init(uptime: system.uptime, wallTime: system.wallTime) },
+            defaults: defaults, gpsWatchdog: gpsWatchdog)
+
+        let snoozed = expectation(description: "user Stop installed a drift snooze")
+        system.onSchedule = { _ in snoozed.fulfill() }
+        watch.stopDriftAlarm()
+        await waitFor(snoozed)
+        let original = try XCTUnwrap(system.pending.first)
+        XCTAssertEqual(original.value, system.wallTime.addingTimeInterval(120))
+
+        system.advance(by: 20)
+        system.wallTime.addTimeInterval(-3_600)
+        gpsSystem.advance(by: 20)
+        let point = Geo.destination(lat: 0, lon: 0, bearing: 90, distance: 12)
+        watch.ingest(
+            point: try XCTUnwrap(AnchorAlarm.Point(latitude: point.lat, longitude: point.lon)),
+            accuracy: 5, measuredAt: .now)
+        XCTAssertEqual(watch.watch?.isDrifting, true)
+        let corrected = expectation(description: "clock change installed corrected drift deadline")
+        system.onSchedule = { _ in corrected.fulfill() }
+        watch.reconcileSound()
+        await waitFor(corrected)
+
+        XCTAssertEqual(system.pendingAtSchedule, [0, 1])
+        XCTAssertEqual(Array(system.pending.values), [system.wallTime.addingTimeInterval(100)])
+        XCTAssertEqual(system.stoppedByApp, [AnchorWatch.soundID])
+        XCTAssertEqual(gpsSystem.attempts.count, 1, "An overlapping fix must leave the GPS fallback due")
+
+        watch.ingest(point: try XCTUnwrap(AnchorAlarm.Point(latitude: 0, longitude: 0)), accuracy: 5, measuredAt: .now)
+        XCTAssertEqual(watch.watch?.isDrifting, false)
+        XCTAssertTrue(system.pending.isEmpty)
+    }
+
     private func waitFor(_ event: XCTestExpectation) async {
         let result = await XCTWaiter.fulfillment(of: [event], timeout: 5)
         XCTAssertEqual(result, .completed)
@@ -496,7 +574,7 @@ final class AnchorGPSWatchdogTests: XCTestCase {
         var onRemove: ((UUID) -> Void)?
         var onFailedRemove: ((UUID) -> Void)?
         private var firstSchedule: CheckedContinuation<Void, Never>?
-        private let changes = AsyncStream<AnchorGPSWatchdog.SystemAlarms.Snapshot>.makeStream()
+        private let changes = AsyncStream<AnchorSystemAlarms.Snapshot>.makeStream()
 
         func makeWatchdog(
             defaults: UserDefaults? = nil, retryDelay: Duration = .milliseconds(20),
@@ -512,7 +590,7 @@ final class AnchorGPSWatchdogTests: XCTestCase {
             uptime += interval
         }
 
-        var driver: AnchorGPSWatchdog.SystemAlarms {
+        var driver: AnchorSystemAlarms {
             .init(
                 snapshot: {
                     if self.snapshotFailures > 0 {

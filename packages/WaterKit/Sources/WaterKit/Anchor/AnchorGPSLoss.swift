@@ -61,9 +61,8 @@ public struct AnchorGPSLoss: Sendable {
             self.sounding = sounding
         }
 
-        public func stoppedAlarms(since previous: Self, wallTime: Date) -> Set<UUID> {
-            let due = previous.pending.filter { $0.value <= wallTime }.keys
-            return previous.sounding.union(due).subtracting(pending.keys).subtracting(sounding)
+        public func stoppedAlarms(since previous: Self) -> Set<UUID> {
+            previous.sounding.subtracting(pending.keys).subtracting(sounding)
         }
 
         /// Keep at least one fallback until a replacement is installed.

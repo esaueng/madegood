@@ -143,16 +143,16 @@ struct AnchorGPSLossTests {
         #expect(loss.request == nil)
     }
 
-    @Test func onlySoundingOrDueMissingAlarmsAreTreatedAsStopped() {
+    @Test func onlyPreviouslySoundingMissingAlarmsAreTreatedAsStopped() {
         let due = UUID()
         let early = UUID()
         let ringing = UUID()
         let now = Date(timeIntervalSinceReferenceDate: 1000)
         let previous = AnchorGPSLoss.Alarms(
             pending: [due: now, early: now.addingTimeInterval(1)], sounding: [ringing])
-        #expect(AnchorGPSLoss.Alarms().stoppedAlarms(since: previous, wallTime: now) == [due, ringing])
+        #expect(AnchorGPSLoss.Alarms().stoppedAlarms(since: previous) == [ringing])
         let current = AnchorGPSLoss.Alarms(sounding: [due, ringing])
-        #expect(current.stoppedAlarms(since: previous, wallTime: now).isEmpty)
+        #expect(current.stoppedAlarms(since: previous).isEmpty)
         #expect(current.pendingToCancel(keeping: nil).isEmpty)
     }
 

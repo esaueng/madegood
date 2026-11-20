@@ -679,6 +679,10 @@ private struct LiveView: View {
                 } else {
                     localStatus(readings)
                 }
+                if sport == .motorboating {
+                    AnchorAlarmLink()
+                        .buttonStyle(.bordered)
+                }
                 if manOverboard.isActive {
                     ManOverboardCard(manOverboard: manOverboard, sport: sport, open: showManOverboard)
                 }
