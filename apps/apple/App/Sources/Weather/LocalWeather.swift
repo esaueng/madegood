@@ -24,15 +24,13 @@ final class LocalWeather {
     }
 
     private(set) var status: Status = .off
-    private(set) var weather: WeatherNow?
-    private(set) var fetchedAt: Date?
+    private var conditions: PhoneWeather.Conditions?
+    var expiresAt: Date? {
+        guard let conditions, conditions.isFresh(at: .now) else { return nil }
+        return AppleWeatherAttribution.displayExpiry(weatherExpiresAt: conditions.expiresAt)
+    }
     /// nil until the user chooses.
     private(set) var choice: Bool?
-
-    /// Answers older than this are refetched when the screen shows.
-    static let refreshAfter: TimeInterval = 15 * 60
-    /// Answers older than this are not shown.
-    static let staleAfter: TimeInterval = 3 * 3_600
 
     private let location = OneShotLocation()
     private var refreshing = false
@@ -40,29 +38,26 @@ final class LocalWeather {
 
     var isEnabled: Bool { choice == true }
 
-    /// The conditions to show, if fresh enough.
     var current: WeatherNow? {
-        guard let weather, let fetchedAt, Date.now.timeIntervalSince(fetchedAt) < Self.staleAfter else { return nil }
-        return weather
+        expiresAt == nil ? nil : conditions?.weather
     }
 
     private init() {
         choice = defaults.object(forKey: UserSettings.Key.localWeather) as? Bool
-        if AppleWeatherAttribution.available != nil,
-            let data = defaults.data(forKey: UserSettings.Key.lastWeather),
-            let saved = try? JSONDecoder().decode(PhoneWeather.Conditions.self, from: data)
-        {
-            weather = saved.weather
-            fetchedAt = saved.fetchedAt
-        }
+        conditions = PhoneWeather.Conditions.load(from: .shared, now: .now)
         #if DEBUG
             if DemoWeatherProvider.isEnabled {
                 choice = DemoWeatherProvider.mood == nil ? nil : true
-                weather = nil
-                fetchedAt = nil
+                conditions = nil
             }
         #endif
         status = isEnabled ? (current == nil ? .loading : .ready) : .off
+    }
+
+    func prune() {
+        let now = Date.now
+        if let conditions, !conditions.isFresh(at: now) { self.conditions = nil }
+        _ = PhoneWeather.Conditions.load(from: .shared, now: now)
     }
 
     /// Turns local conditions on or off. On asks for location if it hasn't been asked.
@@ -83,7 +78,8 @@ final class LocalWeather {
     /// Fetches new conditions unless the last ones are recent (or `force`).
     func refresh(force: Bool = false) async {
         guard isEnabled, !refreshing else { return }
-        if !force, let fetchedAt, Date.now.timeIntervalSince(fetchedAt) < Self.refreshAfter, weather != nil {
+        prune()
+        if !force, current != nil {
             status = .ready
             return
         }
@@ -95,19 +91,19 @@ final class LocalWeather {
             let cell = try await weatherCell()
             // The user may have turned this off while the fix was pending.
             guard isEnabled else { return }
+            // Near the end of attribution's lifetime a cached WeatherKit answer may
+            // still be fresh even though the marks need to be downloaded again.
             let answer = try await PhoneWeather.shared.current(at: cell, force: force)
+            if AppleWeatherAttribution.available == nil { try await AppleWeatherAttribution.prepare() }
             guard isEnabled else { return }
-            weather = answer.weather
-            fetchedAt = answer.fetchedAt
+            conditions = answer
             #if DEBUG
                 if DemoWeatherProvider.isEnabled {
                     status = .ready
                     return
                 }
             #endif
-            if let data = try? JSONEncoder().encode(answer) {
-                defaults.set(data, forKey: UserSettings.Key.lastWeather)
-            }
+            WeatherDiskCache.shared.write(answer, for: .conditions)
             status = .ready
         } catch OneShotLocation.Failure.denied {
             if isEnabled { status = .noLocation }

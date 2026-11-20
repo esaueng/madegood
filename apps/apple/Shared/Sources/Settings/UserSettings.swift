@@ -180,7 +180,7 @@ enum UserSettings {
     /// Debug builds launched with `-resetSettings` start from defaults, so UI tests do not
     /// depend on what an earlier run changed.
     @MainActor
-    static func resetIfRequested() {
+    static func resetIfRequested(onReset: () -> Void = {}) {
         #if DEBUG
             guard ProcessInfo.processInfo.arguments.contains("-resetSettings") else { return }
             var keys =
@@ -192,6 +192,7 @@ enum UserSettings {
                 keys += [Key.lastUsed(sport), Key.lastDistance(sport), Key.lastDate(sport)]
             }
             for key in keys { defaults.removeObject(forKey: key) }
+            onReset()
         #endif
     }
 }

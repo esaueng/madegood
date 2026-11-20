@@ -40,6 +40,20 @@ struct SessionMomentsSection: View {
         if sport == .sailing {
             sailingSection
                 .task(id: forecastQuery) { loadCachedForecast() }
+                .task(id: forecasts.nextExpiry) {
+                    guard let expiry = forecasts.nextExpiry else { return }
+                    do {
+                        while expiry > .now {
+                            try await Task.sleep(for: .seconds(max(0, expiry.timeIntervalSinceNow)))
+                        }
+                        try Task.checkCancellation()
+                        let now = Date.now
+                        if let displayed = forecasts.comparison(for: forecastQuery), displayed.expiresAt <= now {
+                            windChanged()
+                        }
+                        forecasts.prune(now: now)
+                    } catch {}
+                }
         } else if !splits.isEmpty {
             Section {
                 ForEach(splits, id: \.index) { split in
@@ -283,7 +297,15 @@ struct SessionMomentsSection: View {
         guard currentForecast == nil, AppleWeatherAttribution.available != nil, let query = forecastQuery,
             let cached = PhoneWeather.shared.cachedWind(for: query)
         else { return }
-        forecasts.complete(query, with: cached)
+        completeForecast(query, with: cached)
+    }
+
+    private func completeForecast(_ query: SessionWeatherWind.Query, with result: SessionWeatherWind.Comparison) {
+        if let expiresAt = AppleWeatherAttribution.displayExpiry(weatherExpiresAt: result.expiresAt) {
+            forecasts.complete(query, with: .init(wind: result.wind, expiresAt: expiresAt))
+        } else {
+            forecasts.fail(query)
+        }
     }
 
     private func fetchForecast() async {
@@ -292,7 +314,8 @@ struct SessionMomentsSection: View {
         forecasts.start(query)
         do {
             let result = try await PhoneWeather.shared.wind(for: query)
-            forecasts.complete(query, with: result)
+            if AppleWeatherAttribution.available == nil { try await AppleWeatherAttribution.prepare() }
+            completeForecast(query, with: result)
         } catch {
             forecasts.fail(query)
         }
