@@ -3,7 +3,10 @@ import type { ReactNode } from "react";
 
 const GITHUB_URL = "https://github.com/esaueng/madegood";
 const ISSUES_URL = `${GITHUB_URL}/issues`;
-const HISTORY_URL = `${GITHUB_URL}/commits/main/web/src/client/components/privacy-policy.tsx`;
+// The policy moved from the route file into this component in November 2026; the two
+// histories together hold every published version.
+export const HISTORY_URL = `${GITHUB_URL}/commits/main/web/src/client/components/privacy-policy.tsx`;
+export const EARLIER_HISTORY_URL = `${GITHUB_URL}/commits/main/web/src/client/routes/privacy.tsx`;
 
 // Plain-language privacy policy. Keep it in step with what the code does: docs/app-store.md
 // lists the data each part of the app sends, and the App Store privacy label must match.
@@ -81,8 +84,8 @@ export function PrivacyPolicy() {
           Maps in the apps are Apple Maps, which loads map images from Apple for the area on screen.
         </p>
         <p>
-          Without an account, nothing reaches MadeGood. Only these leave your devices, and they go
-          to Apple or to wherever you send them:
+          The apps send nothing to MadeGood until you try to sign in (see below). Without an
+          account, only these leave your devices, and they go to Apple or to wherever you send them:
         </p>
         <ul>
           <li>
@@ -90,11 +93,15 @@ export function PrivacyPolicy() {
             them on (Show on the start screen, or Settings → Weather), and for a sailing session's
             wind when you tap “Compare with Apple Weather”. The iPhone rounds your position to a
             0.1° grid square (about 11 km across) and sends Apple only that square, plus the
-            session's hours for a comparison, never your exact position. Local conditions refresh at
-            most every 15 minutes while the start screen is open. Answers are cached on the iPhone
-            only temporarily; MadeGood's server never sees these requests. Apple says this location
-            is used only to provide weather forecasts, is not associated with personally
-            identifiable information and is not tracked between requests; see{" "}
+            session's hours for a comparison, never your exact position. While the start screen is
+            open, local conditions refresh automatically every 15 minutes; turning them on or
+            refreshing by hand fetches them at once. Answers are kept on the iPhone only in a small
+            temporary cache, which iOS can clear at any time: current conditions for 15 minutes,
+            forecast wind for 1 hour and past wind for 24 hours. Older versions of the app kept
+            these answers in its settings; updating the app removes them. MadeGood's server never
+            sees these requests. Apple says this location is used only to provide weather forecasts,
+            is not associated with personally identifiable information and is not tracked between
+            requests; see{" "}
             <a href="https://developer.apple.com/weatherkit/" className={link}>
               WeatherKit
             </a>{" "}
@@ -113,12 +120,29 @@ export function PrivacyPolicy() {
       <Section id="account" title="If you sign in and sync">
         <p>
           An account is optional. You sign in with Apple; MadeGood asks Apple for your name only,
-          never your email address, and you can choose not to share it. Signing in creates your
-          account with Apple's identifier for you and your name, if you shared it, but uploads no
-          sessions. Only when you also turn on <strong>Sync sessions</strong> (off after every new
-          sign-in) does the iPhone upload the sessions you record while signed in (earlier ones only
-          if you choose), with your account's Visibility of new sessions (see Sharing). The server
-          holds the identifiers below from sign-in, and the rest once sessions upload:
+          never your email address, and you can choose not to share it.
+        </p>
+        <p>
+          <strong>Signing in.</strong> When you complete Sign in with Apple, the iPhone app or this
+          website sends MadeGood's server, through Cloudflare, the signed confirmation Apple returns
+          (it carries Apple's identifier for you) and your name if you shared it. This request is
+          sent on your first sign-in, before any account exists, and also when signing in then
+          fails. Cloudflare handles your IP address for it as for any request (see Where it runs).
+          If the sign-in fails, MadeGood stores nothing from it. A successful sign-in creates your
+          account, or opens your existing one, and stores the following even if you never turn on
+          sync: Apple's identifier for you, an account ID, a handle the server picks, your name if
+          you shared it, when the account was created, your settings (units, and Visibility of new
+          sessions, which starts at Private), and a hash of the sign-in's refresh token with its
+          issue and expiry times (60 days) and whether it is for the app or the website. No session
+          is uploaded.
+        </p>
+        <p>
+          <strong>Syncing.</strong> Only when you also turn on <strong>Sync sessions</strong> (off
+          after every new sign-in) does the iPhone upload the sessions you record while signed in
+          (earlier ones only if you choose), with your account's Visibility of new sessions (see
+          Sharing). The iPhone checks that setting with the server before sync turns on. The server
+          holds the identifiers, settings and sign-in tokens below from sign-in, and the rest once
+          sessions upload:
         </p>
         <ul>
           <li>
@@ -332,11 +356,11 @@ export function PrivacyPolicy() {
             images and profile disappear for everyone else, even before the data is gone. The same
             request deletes your sessions, tracks, privacy zones, settings, voyages, shared
             positions and data exports (any export in progress stops, and its files are deleted). If
-            any part of that fails, the server tries again, every 30 minutes at first and at least
-            every 6 hours, until it is done. About 20 minutes after your request (at the next run
-            after that) the account record itself is deleted, with the deleted session IDs; only
-            then can the same Apple ID start a new, empty account. Recordings on your devices and
-            workouts in Apple Health are not affected.
+            any part of that fails, the server tries again automatically, waiting longer after each
+            failure, until it is done. About 20 minutes after your request (at the next run after
+            that) the account record itself is deleted, with the deleted session IDs; only then can
+            the same Apple ID start a new, empty account. Recordings on your devices and workouts in
+            Apple Health are not affected.
           </li>
           <li>
             Processing a track after upload goes through a queue. A job that keeps failing is set
@@ -357,11 +381,16 @@ export function PrivacyPolicy() {
 
       <Section id="contact" title="Changes and contact">
         <p>
-          When the apps or the server change what they collect, this page changes with them; its{" "}
+          When the apps or the server change what they collect, this page changes with them. Every
+          version is public: the{" "}
           <a href={HISTORY_URL} className={link}>
-            history
+            history of this policy
           </a>{" "}
-          is public. Questions or requests: email{" "}
+          since November 2026, and{" "}
+          <a href={EARLIER_HISTORY_URL} className={link}>
+            earlier versions
+          </a>{" "}
+          from before it moved to its own file. Questions or requests: email{" "}
           <a href="mailto:support@madegood.app" className={link}>
             support@madegood.app
           </a>

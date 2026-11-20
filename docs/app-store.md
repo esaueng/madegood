@@ -25,7 +25,7 @@ get a rejection.
 | 10 | ~~Label and policy predate public profiles, route images and rate limiting.~~ Done: the label section below covers the public profile (#95), route preview images (#96), rate limiting (#98) and the anchor alarm, and `/privacy` describes all four. | The label and the policy must match what the service processes. |
 | 11 | ~~No support page.~~ Done (#136): https://madegood.app/support has the contact address support@madegood.app (forwarding tested by the owner), GitHub issues, common questions and the navigation notice. It is the Support URL below. | App Store Connect requires a Support URL that leads to a way to contact the developer. |
 | 12 | ~~The Voyages tab ships in Release builds.~~ Done (#138): `MADEGOOD_VOYAGES` is set in Debug only, so Release has no Voyages tab or settings and skips voyage recovery, sync and live sharing. The listing, the review notes and the purpose strings do not mention Voyages. Submit an archive built after #138 merges. | Metadata must describe what the build does (2.3.1). |
-| 13 | ~~The iPhone sends weather requests to a non-Apple weather service.~~ Done (#137): local conditions and the sailing wind comparison use Apple WeatherKit with a 0.1° grid cell. Wind for shared sessions uses the WeatherKit REST API since #140: fetched when an unlisted or public session is viewed, kept only in Cloudflare's cache for up to 3 hours, never stored in D1 or exports, and earlier stored wind deleted. The iPhone's WeatherKit answers become a temporary cache in another PR. This document and `/privacy` describe that state, so submit only after the iPhone cache PR merges too. One-time setup: enable WeatherKit on the iPhone App ID ([releasing.md](releasing.md#enable-apple-weather-on-the-iphone-app-id)). Live WeatherKit answers and the attribution assets are still unverified on a signed build. | The label and the policy below assume WeatherKit for all weather. |
+| 13 | ~~The iPhone sends weather requests to a non-Apple weather service.~~ Done (#137): local conditions and the sailing wind comparison use Apple WeatherKit with a 0.1° grid cell. Wind for shared sessions uses the WeatherKit REST API since #140: fetched when an unlisted or public session is viewed, kept only in Cloudflare's cache for up to 3 hours, never stored in D1 or exports, and earlier stored wind deleted. Since #141 the iPhone keeps WeatherKit answers only in a purgeable cache in Library/Caches with entry caps (conditions 15 minutes, forecast wind 1 hour, historical wind 24 hours) and removes the entries older versions stored in preferences; this document and `/privacy` describe that. One-time setup: enable WeatherKit on the iPhone App ID ([releasing.md](releasing.md#enable-apple-weather-on-the-iphone-app-id)). Live WeatherKit answers and the attribution assets are still unverified on a signed build. | The label and the policy below assume WeatherKit for all weather. |
 | 14 | **App Review needs a screen recording of a real session.** The demo modes (`-demoSession`, `-demoOCS`, `-demoOffWater`) are Debug-only (`DemoFeed.isEnabled` is `false` in Release), and tacks, gybes, planing, strokes and the start line's time to burn and line bias cannot be shown on land. Record a real session on the water with the Release build and attach it in App Store Connect → App Review Information → Attachment (or link it in the notes). Don't show the precise location of a home or other private place. | Without it, a reviewer can check only speed and distance (2.1, completeness). |
 | 15 | **Confirm Cloudflare's production settings (owner, in the dashboard).** #135 turned off persisted Workers observability and Logpush in `wrangler.jsonc`, but nobody has checked the production account and zone. Check: (a) the zone's plan and Security Analytics / Security Events retention (31 days on Free, Pro and Business, 90 days for Security Analytics on Enterprise); (b) that no zone-level HTTP request logging, Logpush or Instant Logs job is configured; (c) that Workers Logs and traces are off for the `madegood` Worker; (d) who has dashboard access to the zone. Then confirm the Coarse Location row and the Diagnostics answer below, and the 31-day figure in `/privacy`. | The label and the policy's IP section depend on what the zone actually retains. |
 | 16 | **WeatherKit server key and the 4 Worker secrets set (owner).** #140 reads the WeatherKit key from four Worker secrets: `WEATHERKIT_PRIVATE_KEY`, `WEATHERKIT_KEY_ID`, `WEATHERKIT_TEAM_ID` and `WEATHERKIT_SERVICE_ID`. Create the WeatherKit key in the Apple Developer account and set them with `wrangler secret put` in production. Never commit them ([self-hosting.md](self-hosting.md)). | Without them, shared sessions get no wind; the policy describes the WeatherKit path. |
@@ -50,23 +50,37 @@ keeps for the developer, in a form the developer can read, as the developer's ow
 collection. Where the guidance is ambiguous, the draft declares.
 
 **Without an account** (the default), MadeGood collects nothing: the app sends no
-request to the MadeGood API until the user signs in. What leaves the phone goes to
-Apple, not to MadeGood: an optional Apple Weather request (below), Apple Maps tiles,
-and what the user chooses to save to Apple Health or share as a file.
+request to the MadeGood API until the user attempts to sign in. What leaves the phone
+goes to Apple, not to MadeGood: an optional Apple Weather request (below), Apple Maps
+tiles, and what the user chooses to save to Apple Health or share as a file.
 
-**Signing in** (Settings → Account → Sign in with Apple) creates the account on the
-MadeGood API, a Cloudflare Worker run by the developer. That alone sends Apple's user
-identifier and, if the user allows it, the name Apple shares; the server creates the
-account ID and a handle. Sessions upload only after the user also turns on **Sync
-sessions**, which is off after every new sign-in (`SessionSyncConsent`). Proposed
-answers, with the stage at which each type is collected:
+**Attempting sign-in** (Settings → Account → Sign in with Apple, or the website) sends
+`POST /api/auth/apple` (`web/src/server/routes/auth.ts`) to the MadeGood API, a
+Cloudflare Worker run by the developer, with Apple's identity token (it carries Apple's
+user identifier) and, if the user allows it, the name Apple shares. That request goes
+through Cloudflare on a first sign-in, before any account exists, and also when the
+sign-in then fails (invalid token, rate limit, an account still being deleted), so the
+IP handling below applies from the first attempt. A failed sign-in writes nothing to D1.
+
+**A successful sign-in** stores, with Sync sessions still off: the `users` row
+(`web/src/server/db/schema.ts`: Apple's user identifier `apple_sub`, the account ID, a
+generated handle, the name if shared, `units` (default nautical), `default_visibility`
+(default private) and `created_at`), and one `refresh_tokens` row
+(`web/src/server/auth/tokens.ts`: the SHA-256 hash of the refresh token, its family,
+client (`app` or `web`), creation and expiry times, 60 days, and a revoked time once
+rotated or signed out). The response carries the same user fields, which the iPhone uses
+to show Visibility of new sessions without a second request. Sessions upload only after
+the user also turns on **Sync sessions**, which is off after every new sign-in
+(`SessionSyncConsent`); turning it on first fetches the current Visibility of new
+sessions from `GET /api/me` and stays off if that fails. Proposed answers, with the
+stage at which each type is collected:
 
 | App Store category | Data type | Collected | Linked to the user | Used for tracking | Purpose | What it is in the code |
 |---|---|---|---|---|---|---|
 | Identifiers | User ID | Yes, at sign-in | Yes | No | App Functionality | Apple's stable user identifier (`apple_sub`), the account ID and handle. The handle is public only while the account has a public session (below) |
-| Contact Info | Name | Yes, at sign-in, optional | Yes | No | App Functionality | The display name Apple shares on first sign-in, if the user allows it. Shown only on a visible public profile and its link preview (below). Email is not requested (`requestedScopes = [.fullName]`) |
+| Contact Info | Name | Yes, at sign-in, optional | Yes | No | App Functionality | The display name Apple shares on first sign-in, if the user allows it. Public only while the account has a public session: on the profile page, its link preview and the public profile API, `GET /api/users/{handle}` (below). Email is not requested (`requestedScopes = [.fullName]`) |
 | Location | Precise location | Yes: tracks with Sync sessions on; privacy zones whenever added on the website | Yes | No | App Functionality | The session's GPS track (track v1 in R2), its bounding box and start geohash (D1), uploaded from the iPhone only with Sync sessions on. Separately, privacy zone centers (`privacy-zones.ts`), which a signed-in user saves on the website, from the map or the browser's location, whether or not iPhone sync is on. Covers the rounded server wind lookup below |
-| Location | Coarse location | Yes, from sign-in (any API request) | Yes | No | App Functionality | The client IP address, and the country Cloudflare shows for it, in sampled request records that zone Security Analytics keeps up to 31 days, used only for security (below) |
+| Location | Coarse location | Yes, from the first sign-in attempt (any API request) | Yes | No | App Functionality | The client IP address, and the country Cloudflare shows for it, in sampled request records that zone Security Analytics keeps up to 31 days, used only for security (below) |
 | Health & Fitness | Health | Yes, with Sync sessions on | Yes | No | App Functionality | Heart rate samples in the track, average and max heart rate in the summary |
 | Health & Fitness | Fitness | Yes, with Sync sessions on | Yes | No | App Functionality | Sport, distance, speed, moving time, laps, speed categories |
 | User Content | Other user content | Yes, with Sync sessions on | Yes | No | App Functionality | Session title and notes, visibility setting |
@@ -83,11 +97,14 @@ phone unless the user shares a raw recording file themselves).
 screen or turns on Settings → Weather → Local Conditions) and the sailing session's
 **Compare with Apple Weather** button use WeatherKit. The phone sends Apple only a
 0.1° × 0.1° grid cell (`WeatherGridCell`, about 11 km north–south), never the fix
-itself; the comparison also asks for the session's hours. Local conditions refetch at
-most every 15 minutes while the start screen is shown, and at once when the user turns
-them on. Answers are cached on the phone only temporarily, as WeatherKit's terms
-allow (the temporary cache is in a separate PR); MadeGood's server never sees the
-request. Apple says WeatherKit location "is used only to provide weather
+itself; the comparison also asks for the session's hours. While the start screen is
+shown, local conditions refresh automatically every 15 minutes; turning them on, or the
+card's manual Refresh, fetches sooner. Answers are cached on the phone only temporarily,
+as WeatherKit's terms allow (#141): a purgeable cache in Library/Caches
+(`WeatherDiskCache`) with entry caps, current conditions for 15 minutes, forecast wind
+for 1 hour and historical wind for 24 hours, measured from fetch time
+(`PhoneWeather`). Entries older versions stored in UserDefaults are removed on upgrade.
+MadeGood's server never sees the request. Apple says WeatherKit location "is used only to provide weather
 forecasts, is not associated with any personally identifiable information, and is
 never tracked between requests" ([WeatherKit](https://developer.apple.com/weatherkit/)).
 Apple does not state a retention period there, so the policy doesn't claim one.
@@ -347,7 +364,9 @@ needed: nothing uses those APIs.
   (shared sessions, tracks, route images, the profile and its link tags, live shares)
   answers as for an unknown resource from that moment (#135). It then removes the D1 rows
   (sessions, privacy zones, voyages and legs) and every R2 object, retrying on the
-  scheduled sweep until done, and deletes the account record about 20 minutes later
+  scheduled sweep until done (backoff from 1 minute, doubling to at most 8 h 32 min before
+  a retry is eligible, then picked up by the 30-minute cron, 25 accounts per run; the
+  policy therefore promises automatic retries, not an interval), and deletes the account record about 20 minutes later
   (`web/src/server/lib/account-deletion.ts`). The response is 202. Afterwards the iPhone
   signs out, removes the upload queue, frozen tracks, saved tokens and that account's
   sync consent; the website's session cookies are cleared in the same response.
@@ -395,7 +414,7 @@ needed: nothing uses those APIs.
 Paste the quoted block into App Store Connect → App Review Information → Notes. It
 describes a Release archive with sync configured (item 5) and Voyages hidden (item 12).
 Attach the screen recording of a real session (item 14). App Store Connect allows 4,000 bytes;
-as plain text (bold markers removed, one line per paragraph) the note is 3,872 UTF-8
+as plain text (bold markers removed, one line per paragraph) the note is 3,881 UTF-8
 bytes.
 
 > MadeGood records sailing, windsurfing, kayak, canoe, SUP and motorboat sessions on
@@ -447,8 +466,8 @@ bytes.
 >
 > **Sign in, sync and account deletion.** In Settings → Account, tap Sign in with
 > Apple. This creates the account (Apple's user ID and, if shared, your name) but
-> uploads no sessions. Turn on **Sync sessions**; the row below it shows the account's
-> Visibility of new sessions (Private for a new account). Sessions recorded more than
+> uploads no sessions. Turn on **Sync sessions**; it first checks the account's
+> Visibility of new sessions, shown below it (Private for a new account). Sessions recorded more than
 > ten minutes after signing in upload automatically. One recorded sooner, or before
 > sign-in, waits: tap Upload Earlier Sessions. View it at https://madegood.app, signed
 > in with the same Apple ID. Settings → Account → Delete Account deletes the account and

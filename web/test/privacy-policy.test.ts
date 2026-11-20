@@ -1,36 +1,37 @@
-import {
-  createMemoryHistory,
-  createRootRoute,
-  createRoute,
-  createRouter,
-  RouterProvider,
-} from "@tanstack/react-router";
-import { createElement } from "react";
-import { renderToString } from "react-dom/server";
+import { isValidElement, type ReactNode } from "react";
 import { describe, expect, it } from "vitest";
 import { PrivacyPolicy } from "../src/client/components/privacy-policy";
 
-/** Renders the policy at /privacy in a router of its own (the page uses Link). */
+/**
+ * The policy's text, read from its React element tree rather than from rendered HTML, so
+ * phrases match across tags and line breaks without parsing markup. Function components
+ * (the page's sections) are called; anything else (elements, Link) contributes its children.
+ */
+function textOf(node: ReactNode): string {
+  if (node === null || node === undefined || typeof node === "boolean") return "";
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(textOf).join("");
+  if (isValidElement<{ children?: ReactNode }>(node)) {
+    const { type, props } = node;
+    if (typeof type === "function") {
+      return textOf((type as (p: typeof props) => ReactNode)(props));
+    }
+    return textOf(props.children);
+  }
+  return "";
+}
+
 async function renderPolicy() {
-  const rootRoute = createRootRoute();
-  const privacy = createRoute({
-    getParentRoute: () => rootRoute,
-    path: "/privacy",
-    component: PrivacyPolicy,
-  });
-  const settings = createRoute({ getParentRoute: () => rootRoute, path: "/settings" });
-  const support = createRoute({ getParentRoute: () => rootRoute, path: "/support" });
-  const router = createRouter({
-    routeTree: rootRoute.addChildren([privacy, settings, support]),
-    history: createMemoryHistory({ initialEntries: ["/privacy"] }),
-  });
-  await router.load();
-  // Plain text, so phrases match across tags and line breaks.
-  return renderToString(createElement(RouterProvider, { router }))
-    .replace(/<[^>]+>/g, "")
-    .replace(/<!-- -->/g, "")
-    .replace(/\s+/g, " ")
-    .replace(/&#x27;/g, "'");
+  return textOf(PrivacyPolicy()).replace(/\s+/g, " ");
+}
+
+/** The link targets in the policy, for checking where its history links point. */
+function hrefsOf(node: ReactNode): string[] {
+  if (Array.isArray(node)) return node.flatMap(hrefsOf);
+  if (!isValidElement<{ children?: ReactNode; href?: string }>(node)) return [];
+  const { type, props } = node;
+  if (typeof type === "function") return hrefsOf((type as (p: typeof props) => ReactNode)(props));
+  return [...(props.href ? [props.href] : []), ...hrefsOf(props.children)];
 }
 
 // Review of #133 at 6250414: the policy must match what the service does.
@@ -72,5 +73,45 @@ describe("/privacy", () => {
     expect(text).toContain("data exports do not include it");
     expect(text).not.toMatch(/stored with the session\. Apple/);
     expect(text).not.toContain("and the wind (below)");
+  });
+
+  // Review of #133 at 547913b.
+  it("says sign-in reaches the server before an account exists and what it stores", async () => {
+    const text = await renderPolicy();
+    expect(text).toContain("The apps send nothing to MadeGood until you try to sign in");
+    expect(text).not.toContain("Without an account, nothing reaches MadeGood");
+    expect(text).toContain("sends MadeGood's server, through Cloudflare");
+    expect(text).toContain("before any account exists, and also when signing in then fails");
+    expect(text).toContain("stores the following even if you never turn on sync");
+    expect(text).toContain("a hash of the sign-in's refresh token");
+    expect(text).toContain("Visibility of new sessions, which starts at Private");
+  });
+
+  it("describes the iPhone weather cache as merged in #141", async () => {
+    const text = await renderPolicy();
+    expect(text).toContain("refresh automatically every 15 minutes");
+    expect(text).toContain("turning them on or refreshing by hand fetches them at once");
+    expect(text).toContain(
+      "current conditions for 15 minutes, forecast wind for 1 hour and past wind for 24 hours",
+    );
+    expect(text).toContain("updating the app removes them");
+    expect(text).not.toContain("at most every 15 minutes");
+  });
+
+  it("promises automatic deletion retries without an interval the code can't keep", async () => {
+    const text = await renderPolicy();
+    expect(text).toContain("tries again automatically, waiting longer after each failure");
+    expect(text).not.toMatch(/every 6 hours|six hours/);
+    expect(text).toContain("every sign-in ends and the account is locked");
+  });
+
+  it("links the history of both the old route file and the component", () => {
+    const hrefs = hrefsOf(PrivacyPolicy());
+    expect(hrefs).toContain(
+      "https://github.com/esaueng/madegood/commits/main/web/src/client/components/privacy-policy.tsx",
+    );
+    expect(hrefs).toContain(
+      "https://github.com/esaueng/madegood/commits/main/web/src/client/routes/privacy.tsx",
+    );
   });
 });
