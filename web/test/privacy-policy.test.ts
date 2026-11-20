@@ -68,7 +68,7 @@ describe("/privacy", () => {
     expect(text).toContain("Apple never sees your IP address or the viewer's for it");
     // WeatherKit allows only temporary caching: wind is fetched on view, never stored.
     expect(text).toContain("When someone views an unlisted or public session");
-    expect(text).toContain("for a few hours, in Cloudflare's cache");
+    expect(text).toContain("for up to 3 hours, in Cloudflare's cache");
     expect(text).toContain("data exports do not include it");
     expect(text).not.toMatch(/stored with the session\. Apple/);
     expect(text).not.toContain("and the wind (below)");

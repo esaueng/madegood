@@ -168,9 +168,10 @@ export function PrivacyPolicy() {
           part spans. No account, session ID or track is sent, and the request comes from MadeGood's
           server on Cloudflare, so Apple never sees your IP address or the viewer's for it. Private
           sessions never cause a request, and neither does a shared session whose whole track lies
-          inside your privacy zones. The answer is kept only temporarily, for a few hours, in
-          Cloudflare's cache. It is not stored with the session or in the database, and data exports
-          do not include it. Apple describes how it handles WeatherKit locations on the{" "}
+          inside your privacy zones. The answer is kept only temporarily, for up to 3 hours, in
+          Cloudflare's cache, under the rounded square and hours alone. It is not stored with the
+          session or in the database, and data exports do not include it. Apple describes how it
+          handles WeatherKit locations on the{" "}
           <a href="https://developer.apple.com/weatherkit/" className={link}>
             WeatherKit
           </a>{" "}

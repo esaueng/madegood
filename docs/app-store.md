@@ -25,10 +25,10 @@ get a rejection.
 | 10 | ~~Label and policy predate public profiles, route images and rate limiting.~~ Done: the label section below covers the public profile (#95), route preview images (#96), rate limiting (#98) and the anchor alarm, and `/privacy` describes all four. | The label and the policy must match what the service processes. |
 | 11 | ~~No support page.~~ Done (#136): https://madegood.app/support has the contact address support@madegood.app (forwarding tested by the owner), GitHub issues, common questions and the navigation notice. It is the Support URL below. | App Store Connect requires a Support URL that leads to a way to contact the developer. |
 | 12 | ~~The Voyages tab ships in Release builds.~~ Done (#138): `MADEGOOD_VOYAGES` is set in Debug only, so Release has no Voyages tab or settings and skips voyage recovery, sync and live sharing. The listing, the review notes and the purpose strings do not mention Voyages. Submit an archive built after #138 merges. | Metadata must describe what the build does (2.3.1). |
-| 13 | ~~The iPhone sends weather requests to a non-Apple weather service.~~ Done (#137): local conditions and the sailing wind comparison use Apple WeatherKit with a 0.1° grid cell. Wind for shared sessions moves to the WeatherKit REST API in #140: fetched when an unlisted or public session is viewed, kept only in Cloudflare's cache for a few hours, never stored in D1 or exports, and earlier stored wind deleted. The iPhone's WeatherKit answers become a temporary cache in another PR. This document and `/privacy` describe that state, so submit only after both merge. One-time setup: enable WeatherKit on the iPhone App ID ([releasing.md](releasing.md#enable-apple-weather-on-the-iphone-app-id)). Live WeatherKit answers and the attribution assets are still unverified on a signed build. | The label and the policy below assume WeatherKit for all weather. |
+| 13 | ~~The iPhone sends weather requests to a non-Apple weather service.~~ Done (#137): local conditions and the sailing wind comparison use Apple WeatherKit with a 0.1° grid cell. Wind for shared sessions uses the WeatherKit REST API since #140: fetched when an unlisted or public session is viewed, kept only in Cloudflare's cache for up to 3 hours, never stored in D1 or exports, and earlier stored wind deleted. The iPhone's WeatherKit answers become a temporary cache in another PR. This document and `/privacy` describe that state, so submit only after the iPhone cache PR merges too. One-time setup: enable WeatherKit on the iPhone App ID ([releasing.md](releasing.md#enable-apple-weather-on-the-iphone-app-id)). Live WeatherKit answers and the attribution assets are still unverified on a signed build. | The label and the policy below assume WeatherKit for all weather. |
 | 14 | **App Review needs a screen recording of a real session.** The demo modes (`-demoSession`, `-demoOCS`, `-demoOffWater`) are Debug-only (`DemoFeed.isEnabled` is `false` in Release), and tacks, gybes, planing, strokes and the start line's time to burn and line bias cannot be shown on land. Record a real session on the water with the Release build and attach it in App Store Connect → App Review Information → Attachment (or link it in the notes). Don't show the precise location of a home or other private place. | Without it, a reviewer can check only speed and distance (2.1, completeness). |
 | 15 | **Confirm Cloudflare's production settings (owner, in the dashboard).** #135 turned off persisted Workers observability and Logpush in `wrangler.jsonc`, but nobody has checked the production account and zone. Check: (a) the zone's plan and Security Analytics / Security Events retention (31 days on Free, Pro and Business, 90 days for Security Analytics on Enterprise); (b) that no zone-level HTTP request logging, Logpush or Instant Logs job is configured; (c) that Workers Logs and traces are off for the `madegood` Worker; (d) who has dashboard access to the zone. Then confirm the Coarse Location row and the Diagnostics answer below, and the 31-day figure in `/privacy`. | The label and the policy's IP section depend on what the zone actually retains. |
-| 16 | **WeatherKit server key and the 4 Worker secrets set (owner).** The WeatherKit server key from the Apple Developer account, and the four Worker secrets the server wind lookup reads, must be set with `wrangler secret put` in production and never committed. | Without them, shared sessions get no wind; the policy describes the WeatherKit path. |
+| 16 | **WeatherKit server key and the 4 Worker secrets set (owner).** #140 reads the WeatherKit key from four Worker secrets: `WEATHERKIT_PRIVATE_KEY`, `WEATHERKIT_KEY_ID`, `WEATHERKIT_TEAM_ID` and `WEATHERKIT_SERVICE_ID`. Create the WeatherKit key in the Apple Developer account and set them with `wrangler secret put` in production. Never commit them ([self-hosting.md](self-hosting.md)). | Without them, shared sessions get no wind; the policy describes the WeatherKit path. |
 
 ## Privacy nutrition label
 
@@ -95,17 +95,19 @@ Proposed: **not declared.** The data goes to Apple, not to the developer or a pa
 whose code is in the app, and Apple's guidance says developers aren't responsible for
 disclosing data Apple collects.
 
-**Wind for shared sessions on the website (#72; WeatherKit in PR #140, item 13).**
+**Wind for shared sessions on the website (#72, #140).**
 WeatherKit's terms allow only temporary caching, so the server stores no wind. When
 someone views an **unlisted or public** session, the website asks the Worker, which asks
 Apple's WeatherKit REST API for that session's hourly wind
 (`web/src/server/lib/wind.ts`), and the page shows it with Apple Weather attribution.
 The request carries one position, the center of the session's bounds with privacy
 zones cut out, rounded to 0.1° (`WIND_GRID_DEG`, about 11 km), and the session's
-visible time range. No account, session ID or track is sent, and it comes from
+visible time range, as whole UTC hours from an hour before to an hour after
+(`windRequest`). No account, session ID or track is sent, and it comes from
 Cloudflare, so Apple sees Cloudflare's IP address, never the owner's or the viewer's.
-Private sessions never cause a request. The answer is kept only in Cloudflare's cache,
-for a few hours. Nothing is written to D1 or R2, data exports no longer include wind,
+Private sessions never cause a request. The answer is kept only in Cloudflare's edge cache, for up to
+3 hours (`WIND_TTL_SECONDS`), keyed by cell and hours with no session or viewer ID
+(`cachedWind`). Nothing is written to D1 or R2, data exports no longer include wind,
 and wind stored by the earlier lookup is being deleted (#140).
 Proposed: **no extra row**, for two reasons: Apple's guidance says developers aren't
 responsible for data Apple collects, and the input is derived from the track the
