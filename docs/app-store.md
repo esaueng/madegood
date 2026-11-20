@@ -132,9 +132,10 @@ Draft justification for App Review
 > location for the alarm and removes the stored anchor point. Checking the boat
 > remains the operator's responsibility.
 
-The drift detector needs a running app and usable GPS fixes. A pending system alarm warns if usable
-fixes stop arriving for about two minutes. Force-quitting stops drift monitoring
-until the app is reopened. The pending GPS loss alarm can still sound. The user
+The drift detector needs a running app and usable GPS fixes. A pending system alarm
+asks the operator to check the anchor and GPS if usable fixes near the swing circle
+stop arriving for about two minutes. Force-quitting stops drift monitoring until
+the app is reopened. The pending GPS backup alarm can still sound. The user
 controls the Alarms permission in Settings. Turning it off also disables Lock Screen
 sound for subsequent warnings.
 

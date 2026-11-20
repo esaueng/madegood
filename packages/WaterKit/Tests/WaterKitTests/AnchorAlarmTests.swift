@@ -41,7 +41,7 @@ struct AnchorAlarmTests {
         #expect(alarm.ingest(fix(25, 50)) == true)
     }
 
-    @Test(arguments: [5.0, 15.0, 30.0])
+    @Test(arguments: [5.0, 15.0, 30.0, 60.0])
     func sustainedDriftWorksWithSparseFixes(interval: Double) throws {
         var alarm = try #require(AnchorAlarm(anchor: anchor, radius: 30))
         #expect(alarm.ingest(fix(0, 50)) == false)
@@ -69,14 +69,32 @@ struct AnchorAlarmTests {
         #expect(alarm.ingest(fix(10, 50)) == true)
     }
 
-    @Test func gpsLossDoesNotJoinSeparateExcursions() throws {
+    @Test func sparseOutsideFixesConfirmDriftAndNeverPostponeTheWatchdog() throws {
+        var alarm = try #require(AnchorAlarm(anchor: anchor, radius: 10))
+        var loss = AnchorGPSLoss()
+        loss.arm(at: 0)
+        let original = try #require(loss.request)
+        var alertTimes: [Double] = []
+        for minute in 0...60 {
+            let time = Double(minute * 60)
+            let assessment = alarm.assess(fix(time, 111, accuracy: 5))
+            if assessment == .driftConfirmed { alertTimes.append(time) }
+            loss.recordFix(at: time, assessment: assessment)
+            #expect(loss.request == original)
+        }
+        #expect(alertTimes == [120])
+        #expect(original.deadline == 120)
+    }
+
+    @Test func usableFixAfterGPSLossCanBreakEvidence() throws {
         var alarm = try #require(AnchorAlarm(anchor: anchor, radius: 30))
         #expect(alarm.ingest(fix(0, 50)) == false)
         #expect(alarm.ingest(fix(5, 50)) == false)
         #expect(alarm.ingest(fix(30, 55, accuracy: 40)) == false)
-        #expect(alarm.ingest(fix(60, 50)) == false)
+        #expect(alarm.ingest(fix(60, 30)) == false)
         #expect(alarm.ingest(fix(65, 50)) == false)
-        #expect(alarm.ingest(fix(70, 50)) == true)
+        #expect(alarm.ingest(fix(70, 50)) == false)
+        #expect(alarm.ingest(fix(75, 50)) == true)
     }
 
     @Test func hoursOfSwingAndIsolatedJumpsStayQuiet() throws {

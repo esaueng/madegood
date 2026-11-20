@@ -20,6 +20,7 @@ final class PhoneAnchorAlarmUITests: XCTestCase {
         let arm = app.buttons["anchor.arm"]
         let enabled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isEnabled == true"), object: arm)
         XCTAssertEqual(XCTWaiter.wait(for: [enabled], timeout: 10), .completed)
+        scrollTo(arm, in: app)
         arm.tap()
 
         let status = app.staticTexts["anchor.status"]

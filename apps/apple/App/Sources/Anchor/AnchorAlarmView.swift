@@ -153,7 +153,7 @@ struct AnchorAlarmView: View {
                 Text("The system alarm couldn’t be scheduled. Check Alarms in Settings and watch the boat.")
             }
             if anchorWatch.gpsAlarmNeedsAttention {
-                Text("The system couldn’t schedule the GPS loss alarm. Keep the boat in view.")
+                Text("GPS backup alarm isn’t set. Keep the boat in view.")
             }
             if anchorWatch.locationBlocked {
                 Text("Allow Precise Location in Settings to monitor drift.")

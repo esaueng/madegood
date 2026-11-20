@@ -5,7 +5,6 @@ import Foundation
 public struct AnchorAlarm: Sendable {
     public static let maximumAccuracy = 25.0
     public static let confirmationDelay = 10.0
-    public static let maximumFixGap = 45.0
     public static let radiusRange = 10.0...500.0
 
     public struct Point: Codable, Equatable, Sendable {
@@ -23,6 +22,10 @@ public struct AnchorAlarm: Sendable {
         public let distance: Double
         /// Nil at the anchor itself, where there is no direction back to it.
         public let bearing: Double?
+    }
+
+    public enum FixAssessment: Equatable, Sendable {
+        case unusable, withinOrUncertain, outside, driftConfirmed
     }
 
     public let anchor: Point
@@ -61,22 +64,28 @@ public struct AnchorAlarm: Sendable {
     /// a usable fix whose accuracy circle crosses the boundary starts a new run.
     @discardableResult
     public mutating func ingest(_ fix: GPSFix) -> Bool {
-        guard !isDrifting, fix.t.isFinite, lastFixTime.map({ fix.t > $0 }) ?? true,
+        assess(fix) == .driftConfirmed
+    }
+
+    /// Classifies a fix for both drift evidence and GPS watchdog renewal.
+    /// Gaps between fixes leave the existing evidence in place.
+    public mutating func assess(_ fix: GPSFix) -> FixAssessment {
+        guard fix.t.isFinite, lastFixTime.map({ fix.t > $0 }) ?? true,
             let boat = Point(latitude: fix.latitude, longitude: fix.longitude),
             let accuracy = fix.horizontalAccuracy, (0...Self.maximumAccuracy).contains(accuracy)
-        else { return false }
-        if let lastFixTime, fix.t - lastFixTime > Self.maximumFixGap { resetEvidence() }
+        else { return .unusable }
         lastFixTime = fix.t
         guard isClearlyOutside(at: boat, accuracy: accuracy) else {
             resetEvidence()
-            return false
+            return .withinOrUncertain
         }
+        guard !isDrifting else { return .outside }
 
         let start = firstOutsideTime ?? fix.t
         firstOutsideTime = start
         outsideCount += 1
         isDrifting = outsideCount >= 3 && fix.t - start >= Self.confirmationDelay
-        return isDrifting
+        return isDrifting ? .driftConfirmed : .outside
     }
 
     /// Keeps the circle and starts a fresh confirmation window.

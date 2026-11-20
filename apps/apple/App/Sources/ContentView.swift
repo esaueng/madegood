@@ -82,7 +82,8 @@ struct ContentView: View {
 
     private var anchorStatus: String {
         if anchorWatch.isAlarming { return "Anchor dragging" }
-        if anchorWatch.locationBlocked || anchorWatch.alarmPermissionDenied || anchorWatch.gpsAlarmNeedsAttention {
+        if anchorWatch.gpsAlarmNeedsAttention { return "GPS backup alarm isn’t set" }
+        if anchorWatch.locationBlocked || anchorWatch.alarmPermissionDenied {
             return "Anchor alarm limited"
         }
         return "Anchor alarm armed"

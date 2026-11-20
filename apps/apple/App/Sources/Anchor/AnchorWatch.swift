@@ -54,7 +54,7 @@ final class AnchorWatch: NSObject {
     private(set) var locationBlocked = false
     private(set) var alarmPermissionDenied = false
     private(set) var alarmError = false
-    var gpsAlarmNeedsAttention: Bool { gpsWatchdog.schedulingFailed }
+    var gpsAlarmNeedsAttention: Bool { watch != nil && !DemoFeed.isEnabled && !gpsWatchdog.hasSystemAlarm }
     private(set) var isArming = false
 
     var isViewing: Bool { viewerCount > 0 }
@@ -85,6 +85,11 @@ final class AnchorWatch: NSObject {
             Task { [weak self] in
                 for await _ in AlarmManager.shared.alarmUpdates {
                     self?.reconcileSound()
+                }
+            }
+            Task { [weak self] in
+                for await _ in NotificationCenter.default.notifications(named: UIApplication.significantTimeChangeNotification) {
+                    self?.gpsWatchdog.reconcile()
                 }
             }
             Task { [weak self] in
@@ -227,19 +232,21 @@ final class AnchorWatch: NSObject {
     private func ingest(point: AnchorAlarm.Point, accuracy: Double?, measuredAt: ContinuousClock.Instant) {
         if let position, measuredAt <= position.measuredAt { return }
         position = Position(point: point, accuracy: accuracy, measuredAt: measuredAt)
-        guard watch != nil, measuredAt >= evidenceStartedAt else { return }
+        guard watch != nil, measuredAt >= evidenceStartedAt, position?.isFresh == true else { return }
 
         let elapsed = startedAt.duration(to: measuredAt).components
         let seconds = Double(elapsed.seconds) + Double(elapsed.attoseconds) / 1e18
-        if watch?.ingest(
+        guard let assessment = watch?.assess(
             GPSFix(t: seconds, latitude: point.latitude, longitude: point.longitude, horizontalAccuracy: accuracy)
-        ) == true, !isAlarming {
+        ) else { return }
+        if assessment == .driftConfirmed, !isAlarming {
             saved?.alertPending = true
             persist()
         }
         if isAlarming { scheduleSoundIfNeeded() }
-        if !DemoFeed.isEnabled, position?.isUsable == true {
-            gpsWatchdog.renew(fixAt: measuredAt)
+        if !DemoFeed.isEnabled {
+            let age = measuredAt.duration(to: .now).components
+            gpsWatchdog.renew(fixAge: Double(age.seconds) + Double(age.attoseconds) / 1e18, assessment: assessment)
         }
     }
 

@@ -431,15 +431,20 @@ feet according to the motorboat distance setting. The circle is not for navigati
 A fix is clearly outside when its distance minus its reported horizontal accuracy
 exceeds the radius. The alarm requires at least three distinct, consecutive clearly
 outside usable fixes spanning at least 10 s. A fix with unknown accuracy or accuracy
-worse than 25 m is ignored. A usable fix that fails the outside test or a gap exceeding
-45 s between usable fixes ends the run. Cached positions older than 15 s do not enter
-the calculation. Acknowledging the drift alarm starts a new confirmation window.
+worse than 25 m is ignored. A usable fix that fails the outside test ends the run.
+Time between fixes does not erase outside evidence. Cached positions older than 15 s
+do not enter the calculation. Acknowledging the drift alarm starts a new confirmation window.
 These readings are live only and do not change the session summary or track format.
 
-The iPhone keeps a separate GPS loss alarm scheduled about two minutes after the latest
-usable fix. Renewals replace the pending alarm after at least 15 s of progress, so the
-GPS loss alarm can sound roughly 20 s early. The system owns the scheduled alarm and can
-deliver it after the app stops receiving positions.
+The iPhone keeps a separate GPS backup alarm. Its first deadline is 120 s after arming.
+Only usable fixes whose accuracy circle touches or overlaps the swing circle can renew
+it. A clearly outside fix leaves the backup due while the app confirms drift. After the
+first eligible fix, renewals are coalesced to one per 30 s of fix time. The backup can
+therefore sound up to about 30 s earlier than a deadline based on the most recent
+eligible fix. The system owns the alarm and can deliver it after the app stops receiving
+positions. While monitoring is running, significant clock changes and foreground
+reconciliation check the pending alarm against the monotonic deadline, which is saved
+for relaunch.
 
 ## Session summary
 
