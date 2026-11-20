@@ -8,7 +8,7 @@ const TOKEN_REFRESH_SECONDS = 30;
 const TIMEOUT_MS = 10_000;
 const HOUR_MS = 3_600_000;
 const MAX_SESSION_HOURS = 8 * 24;
-const MAX_SAMPLES = MAX_SESSION_HOURS + 5;
+const MAX_SAMPLES = MAX_SESSION_HOURS + 3;
 const FIRST_HISTORICAL_HOUR = Date.UTC(2021, 7, 1);
 const MAX_FORECAST_HOURS = 240;
 const RESPONSE_MAX_BYTES = 256 * 1024;
@@ -148,7 +148,7 @@ export function windRequest(
   const from = Math.max(FIRST_HISTORICAL_HOUR, floorHour(startedAt) - HOUR_MS);
   const to = Math.min(
     floorHour(now) + MAX_FORECAST_HOURS * HOUR_MS,
-    (Math.ceil(endedAt / HOUR_MS) + 2) * HOUR_MS,
+    floorHour(endedAt) + 2 * HOUR_MS,
   );
   url.search = new URLSearchParams({
     dataSets: "forecastHourly",

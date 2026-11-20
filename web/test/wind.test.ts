@@ -29,7 +29,7 @@ describe("WeatherKit hourly wind", () => {
     expect(Object.fromEntries(url.searchParams)).toEqual({
       dataSets: "forecastHourly",
       hourlyStart: "2022-01-01T09:00:00.000Z",
-      hourlyEnd: "2022-01-01T14:00:00.000Z",
+      hourlyEnd: "2022-01-01T13:00:00.000Z",
       timezone: "UTC",
     });
     expect(url.href).not.toContain("0.12345");
@@ -108,7 +108,7 @@ describe("WeatherKit hourly wind", () => {
             response("09:00", 18, 350),
             response("10:00", 18, 10, 25.2),
             response("11:00", 36),
-            response("14:00", 360, 90),
+            response("13:00", 360, 90, 360),
           ],
         },
       });
