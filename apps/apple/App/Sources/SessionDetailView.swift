@@ -288,6 +288,7 @@ struct SessionDetailView: View {
         let selectedTrackDuration = analysis.current.selection.retainedDuration
         let metrics = analysis.current.selection.replay.metrics
         let replayData = analysis.current.replayData
+        let strokeIntervals = analysis.strokes?.strokeIntervals ?? []
         List {
             Section {
                 HStack(spacing: 12) {
@@ -328,7 +329,7 @@ struct SessionDetailView: View {
                 }
             }
 
-            if !replayData.timeline.points.isEmpty {
+            if !replayData.timeline.points.isEmpty || !strokeIntervals.isEmpty {
                 SessionReplayView(
                     data: replayData, display: display, elapsed: $selectedReplayElapsed, isPlaying: $isPlaying,
                     highlight: replayHighlight
@@ -438,7 +439,7 @@ struct SessionDetailView: View {
 
             SessionMomentsSection(
                 presentation: analysis.current, source: analysis.source, display: display,
-                highlightedTitle: replayHighlight?.title,
+                highlightedTitle: replayHighlight?.title, strokeIntervals: strokeIntervals,
                 windChanged: {
                     if replayHighlight?.eventTime != nil { replayHighlight = nil }
                 },
