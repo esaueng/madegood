@@ -3,6 +3,7 @@ import { env } from "cloudflare:workers";
 import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
 import { describe, expect, it, vi } from "vitest";
+import { createApp } from "../src/server/app";
 import { privacyZones, sessions, users } from "../src/server/db/schema";
 import { ogFingerprint } from "../src/server/lib/og-image";
 import { arcClearsZones } from "../src/server/lib/session-privacy";
@@ -169,6 +170,96 @@ async function waitFor<T>(probe: () => Promise<T | null | undefined | false>): P
 
 const ogImageTag = (html: string) =>
   html.match(/property="og:image" content="([^"]+)"/)?.[1] ?? null;
+
+describe("public reads while account deletion is blocked", () => {
+  it.each(["public", "unlisted"] as const)(
+    "serves the unknown-resource response even while a %s session and its track still exist",
+    async (visibility) => {
+      const { id, owner, fingerprint, path, trackKey } = await processedSession();
+      if (visibility === "unlisted") {
+        expect(
+          (await api(`/sessions/${id}`, json("PATCH", { visibility }, owner.accessToken))).status,
+        ).toBe(200);
+      }
+      await seedCache(path);
+      const app = createApp();
+      const bindings = { ...env, ASSETS: assets };
+      const request = (path: string, init?: RequestInit, db = env.DB) =>
+        app.request(new URL(path, ORIGIN), init, { ...bindings, DB: db }, createExecutionContext());
+      const unknownId = crypto.randomUUID();
+      const handle = owner.user.handle;
+      const unknownHandle = `unknown_${unknownId.slice(0, 8)}`;
+      const profile = `/u/${handle}`;
+      const sessionPage = `/s/${id}`;
+      const paths = [
+        [`/api/sessions/${id}`, `/api/sessions/${unknownId}`, 200],
+        [`/api/sessions/${id}/track`, `/api/sessions/${unknownId}/track`, 200],
+        [sessionPage, `/s/${unknownId}`, 200],
+        [path, imagePath(unknownId, fingerprint), 200],
+        [profile, `/u/${unknownHandle}`, 200],
+        [
+          `/api/users/${handle}`,
+          `/api/users/${unknownHandle}`,
+          visibility === "public" ? 200 : 404,
+        ],
+      ] as const;
+      for (const [url, , status] of paths) {
+        const response = await request(url);
+        expect(response.status, url).toBe(status);
+        if (url === sessionPage) {
+          expect(ogImageTag(await response.text())).toBe(`${ORIGIN}${path}`);
+        } else if (url === profile && visibility === "public") {
+          expect(await response.text()).toContain(`@${handle}`);
+        } else {
+          await response.body?.cancel();
+        }
+      }
+
+      let batches = 0;
+      const blocked = new Proxy(env.DB, {
+        get(target, property) {
+          if (property === "batch") {
+            return (statements: D1PreparedStatement[]) =>
+              ++batches === 2
+                ? Promise.reject(new Error("Synthetic purge failure"))
+                : target.batch(statements);
+          }
+          const value = Reflect.get(target, property);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+      const deletion = await request(
+        "/api/me",
+        json("DELETE", { userId: owner.user.id }, owner.accessToken),
+        blocked,
+      );
+      expect(deletion.status).toBe(202);
+      const db = drizzle(env.DB);
+      const [account] = await db.select().from(users).where(eq(users.id, owner.user.id));
+      expect(account?.deletedAt).toEqual(expect.any(Number));
+      expect(account?.deletionAttempts).toBe(1);
+      const [session] = await db.select().from(sessions).where(eq(sessions.id, id));
+      expect(session).toMatchObject({ deletedAt: null, trackKey, visibility });
+      expect(await env.TRACKS.head(trackKey)).not.toBeNull();
+
+      for (const [url, unknownUrl] of paths) {
+        const init =
+          url === path ? { headers: { "if-none-match": `"${fingerprint}"` } } : undefined;
+        const actual = await request(url, init);
+        const unknown = await request(unknownUrl, init);
+        expect(actual.status, url).toBe(unknown.status);
+        expect(Object.fromEntries(actual.headers), url).toEqual(
+          Object.fromEntries(unknown.headers),
+        );
+        // Generic pages still echo their own URL in og:url.
+        expect(
+          (await actual.text()).replace(`${ORIGIN}${url}"`, `${ORIGIN}${unknownUrl}"`),
+          url,
+        ).toBe(await unknown.text());
+      }
+    },
+  );
+});
 
 function pngSize(bytes: Uint8Array) {
   const view = new DataView(bytes.buffer, bytes.byteOffset);

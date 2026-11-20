@@ -3,6 +3,7 @@ import { drizzle } from "drizzle-orm/d1";
 import { privacyZones, type Session, sessions, users } from "../db/schema";
 import { projectRoute, routeCardAlt, routeCardSvg, routeRuns, type Units } from "../og/card";
 import { svgToPng } from "../og/render";
+import { logFailure } from "./logging";
 import { arcClearsZones, PRIVACY_GAP_EVENT, shareTrack, type Zone } from "./session-privacy";
 import { parseGzippedJson, TrackTooLarge } from "./track";
 
@@ -212,7 +213,7 @@ export async function ogImage(
   // out of the Cache API lookup. Only the Worker sees the cache entry's freshness headers.
   const cacheKey = new Request(new URL(`/s/${sessionId}/og.png?v=${fingerprint}`, url));
   const cached = await caches.default.match(cacheKey).catch((error: unknown) => {
-    console.warn("Could not read the route image cache.", error);
+    logFailure("og_cache_read_failed", error);
     return undefined;
   });
   let body = cached?.body ?? null;
@@ -252,7 +253,7 @@ export async function ogImage(
             headers: { ...headers, "cache-control": `public, max-age=${OG_EDGE_TTL_SECONDS}` },
           }),
         )
-        .catch((error: unknown) => console.warn("Could not cache the route image.", error)),
+        .catch((error: unknown) => logFailure("og_cache_write_failed", error)),
     );
   }
   return new Response(conditional ? null : (png ?? body), {

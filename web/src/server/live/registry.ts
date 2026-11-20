@@ -10,7 +10,8 @@ export async function locateShare(db: D1Database, slugHash: string): Promise<Voy
     .prepare(
       `SELECT r.user_id AS userId, r.voyage_id AS voyageId
        FROM voyage_live_registry r JOIN voyages v ON v.user_id = r.user_id AND v.id = r.voyage_id
-       WHERE r.slug_hash = ? AND v.ended_at IS NULL`,
+       JOIN users u ON u.id = r.user_id
+       WHERE r.slug_hash = ? AND v.ended_at IS NULL AND u.deleted_at IS NULL`,
     )
     .bind(slugHash)
     .first<VoyageKey>();

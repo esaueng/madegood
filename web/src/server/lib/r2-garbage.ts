@@ -1,6 +1,7 @@
 import { and, asc, eq, isNull, lt, lte, or } from "drizzle-orm";
 import type { drizzle } from "drizzle-orm/d1";
 import { pendingR2Deletes } from "../db/schema";
+import { logFailure } from "./logging";
 
 // The R2 garbage ledger (`pending_r2_deletes`). An object key goes in when nothing may
 // reference it any more, in the same D1 batch as the change that stops a row naming it
@@ -117,7 +118,7 @@ export async function collectKeys(db: Db, bucket: R2Bucket, keys: string[]): Pro
   try {
     await claimAndDelete(db.$client, bucket, keys);
   } catch (error) {
-    console.warn("Could not delete detached tracks now; they stay recorded.", error);
+    logFailure("track_garbage_delete_failed", error);
   }
 }
 
