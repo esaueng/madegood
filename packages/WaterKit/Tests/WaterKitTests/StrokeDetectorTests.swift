@@ -3,10 +3,9 @@ import Testing
 
 @testable import WaterKit
 
-// No labeled paddling recordings exist yet (fixtures/ holds one sailing fixture), so the
-// PLAN §5 accuracy targets (count within ±3 %, rate within ±2 SPM) are checked against
-// synthetic wrist motion with known strokes: noise, jitter, pauses, rate changes, side
-// switches, sensor gaps and different sample rates.
+// Check the PLAN §5 targets (count within ±3 %, rate within ±2 SPM) against synthetic
+// wrist motion with known strokes: noise, jitter, pauses, rate changes, side switches,
+// sensor gaps and different sample rates. FixtureAccuracyTests covers labeled recordings.
 @Suite struct StrokeDetectorTests {
     typealias Segment = PaddleMotionSimulator.Segment
 

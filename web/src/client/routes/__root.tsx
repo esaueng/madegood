@@ -67,10 +67,10 @@ function Account() {
 
 function RootLayout() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
-  // The Worker puts a session's title into /s/:id (Open Graph); the session page keeps it
-  // current, and every other page goes back to the site name.
+  // The Worker puts a session's or profile's title into /s/:id and /u/:handle (Open Graph);
+  // those pages keep it current, and every other page goes back to the site name.
   useEffect(() => {
-    if (!pathname.startsWith("/s/")) document.title = "MadeGood";
+    if (!pathname.startsWith("/s/") && !pathname.startsWith("/u/")) document.title = "MadeGood";
   }, [pathname]);
   return (
     <div className="min-h-dvh bg-background text-foreground">

@@ -7,6 +7,7 @@ import { AccountDeleting, cleanDisplayName, toUserBody, UserBody } from "../auth
 import type { User } from "../db/schema";
 import { signInAppleSubject } from "../lib/account-deletion";
 import { apiError, errorResponse } from "../lib/errors";
+import { limitAuth, rateLimitedResponse } from "../lib/rate-limit";
 import { createRouter } from "../lib/router";
 
 const TokenPair = z.object({
@@ -27,6 +28,7 @@ const appleRoute = createRoute({
   description:
     "Exchanges a Sign in with Apple identity token for API tokens, creating the account on first sign-in.",
   tags: ["auth"],
+  middleware: [limitAuth] as const,
   request: {
     body: {
       required: true,
@@ -54,6 +56,7 @@ const appleRoute = createRoute({
     400: errorResponse("The request body is invalid."),
     401: errorResponse("The identity token is invalid, expired or for another app."),
     409: errorResponse("The account is being deleted (`account_deleting`)."),
+    429: rateLimitedResponse,
   },
 });
 
@@ -65,6 +68,7 @@ const refreshRoute = createRoute({
     "Exchanges a refresh token for a new access and refresh token. Each refresh token works once; " +
     "reusing one signs the user out everywhere.",
   tags: ["auth"],
+  middleware: [limitAuth] as const,
   request: {
     body: {
       required: true,
@@ -82,6 +86,7 @@ const refreshRoute = createRoute({
     },
     400: errorResponse("The request body is invalid."),
     401: errorResponse("The refresh token is invalid, expired, or was already used."),
+    429: rateLimitedResponse,
   },
 });
 

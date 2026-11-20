@@ -232,6 +232,38 @@ struct SessionOutboxTests {
         #expect(rig.store.credentials?.tokens.refreshToken == "synthetic-refresh-2")
     }
 
+    @Test func rateLimitedRefreshPreservesSignInAndUsesServerBackoff() async throws {
+        let rig = try Rig()
+        defer { rig.cleanUp() }
+        let binding = try await rig.signIn()
+        let (snapshot, bytes) = try rig.session()
+        let outbox = rig.outbox()
+        try outbox.enqueue(snapshot, for: binding) { bytes }
+        rig.transport.metadataStatuses = [401]
+        rig.transport.refreshStatus = 429
+        rig.transport.retryAfter = "60"
+        rig.transport.refresh = { Data(#"{"error":"rate_limited"}"#.utf8) }
+
+        let retryAt = try #require(try await outbox.drain(for: binding, policy: .init()))
+        #expect(retryAt.timeIntervalSince(rig.now) == 60)
+        #expect(rig.account.binding == binding)
+        #expect(rig.store.credentials?.tokens.refreshToken == "synthetic-refresh")
+
+        rig.transport.metadataStatuses = [401]
+        rig.transport.refreshStatus = 200
+        rig.transport.retryAfter = nil
+        rig.transport.refresh = {
+            try JSONEncoder().encode(VoyageTokenPair(accessToken: "replacement", refreshToken: "successor"))
+        }
+        rig.now = retryAt
+        #expect(try await outbox.drain(for: binding, policy: .init()) == nil)
+        #expect(outbox.status(for: snapshot.sessionID) == .synced)
+        let refreshTokens = rig.transport.calls.filter { $0.step == "refresh" }
+            .map { $0.json?["refreshToken"] as? String }
+        #expect(refreshTokens == ["synthetic-refresh", "synthetic-refresh"])
+        #expect(rig.store.credentials?.tokens.refreshToken == "successor")
+    }
+
     @Test func aFailedRefreshSignsOutAndLeavesTheQueueUntouched() async throws {
         let rig = try Rig()
         defer { rig.cleanUp() }
@@ -888,6 +920,7 @@ private final class StubTransport: SessionSyncTransport {
     var retryAfter: String?
     var trackResults: [Result<Int, URLError>] = []
     var refresh: (() async throws -> Data)?
+    var refreshStatus = 200
     /// Runs while a track upload is in flight, before its response.
     var duringTrackUpload: (() throws -> Void)?
     var completion: (@MainActor (String, Int?) -> Void)?
@@ -914,7 +947,7 @@ private final class StubTransport: SessionSyncTransport {
         if path.hasSuffix("/auth/refresh") {
             calls.append(Call("refresh", request))
             let performRefresh = try #require(refresh)
-            return (try await performRefresh(), response(request, 200))
+            return (try await performRefresh(), response(request, refreshStatus))
         }
         calls.append(Call("metadata", request))
         #expect(request.httpMethod == "PUT")

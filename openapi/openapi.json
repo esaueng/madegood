@@ -904,6 +904,192 @@
         },
         "additionalProperties": false
       },
+      "PublicProfile": {
+        "type": "object",
+        "properties": {
+          "handle": {
+            "type": "string",
+            "example": "skipper_4821"
+          },
+          "displayName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "isOwner": {
+            "type": "boolean",
+            "description": "Whether the caller is this user."
+          },
+          "totals": {
+            "$ref": "#/components/schemas/ProfileTotals"
+          },
+          "sessions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PublicSessionSummary"
+            },
+            "description": "Newest first."
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass as `cursor` for the next page; null on the last page."
+          }
+        },
+        "required": [
+          "handle",
+          "displayName",
+          "isOwner",
+          "totals",
+          "sessions",
+          "nextCursor"
+        ]
+      },
+      "ProfileTotals": {
+        "type": "object",
+        "properties": {
+          "sessions": {
+            "type": "integer"
+          },
+          "distanceM": {
+            "type": "number",
+            "description": "Sum of known distances, m."
+          },
+          "movingS": {
+            "type": "number",
+            "description": "Sum of known moving times, s."
+          },
+          "durationS": {
+            "type": "number",
+            "description": "Sum of known elapsed times, s."
+          },
+          "bySport": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "sessions": {
+                  "type": "integer"
+                },
+                "distanceM": {
+                  "type": "number",
+                  "description": "Sum of known distances, m."
+                },
+                "movingS": {
+                  "type": "number",
+                  "description": "Sum of known moving times, s."
+                },
+                "durationS": {
+                  "type": "number",
+                  "description": "Sum of known elapsed times, s."
+                },
+                "sport": {
+                  "type": "string",
+                  "enum": [
+                    "sailing",
+                    "windsurfing",
+                    "motorboating",
+                    "kayak",
+                    "canoe",
+                    "sup"
+                  ]
+                }
+              },
+              "required": [
+                "sessions",
+                "distanceM",
+                "movingS",
+                "durationS",
+                "sport"
+              ]
+            }
+          }
+        },
+        "required": [
+          "sessions",
+          "distanceM",
+          "movingS",
+          "durationS",
+          "bySport"
+        ],
+        "description": "Totals over the user's public sessions only."
+      },
+      "PublicSessionSummary": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "sport": {
+            "type": "string",
+            "enum": [
+              "sailing",
+              "windsurfing",
+              "motorboating",
+              "kayak",
+              "canoe",
+              "sup"
+            ]
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "startedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "durationS": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "movingS": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "distanceM": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "maxSpeedMps": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "Best 2 s window, m/s."
+          },
+          "avgSpeedMps": {
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "sport",
+          "title",
+          "startedAt",
+          "durationS",
+          "movingS",
+          "distanceM",
+          "maxSpeedMps",
+          "avgSpeedMps"
+        ],
+        "description": "A public session as a profile lists it; GET /sessions/{id} has the rest."
+      },
       "VoyagePositionReceipts": {
         "type": "object",
         "properties": {
@@ -1526,6 +1712,24 @@
                 }
               }
             }
+          },
+          "429": {
+            "description": "Too many requests (`rate_limited`). Retry after the indicated delay.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           }
         }
       }
@@ -1570,6 +1774,24 @@
           },
           "401": {
             "description": "The refresh token is invalid, expired, or was already used.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests (`rate_limited`). Retry after the indicated delay.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -2406,6 +2628,24 @@
                 }
               }
             }
+          },
+          "429": {
+            "description": "Too many requests (`rate_limited`). Retry after the indicated delay.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           }
         }
       },
@@ -2743,6 +2983,24 @@
               }
             }
           },
+          "429": {
+            "description": "Too many requests (`rate_limited`). Retry after the indicated delay.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
           "503": {
             "description": "The upload took too long and its object was collected (`upload_expired`; upload again), or the track is stored but could not be queued for processing (`postprocess_unavailable`). Repeat the upload.",
             "content": {
@@ -2826,6 +3084,98 @@
           },
           "422": {
             "description": "The track inflates to more than 8388608 bytes or has more than 500000 fixes, too large to filter for a viewer other than the owner (`track_too_large`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/users/{handle}": {
+      "get": {
+        "operationId": "getUserProfile",
+        "summary": "A user's public profile and public sessions",
+        "description": "The handle, display name, totals and a page of sessions, all over the user's public sessions only (never unlisted or private ones). Anyone else gets 404 for a user with no public sessions, as for an unknown handle; the user themself always gets their profile as others would see it. `totals` covers every public session, not just this page.",
+        "tags": [
+          "users"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {}
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The user's handle, in either case. Stored lowercase.",
+              "example": "skipper_4821"
+            },
+            "required": true,
+            "description": "The user's handle, in either case. Stored lowercase.",
+            "name": "handle",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 200,
+              "description": "From `nextCursor`."
+            },
+            "required": false,
+            "description": "From `nextCursor`.",
+            "name": "cursor",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "description": "Page size, 20 by default."
+            },
+            "required": false,
+            "description": "Page size, 20 by default.",
+            "name": "limit",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The profile.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicProfile"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The cursor or limit is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "An access token was sent but is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such user, or the user has no public sessions.",
             "content": {
               "application/json": {
                 "schema": {
