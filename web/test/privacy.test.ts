@@ -1,7 +1,8 @@
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { trackSourceOptions } from "../src/client/components/session/colors";
 import { parseTrack, positionAt, speedLines } from "../src/client/lib/track";
+import { createApp } from "../src/server/app";
 import {
   arcClearsZones,
   drawnLengthBoundM,
@@ -17,7 +18,7 @@ import {
   injectPreview,
   sessionPreviewPage,
 } from "../src/server/routes/session-preview";
-import { api, bearer, type SignIn, signIn } from "./apple";
+import { api, bearer, deleteMe, type SignIn, signIn } from "./apple";
 
 // Synthetic data only (AGENTS.md): positions near 0,0 and dates in 2000.
 const START = "2000-01-01T10:00:00.000Z";
@@ -99,6 +100,34 @@ async function sharedTrack(token: string | null, id: string) {
   expect(response.status).toBe(200);
   return JSON.parse(await gunzip(await response.arrayBuffer()));
 }
+
+it("withholds a shared track when deletion removes its privacy zones during the R2 read", async () => {
+  const owner = await signIn();
+  expect((await addZone(owner.accessToken, { lat: 0, lon: 0, radiusM: 200 })).status).toBe(201);
+  const id = await publicSession(owner, lineTrack);
+  expect((await sharedTrack(null, id)).gps.t[0]).toBe(21);
+
+  const get = vi.fn(async (key: string) => {
+    const object = await env.TRACKS.get(key);
+    expect(object).not.toBeNull();
+    expect((await deleteMe(owner.accessToken, { finish: false })).status).toBe(202);
+    expect(
+      await env.DB.prepare("SELECT id FROM privacy_zones WHERE user_id = ?")
+        .bind(owner.user.id)
+        .first(),
+    ).toBeNull();
+    return object;
+  });
+  const response = await createApp().request(
+    `/api/sessions/${id}/track`,
+    {},
+    { ...env, TRACKS: { get } as unknown as R2Bucket },
+  );
+  const unknown = await api(`/sessions/${crypto.randomUUID()}/track`);
+  expect(get).toHaveBeenCalledTimes(1);
+  expect(response.status).toBe(unknown.status);
+  expect(await response.json()).toEqual(await unknown.json());
+});
 
 describe("privacy zone API", () => {
   it("adds, lists and removes the caller's own zones", async () => {

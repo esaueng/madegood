@@ -922,6 +922,9 @@ sessionRoutes.openapi(getTrackRoute, async (c) => {
     const gzipped = await new Response(
       new Blob([JSON.stringify(shared)]).stream().pipeThrough(new CompressionStream("gzip")),
     ).arrayBuffer();
+    // Deletion can remove the zones after this request obtained the R2 object. Recheck
+    // the owner before sending a projection that may have used the emptied zone list.
+    if (!(await accountActive(db, session.userId))) return notFound(c);
     return new Response(gzipped, {
       headers: {
         "content-type": TRACK_CONTENT_TYPE,

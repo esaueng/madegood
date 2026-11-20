@@ -415,3 +415,9 @@ record client IPs and selected request headers, with retention set by the produc
 external destination. Check those settings in the Cloudflare dashboard for your
 deployment. [Real-time logs](https://developers.cloudflare.com/workers/observability/logs/real-time-logs/) ·
 [HTTP request fields](https://developers.cloudflare.com/logs/logpush/logpush-job/datasets/zone/http_requests/)
+
+Cloudflare's zone-level Security Analytics is available independently of these Worker
+settings. It shows sampled incoming requests by default and can filter by source IP
+and URI. Cloudflare documents retention up to 31 days on Free, Pro and Business
+and up to 90 days on Enterprise.
+[Cloudflare Security Analytics](https://developers.cloudflare.com/waf/analytics/security-analytics/)
