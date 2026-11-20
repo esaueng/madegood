@@ -1,6 +1,7 @@
 import { drizzle } from "drizzle-orm/d1";
 import { Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
+import { createMiddleware } from "hono/factory";
 import type { AppEnv } from "../app";
 import { InvalidIdentityToken, parseAudiences, verifyAppleIdentityToken } from "../auth/apple";
 import {
@@ -20,6 +21,7 @@ import {
 } from "../auth/web-cookies";
 import { signInAppleSubject } from "../lib/account-deletion";
 import { apiError } from "../lib/errors";
+import { limitAuth } from "../lib/rate-limit";
 
 // Sign in with Apple for the website, kept out of the OpenAPI document: these are browser
 // redirects and cookie endpoints, not part of the API the apps use.
@@ -72,7 +74,7 @@ function displayNameFrom(user: unknown): string | null {
 
 export const webAuth = new Hono<AppEnv>();
 
-webAuth.get("/auth/web/apple", (c) => {
+webAuth.get("/auth/web/apple", limitAuth, (c) => {
   const [clientId] = parseAudiences(c.env.APPLE_WEB_CLIENT_ID);
   if (!clientId) return c.redirect(failed(c.req.url, "unavailable"), 302);
   const state = randomToken();
@@ -103,7 +105,7 @@ webAuth.get("/auth/web/apple", (c) => {
   return c.redirect(url.toString(), 302);
 });
 
-webAuth.post("/auth/web/apple/callback", async (c) => {
+webAuth.post("/auth/web/apple/callback", limitAuth, async (c) => {
   c.header("Cache-Control", "no-store");
   const raw = getCookie(c, SIGN_IN_COOKIE);
   deleteCookie(c, SIGN_IN_COOKIE, { path: `${WEB_AUTH_PATH}/apple/callback`, secure: true });
@@ -150,9 +152,13 @@ webAuth.post("/auth/web/apple/callback", async (c) => {
   return c.redirect(`${new URL(c.req.url).origin}${next}`, 303);
 });
 
-webAuth.post("/auth/web/refresh", async (c) => {
+const requireSameOrigin = createMiddleware<AppEnv>(async (c, next) => {
   c.header("Cache-Control", "no-store");
   if (!sameOrigin(c)) return apiError(c, 403, "forbidden", "Requests must come from this site.");
+  await next();
+});
+
+webAuth.post("/auth/web/refresh", requireSameOrigin, limitAuth, async (c) => {
   const token = refreshCookie(c);
   if (!token) {
     // Clear the script-readable hint too, or the site would retry the refresh forever.
@@ -170,9 +176,7 @@ webAuth.post("/auth/web/refresh", async (c) => {
   return c.body(null, 204);
 });
 
-webAuth.post("/auth/web/signout", async (c) => {
-  c.header("Cache-Control", "no-store");
-  if (!sameOrigin(c)) return apiError(c, 403, "forbidden", "Requests must come from this site.");
+webAuth.post("/auth/web/signout", requireSameOrigin, async (c) => {
   const token = refreshCookie(c);
   // Ends the whole sign-in, including a successor that a concurrent refresh with the
   // same cookie may have just issued; its access token stops working too (middleware.ts).

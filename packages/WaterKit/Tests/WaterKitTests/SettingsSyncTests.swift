@@ -4,6 +4,31 @@ import Testing
 
 /// Two-way settings sync with a version per setting (PR #39 reviews, PR #62 reviews).
 @Suite struct SettingsSyncTests {
+    @Test func planingThresholdSyncsByKeyIncludingResetToDefault() {
+        let phone = Device(id: "phone")
+        let watch = Device(id: "watch")
+        let sport = Sport.windsurfing
+        let key = SportSettings.Key.planingSpeedThreshold
+        #expect(watch.settings(sport).planingSpeedThreshold == 5)
+
+        phone.edit(sport, at: 10) { $0.planingSpeedThreshold = 6.5 }
+        watch.edit(sport, at: 11) { $0.speedUnit = .kilometresPerHour }
+        _ = phone.receive(watch.snapshot)
+        _ = watch.receive(phone.snapshot)
+        #expect(watch.settings(sport).planingSpeedThreshold == 6.5)
+        #expect(phone.settings(sport).speedUnit == .kilometresPerHour)
+
+        let beforeReset = phone.snapshot
+        watch.edit(sport, at: 12) { $0.planingSpeedThreshold = SportSettings.defaultPlaningSpeedThreshold }
+        _ = phone.receive(watch.snapshot)
+        _ = watch.receive(beforeReset)
+        #expect(phone.settings(sport).planingSpeedThreshold == 5)
+        #expect(watch.settings(sport).planingSpeedThreshold == 5)
+        #expect(phone.stamp(key) == watch.stamp(key))
+        #expect(phone.stamp(key) != nil)
+        #expect(phone.snapshot[key] == nil)
+    }
+
     /// A device running a build with per-setting versions.
     final class Device {
         let id: String
@@ -99,6 +124,42 @@ import Testing
             SettingsSync.migrateToKeyStamps(now: now, device: id, reading: device.read, writing: device.write)
             return device
         }
+    }
+
+    @Test func heartRateEditsMergeIndependentlyAndResetPropagates() {
+        let phone = Device(id: "phone")
+        let watch = Device(id: "watch")
+        let thresholds = [50, 60, 75, 90]
+        SettingsSync.save(
+            HeartRateZones(maximum: 200), now: 10, device: phone.id,
+            reading: phone.read, writing: phone.write)
+        SettingsSync.save(
+            HeartRateZones(thresholds: thresholds), now: 20, device: watch.id,
+            reading: watch.read, writing: watch.write)
+        let phoneSnapshot = phone.snapshot
+        #expect(phone.receive(watch.snapshot) == .appliedAndKeptLocalNewer)
+        #expect(watch.receive(phoneSnapshot) == .appliedAndKeptLocalNewer)
+        let merged = HeartRateZones(maximum: 200, thresholds: thresholds)
+        #expect(SettingsSync.heartRateZones(reading: phone.read) == merged)
+        #expect(SettingsSync.heartRateZones(reading: watch.read) == merged)
+
+        let old = watch.snapshot
+        SettingsSync.save(
+            HeartRateZones(maximum: 200), now: 30, device: watch.id,
+            reading: watch.read, writing: watch.write)
+        #expect(phone.receive(watch.snapshot) == .applied)
+        #expect(phone.receive(old) == .keptLocalNewer)
+        #expect(SettingsSync.heartRateZones(reading: phone.read) == HeartRateZones(maximum: 200))
+    }
+
+    @Test func legacySettingsCannotResetHeartRateSettings() {
+        let phone = Device(id: "phone")
+        let watch = LegacyBuild(id: "watch")
+        let zones = HeartRateZones(maximum: 200, thresholds: [50, 60, 75, 90])
+        SettingsSync.save(zones, now: 10, device: phone.id, reading: phone.read, writing: phone.write)
+        watch.edit(SportSettings.Key.countdown(.sailing), 3, at: 20)
+        #expect(phone.receive(watch.snapshot) == .applied)
+        #expect(SettingsSync.heartRateZones(reading: phone.read) == zones)
     }
 
     // MARK: Local edits and migration

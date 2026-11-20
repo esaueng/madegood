@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fill the real D1 database IDs into web/wrangler.jsonc for a deploy.
+"""Fill D1 and rate limit namespace IDs into web/wrangler.jsonc for a deploy.
 
 The repository keeps placeholder IDs (AGENTS.md: no account or resource IDs in the
 repo). Deploys run this first, in CI or a throwaway checkout, with the IDs from the
@@ -8,17 +8,20 @@ environment:
   D1_DATABASE_ID          production database (`madegood`)
   D1_PREVIEW_DATABASE_ID  preview database (`madegood-preview`)
 
-The account comes from CLOUDFLARE_ACCOUNT_ID, which Wrangler reads itself.
+Rate limit namespaces are derived from those IDs so preview deployments keep
+separate counters. The account comes from CLOUDFLARE_ACCOUNT_ID, which Wrangler
+reads itself.
 Never commit the rewritten file.
 """
+from hashlib import sha256
 import os
 import re
 import sys
 from pathlib import Path
 
 PLACEHOLDERS = {
-    "00000000-0000-0000-0000-000000000000": "D1_DATABASE_ID",
-    "00000000-0000-0000-0000-000000000001": "D1_PREVIEW_DATABASE_ID",
+    "D1_DATABASE_ID": ("00000000-0000-0000-0000-000000000000", ("1001", "1002")),
+    "D1_PREVIEW_DATABASE_ID": ("00000000-0000-0000-0000-000000000001", ("1003", "1004")),
 }
 UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
@@ -26,7 +29,7 @@ UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12
 def main() -> int:
     path = Path(sys.argv[1] if len(sys.argv) > 1 else "web/wrangler.jsonc")
     text = path.read_text(encoding="utf-8")
-    for placeholder, variable in PLACEHOLDERS.items():
+    for variable, (placeholder, namespaces) in PLACEHOLDERS.items():
         value = os.environ.get(variable, "").strip()
         if not UUID.fullmatch(value):
             print(f"{variable} is missing or not a database UUID", file=sys.stderr)
@@ -35,8 +38,17 @@ def main() -> int:
             print(f"Placeholder for {variable} not found in {path}", file=sys.stderr)
             return 1
         text = text.replace(placeholder, value)
+        # Keep each namespace a positive 32-bit integer, above the local placeholders.
+        digest = sha256(f"madegood:{variable}:{value}".encode()).hexdigest()
+        base = 10_000 + 2 * (int(digest[:8], 16) % 1_000_000_000)
+        for offset, namespace in enumerate(namespaces):
+            field = f'"namespace_id": "{namespace}"'
+            if field not in text:
+                print(f"Rate limit placeholder {namespace} not found in {path}", file=sys.stderr)
+                return 1
+            text = text.replace(field, f'"namespace_id": "{base + offset}"')
     path.write_text(text, encoding="utf-8")
-    print(f"Filled database IDs into {path}")
+    print(f"Filled database and rate limit namespace IDs into {path}")
     return 0
 
 

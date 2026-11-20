@@ -36,6 +36,12 @@ struct LiveDisplay {
         return "\(count)"
     }
 
+    static func planing(_ planing: WindsurfAnalysis.Planing?) -> String {
+        guard let planing else { return "–" }
+        let percent = planing.fraction.formatted(.percent.precision(.fractionLength(0)))
+        return "\(Formatting.elapsed(planing.time)) (\(percent))"
+    }
+
     /// Distance over strokes, in metres (feet with statute miles); blank before a stroke.
     func distancePerStroke(distance metres: Double, strokes: Int?) -> String {
         guard let strokes, strokes > 0, metres > 0 else { return "–" }

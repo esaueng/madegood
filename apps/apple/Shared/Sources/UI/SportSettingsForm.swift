@@ -52,6 +52,22 @@ struct SportSettingsForm: View {
                 Text("Auto-pause stops the clock after 10 s at rest. Distance alerts tap your wrist at each mark.")
             }
 
+            if sport == .windsurfing {
+                let unit = settings.resolvedSpeedUnit(for: sport)
+                Section {
+                    Picker("Planing speed", selection: store.binding(sport, \.planingSpeedThreshold)) {
+                        ForEach(SportSettings.planingSpeedChoices, id: \.self) { speed in
+                            let value = unit.display(speed).text
+                            Text(speed == SportSettings.defaultPlaningSpeedThreshold ? "\(value) (Default)" : value)
+                                .tag(speed)
+                        }
+                    }
+                    .accessibilityIdentifier("sportSettings.planingSpeedThreshold")
+                } footer: {
+                    Text("Sets the speed used to estimate time spent planing.")
+                }
+            }
+
             Section {
                 Picker("Countdown", selection: store.binding(sport, \.countdownMinutes)) {
                     ForEach(SportSettings.countdownChoices, id: \.self) { minutes in

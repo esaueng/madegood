@@ -21,7 +21,7 @@ import Testing
 
         let analysis = selection.sailingAnalysis()
         #expect(analysis.windSource == .estimate)
-        expectMatches(analysis.maneuvers, labels: course.labels)
+        expectManeuversMatch(analysis.maneuvers, labels: course.labels)
         #expect(analysis.tackCount == course.labels.count)
         #expect(analysis.gybeCount == 0)
     }
@@ -50,7 +50,7 @@ import Testing
         #expect(abs(resolved.axisConfidence - unresolved.axisConfidence) < 1e-9)
 
         let analysis = selection.sailingAnalysis(windPrior: 50)
-        expectMatches(analysis.maneuvers, labels: course.labels)
+        expectManeuversMatch(analysis.maneuvers, labels: course.labels)
         #expect(analysis.gybeCount == course.labels.count)
         #expect(analysis.upwindVMG == nil)
         // Downwind VMG: 5 m/s at 140° true wind angle is 5 × cos 40° away from the wind.
@@ -413,23 +413,6 @@ import Testing
         #expect(live == post.count)
         #expect(post.allSatisfy { !$0.range.contains(turn) })
     }
-
-    // MARK: Helpers
-
-    private func expectMatches(_ maneuvers: [SailingManeuver], labels: [SessionEvent]) {
-        var unmatched = maneuvers
-        var matches = 0
-        for label in labels {
-            if let index = unmatched.firstIndex(where: {
-                $0.event.type == label.type && abs($0.event.t - label.t) <= 2 && $0.range.contains(label.t)
-            }) {
-                unmatched.remove(at: index)
-                matches += 1
-            }
-        }
-        #expect(Double(matches) / Double(labels.count) >= 0.95)
-        #expect(Double(unmatched.count) / Double(max(1, maneuvers.count)) < 0.05)
-    }
 }
 
 /// A synthetic zig-zag: legs at ±`halfAngle` true wind angle joined by `turn` s turns through
@@ -441,7 +424,7 @@ struct SyntheticCourse {
 
     static func beat(
         windFrom wind: Double, legs: [Double], halfAngle: Double = 45, speed: Double = 5, noise: Double = 3,
-        turn: Double = 6
+        turn: Double = 6, gybing: Bool? = nil
     ) -> SyntheticCourse {
         var course = SyntheticCourse()
         var position = (lat: 10.0, lon: -30.0)
@@ -453,14 +436,15 @@ struct SyntheticCourse {
         var t = 0.0
         // Starboard first: the wind on the right, so course = wind − angle.
         var side = -1.0
-        let type: EventType = halfAngle < 90 ? .tack : .gybe
+        let isGybe = gybing ?? (halfAngle >= 90)
+        let type: EventType = isGybe ? .gybe : .tack
         for (index, leg) in legs.enumerated() {
             var segment: [(course: Double, speed: Double)] = Array(
                 repeating: (wind + side * halfAngle, speed), count: Int(leg))
             if index < legs.count - 1 {
                 let from = wind + side * halfAngle
                 // Upwind turns go through the wind; downwind turns through the run.
-                let to = halfAngle < 90 ? wind - side * halfAngle : wind - side * halfAngle + side * 360
+                let to = wind - side * halfAngle + (isGybe ? side * 360 : 0)
                 for step in 0..<Int(turn) {
                     let fraction = Double(step) / turn
                     let dip = 1 - 0.5 * (1 - abs(fraction * 2 - 1))

@@ -2,7 +2,7 @@ import SwiftUI
 import WaterKit
 
 /// One row per sport, each opening that sport's settings (the same form as on the watch),
-/// then app-wide items. Every setting starts at an automatic value that follows the sport.
+/// then app-wide items.
 struct SettingsView: View {
     @Environment(PrivateVoyageSync.self) private var voyageSync: PrivateVoyageSync?
     @State private var store = SettingsStore.shared
@@ -36,6 +36,14 @@ struct SettingsView: View {
                     Text(
                         "Units, first screen, alerts, countdown and Health for each sport. Changes reach your watch. "
                             + "Touch and hold a sport on the start screen to drag it into your own order.")
+                }
+
+                Section {
+                    NavigationLink("Heart Rate Zones") {
+                        HeartRateZoneSettingsView()
+                    }
+                } footer: {
+                    Text("Maximum heart rate and zone thresholds apply to every sport and sync to your watch.")
                 }
 
                 Section {

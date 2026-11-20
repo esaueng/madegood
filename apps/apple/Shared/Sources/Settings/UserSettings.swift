@@ -2,9 +2,8 @@ import Foundation
 import WaterKit
 
 /// The user's preferences, in UserDefaults on each device: per-sport settings
-/// (`SportSettings`, edited on either device and kept in sync through
-/// `RecordingTransfer` and `SettingsSync`) plus device-local history used to order the
-/// start screen.
+/// and heart-rate zones are kept in sync through `RecordingTransfer` and
+/// `SettingsSync`. Start screen history stays on the device.
 ///
 /// Every write to the synced settings runs on the main actor (local edits, incoming
 /// snapshots, migration), so a revision check and the keys it writes are never
@@ -59,10 +58,12 @@ enum UserSettings {
         settings(for: sport).savesWorkout
     }
 
-    /// The sport's engine profile with the user's auto-pause choice applied.
+    /// The sport's analysis profile with the user's settings applied.
     static func profile(for sport: Sport) -> SportProfile {
         var profile = SportProfile.standard(for: sport)
-        profile.autoPause.enabled = settings(for: sport).autoPause
+        let settings = settings(for: sport)
+        profile.autoPause.enabled = settings.autoPause
+        profile.planingSpeedThreshold = settings.planingSpeedThreshold
         return profile
     }
 
@@ -70,9 +71,18 @@ enum UserSettings {
         Set(Sport.allCases.filter { settings(for: $0).isHidden })
     }
 
+    static var heartRateZones: HeartRateZones {
+        SettingsSync.heartRateZones(reading: read)
+    }
+
+    @MainActor
+    static func save(_ zones: HeartRateZones, at date: Date = Date()) {
+        SettingsSync.save(zones, now: date.timeIntervalSince1970, device: deviceID, reading: read, writing: write)
+    }
+
     // MARK: Sync
 
-    /// This device's per-sport settings and their stamps, to send to the other device.
+    /// This device's synced settings and their stamps, to send to the other device.
     /// Main actor only, so it never mixes values from before a save with the revision
     /// from after it.
     @MainActor

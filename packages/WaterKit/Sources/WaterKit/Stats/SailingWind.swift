@@ -101,13 +101,17 @@ public struct CourseHistogram: Sendable, Hashable {
     /// one; otherwise the legs are assumed upwind and the side is left unresolved.
     /// Nil until both legs have enough time.
     public func windEstimate(prior: Double? = nil) -> WindEstimate? {
+        windEstimate(prior: prior, legAngles: Self.legAngleRange)
+    }
+
+    func windEstimate(prior: Double? = nil, legAngles: ClosedRange<Double>) -> WindEstimate? {
         let n = Self.binCount
         func mass(around bin: Int, halfWidth: Int) -> Double {
             (-halfWidth...halfWidth).reduce(0) { $0 + weights[((bin + $1) % n + n) % n] }
         }
         let masses = (0..<n).map { mass(around: $0, halfWidth: Self.legHalfWidth) }
-        let minimumSeparation = Int((Self.legAngleRange.lowerBound / Self.binWidth).rounded())
-        let maximumSeparation = Int((Self.legAngleRange.upperBound / Self.binWidth).rounded())
+        let minimumSeparation = Int((legAngles.lowerBound / Self.binWidth).rounded())
+        let maximumSeparation = Int((legAngles.upperBound / Self.binWidth).rounded())
         var best: (a: Int, b: Int, score: Double)?
         for a in 0..<n {
             for separation in minimumSeparation...maximumSeparation {
@@ -120,8 +124,8 @@ public struct CourseHistogram: Sendable, Hashable {
         guard let best, let first = refined(best.a), let second = refined(best.b) else { return nil }
         let separation = GPSFilter.signedDifference(from: first, to: second)
         // Refinement may move the legs a little; still require two distinct legs.
-        guard abs(separation) >= Self.legAngleRange.lowerBound - Self.binWidth,
-            abs(separation) <= Self.legAngleRange.upperBound + Self.binWidth
+        guard abs(separation) >= legAngles.lowerBound - Self.binWidth,
+            abs(separation) <= legAngles.upperBound + Self.binWidth
         else { return nil }
         let bisector = GPSFilter.normalize(first + separation / 2)
         let opposite = GPSFilter.normalize(bisector + 180)
@@ -266,7 +270,7 @@ extension SessionSelection {
     public func sailingAnalysis(windFromDegreesTrue userWind: Double? = nil, windPrior: Double? = nil)
         -> SailingAnalysis
     {
-        let runs = sailingObservationRuns()
+        let runs = track.sport == .sailing ? sailingObservationRuns() : []
         let estimate = Self.courseHistogram(runs).windEstimate(prior: windPrior)
         let validUser = userWind.flatMap { $0.isFinite && (0...360).contains($0) ? $0 : nil }
         let wind = validUser ?? estimate?.fromDegrees
@@ -328,13 +332,16 @@ extension SessionSelection {
 
     /// The track's wind estimate on its own (see `sailingAnalysis`).
     public func estimatedWind(prior: Double? = nil) -> WindEstimate? {
-        Self.courseHistogram(sailingObservationRuns()).windEstimate(prior: prior)
+        guard track.sport == .sailing else { return nil }
+        return Self.courseHistogram(sailingObservationRuns()).windEstimate(prior: prior)
     }
 
-    static func courseHistogram(_ runs: [[SailingObservation]]) -> CourseHistogram {
+    static func courseHistogram(
+        _ runs: [[SailingObservation]], minimumSpeed: Double = CourseHistogram.minimumSailingSpeed
+    ) -> CourseHistogram {
         var histogram = CourseHistogram()
         for run in runs {
-            for (a, b) in zip(run, run.dropFirst()) where a.speed >= CourseHistogram.minimumSailingSpeed {
+            for (a, b) in zip(run, run.dropFirst()) where a.speed >= minimumSpeed {
                 histogram.add(course: a.course, seconds: min(b.t - a.t, CourseHistogram.maximumFixWeight))
             }
         }

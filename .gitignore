@@ -49,3 +49,4 @@ coverage/
 recordings/
 *.mgsession.zip
 fixtures/**/raw-original/
+/fixtures/.corpus/

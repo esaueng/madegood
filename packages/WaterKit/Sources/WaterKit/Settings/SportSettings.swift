@@ -31,12 +31,15 @@ public struct SportSettings: Sendable, Hashable {
     public var fuelUnit: VolumeUnit
     /// What the Apple Watch Ultra's Action button does while this sport is recording.
     public var actionButton: ActionButtonAction
+    /// Doppler speed above which a windsurfing board is treated as planing, m/s.
+    public var planingSpeedThreshold: Double
 
     public init(
         speedUnit: SpeedUnit? = nil, distanceUnit: DistanceUnit? = nil, firstScreen: LiveScreen = .speed,
         autoPause: Bool, savesWorkout: Bool, distanceAlert: Double? = nil, countdownMinutes: Int = 0,
         isHidden: Bool = false, fuelBurnRate: Double? = nil, idleFuelBurnRate: Double? = nil,
-        fuelUnit: VolumeUnit = .litres, actionButton: ActionButtonAction = .lap
+        fuelUnit: VolumeUnit = .litres, actionButton: ActionButtonAction = .lap,
+        planingSpeedThreshold: Double = defaultPlaningSpeedThreshold
     ) {
         self.speedUnit = speedUnit
         self.distanceUnit = distanceUnit
@@ -50,6 +53,7 @@ public struct SportSettings: Sendable, Hashable {
         self.idleFuelBurnRate = idleFuelBurnRate
         self.fuelUnit = fuelUnit
         self.actionButton = actionButton
+        self.planingSpeedThreshold = planingSpeedThreshold
     }
 
     /// The defaults: automatic units, speed first, no alerts or countdown, and auto-pause
@@ -63,6 +67,9 @@ public struct SportSettings: Sendable, Hashable {
     public static let countdownChoices = [0, 1, 3, 5]
     /// Distance alert intervals offered, in the distance unit's main unit.
     public static let distanceAlertChoices: [Double] = [0.25, 0.5, 1, 2, 5, 10]
+    public static let defaultPlaningSpeedThreshold = 5.0
+    /// Windsurfing thresholds offered in 0.5 m/s steps, displayed in the chosen unit.
+    public static let planingSpeedChoices = (4...30).map { Double($0) / 2 }
 
     public func resolvedSpeedUnit(for sport: Sport) -> SpeedUnit {
         speedUnit ?? .automatic(for: sport)
@@ -169,6 +176,7 @@ extension SportSettings {
         public static func fuelIdleBurn(_ sport: Sport) -> String { "settings.fuelIdleBurn.\(sport.rawValue)" }
         public static func fuelUnit(_ sport: Sport) -> String { "settings.fuelUnit.\(sport.rawValue)" }
         public static func actionButton(_ sport: Sport) -> String { "settings.actionButton.\(sport.rawValue)" }
+        public static let planingSpeedThreshold = "settings.planingSpeedThreshold.windsurfing"
 
         /// Units for every sport, before units became per sport.
         public static let legacySpeedUnit = "settings.speedUnit"
@@ -176,11 +184,12 @@ extension SportSettings {
 
         /// Every key of one sport.
         public static func all(_ sport: Sport) -> [String] {
-            [
+            let shared = [
                 speedUnit(sport), distanceUnit(sport), firstScreen(sport), autoPause(sport), saveWorkout(sport),
                 distanceAlert(sport), countdown(sport), hidden(sport), fuelBurn(sport), fuelIdleBurn(sport),
                 fuelUnit(sport), actionButton(sport),
             ]
+            return sport == .windsurfing ? shared + [planingSpeedThreshold] : shared
         }
 
         /// Every per-sport key of every sport.
@@ -214,6 +223,11 @@ extension SportSettings {
         fuelBurnRate = Self.burnRate(value(Key.fuelBurn(sport)))
         idleFuelBurnRate = Self.burnRate(value(Key.fuelIdleBurn(sport)), allowZero: true)
         if let raw = value(Key.fuelUnit(sport)) as? String, let unit = VolumeUnit(rawValue: raw) { fuelUnit = unit }
+        if sport == .windsurfing, let threshold = Self.number(value(Key.planingSpeedThreshold)),
+            Self.planingSpeedChoices.contains(threshold)
+        {
+            planingSpeedThreshold = threshold
+        }
     }
 
     private static func burnRate(_ value: Any?, allowZero: Bool = false) -> Double? {
@@ -238,6 +252,12 @@ extension SportSettings {
         set(Key.fuelIdleBurn(sport), idleFuelBurnRate)
         set(Key.fuelUnit(sport), fuelUnit == standard.fuelUnit ? nil : fuelUnit.rawValue)
         set(Key.actionButton(sport), actionButton == standard.actionButton ? nil : actionButton.rawValue)
+        if sport == .windsurfing {
+            let custom =
+                planingSpeedThreshold != standard.planingSpeedThreshold
+                && Self.planingSpeedChoices.contains(planingSpeedThreshold)
+            set(Key.planingSpeedThreshold, custom ? planingSpeedThreshold : nil)
+        }
     }
 
     /// Moves units chosen before they were per sport onto every sport that has no unit of
