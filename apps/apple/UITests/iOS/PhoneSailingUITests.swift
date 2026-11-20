@@ -3,7 +3,7 @@ import XCTest
 /// Sailing on the iPhone: the live sailing card during a demo beat (`-demoTacks`: wind
 /// from north, a tack every 31 s), and wind, VMG and the maneuver list in the detail of
 /// the demo history's 48-minute beat (wind from north, a tack every 4 minutes). The
-/// track alone only gives the wind's axis, so until Open-Meteo chooses a side nothing is
+/// track alone only gives the wind's axis, so until Apple Weather chooses a side nothing is
 /// called upwind, downwind, a tack or a gybe.
 final class PhoneSailingUITests: XCTestCase {
     override func setUp() {
@@ -75,19 +75,19 @@ final class PhoneSailingUITests: XCTestCase {
         scrollTo(axis, in: app)
         XCTAssertTrue(axis.label.hasPrefix("VMG along the wind axis, "), axis.label)
 
-        // The demo build answers for Open-Meteo without the network (10° at 6 m/s). The
+        // The demo build answers for Apple Weather without the network (10° at 6 m/s). The
         // button says what is sent before the tap.
-        let fetch = app.buttons["moments.openMeteo.fetch"]
+        let fetch = app.buttons["moments.appleWeather.fetch"]
         scrollTo(fetch, in: app)
-        XCTAssertTrue(fetch.label.contains("approximate area (~50 km) and dates"), fetch.label)
-        attachScreenshot("2 vmg and open-meteo button")
+        XCTAssertTrue(fetch.label.contains("approximate area (~11 km) and time range with Apple"), fetch.label)
+        attachScreenshot("2 vmg and apple weather button")
         fetch.tap()
         // The prior re-runs the analysis, and the list grows again, so find the row after.
         let resolvedTack = app.buttons.matching(
             NSPredicate(format: "identifier BEGINSWITH 'moments.maneuver.' AND label BEGINSWITH 'Tack · '")
         ).firstMatch
         XCTAssertTrue(resolvedTack.waitForExistence(timeout: 15))
-        let result = element("moments.openMeteo.result", in: app)
+        let result = element("moments.appleWeather.result", in: app)
         scrollTo(result, in: app)
         XCTAssertTrue(result.label.contains("10°"), result.label)
 
@@ -97,12 +97,12 @@ final class PhoneSailingUITests: XCTestCase {
         XCTAssertTrue(upwind.label.hasPrefix("VMG upwind, "), upwind.label)
         XCTAssertTrue(last.waitForExistence(timeout: 5))
         XCTAssertTrue(last.label.hasPrefix("Tack · 44:0"), last.label)
-        attachScreenshot("3 open-meteo comparison")
+        attachScreenshot("3 apple weather comparison")
     }
 
     @MainActor
-    func testOpenMeteoFailureKeepsTheEstimate() {
-        let app = launchDemoHistory(extraArguments: ["-demoOpenMeteoOffline"])
+    func testAppleWeatherFailureKeepsTheEstimate() {
+        let app = launchDemoHistory(extraArguments: ["-demoWeatherOffline"])
         app.tabBars.buttons["History"].tap()
         let sailing = app.buttons.matching(identifier: "session.row")
             .containing(.staticText, identifier: "Sailing")
@@ -110,13 +110,13 @@ final class PhoneSailingUITests: XCTestCase {
         XCTAssertTrue(sailing.waitForExistence(timeout: 15))
         scrollTo(sailing, in: app)
         sailing.tap()
-        let fetch = app.buttons["moments.openMeteo.fetch"]
+        let fetch = app.buttons["moments.appleWeather.fetch"]
         scrollTo(fetch, in: app)
         fetch.tap()
-        waitFor(fetch, label: "Open-Meteo unavailable\\. Try again.*", timeout: 10)
+        waitFor(fetch, label: "Apple Weather unavailable\\. Try again.*", timeout: 10)
         // The track's own analysis stays.
         XCTAssertTrue(element("moments.vmg.axis", in: app).exists)
-        attachScreenshot("open-meteo offline")
+        attachScreenshot("apple weather offline")
     }
 
     private func waitFor(_ element: XCUIElement, value pattern: String, timeout: TimeInterval) {

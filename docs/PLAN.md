@@ -56,9 +56,13 @@ bundle prefix `app.madegood` (forks override it in `Local.xcconfig`) · GitHub r
 | Data | D1 (Drizzle ORM) for metadata, R2 for track files, Queues for post-upload jobs |
 | API contract | Zod schemas → OpenAPI (`@hono/zod-openapi`) → Swift client (`swift-openapi-generator`) |
 | Auth | Sign in with Apple (iOS + web), our own JWT access + refresh tokens |
-| Weather | Open-Meteo (historical + forecast wind) |
+| Weather | Apple WeatherKit on iPhone, Open-Meteo for post-upload wind in the Worker |
 | Tooling | pnpm workspaces, Biome, Vitest + `@cloudflare/vitest-pool-workers`, swift-format, GitHub Actions |
 | Minimum OS | iOS 26 / watchOS 26 (needed for iPhone-only workout sessions) |
+
+The iPhone uses Apple WeatherKit for local conditions and the optional sailing wind
+comparison. It sends a fixed 0.1° × 0.1° grid cell (about 11 km per side at the equator)
+instead of an exact GPS fix. The Worker still uses Open-Meteo for post-upload wind.
 
 ---
 
@@ -205,9 +209,9 @@ Metric definitions get their own doc (`docs/metrics.md`) as each one is built.
   Tack vs gybe decided by whether the bow crossed the wind (upwind) or downwind.
 - **Wind direction:**
   - Post-session: upwind course histogram → two peaks 70–110° apart → wind direction
-    is the line midway between them; Open-Meteo resolves which of the two opposite
-    directions is correct.
-  - Live: Open-Meteo forecast fetched at start, a user-set direction, or auto after the first two tacks.
+    is the line midway between them. The optional Apple Weather prior can resolve
+    which of the two opposite directions is correct.
+  - Live: a user-set direction or an estimate after the first two tacks.
 - VMG = SOG × cos(true wind angle); upwind/downwind VMG, pointing angle, time and
   distance on each tack.
 - **Race tools:** countdown timer (5-4-1-0, sync to the nearest minute, haptics), ping the
@@ -244,7 +248,7 @@ waypoints). Voyages reuse the Sessions engine, track format, sync, and backend.
   that wakes on movement. Auto-detects departure and arrival.
 - Log entries: one-tap buttons (engine on/off, reef/sail change, waypoint passed,
   watch change, note, photo) plus an automatic hourly entry (position, COG, SOG,
-  barometric pressure from the iPhone barometer, wind from instruments or Open-Meteo).
+  barometric pressure from the iPhone barometer, wind from instruments or Apple Weather).
 - Stats: distance, time underway, time under sail vs motor, day's runs (noon to noon),
   nights at sea, average/max speed. Export the log as PDF/CSV and the track as GPX.
 
@@ -414,7 +418,7 @@ Each phase ends with a checkable exit criterion. Tasks are sized for one agent P
 
 ### Phase 2: Sport intelligence
 1. Paddling stroke detection (live + post) and the paddling sport page.
-2. Sailing maneuver detection, wind estimation (+ Open-Meteo), VMG, sailing sport page.
+2. Sailing maneuver detection, wind estimation (+ Apple Weather), VMG, sailing sport page.
 3. Race countdown + start line.
 4. Windsurf speed categories + speed page.
 5. Motorboat profile: nm log, fuel estimate, anchor alarm.

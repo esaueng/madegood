@@ -25,7 +25,7 @@ enum UserSettings {
         /// iPhone only, device-local: whether the start screen shows local conditions.
         static let localWeather = "weather.enabled"
         /// iPhone only, device-local: the last conditions fetched, for a quick first draw.
-        static let lastWeather = "weather.last"
+        static let lastWeather = "weather.appleLast"
     }
 
     /// Posted on the main queue when settings arrive from the other device.

@@ -266,7 +266,7 @@ public struct SailingAnalysis: Sendable {
 extension SessionSelection {
     /// Wind, maneuvers and VMG for a sailing selection. A user direction (degrees true,
     /// 0...360) is used as given; otherwise the track's estimate, with `windPrior` (for
-    /// example an Open-Meteo direction) choosing between its two opposite directions.
+    /// example a modelled weather direction) choosing between its two opposite directions.
     public func sailingAnalysis(windFromDegreesTrue userWind: Double? = nil, windPrior: Double? = nil)
         -> SailingAnalysis
     {
