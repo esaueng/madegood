@@ -1,3 +1,4 @@
+import { logFailure } from "./logging";
 // A minimal streaming ZIP writer (PKWARE APPNOTE 6.3): stored entries only, no compression
 // (the track files are already gzip), sizes and CRC-32 in a data descriptor after each
 // entry, so an entry's bytes pass straight through without being buffered. No ZIP64: the
@@ -191,8 +192,8 @@ export function zipResponseBody(
         else controller.enqueue(value);
       } catch (err) {
         // A truncated archive fails to open, which is the right signal for a broken export.
-        console.error(err);
-        controller.error(err);
+        logFailure("zip_stream_failed", err);
+        controller.error(new Error("zip_stream_failed"));
       }
     },
     async cancel() {

@@ -2700,7 +2700,7 @@
       "get": {
         "operationId": "getSession",
         "summary": "A session",
-        "description": "The owner always sees it. Anyone else, signed in or not, sees only public and unlisted sessions; a private one is reported as not found.",
+        "description": "For an active account, the owner can see any of their sessions. Other viewers see only public and unlisted sessions. Once account deletion starts, its sessions are reported as not found.",
         "tags": [
           "sessions"
         ],

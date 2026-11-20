@@ -4,6 +4,7 @@ import { AccountDeleting } from "../auth/account-state";
 import { findOrCreateUser } from "../auth/users";
 import { pendingR2Deletes, type User, users } from "../db/schema";
 import { purgeAccountVoyages } from "../live/registry";
+import { logFailure } from "./logging";
 import { collectR2Garbage, recordSessionTrackKeys, UPLOAD_GRACE_MS } from "./r2-garbage";
 import { deletePrefix, userPrefix } from "./storage";
 
@@ -158,10 +159,9 @@ export async function runScheduledDeletion(
       .returning({ attempts: users.deletionAttempts });
     const attempts = row?.attempts ?? 0;
     if (attempts >= DELETION_ALERT_ATTEMPTS) {
-      // Workers observability keeps this; search for it to find stuck deletions.
-      console.error(JSON.stringify({ event: "account_deletion_failing", userId, attempts }), error);
+      logFailure("account_deletion_failing", error);
     } else {
-      console.warn("Account deletion pass failed; retrying with backoff.", error);
+      logFailure("account_deletion_retry", error);
     }
     return "failed";
   }

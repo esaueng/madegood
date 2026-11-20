@@ -2,6 +2,7 @@ import { drizzle } from "drizzle-orm/d1";
 import { createApp } from "./app";
 import { sweepAccountDeletions } from "./lib/account-deletion";
 import { handleExportBatch, sweepExports } from "./lib/export-job";
+import { logFailure } from "./lib/logging";
 import { handlePostprocessBatch, sweepPendingZoneChanges } from "./lib/postprocess";
 import { collectR2Garbage, UPLOAD_GRACE_MS } from "./lib/r2-garbage";
 
@@ -60,6 +61,10 @@ export default {
         limit: 5000,
       }),
     ]);
-    for (const result of results) if (result.status === "rejected") throw result.reason;
+    const failure = results.find((result) => result.status === "rejected");
+    if (failure) {
+      logFailure("scheduled_sweep_failed", failure.reason);
+      throw new Error("scheduled_sweep_failed");
+    }
   },
 } satisfies ExportedHandler<Env>;

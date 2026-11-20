@@ -357,12 +357,13 @@ to `scripts/testflight` as a build setting.
   derived from tracks (bounds, fix times, wind; see
   [Upload post-processing](#upload-post-processing)), and privacy zones. R2 holds each session's gzipped track v1 under the user's prefix.
 - `DELETE /api/me` (with the account's ID in the body) marks the account deleting and
-  revokes its sign-ins at once, then deletes the user's rows, live voyage shares and every
-  R2 object under their prefix (202). Anything that fails is retried by the scheduled
+  revokes sign-ins and hides its shared sessions, profile and live voyage data at once.
+  It then deletes the user's rows, live voyage shares and every R2 object under their prefix
+  (202). Anything that fails is retried by the scheduled
   sweep (the `triggers.crons` entry in `wrangler.jsonc`), which also deletes the account
   record once 20 minutes have passed. A deletion that keeps failing backs off (1 minute,
   doubling, at most 6 hours) so others still run; after 8 failed passes each failure is
-  logged as `{"event":"account_deletion_failing",…}` (search Workers observability for it).
+  logged as `{"event":"account_deletion_failing"}` in the Worker console.
   Without the cron trigger (previews) the data is still removed by the request, and the
   account record goes the next time that Apple ID signs in after the 20 minutes; until
   then the Apple ID stays reserved. The record also waits until every upload record of the
@@ -386,6 +387,37 @@ to `scripts/testflight` as a build setting.
   before per-upload keys (`track.v1.gz`, `track.v1.r<revision>.gz`) that a failed cleanup
   left behind are found by listing the session's prefix on its next upload. Account deletion collects
   all of the user's recorded keys, inside or outside their prefix.
-- Workers observability is on in `wrangler.jsonc` (`observability.enabled`), so
-  Cloudflare keeps request logs for your account; turn it off there if you do not want
-  them.
+
+## Worker logging
+
+MadeGood's Worker console emits a warning or error level and a fixed event code.
+It discards caught errors in full, including messages, stacks, causes and SQL parameters.
+Console events carry no account or session identifiers (including hashes), profile
+fields, Apple subjects, coordinates, tokens, request bodies, URLs, headers or client IPs.
+Cloudflare receives the client IP at ingress. The auth limiter uses `CF-Connecting-IP`
+as its rate-limit key without writing it to the app's storage or console.
+
+The shipped `wrangler.jsonc` disables Workers observability and Workers Logpush. With
+these settings the deployment does not persist Workers Logs or traces or export Workers
+trace events through Logpush. There is no `head_sampling_rate` override. If observability
+is enabled with default logging settings, Cloudflare samples at 100% and stores invocation
+records (including HTTP methods, full request URLs and related request and response
+metadata), custom console events and uncaught exceptions. Cloudflare documents retention
+of 3 days on Workers Free and 7 days on Workers Paid under its legacy pricing and a
+default of 7 days under the Observability pricing starting December 1, 2026.
+[Workers Logs](https://developers.cloudflare.com/workers/observability/logs/workers-logs/) ·
+[Cloudflare Observability pricing](https://developers.cloudflare.com/observability/pricing/)
+
+An operator can still open a real-time tail, whose platform events can include the full
+request URL, request headers and Cloudflare request metadata. Zone-level HTTP logging
+and Logpush jobs are separate settings. Depending on their configuration, they can
+record client IPs and selected request headers, with retention set by the product or
+external destination. Check those settings in the Cloudflare dashboard for your
+deployment. [Real-time logs](https://developers.cloudflare.com/workers/observability/logs/real-time-logs/) ·
+[HTTP request fields](https://developers.cloudflare.com/logs/logpush/logpush-job/datasets/zone/http_requests/)
+
+Cloudflare's zone-level Security Analytics is available independently of these Worker
+settings. It shows sampled incoming requests by default and can filter by source IP
+and URI. Cloudflare documents retention up to 31 days on Free, Pro and Business
+and up to 90 days on Enterprise.
+[Cloudflare Security Analytics](https://developers.cloudflare.com/waf/analytics/security-analytics/)

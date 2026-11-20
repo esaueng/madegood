@@ -348,8 +348,11 @@ describe("finding 4: deletions finish without a cron, and failing ones back off"
       await sql("update users set deletion_next_at = null where id = ?", stuck.user.id);
       await sweepAccountDeletions(failing, Date.now(), 1);
     }
-    expect(errors.mock.calls.some((c) => String(c[0]).includes("account_deletion_failing"))).toBe(
-      true,
+    expect(errors.mock.calls).toEqual([[{ event: "account_deletion_failing" }]]);
+    expect(warn.mock.calls).toEqual(
+      Array.from({ length: DELETION_ALERT_ATTEMPTS - 1 }, () => [
+        { event: "account_deletion_retry" },
+      ]),
     );
     errors.mockRestore();
     warn.mockRestore();

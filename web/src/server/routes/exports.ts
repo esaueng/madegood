@@ -13,6 +13,7 @@ import {
   recentExports,
   sendExportStep,
 } from "../lib/export-job";
+import { logFailure } from "../lib/logging";
 import { createRouter } from "../lib/router";
 
 // Account export as a background job (lib/export-job.ts): start one, watch its progress,
@@ -182,7 +183,7 @@ exportRoutes.openapi(createRouteDef, async (c) => {
     await sendExportStep(c.env, ctx, firstMessage(result.job));
   } catch (error) {
     // The job stays queued; the scheduled sweep resumes it.
-    console.error("Could not queue the export.", error);
+    logFailure("export_queue_failed", error);
   }
   return c.json(toBody(result.job), 202);
 });

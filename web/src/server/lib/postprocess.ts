@@ -2,6 +2,7 @@ import { z } from "@hono/zod-openapi";
 import { and, asc, eq, gt, isNotNull, isNull, lt, ne, or, type SQL, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
 import { privacyZones, type Session, sessions, users } from "../db/schema";
+import { logFailure } from "./logging";
 import type { Zone } from "./session-privacy";
 import { parseGzippedJson, SHARED_TRACK_MAX_INFLATED_BYTES, TrackTooLarge } from "./track";
 import { boundsCenter, deriveTrack, InvalidTrack, type TrackDerived } from "./track-derived";
@@ -378,12 +379,12 @@ export async function handlePostprocessBatch(
     try {
       const outcome = await processMessage(env, message.body, deps);
       if (outcome === "invalid_message") {
-        console.warn("Dropping a malformed post-processing message.");
+        logFailure("postprocess_message_invalid");
       }
       message.ack();
     } catch (error) {
       if (!(error instanceof RetryLater || error instanceof WindTransientError)) {
-        console.error("Post-processing failed; retrying.", error);
+        logFailure("postprocess_retry", error);
       }
       message.retry({ delaySeconds: retryDelaySeconds(message.attempts) });
     }
@@ -425,7 +426,7 @@ export async function processInline(env: ProcessEnv, messages: PostprocessMessag
         await processSession(env, message);
       }
     } catch (error) {
-      console.warn("Inline post-processing failed.", error);
+      logFailure("postprocess_inline_failed", error);
     }
   }
 }
@@ -473,7 +474,7 @@ export async function sweepPendingZoneChanges(
     try {
       if (await ensureUserRequeued(env, ctx, id)) queued += 1;
     } catch (error) {
-      console.warn("Could not queue a pending zone change; the next sweep retries.", error);
+      logFailure("postprocess_zone_change_queue_failed", error);
     }
   }
   return queued;
