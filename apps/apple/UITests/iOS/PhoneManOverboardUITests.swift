@@ -8,8 +8,42 @@ final class PhoneManOverboardUITests: XCTestCase {
         continueAfterFailure = false
     }
 
+    func testPhoneButtonIsHiddenByDefaultAndCanBeToggled() {
+        let immediateStart = ["-settings.countdown.kayak", "0"]
+        var app = launchDemoApp(extraArguments: immediateStart)
+        XCTAssertTrue(app.buttons["sport.kayak"].waitForExistence(timeout: 15))
+        XCTAssertFalse(element("control.mob", in: app).exists)
+
+        let toggle = openButtonSetting(app)
+        XCTAssertEqual(toggle.value as? String, "0")
+        toggle.switches.firstMatch.tap()
+        XCTAssertEqual(toggle.value as? String, "1")
+        app.tabBars.buttons["Record"].tap()
+        XCTAssertTrue(element("control.mob", in: app).waitForExistence(timeout: 5))
+
+        app = launchDemoApp(extraArguments: immediateStart, resetSettings: false)
+        let mob = element("control.mob", in: app)
+        XCTAssertTrue(mob.waitForExistence(timeout: 15))
+
+        let persistedToggle = openButtonSetting(app)
+        XCTAssertEqual(persistedToggle.value as? String, "1")
+        persistedToggle.switches.firstMatch.tap()
+        XCTAssertEqual(persistedToggle.value as? String, "0")
+        app.tabBars.buttons["Record"].tap()
+        XCTAssertTrue(app.buttons["sport.kayak"].waitForExistence(timeout: 5))
+        XCTAssertTrue(mob.waitForNonExistence(timeout: 5))
+
+        startKayak(app)
+        XCTAssertFalse(mob.exists)
+        app.buttons["control.pause"].tap()
+        let save = app.buttons["control.save"]
+        XCTAssertTrue(save.waitForExistence(timeout: 5))
+        XCTAssertFalse(mob.exists)
+        save.tap()
+    }
+
     func testHoldToMarkShowsTheWayBackAndSurvivesRelaunch() {
-        let app = launchDemoApp(extraArguments: [
+        let app = launchWithPhoneButton(extraArguments: [
             "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryL",
             "-app.appearance", "light",
         ])
@@ -66,7 +100,7 @@ final class PhoneManOverboardUITests: XCTestCase {
     }
 
     func testLargestTextDarkKeepsMOBReachable() {
-        let app = launchDemoApp(extraArguments: [
+        let app = launchWithPhoneButton(extraArguments: [
             "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL",
             "-app.appearance", "dark",
         ])
@@ -92,25 +126,52 @@ final class PhoneManOverboardUITests: XCTestCase {
 
     /// A mark made on the watch during a mirrored session shows on the phone: the demo
     /// mirror carries a mark 150 m north of the demo origin.
-    func testWatchMarkShowsOnThePhone() {
-        let app = launchDemoApp(extraArguments: ["-demoWatchMirror", "-demoWatchMOB", "-app.appearance", "dark"])
+    func testWatchMarkStaysReachableWithPhoneButtonHidden() {
+        var app = launchDemoApp(extraArguments: [
+            "-settings.countdown.kayak", "0", "-demoWatchMirror", "-demoWatchMOB", "-app.appearance", "dark",
+        ])
         startKayak(app, waitForSpeed: false)
         let distance = app.staticTexts["mob.distance"]
         XCTAssertTrue(distance.waitForExistence(timeout: 15))
         attachScreenshot("8 watch mark dark")
         app.buttons["mob.done"].tap()
+        endSession(app)
+        let watchStatus = element("status.watchWorkout", in: app)
+        XCTAssertTrue(watchStatus.waitForExistence(timeout: 15))
         XCTAssertTrue(app.buttons["mob.card"].waitForExistence(timeout: 5))
+        XCTAssertFalse(element("control.mob", in: app).exists)
         app.buttons["mob.card"].tap()
+        XCTAssertTrue(distance.waitForExistence(timeout: 5))
+
+        // Relaunch without the demo watch connection, as if the watch disconnected.
+        app = launchDemoApp(extraArguments: ["-settings.countdown.kayak", "1"], resetSettings: false)
+        let newSession = app.buttons["mob.newSession"]
+        XCTAssertTrue(newSession.waitForExistence(timeout: 15))
+        newSession.tap()
+        let card = app.buttons["mob.card"]
+        XCTAssertTrue(card.waitForExistence(timeout: 5))
+        card.tap()
+        XCTAssertTrue(app.staticTexts["mob.distance"].waitForExistence(timeout: 5))
+        app.buttons["mob.done"].tap()
+        let kayak = app.buttons["sport.kayak"]
+        scrollTo(kayak, in: app)
+        kayak.tap()
+        XCTAssertTrue(element("countdown.time", in: app).waitForExistence(timeout: 10))
+        XCTAssertFalse(element("control.mob", in: app).exists)
+        scrollTo(card, in: app)
+        card.tap()
+        XCTAssertTrue(app.staticTexts["mob.distance"].waitForExistence(timeout: 5))
         clearMark(app)
-        XCTAssertTrue(app.buttons["control.pause"].waitForExistence(timeout: 10))
-        XCTAssertFalse(app.buttons["mob.card"].exists)
+        XCTAssertTrue(app.buttons["countdown.cancel"].waitForExistence(timeout: 10))
+        XCTAssertFalse(card.exists)
+        app.buttons["countdown.cancel"].tap()
     }
 
     /// MOB during a countdown, before any local recording, marks from the phone's own
     /// location; after cancelling, the mark fills the Record tab. Then MOB from the start
     /// screen itself.
     func testMarkDuringACountdownAndFromTheStartScreen() {
-        let app = launchDemoApp(extraArguments: ["-settings.countdown.kayak", "1", "-app.appearance", "light"])
+        let app = launchWithPhoneButton(countdownMinutes: 1, extraArguments: ["-app.appearance", "light"])
         let kayak = app.buttons["sport.kayak"]
         XCTAssertTrue(kayak.waitForExistence(timeout: 15))
         scrollTo(kayak, in: app)
@@ -142,7 +203,7 @@ final class PhoneManOverboardUITests: XCTestCase {
     /// MOB during a mirrored watch session, with no local recording: the phone marks from
     /// its own location and keeps showing the watch's session.
     func testMarkDuringAMirroredWatchSession() {
-        let app = launchDemoApp(extraArguments: ["-demoWatchMirror", "-app.appearance", "dark"])
+        let app = launchWithPhoneButton(extraArguments: ["-demoWatchMirror", "-app.appearance", "dark"])
         startKayak(app, waitForSpeed: false)
         endSession(app)
         let watchStatus = element("status.watchWorkout", in: app)
@@ -165,7 +226,7 @@ final class PhoneManOverboardUITests: XCTestCase {
     /// With location denied, a MOB press says so at once, offers Settings, and keeps the
     /// press waiting rather than failing silently.
     func testDeniedLocationIsShownAtOnce() {
-        let app = launchDemoApp(extraArguments: ["-demoLocationIssue", "denied", "-app.appearance", "light"])
+        let app = launchWithPhoneButton(extraArguments: ["-demoLocationIssue", "denied", "-app.appearance", "light"])
         let mob = element("control.mob", in: app)
         XCTAssertTrue(mob.waitForExistence(timeout: 15))
         mob.press(forDuration: 1.2)
@@ -176,6 +237,24 @@ final class PhoneManOverboardUITests: XCTestCase {
         attachScreenshot("14 location denied")
         clearMark(app)
         XCTAssertTrue(app.buttons["sport.kayak"].waitForExistence(timeout: 10))
+    }
+
+    private func openButtonSetting(_ app: XCUIApplication) -> XCUIElement {
+        let settings = app.tabBars.buttons["Settings"]
+        XCTAssertTrue(settings.waitForExistence(timeout: 15))
+        settings.tap()
+        let toggle = app.switches["settings.showManOverboardButton"]
+        scrollTo(toggle.switches.firstMatch, in: app)
+        return toggle
+    }
+
+    private func launchWithPhoneButton(countdownMinutes: Int = 0, extraArguments: [String]) -> XCUIApplication {
+        let app = launchDemoApp(extraArguments: ["-settings.countdown.kayak", String(countdownMinutes)] + extraArguments)
+        let toggle = openButtonSetting(app)
+        toggle.switches.firstMatch.tap()
+        XCTAssertEqual(toggle.value as? String, "1")
+        app.tabBars.buttons["Record"].tap()
+        return app
     }
 
     private func startKayak(_ app: XCUIApplication, waitForSpeed: Bool = true) {

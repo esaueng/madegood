@@ -19,6 +19,8 @@ enum UserSettings {
         static let legacyPhoneSport = "recorder.sport"
         /// iPhone only, device-local: System, Light or Dark (`Appearance`).
         static let appearance = "app.appearance"
+        /// iPhone only, device-local: whether Record shows the man-overboard button.
+        static let showManOverboardButton = "app.showManOverboardButton"
         /// iPhone only, device-local: the start screen's sports in the order the user
         /// dragged them (raw values); absent for most recently used first.
         static let startOrder = "start.order"
@@ -183,7 +185,8 @@ enum UserSettings {
             guard ProcessInfo.processInfo.arguments.contains("-resetSettings") else { return }
             var keys =
                 SettingsSync.storedKeys + [
-                    SettingsSync.Key.highestSeen, Key.appearance, Key.startOrder, Key.localWeather, Key.lastWeather,
+                    SettingsSync.Key.highestSeen, Key.appearance, Key.showManOverboardButton, Key.startOrder,
+                    Key.localWeather, Key.lastWeather,
                 ]
             for sport in Sport.allCases {
                 keys += [Key.lastUsed(sport), Key.lastDistance(sport), Key.lastDate(sport)]
