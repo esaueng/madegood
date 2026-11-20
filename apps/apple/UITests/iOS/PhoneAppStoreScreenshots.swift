@@ -2,8 +2,7 @@ import XCTest
 
 /// The iPhone App Store screenshot set, from synthetic demo data only (`-demoSession`,
 /// `-demoHistory`, canned weather). `scripts/app-store-screenshots` runs this class on the
-/// largest iPhone simulator and exports the attachments named `appstore NN-name`; CI runs
-/// it too, so the tour keeps working as the screens change.
+/// largest iPhone simulator and exports the attachments named `appstore NN-name`.
 final class PhoneAppStoreScreenshots: XCTestCase {
     override func setUp() {
         continueAfterFailure = false
@@ -69,9 +68,9 @@ final class PhoneAppStoreScreenshots: XCTestCase {
         sleep(1)
         attachAppStoreScreenshot("05-session-stats")
 
-        // The demo build answers for Open-Meteo without the network, which tells tacks
+        // The demo build answers for Apple Weather without the network, which tells tacks
         // from gybes and gives upwind VMG.
-        let fetch = app.buttons["moments.openMeteo.fetch"]
+        let fetch = app.buttons["moments.appleWeather.fetch"]
         scrollTo(fetch, in: app, column: 0.06)
         fetch.tap()
         let tack = app.buttons.matching(

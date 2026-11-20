@@ -12,7 +12,7 @@ final class PhoneSailingUITests: XCTestCase {
 
     @MainActor
     func testLiveSailingCard() {
-        let app = launchDemoApp(extraArguments: ["-demoTacks", "-app.appearance", "light"])
+        let app = launchDemoApp(extraArguments: ["-demoTacks", "-demoOmitMapKit", "-app.appearance", "light"])
         let start = app.buttons["sport.sailing"]
         XCTAssertTrue(start.waitForExistence(timeout: 15))
         scrollTo(start, in: app)

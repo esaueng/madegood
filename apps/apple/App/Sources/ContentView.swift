@@ -727,7 +727,7 @@ private struct LiveView: View {
                     PingFailedBanner(end: failed) { startLine.dismissFailedAtStart() }
                 }
                 if let recorder, let startedAt {
-                    if first == .map {
+                    if first == .map && !DemoFeed.omitMapKit {
                         LiveTrackMap(points: recorder.trackPoints, manOverboard: manOverboard.mark)
                             .frame(height: 260)
                             .clipShape(.rect(cornerRadius: 16))
@@ -737,7 +737,7 @@ private struct LiveView: View {
                         metricCards(display: display, readings: readings, elapsed: context.date.timeIntervalSince(startedAt))
                     }
                     motorboatPage(display: display, readings: readings)
-                    if first != .map {
+                    if first != .map && !DemoFeed.omitMapKit {
                         LiveTrackMap(points: recorder.trackPoints, manOverboard: manOverboard.mark)
                             .frame(height: 180)
                             .clipShape(.rect(cornerRadius: 16))
