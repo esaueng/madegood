@@ -3,13 +3,14 @@ import Observation
 import SwiftUI
 import WaterKit
 
-/// Observable per-sport settings for the UI on both devices. Reads and writes go through
+/// Observable synced settings for the UI on both devices. Reads and writes go through
 /// `UserSettings`; every change is sent to the other device.
 @MainActor
 @Observable
 final class SettingsStore {
     static let shared = SettingsStore()
 
+    private(set) var heartRateZones = HeartRateZones()
     private(set) var sports: [Sport: SportSettings] = [:]
     private(set) var lastUsed: [Sport: Double] = [:]
     private(set) var lastSessions: [Sport: UserSettings.LastSession] = [:]
@@ -26,6 +27,7 @@ final class SettingsStore {
     }
 
     func reload() {
+        heartRateZones = UserSettings.heartRateZones
         sports = Dictionary(uniqueKeysWithValues: Sport.allCases.map { ($0, UserSettings.settings(for: $0)) })
         lastUsed = UserSettings.lastUsed()
         startOrder = UserSettings.startOrder
@@ -47,6 +49,13 @@ final class SettingsStore {
         guard settings != self[sport] else { return }
         UserSettings.save(settings, for: sport)
         sports[sport] = settings
+        RecordingTransfer.shared.pushSettings()
+    }
+
+    func updateHeartRateZones(_ zones: HeartRateZones) {
+        guard zones != heartRateZones else { return }
+        UserSettings.save(zones)
+        heartRateZones = zones
         RecordingTransfer.shared.pushSettings()
     }
 

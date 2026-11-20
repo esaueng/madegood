@@ -12,7 +12,7 @@ const app = createApp();
 /** wrangler.jsonc `queues.consumers`: account exports have their own queue (batch size 1). */
 export const EXPORTS_QUEUE = "madegood-exports";
 
-/** Page requests the Worker sees (/s/*, /v/*) and the web sign-in entry point on another
+/** Page requests the Worker sees (/s/*, /u/*, /v/*) and the web sign-in entry point on another
  * host move to CANONICAL_ORIGIN, so Apple gets the registered return URL and cookies land on
  * the canonical host. The rest of the API keeps answering on every host: older app builds sync
  * to the workers.dev address, and a redirect would turn their uploads into GETs. Local hosts

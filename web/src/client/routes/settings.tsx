@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { createFileRoute } from "@tanstack/react-router";
-import { Download, LocateFixed, Trash2, TriangleAlert } from "lucide-react";
+import { createFileRoute, Link } from "@tanstack/react-router";
+import { Download, Globe, LocateFixed, Trash2, TriangleAlert } from "lucide-react";
 import { lazy, Suspense, useState } from "react";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { VISIBILITY } from "@/components/visibility";
@@ -61,11 +61,39 @@ function Settings() {
   return (
     <div className="grid gap-10 py-6">
       <h1 className="text-2xl font-semibold">Settings</h1>
+      <PublicProfile me={me} />
       <Preferences me={me} />
+      <section>
+        <h2 className="text-lg font-semibold">Heart rate zones</h2>
+        <p className="mt-1 max-w-prose text-sm text-muted-foreground">
+          Set your maximum heart rate and zone thresholds in MadeGood on iPhone under Settings →
+          Heart Rate Zones. These settings apply to all sports and sync to your Apple Watch.
+        </p>
+      </section>
       <Zones />
       <ExportData />
       <DeleteAccount me={me} onDeleted={() => setDeleted(true)} />
     </div>
+  );
+}
+
+function PublicProfile({ me }: { me: Me }) {
+  return (
+    <section className="grid gap-2">
+      <h2 className="text-lg font-semibold">Public profile</h2>
+      <p className="max-w-prose text-sm text-muted-foreground">
+        Your name, handle and the sessions you make public, with their totals. Private and unlisted
+        sessions never appear there, and nobody else can open it until you have a public session.
+      </p>
+      <Link
+        to="/u/$handle"
+        params={{ handle: me.handle }}
+        className="inline-flex w-fit max-w-full items-center gap-1.5 truncate text-sm font-medium text-primary underline-offset-4 hover:underline"
+      >
+        <Globe className="size-3.5 shrink-0" aria-hidden />
+        <span className="truncate">/u/{me.handle}</span>
+      </Link>
+    </section>
   );
 }
 
