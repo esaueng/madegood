@@ -33,12 +33,11 @@ import {
   InvalidTrack,
   lonRange,
 } from "../src/server/lib/track-derived";
-import { fetchWind, WindTransientError, windRequest } from "../src/server/lib/wind";
 import { api, bearer, type SignIn, signIn } from "./apple";
-import { steadyWest } from "./open-meteo";
+import { steadyWest } from "./weatherkit";
 
-// Synthetic data only (AGENTS.md): positions near 0,0 and dates in 2000.
-const START = "2000-01-01T10:00:00.000Z";
+// Synthetic data only (AGENTS.md): positions near 0,0 and dates in 2022.
+const START = "2022-01-01T10:00:00.000Z";
 const START_MS = Date.parse(START);
 /** About 111 m of latitude per 0.001°. */
 const DEG_PER_M = 1 / 111_195;
@@ -80,7 +79,7 @@ const json = (method: string, body: unknown, token: string) => ({
   body: JSON.stringify(body),
 });
 
-const metadata = { sport: "kayak", startedAt: START, endedAt: "2000-01-01T11:00:00.000Z" };
+const metadata = { sport: "kayak", startedAt: START, endedAt: "2022-01-01T11:00:00.000Z" };
 
 async function upload(owner: SignIn, id: string, body: unknown, revision = 0) {
   const query = revision > 0 ? `?revision=${revision}` : "";
@@ -187,74 +186,6 @@ describe("derived track data", () => {
   });
 });
 
-describe("Open-Meteo wind", () => {
-  const window = { startedAt: START_MS, endedAt: START_MS + 3600_000 };
-
-  it("sends only a rounded position, the UTC dates and the fixed variables", () => {
-    const url = windRequest({ lat: 0.12345, lon: -0.06789 }, window, START_MS + 86_400_000);
-    expect(url?.origin).toBe("https://api.open-meteo.com");
-    expect(Object.fromEntries(url?.searchParams ?? [])).toEqual({
-      latitude: "0.1",
-      longitude: "-0.1",
-      start_date: "2000-01-01",
-      end_date: "2000-01-01",
-      hourly: "wind_speed_10m,wind_direction_10m,wind_gusts_10m",
-      wind_speed_unit: "ms",
-      timeformat: "unixtime",
-      timezone: "GMT",
-    });
-    // Older sessions come from the reanalysis archive.
-    expect(windRequest({ lat: 0, lon: 0 }, window, START_MS + 365 * 86_400_000)?.origin).toBe(
-      "https://archive-api.open-meteo.com",
-    );
-    expect(windRequest({ lat: 0, lon: 0 }, { startedAt: 2, endedAt: 1 })).toBeNull();
-  });
-
-  it("summarizes the hours around the session", async () => {
-    const url = windRequest({ lat: 0, lon: 0 }, window, START_MS + 86_400_000) as URL;
-    const wind = await fetchWind(
-      url,
-      window,
-      async (input) => steadyWest(new URL(String(input))),
-      1,
-    );
-    expect(wind).toMatchObject({
-      status: "ok",
-      source: "open-meteo-forecast",
-      directionDeg: 270,
-      speedMps: 5,
-      gustMps: 7,
-      fetchedAt: 1,
-    });
-    // 09:00 to 12:00: the hour before the start through the hour after the end.
-    expect(wind.status === "ok" && wind.samples.map((s) => new Date(s.t).getUTCHours())).toEqual([
-      9, 10, 11, 12,
-    ]);
-  });
-
-  it("retries rate limits and outages, but not answers that will not change", async () => {
-    const url = windRequest({ lat: 0, lon: 0 }, window) as URL;
-    const answer = (response: Response) => async () => response;
-    await expect(fetchWind(url, window, answer(new Response("", { status: 429 })))).rejects.toThrow(
-      WindTransientError,
-    );
-    await expect(fetchWind(url, window, answer(new Response("", { status: 502 })))).rejects.toThrow(
-      WindTransientError,
-    );
-    await expect(
-      fetchWind(url, window, async () => {
-        throw new TypeError("network");
-      }),
-    ).rejects.toThrow(WindTransientError);
-    expect(await fetchWind(url, window, answer(new Response("{}", { status: 400 })))).toMatchObject(
-      { status: "unavailable", reason: "http_400" },
-    );
-    expect(
-      await fetchWind(url, window, answer(Response.json({ hourly: { time: "x" } }))),
-    ).toMatchObject({ status: "unavailable", reason: "unexpected_response" });
-  });
-});
-
 describe("upload post-processing", { timeout: 30_000 }, () => {
   it("is queued by a track upload and derives the bounds and times", async () => {
     const owner = await signIn();
@@ -266,7 +197,7 @@ describe("upload post-processing", { timeout: 30_000 }, () => {
       processing: "done",
       bounds: { south: 0, west: 0, east: 0 },
       trackStartedAt: START,
-      trackEndedAt: "2000-01-01T10:16:30.000Z",
+      trackEndedAt: "2022-01-01T10:16:30.000Z",
       wind: null,
     });
     expect((await row(id)).startGeohash).toBe("s0000");
@@ -292,10 +223,69 @@ describe("upload post-processing", { timeout: 30_000 }, () => {
     const theirs = await getSession(null, id);
     expect((theirs.bounds as { south: number }).south).toBeGreaterThan(300 * DEG_PER_M);
     expect(theirs.wind).toMatchObject({
-      source: "open-meteo-archive",
+      source: "weatherkit",
       directionDeg: 270,
       speedMps: 5,
     });
+  });
+
+  it("acks a shared session without WeatherKit secrets and leaves wind unset", async () => {
+    const owner = await signIn();
+    const id = crypto.randomUUID();
+    await upload(owner, id, track(id, line(10)));
+    await waitUntilProcessed(owner.accessToken, id);
+    await drizzle(env.DB)
+      .update(sessions)
+      .set({ visibility: "unlisted" })
+      .where(eq(sessions.id, id));
+    const batch = createMessageBatch("madegood-postprocess", [
+      { id: "unconfigured", timestamp: new Date(), attempts: 1, body: await messageFor(id) },
+    ]);
+    await handlePostprocessBatch(
+      batch,
+      { ...env, WEATHERKIT_SERVICE_ID: undefined },
+      {
+        fetch: noFetch,
+      },
+    );
+    const result = await getQueueResult(batch, createExecutionContext());
+    expect(result.explicitAcks).toEqual(["unconfigured"]);
+    expect(result.retryMessages).toEqual([]);
+    expect(noFetch).not.toHaveBeenCalled();
+    expect((await row(id)).windJson).toBeNull();
+  });
+
+  it("serves wind from unversioned session rows with its original source", async () => {
+    const owner = await signIn();
+    const id = crypto.randomUUID();
+    await upload(owner, id, track(id, line(10)));
+    await waitUntilProcessed(owner.accessToken, id);
+    const sample = { t: START_MS, directionDeg: 270, speedMps: 5, gustMps: null };
+    const stored = {
+      status: "ok",
+      source: "open-meteo-archive",
+      directionDeg: 270,
+      speedMps: 5,
+      gustMps: null,
+      samples: [sample],
+      fetchedAt: START_MS,
+    };
+    await drizzle(env.DB)
+      .update(sessions)
+      .set({ visibility: "unlisted", windJson: JSON.stringify(stored) })
+      .where(eq(sessions.id, id));
+    expect((await getSession(null, id)).wind).toEqual({
+      source: stored.source,
+      directionDeg: 270,
+      speedMps: 5,
+      gustMps: null,
+      samples: [{ ...sample, t: START }],
+      fetchedAt: START,
+    });
+    expect(await processSession(env, await messageFor(id), { fetch: noFetch })).toBe(
+      "skipped_done",
+    );
+    expect(noFetch).not.toHaveBeenCalled();
   });
 
   it("never asks for wind for a private session", async () => {
@@ -429,7 +419,7 @@ describe("upload post-processing", { timeout: 30_000 }, () => {
     expect((await row(id)).windJson).toBeNull();
     expect([1, 2, 5, 10].map(retryDelaySeconds)).toEqual([30, 60, 480, 3600]);
 
-    // The Worker's own queue handler, with Open-Meteo answering again.
+    // The Worker's own queue handler, with WeatherKit answering again.
     const retried = createMessageBatch("madegood-postprocess", [
       { id: "c", timestamp: new Date(), attempts: 4, body: message },
     ]);
@@ -734,7 +724,7 @@ describe("scoped re-check of #72", { timeout: 30_000 }, () => {
     expect((await getSession(null, id)).wind).toBeNull();
     expect((await getSession(owner.accessToken, id)).wind).not.toBeNull();
 
-    // A zone added while Open-Meteo answers: the answer is not stored.
+    // A zone added while WeatherKit answers: the answer is not stored.
     await drizzle(env.DB)
       .update(sessions)
       .set({ publicZonesVersion: null, windJson: null })
@@ -763,12 +753,12 @@ describe("scoped re-check of #72", { timeout: 30_000 }, () => {
     if (after.windJson !== null) expect(after.publicMinLat).toBeGreaterThan(300 * DEG_PER_M);
   });
 
-  it("asks for wind on the dates others can see, not the hidden start's", async () => {
+  it("uses the visible fixes to build the WeatherKit time range", async () => {
     const owner = await signIn();
     expect((await addZone(owner.accessToken)).status).toBe(201);
     const id = crypto.randomUUID();
     // Starts at 23:57 UTC; the zone hides the first 300 s, past midnight.
-    const doc = { ...track(id, line(100)), startedAt: "2000-01-01T23:57:00.000Z" };
+    const doc = { ...track(id, line(100)), startedAt: "2022-01-01T23:57:00.000Z" };
     await upload(owner, id, doc);
     await waitUntilProcessed(owner.accessToken, id);
     await drizzle(env.DB)
@@ -782,7 +772,9 @@ describe("scoped re-check of #72", { timeout: 30_000 }, () => {
       return steadyWest(url);
     });
     await processSession(env, await messageFor(id), { fetch: capture });
-    expect(urls.map((u) => u.searchParams.get("start_date"))).toEqual(["2000-01-02"]);
+    expect(urls.map((u) => u.searchParams.get("hourlyStart"))).toEqual([
+      "2022-01-01T23:00:00.000Z",
+    ]);
   });
 
   it("does nothing when deleting an unknown zone", async () => {

@@ -56,13 +56,17 @@ bundle prefix `app.madegood` (forks override it in `Local.xcconfig`) · GitHub r
 | Data | D1 (Drizzle ORM) for metadata, R2 for track files, Queues for post-upload jobs |
 | API contract | Zod schemas → OpenAPI (`@hono/zod-openapi`) → Swift client (`swift-openapi-generator`) |
 | Auth | Sign in with Apple (iOS + web), our own JWT access + refresh tokens |
-| Weather | Apple WeatherKit on iPhone, Open-Meteo for post-upload wind in the Worker |
+| Weather | Apple WeatherKit on iPhone and for post-upload wind in the Worker |
 | Tooling | pnpm workspaces, Biome, Vitest + `@cloudflare/vitest-pool-workers`, swift-format, GitHub Actions |
 | Minimum OS | iOS 26 / watchOS 26 (needed for iPhone-only workout sessions) |
 
+**Weather provider decision.** Apple WeatherKit is the sole weather provider. The
+Worker uses the WeatherKit REST API for shared-session wind when the owner of the
+deployment configures Apple credentials.
+
 The iPhone uses Apple WeatherKit for local conditions and the optional sailing wind
 comparison. It sends a fixed 0.1° × 0.1° grid cell (about 11 km per side at the equator)
-instead of an exact GPS fix. The Worker still uses Open-Meteo for post-upload wind.
+instead of an exact GPS fix.
 
 ---
 
@@ -373,7 +377,7 @@ GET    /api/live/:slug             WebSocket for viewers (respects share delay)
 - Auth: verify the Apple identity token against Apple's public keys with `jose`; issue a
   15-minute access JWT plus a rotating refresh token (stored hashed). The web uses an
   HttpOnly cookie.
-- Queue consumer: fetch Open-Meteo wind for the session time and area, compute
+- Queue consumer: fetch Apple Weather wind for the session time and area, compute
   bbox/geohash, and later render a static map thumbnail for Open Graph previews.
 - Rate limits on auth and upload with the Workers rate limiting binding.
 

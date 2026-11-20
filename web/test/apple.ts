@@ -2,7 +2,7 @@ import { env, exports } from "cloudflare:workers";
 import { decodeJwt, exportJWK, generateKeyPair, SignJWT } from "jose";
 import { vi } from "vitest";
 import { DELETION_GRACE_MS, runAccountDeletion } from "../src/server/lib/account-deletion";
-import { openMeteo } from "./open-meteo";
+import { steadyWest } from "./weatherkit";
 
 // A stand-in for Apple's signing key. The Worker fetches the "Apple" JWKS from a mocked
 // fetch, so tests never reach appleid.apple.com.
@@ -16,8 +16,6 @@ const jwks = {
 };
 
 const realFetch = globalThis.fetch;
-/** The hosts lib/wind.ts calls; answered by the stand-in in test/open-meteo.ts. */
-const OPEN_METEO_HOSTS = new Set(["api.open-meteo.com", "archive-api.open-meteo.com"]);
 export const jwksRequests: string[] = [];
 vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
   const url = input instanceof Request ? input.url : String(input);
@@ -25,7 +23,7 @@ vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     jwksRequests.push(url);
     return Response.json(jwks);
   }
-  if (OPEN_METEO_HOSTS.has(new URL(url).hostname)) return openMeteo(new URL(url));
+  if (new URL(url).hostname === "weatherkit.apple.com") return steadyWest(new URL(url));
   return realFetch(input, init);
 });
 

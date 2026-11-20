@@ -1,3 +1,4 @@
+import { generateKeyPairSync } from "node:crypto";
 import path from "node:path";
 import { cloudflareTest, readD1Migrations } from "@cloudflare/vitest-plugin";
 import { defineConfig } from "vitest/config";
@@ -6,6 +7,7 @@ import { defineConfig } from "vitest/config";
 // without the client build plugins.
 export default defineConfig(async () => {
   const migrations = await readD1Migrations(path.join(import.meta.dirname, "migrations"));
+  const { privateKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
   return {
     plugins: [
       cloudflareTest({
@@ -24,6 +26,10 @@ export default defineConfig(async () => {
           },
           bindings: {
             TEST_MIGRATIONS: migrations,
+            WEATHERKIT_PRIVATE_KEY: privateKey.export({ format: "pem", type: "pkcs8" }).toString(),
+            WEATHERKIT_KEY_ID: "test-weather-key",
+            WEATHERKIT_TEAM_ID: "test-weather-team",
+            WEATHERKIT_SERVICE_ID: "test.weatherkit",
             VOYAGE_LIVE_LOCAL: "1",
             VOYAGE_PRIVATE_LOCAL: "1",
             // The website's Sign in with Apple Services ID (a placeholder).

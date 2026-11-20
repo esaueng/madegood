@@ -118,8 +118,38 @@ A refresh token replayed within 30 s across the change counts as reuse and signs
 user out.
 
 Sign-in fetches Apple's public keys from `https://appleid.apple.com/auth/keys` and
-caches them in memory for an hour. No Apple private key is needed: the Worker only
-verifies identity tokens.
+caches them in memory for an hour. Sign in with Apple identity-token verification uses only public keys.
+
+### Enable WeatherKit wind
+
+Shared-session wind is optional. In the Apple Developer portal, open **Certificates,
+Identifiers & Profiles**. Under **Identifiers**, create a **Services ID** or choose
+one already registered to your team, and record its identifier. Under **Keys**,
+register a key with **WeatherKit** enabled, download its `.p8` file, and record
+its Key ID. Find your Team ID in the Apple Developer account's membership details.
+Use the same team for the key and Services ID. See [Apple's WeatherKit setup guide](https://developer.apple.com/documentation/weatherkitrestapi/request-authentication-for-weatherkit-rest-api).
+
+Set these four Worker secrets from `web/`:
+
+| Secret | Value |
+|---|---|
+| `WEATHERKIT_PRIVATE_KEY` | Entire downloaded `.p8` file, including the PEM delimiters |
+| `WEATHERKIT_KEY_ID` | Key ID shown for the WeatherKit key |
+| `WEATHERKIT_TEAM_ID` | Apple Developer Team ID |
+| `WEATHERKIT_SERVICE_ID` | Registered Services ID identifier |
+
+```sh
+pnpm exec wrangler secret put WEATHERKIT_PRIVATE_KEY < /path/to/key.p8
+pnpm exec wrangler secret put WEATHERKIT_KEY_ID
+pnpm exec wrangler secret put WEATHERKIT_TEAM_ID
+pnpm exec wrangler secret put WEATHERKIT_SERVICE_ID
+```
+
+Set them directly on each Worker that should fetch wind (add `--env preview` to
+enable it on the preview Worker). For local development use the same names in the
+gitignored `web/.dev.vars`, with the key quoted as multiline PEM or with escaped
+newlines. A missing value skips the lookup without retrying or writing a wind result.
+The rest of post-processing still runs.
 
 ## Deploying
 
@@ -206,7 +236,7 @@ After a track upload (`PUT /api/sessions/:id/track`) the Worker sends a message 
   in the shared track, which is all anyone else ever gets;
 - the first and last GPS fix times: the whole track's for the owner, and separately
   the first and last fix others may see, which is all they get;
-- for public and unlisted sessions only, hourly modelled wind from Open-Meteo.
+- for public and unlisted sessions only, hourly modelled wind from Apple Weather when configured.
 
 The session's `processing` field reports `pending`, `done`, `too_large` or `invalid`.
 Tracks above the shared-track caps (8 MiB inflated or 500,000 fixes) are `too_large`
@@ -234,7 +264,7 @@ sweep (`triggers.crons`, every 30 minutes) queues any that are left. Adding a zo
 cannot be queued is undone and answers 503; removing one answers 503 but needs no
 retry. Removing a zone that does not exist changes nothing.
 
-**Retries and dead letters.** A failure (D1, R2, an Open-Meteo outage or rate limit)
+**Retries and dead letters.** A failure (D1, R2, a WeatherKit outage or rate limit)
 is retried after 30 s, 1, 2, 4 and 8 minutes. After 5 retries the message moves to
 `madegood-postprocess-dlq`, which has no consumer: inspect it in the dashboard (Queues
 › madegood-postprocess-dlq) and, once the cause is fixed, either re-upload the track
@@ -251,24 +281,31 @@ reprocesses at most 20 sessions (a `waitUntil` gets about 30 s). The others show
 public data until their next upload or zone change. A self-hosted copy can drop the
 `queues` block the same way.
 
-### What is sent to Open-Meteo
+### What is sent to Apple Weather
 
-Wind is fetched only while a session is public or unlisted; private sessions never
-cause a request (sharing a session later queues the lookup). Visibility is read again
-right before each request, and the answer is stored only if the session is still
-shared. Each request to
-`api.open-meteo.com` (sessions that ended within 60 days) or `archive-api.open-meteo.com`
-(older ones) carries only:
+The Worker requests wind while a session is public or unlisted. Sharing a session
+later queues the lookup. The Worker checks visibility again before requesting data
+and writes the answer only while the session is still shared and its track and
+privacy-zone data are current.
 
-- one position: the center of the session's **public** bounds, rounded to 0.1°
-  (about 11 km), so no point inside a privacy zone shapes it;
-- the UTC calendar dates of the first and last fix others may see (no time of day);
-- the fixed variables `wind_speed_10m,wind_direction_10m,wind_gusts_10m` with
-  `wind_speed_unit=ms`, `timeformat=unixtime`, `timezone=GMT`.
+Each GET to `weatherkit.apple.com/api/v1/weather/en/<latitude>/<longitude>` sends:
 
-No account, session ID, track, title or API key is sent. Open-Meteo's free API is for
-non-commercial use; a commercial deployment needs its own Open-Meteo plan. Wind is a
-model value for the area, shown as such, and not for navigation.
+- the center of the session's public track bounds, after privacy zone cuts, rounded
+  to a 0.1° grid (about 11 km);
+- `hourlyStart` and `hourlyEnd` as whole UTC-hour boundaries derived from the first
+  and last visible GPS fixes. The requested samples span the hour before the start
+  through the hour after the end, with an exclusive end boundary and WeatherKit's
+  historical and forecast limits;
+- `dataSets=forecastHourly`, `timezone=UTC`, and `Accept: application/json`;
+- a Bearer JWT containing the deployment's Apple key, team, and Services ID
+  identifiers and the token's issue and expiry times. The Worker signs the JWT
+  locally and retains the private key in its secret binding.
+
+The request carries no MadeGood account or session ID, track, title, exact fix
+coordinates or exact fix timestamps. Apple Weather supplies modelled values for
+the area. The session page displays these with Apple Weather attribution and the
+not-for-navigation label. Previously stored wind stays available in the API and
+account exports with its original source.
 
 ## Account export
 

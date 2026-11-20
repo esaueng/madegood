@@ -33,7 +33,7 @@ import {
   TrackTooLarge,
   trackKey,
 } from "../lib/track";
-import type { StoredWind } from "../lib/wind";
+import { readStoredWind, WindSource } from "../lib/wind";
 
 type SessionsEnv = {
   Bindings: Env;
@@ -188,7 +188,7 @@ const BoundsBody = z
 const nullableNumber = z.number().nullable();
 const WindBody = z
   .object({
-    source: z.enum(["open-meteo-forecast", "open-meteo-archive"]),
+    source: WindSource,
     directionDeg: nullableNumber.openapi({
       description: "Mean direction the wind blows from, degrees true.",
     }),
@@ -248,7 +248,7 @@ const SessionBody = z
     }),
     wind: WindBody.nullable().openapi({
       description:
-        "Modelled wind from Open-Meteo for the session's time and area, fetched only while " +
+        "Modelled wind for the session's time and area, fetched only while " +
         "the session is public or unlisted. Null when not fetched or not available.",
     }),
     isOwner: z.boolean().openapi({ description: "Whether the caller owns the session." }),
@@ -340,9 +340,8 @@ function boundsOf(session: Session, owner: boolean): z.infer<typeof BoundsBody> 
 }
 
 function windOf(session: Session): z.infer<typeof WindBody> | null {
-  if (session.windJson === null) return null;
-  const wind = JSON.parse(session.windJson) as StoredWind;
-  if (wind.status !== "ok") return null;
+  const wind = readStoredWind(session.windJson);
+  if (!wind) return null;
   return {
     source: wind.source,
     directionDeg: wind.directionDeg,

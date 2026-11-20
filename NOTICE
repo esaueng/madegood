@@ -14,3 +14,6 @@ Third-party components bundled with the website's Worker:
   web/src/server/og/fonts/ with the license text (OFL.txt).
 - resvg-wasm (https://github.com/thx/resvg-js), licensed under the Mozilla
   Public License 2.0, used unmodified from npm.
+- Apple Weather attribution marks, provided by Apple's WeatherKit attribution
+  endpoint (https://weatherkit.apple.com/attribution/en). Apple Weather and
+  the Apple Weather mark are trademarks of Apple Inc.

@@ -707,7 +707,8 @@
             "type": "string",
             "enum": [
               "open-meteo-forecast",
-              "open-meteo-archive"
+              "open-meteo-archive",
+              "weatherkit"
             ]
           },
           "directionDeg": {
@@ -780,7 +781,7 @@
           "samples",
           "fetchedAt"
         ],
-        "description": "Modelled wind from Open-Meteo for the session's time and area, fetched only while the session is public or unlisted. Null when not fetched or not available."
+        "description": "Modelled wind for the session's time and area, fetched only while the session is public or unlisted. Null when not fetched or not available."
       },
       "PutSessionRequest": {
         "type": "object",

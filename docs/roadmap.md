@@ -76,7 +76,7 @@ screen reordering and conditions (#75, #90), brand and app icon (#83).
 | Task | Status | Pull requests |
 |---|---|---|
 | 1. Paddling stroke detection and sport page | ✅ | #59; stroke-based intervals: #102 |
-| 2. Sailing maneuvers, wind estimate (+ Open-Meteo), VMG, sport page | ✅ | #54, #67 |
+| 2. Sailing maneuvers, wind estimate (+ Apple Weather), VMG, sport page | ✅ | #54, #67 |
 | 3. Race countdown and start line | ✅ | countdown: #39, #40; start line: #77 |
 | 4. Windsurf speed categories and speed page | ✅ | #57; planing time and gybes: #100 |
 | 5. Motorboat profile: nm log, fuel estimate, anchor alarm | ✅ | #60; anchor alarm: #101 |

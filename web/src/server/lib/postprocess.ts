@@ -6,7 +6,16 @@ import { logFailure } from "./logging";
 import type { Zone } from "./session-privacy";
 import { parseGzippedJson, SHARED_TRACK_MAX_INFLATED_BYTES, TrackTooLarge } from "./track";
 import { boundsCenter, deriveTrack, InvalidTrack, type TrackDerived } from "./track-derived";
-import { fetchWind, type StoredWind, WindTransientError, windRequest } from "./wind";
+import {
+  fetchWind,
+  type StoredWind,
+  unavailableWind,
+  type WeatherKitCredentials,
+  WindTransientError,
+  weatherKitCredentials,
+  weatherKitToken,
+  windRequest,
+} from "./wind";
 
 // Upload post-processing (docs/PLAN.md §7). A track upload enqueues one message per
 // (session, revision, track ETag); the consumer derives the bounds, start geohash and time
@@ -132,7 +141,8 @@ export type ProcessDeps = {
   hooks?: { afterDerive?: () => Promise<void>; beforeWind?: () => Promise<void> };
 };
 
-type ProcessEnv = Pick<Env, "DB" | "TRACKS"> & { POSTPROCESS?: Queue<PostprocessMessage> };
+type ProcessEnv = Pick<Env, "DB" | "TRACKS"> &
+  WeatherKitSecrets & { POSTPROCESS?: Queue<PostprocessMessage> };
 
 /**
  * Processes one message. Returns the outcome, or throws when the message should be
@@ -157,7 +167,7 @@ export async function processMessage(
 const ZONE_RACE_ATTEMPTS = 3;
 
 export async function processSession(
-  env: Pick<Env, "DB" | "TRACKS">,
+  env: ProcessEnv,
   raw: unknown,
   deps: ProcessDeps = {},
 ): Promise<Outcome> {
@@ -251,7 +261,9 @@ export async function processSession(
   if (!needsWind(session)) return outcome;
   const version = session.publicZonesVersion;
   if (version === null) return outcome;
-  const wind = await lookupWind(db, session, current, deps);
+  const credentials = weatherKitCredentials(env);
+  if (!credentials) return outcome;
+  const wind = await lookupWind(db, session, current, credentials, deps);
   if (!wind) return outcome;
   // Wind is public data like the bounds: it is stored only while the row still holds this
   // processed track, is still shared, has none, and its public data is still at the
@@ -277,15 +289,19 @@ export const needsWind = (s: Pick<Session, "visibility" | "windJson" | "publicMi
   s.visibility !== "private" && s.windJson === null && s.publicMinLat !== null;
 
 /**
- * Re-reads the row right before calling Open-Meteo, so a session made private (or whose
+ * Re-reads the row right before calling WeatherKit, so a session made private (or whose
  * data was replaced) since the snapshot causes no request. Null when none is made.
  */
 async function lookupWind(
   db: Db,
   snapshot: Session,
   current: SQL | undefined,
+  credentials: WeatherKitCredentials,
   deps: ProcessDeps,
 ): Promise<StoredWind | null> {
+  const now = deps.now?.() ?? Date.now();
+  // Complete asynchronous signing before the final visibility and track check.
+  const token = await weatherKitToken(credentials, now);
   await deps.hooks?.beforeWind?.();
   const [session] = await db.select().from(sessions).where(current);
   if (
@@ -296,7 +312,6 @@ async function lookupWind(
   ) {
     return null;
   }
-  const now = deps.now?.() ?? Date.now();
   // Only what others may see: the public box and the public time range.
   const startedAt = session.publicTrackStartedAt;
   const endedAt = session.publicTrackEndedAt ?? startedAt;
@@ -308,8 +323,9 @@ async function lookupWind(
     east: session.publicMaxLon as number,
   });
   const url = windRequest(center, { startedAt, endedAt }, now);
-  if (!url) return { status: "unavailable", reason: "no_window", fetchedAt: now };
-  return fetchWind(url, { startedAt, endedAt }, deps.fetch ?? fetch, now);
+  if (!url) return unavailableWind("no_window", now);
+  if (!token) return unavailableWind("invalid_credentials", now);
+  return fetchWind(token, url, deps.fetch ?? fetch, now);
 }
 
 /** The user's sessions with a track whose public data is behind their zones version. */

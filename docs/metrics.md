@@ -328,6 +328,12 @@ the hour before the start through the hour after the end, using WeatherKit's hou
 history from August 1, 2021. Cached observations are reused by grid cell and hour.
 Offline or on error, the detail keeps the track's own estimate and offers to try again.
 
+For public and unlisted uploads, the web Worker can request Apple Weather hourly
+wind around the visible track's time range and the rounded center of its visible
+bounds. The website shows the mean speed and speed-weighted FROM direction, with
+the strongest available hourly gust. Wind speeds and gusts are stored in m/s and
+converted to the viewer's units for display. See [what is sent to Apple Weather](self-hosting.md#what-is-sent-to-apple-weather).
+
 ## Start line
 
 `StartLine` in WaterKit (`Stats/StartLine.swift`), shown on the sailing countdown screens.

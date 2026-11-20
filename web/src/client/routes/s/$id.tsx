@@ -119,6 +119,7 @@ function SessionPage() {
         </p>
       )}
       <SpeedBests session={s} units={units} />
+      {s.wind?.source === "weatherkit" && <SessionWind wind={s.wind} units={units} />}
       {track.data && <Maneuvers track={track.data} />}
       <Laps session={s} units={units} />
       {s.notes && (
@@ -203,6 +204,42 @@ function Stats({ session, units }: { session: Session; units: Units }) {
       {hrAvg !== null && <Stat label="Avg heart rate" value={`${Math.round(hrAvg)} bpm`} />}
       {hrMax !== null && <Stat label="Max heart rate" value={`${Math.round(hrMax)} bpm`} />}
     </dl>
+  );
+}
+
+function SessionWind({ wind, units }: { wind: NonNullable<Session["wind"]>; units: Units }) {
+  const direction =
+    wind.directionDeg === null ? "–" : `${Math.round(wind.directionDeg) % 360}° true`;
+  return (
+    <section aria-labelledby="session-wind">
+      <h2 id="session-wind" className="mb-2 font-semibold">
+        Modelled wind
+      </h2>
+      <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <Stat label="From" value={direction} />
+        <Stat label="Avg wind speed" value={formatSpeed(wind.speedMps, units)} />
+        {wind.gustMps !== null && (
+          <Stat label="Peak gust" value={formatSpeed(wind.gustMps, units)} />
+        )}
+      </dl>
+      <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+        <a
+          href="https://developer.apple.com/weatherkit/data-source-attribution/"
+          className="inline-flex rounded-sm py-1 focus-visible:outline-2 focus-visible:outline-ring"
+        >
+          <picture>
+            <source media="(prefers-color-scheme: dark)" srcSet="/apple-weather-dark.png" />
+            <img
+              src="/apple-weather-light.png"
+              alt="Apple Weather attribution"
+              width={77}
+              height={14}
+            />
+          </picture>
+        </a>
+        <span>Not for navigation.</span>
+      </div>
+    </section>
   );
 }
 
