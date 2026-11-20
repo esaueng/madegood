@@ -17,6 +17,7 @@ import { Route as SigninRouteImport } from './routes/signin'
 import { Route as AppIndexRouteImport } from './routes/app/index'
 import { Route as AppSettingsRouteImport } from './routes/app/settings'
 import { Route as SIdRouteImport } from './routes/s/$id'
+import { Route as UHandleRouteImport } from './routes/u/$handle'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -58,6 +59,11 @@ const SIdRoute = SIdRouteImport.update({
   path: '/s/$id',
   getParentRoute: () => rootRouteImport,
 } as any)
+const UHandleRoute = UHandleRouteImport.update({
+  id: '/u/$handle',
+  path: '/u/$handle',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -67,6 +73,7 @@ export interface FileRoutesByFullPath {
   '/signin': typeof SigninRoute
   '/app/settings': typeof AppSettingsRoute
   '/s/$id': typeof SIdRoute
+  '/u/$handle': typeof UHandleRoute
   '/app/': typeof AppIndexRoute
 }
 export interface FileRoutesByTo {
@@ -77,6 +84,7 @@ export interface FileRoutesByTo {
   '/signin': typeof SigninRoute
   '/app/settings': typeof AppSettingsRoute
   '/s/$id': typeof SIdRoute
+  '/u/$handle': typeof UHandleRoute
   '/app': typeof AppIndexRoute
 }
 export interface FileRoutesById {
@@ -88,6 +96,7 @@ export interface FileRoutesById {
   '/signin': typeof SigninRoute
   '/app/settings': typeof AppSettingsRoute
   '/s/$id': typeof SIdRoute
+  '/u/$handle': typeof UHandleRoute
   '/app/': typeof AppIndexRoute
 }
 export interface FileRouteTypes {
@@ -100,6 +109,7 @@ export interface FileRouteTypes {
     | '/signin'
     | '/app/settings'
     | '/s/$id'
+    | '/u/$handle'
     | '/app/'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -110,6 +120,7 @@ export interface FileRouteTypes {
     | '/signin'
     | '/app/settings'
     | '/s/$id'
+    | '/u/$handle'
     | '/app'
   id:
     | '__root__'
@@ -120,6 +131,7 @@ export interface FileRouteTypes {
     | '/signin'
     | '/app/settings'
     | '/s/$id'
+    | '/u/$handle'
     | '/app/'
   fileRoutesById: FileRoutesById
 }
@@ -131,6 +143,7 @@ export interface RootRouteChildren {
   SigninRoute: typeof SigninRoute
   AppSettingsRoute: typeof AppSettingsRoute
   SIdRoute: typeof SIdRoute
+  UHandleRoute: typeof UHandleRoute
   AppIndexRoute: typeof AppIndexRoute
 }
 
@@ -192,6 +205,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/u/$handle': {
+      id: '/u/$handle'
+      path: '/u/$handle'
+      fullPath: '/u/$handle'
+      preLoaderRoute: typeof UHandleRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -203,6 +223,7 @@ const rootRouteChildren: RootRouteChildren = {
   SigninRoute: SigninRoute,
   AppSettingsRoute: AppSettingsRoute,
   SIdRoute: SIdRoute,
+  UHandleRoute: UHandleRoute,
   AppIndexRoute: AppIndexRoute,
 }
 export const routeTree = rootRouteImport
