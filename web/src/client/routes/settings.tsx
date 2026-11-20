@@ -63,6 +63,13 @@ function Settings() {
       <h1 className="text-2xl font-semibold">Settings</h1>
       <PublicProfile me={me} />
       <Preferences me={me} />
+      <section>
+        <h2 className="text-lg font-semibold">Heart rate zones</h2>
+        <p className="mt-1 max-w-prose text-sm text-muted-foreground">
+          Set your maximum heart rate and zone thresholds in MadeGood on iPhone under Settings →
+          Heart Rate Zones. These settings apply to all sports and sync to your Apple Watch.
+        </p>
+      </section>
       <Zones />
       <ExportData />
       <DeleteAccount me={me} onDeleted={() => setDeleted(true)} />

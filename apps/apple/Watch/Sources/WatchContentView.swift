@@ -523,6 +523,7 @@ private struct MetricsPage: View {
     let sport: Sport
     /// The metric shown large (the sport's first screen).
     let hero: LiveScreen
+    @State private var store = SettingsStore.shared
     @Environment(\.isLuminanceReduced) private var isLuminanceReduced
 
     var body: some View {
@@ -531,6 +532,7 @@ private struct MetricsPage: View {
         // Always-on updates about once a minute, so seconds would just be wrong.
         TimelineView(.periodic(from: startedAt, by: isLuminanceReduced ? 60 : 1)) { context in
             let elapsed = context.date.timeIntervalSince(startedAt)
+            let zone = currentZone(metrics: metrics, elapsed: elapsed)
             let time = isLuminanceReduced ? Formatting.duration(elapsed) : Formatting.elapsed(elapsed)
             VStack(alignment: .leading, spacing: 2) {
                 HStack {
@@ -548,12 +550,15 @@ private struct MetricsPage: View {
                     }
                 }
                 .font(.footnote)
-                Text(heroValue(display: display, metrics: metrics, time: time))
-                    .font(.system(size: 40, weight: .semibold, design: .rounded).monospacedDigit())
-                    .minimumScaleFactor(0.6)
-                    .lineLimit(1)
-                    .accessibilityHint(hero.title)
-                    .accessibilityIdentifier("metric.\(hero.rawValue)")
+                HStack(alignment: .firstTextBaseline, spacing: 4) {
+                    Text(heroValue(display: display, metrics: metrics, time: time))
+                        .font(.system(size: 40, weight: .semibold, design: .rounded).monospacedDigit())
+                        .minimumScaleFactor(0.6)
+                        .lineLimit(1)
+                        .accessibilityHint(hero.title)
+                        .accessibilityIdentifier("metric.\(hero.rawValue)")
+                    if hero == .heartRate, let zone { zoneLabel(zone) }
+                }
                 if hero != .speed {
                     Field(label: "Speed", value: display.speed(metrics?.speed))
                 }
@@ -566,12 +571,31 @@ private struct MetricsPage: View {
                         Field(label: "Max 10 s", value: display.speed(metrics?.maxSpeed10s))
                     }
                     if hero != .heartRate {
-                        Field(label: "HR", value: LiveDisplay.heartRate(metrics?.heartRate))
+                        HStack(spacing: 4) {
+                            Field(label: "HR", value: LiveDisplay.heartRate(metrics?.heartRate))
+                            if let zone { zoneLabel(zone) }
+                        }
                     }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    private func currentZone(metrics: LiveMetrics?, elapsed: Double) -> HeartRateZones.Zone? {
+        guard let metrics, metrics.pauseState == .moving, let bpm = metrics.heartRate,
+            let sampleTime = metrics.heartRateTime,
+            max(elapsed, metrics.elapsed) - sampleTime <= HeartRateZones.maximumSampleGap
+        else { return nil }
+        return store.heartRateZones.zone(for: bpm)
+    }
+
+    private func zoneLabel(_ zone: HeartRateZones.Zone) -> some View {
+        Text("Z\(zone.rawValue)")
+            .font(.caption)
+            .foregroundStyle(Theme.brightPetrol)
+            .fixedSize()
+            .accessibilityLabel("Heart rate zone \(zone.rawValue)")
     }
 
     private func heroValue(display: LiveDisplay, metrics: LiveMetrics?, time: String) -> String {

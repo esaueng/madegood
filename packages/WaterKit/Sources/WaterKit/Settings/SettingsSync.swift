@@ -1,5 +1,5 @@
-/// Syncs per-sport settings between two devices (the phone and the watch) with a
-/// last-writer-wins version per setting. Each per-sport key carries its own stamp: the
+/// Syncs settings between two devices (the phone and the watch) with a
+/// last-writer-wins version per setting. Each key carries its own stamp: the
 /// revision and device of the edit that last set it. A local edit stamps only the keys it
 /// changes, and a return to the default is a stamped write like any other (the value is
 /// removed, the stamp stays). Applying the other device's snapshot takes each key whose
@@ -24,7 +24,10 @@
 /// Storage is reached through closures, like `SportSettings`, so this is pure and testable.
 public enum SettingsSync {
     public enum Key {
-        /// The stamp of every per-sport key that has one: a dictionary from key to
+        public static let maximumHeartRate = "heartRate.maximum"
+        public static let heartRateThresholds = "heartRate.thresholds"
+
+        /// The stamp of every setting that has one: a dictionary from key to
         /// `[revision, device]`. Stored on each device and sent in its snapshot.
         public static let stamps = "settings.stamps"
         /// Builds before per-setting versions: the revision of the whole snapshot. Sent as
@@ -38,9 +41,13 @@ public enum SettingsSync {
         public static let deviceID = "settings.deviceID"
     }
 
+    private static var syncedKeys: [String] {
+        SportSettings.Key.allSports + [Key.maximumHeartRate, Key.heartRateThresholds]
+    }
+
     /// Every stored key that belongs to synced settings, for resets.
     public static var storedKeys: [String] {
-        SportSettings.Key.allSports + [Key.stamps, Key.revision, Key.revisionDevice]
+        syncedKeys + [Key.stamps, Key.revision, Key.revisionDevice]
     }
 
     /// A setting's position in the order both devices agree on.
@@ -106,9 +113,37 @@ public enum SettingsSync {
         _ settings: SportSettings, for sport: Sport, now: Double, device: String,
         reading value: (String) -> Any?, writing set: (String, Any?) -> Void
     ) {
-        let keys = SportSettings.Key.all(sport)
+        save(keys: SportSettings.Key.all(sport), now: now, device: device, reading: value, writing: set) {
+            settings.write(sport: sport, to: set)
+        }
+    }
+
+    public static func heartRateZones(reading value: (String) -> Any?) -> HeartRateZones {
+        HeartRateZones(
+            maximum: value(Key.maximumHeartRate) as? Int ?? HeartRateZones.defaultMaximum,
+            thresholds: value(Key.heartRateThresholds) as? [Int] ?? HeartRateZones.defaultThresholds)
+    }
+
+    /// Maximum and thresholds are independent settings. Stamp only those that change.
+    public static func save(
+        _ zones: HeartRateZones, now: Double, device: String,
+        reading value: (String) -> Any?, writing set: (String, Any?) -> Void
+    ) {
+        save(
+            keys: [Key.maximumHeartRate, Key.heartRateThresholds], now: now, device: device,
+            reading: value, writing: set
+        ) {
+            set(Key.maximumHeartRate, zones.maximum == HeartRateZones.defaultMaximum ? nil : zones.maximum)
+            set(Key.heartRateThresholds, zones.thresholds == HeartRateZones.defaultThresholds ? nil : zones.thresholds)
+        }
+    }
+
+    private static func save(
+        keys: [String], now: Double, device: String,
+        reading value: (String) -> Any?, writing set: (String, Any?) -> Void, update: () -> Void
+    ) {
         let before = keys.map { value($0) }
-        settings.write(sport: sport, to: set)
+        update()
         let changed = zip(keys, before).filter { !sameValue($0.1, value($0.0)) }.map(\.0)
         guard !changed.isEmpty else { return }
         var stamps = storedStamps(value)
@@ -130,7 +165,7 @@ public enum SettingsSync {
         now: Double, device: String, reading value: (String) -> Any?, writing set: (String, Any?) -> Void
     ) -> Bool {
         guard value(Key.stamps) == nil else { return false }
-        let stored = SportSettings.Key.allSports.filter { value($0) != nil }
+        let stored = syncedKeys.filter { value($0) != nil }
         let seen = revision(value(Key.highestSeen)) ?? 0
         var stamp: Stamp?
         if let legacy = revision(value(Key.revision)) {
@@ -155,7 +190,7 @@ public enum SettingsSync {
     /// before per-setting versions, the newest stamp as the snapshot's revision.
     public static func snapshot(reading value: (String) -> Any?) -> [String: Any] {
         var result: [String: Any] = [:]
-        for key in SportSettings.Key.allSports {
+        for key in syncedKeys {
             if let stored = value(key) { result[key] = stored }
         }
         let stamps = storedStamps(value)
@@ -209,7 +244,7 @@ public enum SettingsSync {
 
         var changed = false
         var stampsChanged = false
-        for key in SportSettings.Key.allSports {
+        for key in syncedKeys {
             guard let stamp = theirs[key], stamps[key].map({ stamp > $0 }) ?? true else { continue }
             if !sameValue(value(key), remote[key]) {
                 set(key, remote[key])
@@ -264,6 +299,7 @@ public enum SettingsSync {
         default: break
         }
         if let x = a as? String, let y = b as? String { return x == y }
+        if let x = a as? [Int], let y = b as? [Int] { return x == y }
         func scalar(_ value: Any?) -> Double? {
             if value is String { return nil }
             return SportSettings.number(value) ?? SportSettings.bool(value).map { $0 ? 1 : 0 }
