@@ -1,3 +1,5 @@
+import Foundation
+
 /// Tracks the GPS watchdog deadline in seconds on the caller's sleep-inclusive
 /// monotonic clock. The caller owns the system alarm and persists the checkpoint.
 public struct AnchorGPSLoss: Sendable {
@@ -7,6 +9,13 @@ public struct AnchorGPSLoss: Sendable {
     public struct Checkpoint: Codable, Sendable {
         fileprivate let measuredAt: Double
         fileprivate let deadline: Double
+    }
+
+    public enum AlarmPlan: Equatable, Sendable {
+        case keep(UUID)
+        case waitForStop
+        case install(UUID)
+        case makeSpace(keeping: UUID?)
     }
 
     public struct Request: Equatable, Sendable {
@@ -23,6 +32,47 @@ public struct AnchorGPSLoss: Sendable {
         public func matches(remaining: Double, at now: Double) -> Bool {
             if deadline <= now { return (-1...1.5).contains(remaining) }
             return abs(remaining - (deadline - now)) <= 1
+        }
+
+        public func plan(for alarms: Alarms, slots: [UUID], at now: Double, wallTime: Date) -> AlarmPlan {
+            if let current = alarms.pending.first(where: {
+                matches(remaining: $0.value.timeIntervalSince(wallTime), at: now)
+            }) {
+                return .keep(current.key)
+            }
+            if alarms.pending.isEmpty, !alarms.sounding.isEmpty, preservesExistingAlarm || deadline <= now {
+                return .waitForStop
+            }
+            if let next = slots.first(where: { alarms.pending[$0] == nil && !alarms.sounding.contains($0) }) {
+                return .install(next)
+            }
+            return .makeSpace(keeping: alarms.earliestPending?.key)
+        }
+    }
+
+    /// The last known alarms let a later snapshot distinguish a disappeared
+    /// pending backup from a one-shot alarm that fired and was stopped.
+    public struct Alarms: Codable, Equatable, Sendable {
+        public var pending: [UUID: Date]
+        public var sounding: Set<UUID>
+
+        public init(pending: [UUID: Date] = [:], sounding: Set<UUID> = []) {
+            self.pending = pending
+            self.sounding = sounding
+        }
+
+        public func stoppedAlarms(since previous: Self, wallTime: Date) -> Set<UUID> {
+            let due = previous.pending.filter { $0.value <= wallTime }.keys
+            return previous.sounding.union(due).subtracting(pending.keys).subtracting(sounding)
+        }
+
+        /// Keep at least one fallback until a replacement is installed.
+        public func pendingToCancel(keeping id: UUID?) -> [UUID] {
+            pending.keys.filter { $0 != id }
+        }
+
+        public var earliestPending: (key: UUID, value: Date)? {
+            pending.min { $0.value < $1.value }
         }
     }
 
@@ -57,6 +107,14 @@ public struct AnchorGPSLoss: Sendable {
         armedAt = nil
         lastRenewal = nil
         request = nil
+    }
+
+    public mutating func snooze(at now: Double) {
+        guard request != nil else { return }
+        armedAt = now
+        lastRenewal = nil
+        request = Request(
+            generation: generation, deadline: now + Self.timeout, preservesExistingAlarm: false)
     }
 
     /// The first usable fix near the circle resets the deadline. Allow one

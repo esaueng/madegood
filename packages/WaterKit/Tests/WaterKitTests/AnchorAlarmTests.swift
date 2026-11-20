@@ -24,21 +24,26 @@ struct AnchorAlarmTests {
         #expect(AnchorAlarm.Point(latitude: 91, longitude: 0) == nil)
     }
 
-    @Test func outsideNeedsBothTimeAndThreeDistinctFixes() throws {
+    @Test func threeDistinctOutsideFixesConfirmDriftWithoutAMinimumDuration() throws {
         var alarm = try #require(AnchorAlarm(anchor: anchor, radius: 30))
         #expect(alarm.ingest(fix(0, 50)) == false)
-        #expect(alarm.ingest(fix(2, 50)) == false)
-        #expect(alarm.ingest(fix(4, 50)) == false)
-        #expect(alarm.ingest(fix(10, 50)) == true)
-        #expect(alarm.ingest(fix(12, 2)) == false)
-        #expect(alarm.isDrifting)
-        alarm.acknowledge()
-        #expect(!alarm.isDrifting)
+        #expect(alarm.ingest(fix(1, 50)) == false)
+        #expect(alarm.ingest(fix(1, 50)) == false)
+        #expect(alarm.ingest(fix(0.5, 50)) == false)
+        #expect(alarm.ingest(fix(2, 50)) == true)
+    }
+
+    @Test func stopSnoozesOnlyWhenDriftRemainsConfirmed() throws {
+        var alarm = try #require(AnchorAlarm(anchor: anchor, radius: 30))
+        for time in 0...2 { alarm.ingest(fix(Double(time), 50)) }
+        #expect(alarm.snoozeDeadline(afterStopAt: 4) == 124)
+        alarm.ingest(fix(10, 33))
+        #expect(alarm.snoozeDeadline(afterStopAt: 10) == 130)
+        alarm.ingest(fix(11, 2))
+        #expect(alarm.snoozeDeadline(afterStopAt: 12) == nil)
         #expect(alarm.ingest(fix(13, 50)) == false)
-        #expect(alarm.ingest(fix(24, 50)) == false)
-        #expect(alarm.ingest(fix(24, 50)) == false)
-        #expect(alarm.ingest(fix(22, 50)) == false)
-        #expect(alarm.ingest(fix(25, 50)) == true)
+        #expect(alarm.ingest(fix(14, 50)) == false)
+        #expect(alarm.ingest(fix(15, 50)) == true)
     }
 
     @Test(arguments: [5.0, 15.0, 30.0, 60.0])
@@ -49,23 +54,20 @@ struct AnchorAlarmTests {
         #expect(alarm.ingest(fix(2 * interval, 50)) == true)
     }
 
-    @Test func outsideEvidenceExpiresAcrossAGPSGap() throws {
+    @Test func isolatedOptimisticFixAfterAGapDoesNotConfirmDrift() throws {
         var alarm = try #require(AnchorAlarm(anchor: anchor, radius: 10))
-        #expect(alarm.assess(fix(0, 14, accuracy: 2)) == .outside)
-        #expect(alarm.assess(fix(5, 14, accuracy: 2)) == .outside)
+        #expect(alarm.assess(fix(0, 2, accuracy: 2)) == .withinOrUncertain)
         #expect(alarm.assess(fix(605, 12, accuracy: 1)) == .outside)
-        #expect(alarm.assess(fix(610, 14, accuracy: 2)) == .outside)
-        #expect(alarm.assess(fix(615, 14, accuracy: 2)) == .driftConfirmed)
+        #expect(alarm.assess(fix(610, 2, accuracy: 2)) == .withinOrUncertain)
+        #expect(!alarm.isDrifting)
     }
 
-    @Test func usableFixOverlappingTheBoundaryBreaksEvidence() throws {
+    @Test func usableFixOverlappingTheBoundaryPreservesEvidence() throws {
         var alarm = try #require(AnchorAlarm(anchor: anchor, radius: 30))
         #expect(alarm.ingest(fix(0, 50)) == false)
         #expect(alarm.ingest(fix(5, 50)) == false)
         #expect(alarm.ingest(fix(11, 33)) == false)
-        #expect(alarm.ingest(fix(12, 50)) == false)
-        #expect(alarm.ingest(fix(17, 50)) == false)
-        #expect(alarm.ingest(fix(22, 50)) == true)
+        #expect(alarm.ingest(fix(12, 50)) == true)
     }
 
     @Test(arguments: [26.0, -1.0, nil] as [Double?])
@@ -78,38 +80,39 @@ struct AnchorAlarmTests {
         #expect(alarm.ingest(fix(10, 50)) == true)
     }
 
-    @Test func sparseOutsideFixesConfirmDriftAndNeverPostponeTheWatchdog() throws {
+    @Test(arguments: [60.0, 150.0])
+    func sparseOutsideFixesConfirmDriftAndNeverPostponeTheWatchdog(interval: Double) throws {
         var alarm = try #require(AnchorAlarm(anchor: anchor, radius: 10))
         var loss = AnchorGPSLoss()
         loss.arm(at: 0)
         let original = try #require(loss.request)
         var alertTimes: [Double] = []
-        for minute in 0...60 {
-            let time = Double(minute * 60)
+        for index in 0...24 {
+            let time = Double(index) * interval
             let assessment = alarm.assess(fix(time, 111, accuracy: 5))
             if assessment == .driftConfirmed { alertTimes.append(time) }
             loss.recordFix(at: time, assessment: assessment)
             #expect(loss.request == original)
         }
-        #expect(alertTimes == [120])
+        #expect(alertTimes == [2 * interval])
         #expect(original.deadline == 120)
     }
 
-    @Test func usableFixAfterGPSLossCanBreakEvidence() throws {
+    @Test func confidentlyInsideFixAfterGPSLossResetsEvidence() throws {
         var alarm = try #require(AnchorAlarm(anchor: anchor, radius: 30))
         #expect(alarm.ingest(fix(0, 50)) == false)
         #expect(alarm.ingest(fix(5, 50)) == false)
         #expect(alarm.ingest(fix(30, 55, accuracy: 40)) == false)
-        #expect(alarm.ingest(fix(60, 30)) == false)
-        #expect(alarm.ingest(fix(65, 50)) == false)
-        #expect(alarm.ingest(fix(70, 50)) == false)
-        #expect(alarm.ingest(fix(75, 50)) == true)
+        #expect(alarm.ingest(fix(600, 20)) == false)
+        #expect(alarm.ingest(fix(605, 50)) == false)
+        #expect(alarm.ingest(fix(610, 50)) == false)
+        #expect(alarm.ingest(fix(615, 50)) == true)
     }
 
     @Test func hoursOfSwingAndIsolatedJumpsStayQuiet() throws {
         var alarm = try #require(AnchorAlarm(anchor: anchor, radius: 30))
         for second in 0..<(12 * 3600) {
-            let distance = second.isMultiple(of: 67) ? 55 : 27 + 6 * sin(Double(second) / 23)
+            let distance = second.isMultiple(of: 67) ? 55 : 24 + 6 * sin(Double(second) / 23)
             if alarm.ingest(fix(Double(second), distance)) {
                 Issue.record("Unexpected drift at second \(second)")
                 return

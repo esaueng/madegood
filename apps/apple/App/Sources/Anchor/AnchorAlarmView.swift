@@ -20,17 +20,17 @@ struct AnchorAlarmView: View {
             List {
                 Section {
                     status(position: position)
-                    if anchorWatch.hasStraySoundingAlarm {
-                        Button("Stop sounding alarm", systemImage: "bell.slash", action: anchorWatch.stopStraySoundingAlarm)
+                    if anchorWatch.gpsLossSounding {
+                        Button("Stop GPS backup alarm", systemImage: "bell.slash", action: anchorWatch.stopGPSLossAlarm)
+                    }
+                    if anchorWatch.canStopDrift {
+                        Button("Stop drift alarm", systemImage: "bell.slash", action: anchorWatch.stopDriftAlarm)
+                            .accessibilityIdentifier("anchor.stopDrift")
                     }
                     if anchorWatch.locationBlocked || anchorWatch.alarmPermissionDenied || anchorWatch.alarmError {
                         Button("Open Settings", systemImage: "gearshape") {
                             if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
                         }
-                    }
-                    if anchorWatch.isAlarming {
-                        Button("Acknowledge drift", systemImage: "bell.slash", action: anchorWatch.acknowledge)
-                            .accessibilityIdentifier("anchor.acknowledge")
                     }
                 }
 

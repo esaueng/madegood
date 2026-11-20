@@ -12,10 +12,7 @@ final class PhoneAnchorAlarmUITests: XCTestCase {
         scrollTo(open, in: app)
         open.tap()
 
-        let radius = app.buttons["anchor.radius"]
-        XCTAssertTrue(radius.waitForExistence(timeout: 10))
-        radius.tap()
-        app.buttons["20.0 m"].tap()
+        XCTAssertTrue(app.buttons["anchor.radius"].waitForExistence(timeout: 10))
 
         let arm = app.buttons["anchor.arm"]
         let enabled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isEnabled == true"), object: arm)
@@ -36,9 +33,9 @@ final class PhoneAnchorAlarmUITests: XCTestCase {
         XCTAssertTrue(banner.isHittable)
         banner.tap()
 
-        let acknowledge = app.buttons["anchor.acknowledge"]
-        XCTAssertTrue(acknowledge.waitForExistence(timeout: 10))
-        acknowledge.tap()
+        let stop = app.buttons["anchor.stopDrift"]
+        XCTAssertTrue(stop.waitForExistence(timeout: 10))
+        stop.tap()
         waitForLabel(status, "Armed", timeout: 5)
 
         let disarm = app.buttons["anchor.disarm"]

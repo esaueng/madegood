@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 
 @testable import WaterKit
@@ -123,6 +124,60 @@ struct AnchorGPSLossTests {
 
         restored.arm(at: 10, restoring: true, checkpoint: checkpoint)
         #expect(restored.request?.delay(at: 10) == 1)
+    }
+
+    @Test func stopSnoozesAndNextEligibleFixRenewsImmediately() throws {
+        var loss = AnchorGPSLoss()
+        loss.arm(at: 0)
+        loss.recordFix(at: 1, assessment: .withinOrUncertain)
+        loss.snooze(at: 160)
+        loss.recordFix(at: 159, assessment: .withinOrUncertain)
+        loss.recordFix(at: 161, assessment: .outside)
+        let snoozed = try #require(loss.request)
+        #expect(snoozed.deadline == 280)
+        #expect(snoozed.delay(at: 161) == 119)
+        loss.recordFix(at: 162, assessment: .withinOrUncertain)
+        #expect(loss.request?.deadline == 312)
+        loss.disarm()
+        loss.snooze(at: 200)
+        #expect(loss.request == nil)
+    }
+
+    @Test func onlySoundingOrDueMissingAlarmsAreTreatedAsStopped() {
+        let due = UUID()
+        let early = UUID()
+        let ringing = UUID()
+        let now = Date(timeIntervalSinceReferenceDate: 1000)
+        let previous = AnchorGPSLoss.Alarms(
+            pending: [due: now, early: now.addingTimeInterval(1)], sounding: [ringing])
+        #expect(AnchorGPSLoss.Alarms().stoppedAlarms(since: previous, wallTime: now) == [due, ringing])
+        let current = AnchorGPSLoss.Alarms(sounding: [due, ringing])
+        #expect(current.stoppedAlarms(since: previous, wallTime: now).isEmpty)
+        #expect(current.pendingToCancel(keeping: nil).isEmpty)
+    }
+
+    @Test func replacementPlanKeepsCoverageAndNeverReusesARingingSlot() throws {
+        var loss = AnchorGPSLoss()
+        loss.arm(at: 0)
+        loss.recordFix(at: 10, assessment: .withinOrUncertain)
+        let request = try #require(loss.request)
+        let old = UUID()
+        let ringing = UUID()
+        let replacement = UUID()
+        let slots = [old, ringing, replacement]
+        let now = Date(timeIntervalSinceReferenceDate: 1000)
+        var alarms = AnchorGPSLoss.Alarms(pending: [old: now.addingTimeInterval(110)], sounding: [ringing])
+
+        #expect(request.plan(for: alarms, slots: slots, at: 10, wallTime: now) == .install(replacement))
+        #expect(request.plan(for: alarms, slots: [old, ringing], at: 10, wallTime: now) == .makeSpace(keeping: old))
+        #expect(alarms.pendingToCancel(keeping: old).isEmpty)
+
+        alarms.pending[replacement] = now.addingTimeInterval(150)
+        #expect(request.plan(for: alarms, slots: slots, at: 10, wallTime: now) == .keep(replacement))
+        #expect(alarms.pendingToCancel(keeping: replacement) == [old])
+        alarms.pending.removeValue(forKey: old)
+        alarms.sounding.insert(old)
+        #expect(alarms.pendingToCancel(keeping: replacement).isEmpty)
     }
 
 }

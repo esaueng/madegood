@@ -4,9 +4,9 @@ import Foundation
 /// bearings in degrees true, and fix timestamps in seconds on the caller's monotonic clock.
 public struct AnchorAlarm: Sendable {
     public static let maximumAccuracy = 25.0
-    public static let confirmationDelay = 10.0
+    public static let confirmationFixCount = 3
+    public static let snoozeDuration = 120.0
     public static let radiusRange = 10.0...500.0
-    private static let maximumEvidenceGap = 120.0
 
     public struct Point: Codable, Equatable, Sendable {
         public let latitude: Double
@@ -34,15 +34,15 @@ public struct AnchorAlarm: Sendable {
     public private(set) var isDrifting = false
 
     private var lastFixTime: Double?
-    private var firstOutsideTime: Double?
     private var outsideCount = 0
 
-    public init?(anchor: Point, radius: Double) {
+    public init?(anchor: Point, radius: Double, confirmedOutside: Bool = false) {
         guard Self.radiusRange.contains(radius),
             Point(latitude: anchor.latitude, longitude: anchor.longitude) != nil
         else { return nil }
         self.anchor = anchor
         self.radius = radius
+        isDrifting = confirmedOutside
     }
 
     public func reading(at boat: Point) -> Reading {
@@ -60,46 +60,35 @@ public struct AnchorAlarm: Sendable {
         reading(at: boat).distance - accuracy > radius
     }
 
-    /// Returns true once per alert. Three distinct usable fixes must be clearly
-    /// outside, spanning at least 10 s. Weak fixes do not count as evidence, and
-    /// a usable fix whose accuracy circle crosses the boundary starts a new run.
+    /// Returns true when a run first confirms drift.
     @discardableResult
     public mutating func ingest(_ fix: GPSFix) -> Bool {
         assess(fix) == .driftConfirmed
     }
 
-    /// Classifies a fix for both drift evidence and GPS watchdog renewal.
-    /// Gaps longer than two minutes between usable fixes reset outside evidence.
+    /// A confidently inside fix clears drift and outside evidence. Uncertain
+    /// and unusable fixes leave the evidence intact, including across GPS gaps.
     public mutating func assess(_ fix: GPSFix) -> FixAssessment {
         guard fix.t.isFinite, lastFixTime.map({ fix.t > $0 }) ?? true,
             let boat = Point(latitude: fix.latitude, longitude: fix.longitude),
             let accuracy = fix.horizontalAccuracy, (0...Self.maximumAccuracy).contains(accuracy)
         else { return .unusable }
-        if let lastFixTime, fix.t - lastFixTime > Self.maximumEvidenceGap {
-            resetEvidence()
-        }
         lastFixTime = fix.t
-        guard isClearlyOutside(at: boat, accuracy: accuracy) else {
-            resetEvidence()
+        let distance = reading(at: boat).distance
+        guard distance - accuracy > radius else {
+            if distance + accuracy < radius {
+                isDrifting = false
+                outsideCount = 0
+            }
             return .withinOrUncertain
         }
         guard !isDrifting else { return .outside }
-
-        let start = firstOutsideTime ?? fix.t
-        firstOutsideTime = start
         outsideCount += 1
-        isDrifting = outsideCount >= 3 && fix.t - start >= Self.confirmationDelay
+        isDrifting = outsideCount == Self.confirmationFixCount
         return isDrifting ? .driftConfirmed : .outside
     }
 
-    /// Keeps the circle and starts a fresh confirmation window.
-    public mutating func acknowledge() {
-        isDrifting = false
-        resetEvidence()
-    }
-
-    private mutating func resetEvidence() {
-        firstOutsideTime = nil
-        outsideCount = 0
+    public func snoozeDeadline(afterStopAt time: Double) -> Double? {
+        isDrifting ? time + Self.snoozeDuration : nil
     }
 }

@@ -17,6 +17,8 @@ final class AnchorWatch: NSObject {
         let radius: Double
         var alertPending = false
         var alarmScheduled = false
+        var confirmedOutside: Bool?
+        var snoozeUntil: Date?
     }
 
     struct Position {
@@ -31,8 +33,7 @@ final class AnchorWatch: NSObject {
     }
 
     private static let storageKey = "anchorWatch.configuration"
-    // One system alarm per app. A later launch can clean it up even if the app
-    // stopped between updating its saved configuration and cancelling the alarm.
+    // Stable ID lets a later launch find the drift alarm.
     private static let soundID = UUID(uuidString: "235026A9-7F06-46D1-AB58-12CC791B87EA")!
 
     private let location = CLLocationManager()
@@ -49,7 +50,7 @@ final class AnchorWatch: NSObject {
     private var evidenceStartedAt = ContinuousClock.now
     private var saved: SavedWatch?
     private var driftCleanupPending = false
-    private var strayDriftSounding = false
+    private var driftRevision = 0
 
     private(set) var watch: AnchorAlarm?
     private(set) var position: Position?
@@ -60,8 +61,12 @@ final class AnchorWatch: NSObject {
     private(set) var isArming = false
 
     var isViewing: Bool { viewerCount > 0 }
-    var isAlarming: Bool { saved?.alertPending == true }
-    var hasStraySoundingAlarm: Bool { strayDriftSounding || gpsWatchdog.hasStraySoundingAlarm }
+    var isAlarming: Bool { saved?.alertPending == true || (watch != nil && driftSounding) }
+    private(set) var driftSounding = false
+    var gpsLossSounding: Bool { gpsWatchdog.hasSoundingAlarm }
+    var canStopDrift: Bool { driftSounding || (DemoFeed.isEnabled && isAlarming) }
+    var hasSoundingAlarm: Bool { driftSounding || gpsLossSounding }
+    private var wantsDriftAlarm: Bool { saved?.alertPending == true || saved?.snoozeUntil != nil }
 
     private override init() {
         super.init()
@@ -73,7 +78,9 @@ final class AnchorWatch: NSObject {
         if !DemoFeed.isEnabled,
             let data = UserDefaults.standard.data(forKey: Self.storageKey),
             let restored = try? JSONDecoder().decode(SavedWatch.self, from: data),
-            let watch = AnchorAlarm(anchor: restored.point, radius: restored.radius)
+            let watch = AnchorAlarm(
+                anchor: restored.point, radius: restored.radius,
+                confirmedOutside: restored.confirmedOutside ?? restored.alertPending)
         {
             saved = restored
             self.watch = watch
@@ -120,9 +127,17 @@ final class AnchorWatch: NSObject {
         gpsWatchdog.setActive(false)
     }
 
-    func stopStraySoundingAlarm() {
-        if strayDriftSounding, !isAlarming { cancelSound() }
-        gpsWatchdog.stopStrayAlarms()
+    func stopGPSLossAlarm() {
+        gpsWatchdog.stopSoundingAlarms()
+    }
+
+    func reconcileAfterSystemStop(id: UUID) async {
+        if id == Self.soundID {
+            reconcileSound()
+            await scheduleTask?.value
+        } else {
+            await gpsWatchdog.reconcileAfterSystemStop(id: id)
+        }
     }
 
     func beginSetup() {
@@ -172,24 +187,34 @@ final class AnchorWatch: NSObject {
         updateLocationDemand()
     }
 
-    func acknowledge() {
-        guard isAlarming else { return }
+    func stopDriftAlarm() {
+        guard DemoFeed.isEnabled || (try? stopSoundingAnchorAlarm(id: Self.soundID)) == true else {
+            reconcileSound()
+            return
+        }
+        driftSounding = false
+        if watch != nil { driftAlarmStopped() }
+    }
+
+    private func driftAlarmStopped() {
+        driftRevision += 1
         saved?.alertPending = false
         saved?.alarmScheduled = false
-        watch?.acknowledge()
-        evidenceStartedAt = .now
+        saved?.snoozeUntil = watch?.snoozeDeadline(afterStopAt: Date.now.timeIntervalSinceReferenceDate)
+            .map { Date(timeIntervalSinceReferenceDate: $0) }
         alarmError = false
         lastScheduleAttempt = nil
         persist()
-        cancelSound()
+        scheduleSoundIfNeeded()
     }
 
     func disarm() {
+        driftRevision += 1
         saved = nil
         watch = nil
         alarmError = false
         persist()
-        cancelSound()
+        reconcileSound()
         if !DemoFeed.isEnabled { gpsWatchdog.stop() }
         updateLocationDemand()
     }
@@ -245,24 +270,36 @@ final class AnchorWatch: NSObject {
     private func ingest(point: AnchorAlarm.Point, accuracy: Double?, measuredAt: ContinuousClock.Instant) {
         if let position, measuredAt <= position.measuredAt { return }
         position = Position(point: point, accuracy: accuracy, measuredAt: measuredAt)
-        if driftCleanupPending, !isAlarming { cancelSound() }
-        guard watch != nil, measuredAt >= evidenceStartedAt, position?.isFresh == true else {
-            // Even a fix that can't participate in monitoring can prompt cleanup.
-            if !DemoFeed.isEnabled { gpsWatchdog.renew(fixAge: 0, assessment: .unusable) }
-            return
-        }
+        if driftCleanupPending { reconcileSound() }
+        guard watch != nil, measuredAt >= evidenceStartedAt, position?.isFresh == true else { return }
+        let wasDrifting = watch?.isDrifting == true
 
         let elapsed = startedAt.duration(to: measuredAt).components
         let seconds = Double(elapsed.seconds) + Double(elapsed.attoseconds) / 1e18
         guard let assessment = watch?.assess(
             GPSFix(t: seconds, latitude: point.latitude, longitude: point.longitude, horizontalAccuracy: accuracy)
         ) else { return }
-        if assessment == .driftConfirmed, !isAlarming {
-            strayDriftSounding = false
-            saved?.alertPending = true
+        let confirmedOutside = watch?.isDrifting == true
+        if wasDrifting != confirmedOutside {
+            let cancelSnooze = !confirmedOutside && saved?.snoozeUntil != nil
+            saved?.confirmedOutside = confirmedOutside
+            if assessment == .driftConfirmed, !wantsDriftAlarm {
+                driftRevision += 1
+                saved?.alertPending = true
+            } else if cancelSnooze {
+                driftRevision += 1
+                saved?.snoozeUntil = nil
+                saved?.alarmScheduled = false
+                lastScheduleAttempt = nil
+            }
             persist()
+            if cancelSnooze { reconcileSound() }
         }
-        if isAlarming { scheduleSoundIfNeeded() }
+        if DemoFeed.isEnabled, let snoozeUntil = saved?.snoozeUntil, snoozeUntil <= .now {
+            saved?.snoozeUntil = nil
+            saved?.alertPending = true
+        }
+        if wantsDriftAlarm { scheduleSoundIfNeeded() }
         if !DemoFeed.isEnabled {
             let age = measuredAt.duration(to: .now).components
             gpsWatchdog.renew(fixAge: Double(age.seconds) + Double(age.attoseconds) / 1e18, assessment: assessment)
@@ -277,31 +314,35 @@ final class AnchorWatch: NSObject {
     // MARK: - System alarm
 
     private func reconcileSound() {
-        guard !DemoFeed.isEnabled, scheduleTask == nil else { return }
-        guard isAlarming else {
-            cancelSound()
-            return
-        }
-        // Missing after successful scheduling means the system stopped the alarm
-        // (for example, the user tapped Stop on the Lock Screen).
+        guard !DemoFeed.isEnabled else { return }
         alarmPermissionDenied = alarms.authorizationState == .denied
         if alarmPermissionDenied, saved?.alarmScheduled == true {
             saved?.alarmScheduled = false
             lastScheduleAttempt = nil
             persist()
         }
-        if saved?.alarmScheduled == true {
-            if let current = try? alarms.alarms, !current.contains(where: { $0.id == Self.soundID }) {
-                acknowledge()
+        do {
+            let alarm = try alarms.alarms.first { $0.id == Self.soundID }
+            driftSounding = alarm?.state == .alerting
+            guard scheduleTask == nil else { return }
+            if driftCleanupPending || !wantsDriftAlarm {
+                try cancelPendingAnchorAlarm(id: Self.soundID)
+                driftCleanupPending = false
             }
-        } else {
-            scheduleSoundIfNeeded()
+            guard wantsDriftAlarm else { return }
+            if saved?.alarmScheduled == true {
+                if alarm == nil { driftAlarmStopped() }
+            } else {
+                scheduleSoundIfNeeded()
+            }
+        } catch {
+            if !wantsDriftAlarm { driftCleanupPending = true }
         }
     }
 
     private func scheduleSoundIfNeeded() {
-        guard !DemoFeed.isEnabled, isAlarming, saved?.alarmScheduled == false,
-            scheduleTask == nil,
+        guard !DemoFeed.isEnabled, wantsDriftAlarm, saved?.alarmScheduled == false,
+            !driftCleanupPending, scheduleTask == nil,
             lastScheduleAttempt.map({ $0.duration(to: .now) >= .seconds(5) }) ?? true
         else { return }
         lastScheduleAttempt = .now
@@ -309,28 +350,36 @@ final class AnchorWatch: NSObject {
             signalSoundFailure()
             return
         }
+        let revision = driftRevision
         scheduleTask = Task {
             defer {
                 scheduleTask = nil
                 reconcileSound()
             }
+            guard revision == driftRevision else { return }
             do {
-                // The alarm may already exist after a relaunch between schedule and persist.
+                // Adopt a sounding alarm or an installation interrupted by relaunch.
                 if try !alarms.alarms.contains(where: { $0.id == Self.soundID }) {
+                    let now = Date.now
+                    let deadline = saved?.snoozeUntil.map { max($0, now.addingTimeInterval(1)) }
+                        ?? now.addingTimeInterval(2)
                     let configuration = anchorAlarmConfiguration(
-                        title: "Anchor dragging", deadline: Date.now.addingTimeInterval(2))
+                        id: Self.soundID, title: "Anchor dragging", deadline: deadline)
                     _ = try await AlarmManager.shared.schedule(id: Self.soundID, configuration: configuration)
                 }
-                guard isAlarming else {
-                    cancelSound()
+                guard revision == driftRevision else {
+                    driftCleanupPending = true
                     return
                 }
                 saved?.alarmScheduled = true
                 alarmError = false
                 persist()
             } catch {
-                guard isAlarming else { return }
-                signalSoundFailure()
+                if revision != driftRevision {
+                    driftCleanupPending = true
+                } else {
+                    signalSoundFailure()
+                }
             }
         }
     }
@@ -339,24 +388,6 @@ final class AnchorWatch: NSObject {
         alarmError = true
         if UIApplication.shared.applicationState == .active {
             AudioServicesPlayAlertSound(kSystemSoundID_Vibrate)
-        }
-    }
-
-    private func cancelSound() {
-        guard !DemoFeed.isEnabled else { return }
-        do {
-            if let alarm = try alarms.alarms.first(where: { $0.id == Self.soundID }) {
-                strayDriftSounding = alarm.state == .alerting
-                if strayDriftSounding {
-                    try alarms.stop(id: Self.soundID)
-                } else {
-                    try alarms.cancel(id: Self.soundID)
-                }
-            }
-            strayDriftSounding = false
-            driftCleanupPending = false
-        } catch {
-            driftCleanupPending = true
         }
     }
 

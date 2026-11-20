@@ -428,24 +428,31 @@ from the most recent position to the selected anchor point. Bearing is omitted a
 the anchor itself. The swing radius is stored in metres and displayed in metres or
 feet according to the motorboat distance setting. The circle is not for navigation.
 
-A fix is clearly outside when its distance minus its reported horizontal accuracy
-exceeds the radius. The alarm requires at least three distinct, consecutive clearly
-outside usable fixes spanning at least 10 s. A fix with unknown accuracy or accuracy
-worse than 25 m is ignored. A usable fix that fails the outside test ends the run.
-A gap longer than 120 s between usable fixes ends the run. Cached positions older than
-15 s do not enter the calculation. Acknowledging the drift alarm starts a new confirmation window.
-These readings are live only and do not change the session summary or track format.
+A fix is confidently outside when its distance minus horizontal accuracy exceeds
+the radius. Drift is confirmed after three distinct confidently outside fixes,
+regardless of how far apart they arrive. A confidently inside fix (distance plus
+accuracy below the radius) resets the count and clears the confirmed drift state.
+A fix whose accuracy circle touches or crosses the boundary leaves the count
+unchanged. Fixes with unknown accuracy, accuracy worse than 25 m, or locations
+older than 15 s do not enter the calculation. These readings are live only and do
+not change the session summary or track format.
 
-The iPhone keeps a separate GPS backup alarm. Its first deadline is 120 s after arming.
-Only usable fixes whose accuracy circle touches or overlaps the swing circle can renew
-it. A clearly outside fix leaves the backup due while the app confirms drift. After the
+The iPhone schedules a GPS backup alarm for 120 s after arming. Only usable fixes
+whose accuracy circle touches or overlaps the swing circle can renew it. After the
 first eligible fix, renewals are coalesced to one per 30 s of fix time. Each renewal
-sets a deadline 150 s after its fix, giving the most recent eligible fix at least
-120 s and up to 150 s before the backup is due. The system owns the alarm and can
-deliver it after the app stops receiving positions. Alarm changes, foreground checks,
-and a periodic check while the app is active restore a missing backup. Significant
-clock changes and foreground checks also reconcile the pending alarm against the
-monotonic deadline, which is saved for relaunch.
+sets a deadline 150 s after its fix, giving the latest eligible fix at least 120 s
+and up to 150 s before the backup is due. The app installs the replacement before
+cancelling the previous scheduled alarm. Alarm changes and a once-per-minute
+foreground check restore missing coverage. Significant clock changes and foreground
+checks reconcile the fixed system alarm against the saved monotonic deadline.
+
+Use Stop on the system alarm or in the Anchor Alarm screen. While armed, stopping
+the GPS backup snoozes it for 120 s. The next eligible fix can renew it immediately.
+Stopping the drift alarm schedules another alert in 120 s if drift is still
+confirmed. A confidently inside fix cancels the scheduled drift re-alert and a
+new alert requires drift to be confirmed again. Disarming cancels pending alarms
+that can still be safely cancelled. A sounding alarm, including one that starts
+during renewal or disarm, stays audible until the user stops it.
 
 ## Session summary
 
