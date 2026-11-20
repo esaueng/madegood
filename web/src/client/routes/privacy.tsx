@@ -50,9 +50,9 @@ function Privacy() {
             course. The iPhone keeps recording with the screen off and shows the system location
             indicator. Location is also used to ping the ends of a race start line during a
             countdown, and to mark a man-overboard position and guide you back to it; on the iPhone,
-            a man-overboard mark keeps receiving location with the screen locked until you clear it.
-            If you turn on local conditions, the iPhone also reads its position while the start
-            screen is open (below).
+            man-overboard marks keep receiving location with the screen locked until you clear the
+            last one. If you turn on local conditions, the iPhone also reads its position while the
+            start screen is open (below).
           </li>
           <li>
             <strong>The anchor alarm</strong> on the iPhone, only while you have it armed: it reads
@@ -80,24 +80,25 @@ function Privacy() {
           iPhone. Settings are stored on the device and kept in step between your watch and iPhone.
           Maps in the apps are Apple Maps, which loads map images from Apple for the area on screen.
         </p>
-        <p>Without an account, only these leave your devices:</p>
+        <p>
+          Without an account, nothing reaches MadeGood. Only these leave your devices, and they go
+          to Apple or to wherever you send them:
+        </p>
         <ul>
           <li>
-            <strong>Open-Meteo wind</strong>, only when you tap “Compare with Open-Meteo” on a
-            sailing session. The iPhone sends{" "}
-            <a href="https://open-meteo.com" className={link}>
-              Open-Meteo
+            <strong>Apple Weather</strong>, for local conditions if you turn them on (Show on the
+            start screen, or Settings → Weather), and for a sailing session's wind when you tap
+            “Compare with Apple Weather”. The iPhone rounds your position to a 0.1° grid square
+            (about 11 km across) and sends Apple only that square, plus the session's hours for a
+            comparison, never your exact position. Local conditions refresh at most every 15 minutes
+            while the start screen is open. Answers are kept on the iPhone; MadeGood's server never
+            sees these requests. Apple says this location is used only to provide weather forecasts,
+            is not associated with personally identifiable information and is not tracked between
+            requests; see{" "}
+            <a href="https://developer.apple.com/weatherkit/" className={link}>
+              WeatherKit
             </a>{" "}
-            the session's average position rounded to 0.5° (about 50 km) and its dates, with no
-            account, identifier or cookie, and gets back the modelled wind. (The server can also ask
-            Open-Meteo for shared sessions; see below.)
-          </li>
-          <li>
-            <strong>Open-Meteo local conditions</strong>, only if you turn them on (Show on the
-            start screen, or Settings → Weather). While the start screen is open, at most every 15
-            minutes, the iPhone sends Open-Meteo its position rounded to 0.1° (about 10 km), with no
-            account, identifier or cookie, and gets back the current weather and the next few hours.
-            The position is not stored; the last answer is kept on the iPhone.
+            and Apple's privacy policy.
           </li>
           <li>
             Files you choose to share or export (GPX, raw recordings, ZIP files). They contain
@@ -112,15 +113,18 @@ function Privacy() {
       <Section id="account" title="If you sign in and sync">
         <p>
           An account is optional. You sign in with Apple; MadeGood asks Apple for your name only,
-          never your email address, and you can choose not to share it. When you turn on sync, the
-          iPhone uploads the sessions you recorded while signed in (earlier ones only if you
-          choose). The server then holds:
+          never your email address, and you can choose not to share it. Signing in creates your
+          account with Apple's identifier for you and your name, if you shared it, but uploads no
+          sessions. Only when you also turn on <strong>Sync sessions</strong> (off after every new
+          sign-in) does the iPhone upload the sessions you record while signed in (earlier ones only
+          if you choose). The server then holds:
         </p>
         <ul>
           <li>
             <strong>Identifiers:</strong> Apple's identifier for your sign-in, an account ID and a
-            handle, and your name if you shared it. Your handle and name become public only on your
-            profile page, while you have a public session (see Sharing).
+            handle, and your name if you shared it. Your handle and name are shown to others only on
+            your profile page and in its link preview, and only while you have a public session (see
+            Sharing).
           </li>
           <li>
             <strong>Sessions:</strong> sport, times, distance, speeds, laps and other statistics,
@@ -157,9 +161,15 @@ function Privacy() {
           for the wind during it, automatically. It uses only what others can see of the track, with
           your privacy zones cut out: one position, the center of that visible area, rounded to 0.1°
           (about 11 km), and the UTC dates the visible part spans. No account, session ID, track or
-          time of day is sent. Private sessions never cause a request, and neither does a shared
-          session whose whole track lies inside your privacy zones. The answer is stored with the
-          session.
+          time of day is sent, and the request comes from Cloudflare's servers, so Open-Meteo sees
+          Cloudflare's IP address, not yours. Private sessions never cause a request, and neither
+          does a shared session whose whole track lies inside your privacy zones. The answer is
+          stored with the session. Open-Meteo says it keeps web server logs, which may contain the
+          coordinates, for troubleshooting, deletes them after 90 days and does not share them (
+          <a href="https://open-meteo.com/en/terms#privacy" className={link}>
+            its terms
+          </a>
+          ).
         </p>
         <p>
           The raw motion data the watch records stays on your devices. Your data is used only to
@@ -169,8 +179,7 @@ function Privacy() {
 
       <Section id="voyages" title="Voyages">
         <p>
-          Voyages (multi-day passages made of legs) are recorded on the iPhone and stay there.
-          Syncing them to the server and sharing them live are being built and are{" "}
+          Voyages (multi-day passages made of legs) are being built and are{" "}
           <strong>not available</strong> in the released apps or on this service yet. When they are,
           this is what they will hold:
         </p>
@@ -194,10 +203,16 @@ function Privacy() {
 
       <Section id="sharing" title="Sharing">
         <p>
-          Every session is private until you change it. An <em>unlisted</em> session can be seen by
-          anyone with its link; a <em>public</em> session by anyone. Others see its track,
-          statistics, title and notes, but not your heart rate, and parts of the track inside your
-          privacy zones are cut out.
+          A new upload takes your account's <strong>Visibility of new sessions</strong> setting,
+          which is Private unless you change it in{" "}
+          <Link to="/settings" className={link}>
+            Settings
+          </Link>
+          . If you set it to Unlisted or Public, sessions you upload afterwards are shared without
+          any further step. You can also change each session's visibility. An <em>unlisted</em>{" "}
+          session can be seen by anyone with its link; a <em>public</em> session by anyone. Others
+          see its track, statistics, title and notes, but not your heart rate, and parts of the
+          track inside your privacy zones are cut out.
         </p>
         <ul>
           <li>
@@ -205,7 +220,8 @@ function Privacy() {
             page (<code>/u/</code> and your handle) shows your handle, your name if you shared it,
             your totals, and your public sessions with their sport, title, start time, duration,
             distance and speeds. It never lists private or unlisted sessions. With no public
-            sessions, the page looks to others exactly like one that does not exist.
+            sessions, the page, its data and its link preview look to others exactly like a profile
+            that does not exist. Session pages and their previews do not show your handle or name.
           </li>
           <li>
             <strong>Link previews.</strong> When an unlisted or public session's link is posted in a
@@ -248,15 +264,24 @@ function Privacy() {
       <Section id="hosting" title="Where it runs">
         <p>
           The server and this website run on Cloudflare (Workers, D1, R2, Queues and Durable
-          Objects). Cloudflare keeps request logs, which include IP addresses and the addresses of
-          the pages and API calls requested, for a limited time, to run and debug the service.
-          MadeGood uses no other services and gives your data to no one else.
+          Objects). Apart from the Open-Meteo wind request above, MadeGood uses no other services
+          and gives your data to no one else.
+        </p>
+        <p>
+          <strong>Logs.</strong> When something fails, the server logs only a severity and a fixed
+          event name, such as “account deletion retry”: never your account or session IDs, handle,
+          name, location, tokens, IP address, the address requested or error details. MadeGood keeps
+          Cloudflare's stored Workers logs, traces and log exports turned off. Cloudflare itself
+          handles your IP address to deliver each request, and its security analytics can show
+          sampled requests, including the IP address and the address requested, for up to 31 days on
+          Cloudflare's standard plans. A maintainer watching the live log stream while debugging can
+          see request addresses and headers as they happen; that stream is not stored.
         </p>
         <p>
           <strong>Rate limits.</strong> To slow down abuse, signing in and refreshing a sign-in are
-          limited per IP address (60 requests a minute), and uploads per account. Cloudflare counts
-          the requests over one-minute windows; MadeGood does not store the IP address. A request
-          over the limit is refused and can be retried a minute later.
+          limited per IP address (60 requests a minute), and uploads per account. Cloudflare's rate
+          limiter counts the requests for each one-minute window; MadeGood does not store or log the
+          IP address. A request over the limit is refused and can be retried a minute later.
         </p>
       </Section>
 
@@ -281,14 +306,15 @@ function Privacy() {
           <li>
             Delete your account in the iPhone app (Settings → Account → Delete Account) or on this
             website's Settings page. At that moment every sign-in ends and the account is locked: it
-            cannot sign in, and nothing can be read from it or added to it. The same request deletes
-            your sessions, tracks, privacy zones, settings, voyages, shared positions and data
-            exports (any export in progress stops, and its files are deleted). If any part of that
-            fails, the server tries again, every 30 minutes at first and at least every 6 hours,
-            until it is done. About 20 minutes after your request (at the next run after that) the
-            account record itself is deleted, with the deleted session IDs; only then can the same
-            Apple ID start a new, empty account. Recordings on your devices and workouts in Apple
-            Health are not affected.
+            cannot sign in, nothing can be added to it, and your shared sessions, tracks, route
+            images and profile disappear for everyone else, even before the data is gone. The same
+            request deletes your sessions, tracks, privacy zones, settings, voyages, shared
+            positions and data exports (any export in progress stops, and its files are deleted). If
+            any part of that fails, the server tries again, every 30 minutes at first and at least
+            every 6 hours, until it is done. About 20 minutes after your request (at the next run
+            after that) the account record itself is deleted, with the deleted session IDs; only
+            then can the same Apple ID start a new, empty account. Recordings on your devices and
+            workouts in Apple Health are not affected.
           </li>
           <li>
             Processing a track after upload goes through a queue. A job that keeps failing is set
@@ -313,11 +339,20 @@ function Privacy() {
           <a href={HISTORY_URL} className={link}>
             history
           </a>{" "}
-          is public. Questions or requests: open an issue on{" "}
+          is public. Questions or requests: email{" "}
+          <a href="mailto:support@madegood.app" className={link}>
+            support@madegood.app
+          </a>
+          , see{" "}
+          <Link to="/support" className={link}>
+            Support
+          </Link>
+          , or open an issue on{" "}
           <a href={ISSUES_URL} className={link}>
             GitHub
-          </a>
-          . For a security problem, follow the project's{" "}
+          </a>{" "}
+          (issues are public, so leave out personal details). For a security problem, follow the
+          project's{" "}
           <a href={`${GITHUB_URL}/security/policy`} className={link}>
             security policy
           </a>{" "}
