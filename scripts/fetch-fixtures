@@ -1,0 +1,100 @@
+#!/usr/bin/env python3
+"""Fetch the public WaterKit corpus using the checksums pinned in Git."""
+
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+from shutil import copyfileobj
+import sys
+from tempfile import NamedTemporaryFile
+from urllib.parse import urlsplit
+from urllib.request import urlopen
+
+
+SCRIPTS = Path(__file__).resolve().parent
+DEFAULT_BASE_URL = "https://fixtures.example.invalid"
+SESSION_KEY = re.compile(r"(sailing|windsurfing|motorboating|kayak|canoe|sup)/[a-z0-9]+(?:-[a-z0-9]+)*")
+RAW_STREAM = re.compile(r"(gps|motion|hr|heading|events|clock)\.ndjson(\.gz)?")
+
+
+def read_manifest():
+    manifest = json.loads((SCRIPTS / "fixture-manifest.json").read_text(encoding="utf-8"))
+    if not isinstance(manifest, dict) or manifest.get("v") != 1 or not isinstance(manifest.get("fixtures"), dict):
+        raise ValueError("expected a v1 fixture manifest with a fixtures object")
+    for session, files in manifest["fixtures"].items():
+        if not SESSION_KEY.fullmatch(session) or not isinstance(files, dict) or "labels.json" not in files:
+            raise ValueError(f"invalid manifest fixture: {session}")
+        streams = [name.removesuffix(".gz") for name in files if RAW_STREAM.fullmatch(name)]
+        raw = "meta.json" in files and len(streams) == len(set(streams))
+        track = "track.json.gz" in files and len(files) == 2
+        if not track and (not raw or "track.json.gz" in files):
+            raise ValueError(f"{session}: expected a raw recording or track.json.gz")
+        for name, digest in files.items():
+            if name not in {"labels.json", "meta.json", "track.json.gz"} and not RAW_STREAM.fullmatch(name):
+                raise ValueError(f"{session}: unexpected file {name}")
+            if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+                raise ValueError(f"{session}/{name}: expected a lowercase SHA-256 checksum")
+    return manifest["fixtures"]
+
+
+def checksum(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for block in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def fetch(url, destination, expected):
+    if destination.is_file() and checksum(destination) == expected:
+        return "cached"
+    # Write beside the final file so rename is atomic, and publish only verified bytes.
+    with NamedTemporaryFile(dir=destination.parent, prefix=".", delete=False) as output:
+        temporary = Path(output.name)
+        try:
+            with urlopen(url, timeout=60) as response:
+                copyfileobj(response, output)
+            output.close()
+            actual = checksum(temporary)
+            if actual != expected:
+                raise ValueError(f"SHA-256 mismatch (expected {expected}, got {actual})")
+            temporary.replace(destination)
+        finally:
+            temporary.unlink(missing_ok=True)
+    return "downloaded"
+
+
+def main():
+    fixtures = read_manifest()
+    if not fixtures:
+        print("Fixture manifest is empty.")
+        return
+
+    base_url = (os.environ.get("FIXTURES_BASE_URL") or DEFAULT_BASE_URL).rstrip("/")
+    url = urlsplit(base_url)
+    if url.scheme not in {"http", "https"} or not url.netloc or url.query or url.fragment:
+        raise ValueError("FIXTURES_BASE_URL must be an HTTP(S) base URL without a query or fragment")
+
+    root = SCRIPTS.parent / "fixtures" / ".corpus"
+    for session, files in sorted(fixtures.items()):
+        folder = root / session
+        if folder.resolve() != folder:
+            raise ValueError(f"{session}: symlink in the fixture destination")
+        folder.mkdir(parents=True, exist_ok=True)
+        # The label file is the test suite's discovery marker. Publish it last.
+        for name in sorted(files, key=lambda name: (name == "labels.json", name)):
+            key = f"{session}/{name}"
+            try:
+                result = fetch(f"{base_url}/{key}", folder / name, files[name])
+            except (OSError, ValueError) as error:
+                raise ValueError(f"{key}: {error}") from error
+            print(f"{result} {key}")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (OSError, ValueError) as error:
+        sys.exit(f"fetch-fixtures: {error}")

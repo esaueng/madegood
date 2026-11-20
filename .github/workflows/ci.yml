@@ -78,16 +78,27 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install zlib headers
+      - name: Install zlib headers and Python if needed
         run: |
+          set --
           if [ ! -f /usr/include/zlib.h ]; then
-            apt-get update -q && apt-get install -yq --no-install-recommends zlib1g-dev
+            set -- "$@" zlib1g-dev
+          fi
+          if ! command -v python3 >/dev/null; then
+            set -- "$@" python3
+          fi
+          if [ "$#" -gt 0 ]; then
+            apt-get update -q && apt-get install -yq --no-install-recommends "$@"
           fi
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: packages/WaterKit/.build
           key: waterkit-linux-swift-6.3.3-${{ hashFiles('packages/WaterKit/Package.swift', 'packages/WaterKit/Sources/**') }}
           restore-keys: waterkit-linux-swift-6.3.3-
+      - name: Fetch fixture corpus
+        env:
+          FIXTURES_BASE_URL: ${{ vars.FIXTURES_BASE_URL }}
+        run: scripts/fetch-fixtures
       - name: Test
         run: swift test --package-path packages/WaterKit --parallel
       - name: Check fixtures are anonymized
@@ -106,6 +117,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Fetch fixture corpus
+        env:
+          FIXTURES_BASE_URL: ${{ vars.FIXTURES_BASE_URL }}
+        run: scripts/fetch-fixtures
       - name: Test
         run: swift test --package-path packages/WaterKit --parallel
 

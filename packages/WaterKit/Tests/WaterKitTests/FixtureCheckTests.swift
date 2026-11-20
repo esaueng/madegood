@@ -118,9 +118,12 @@ import Testing
         let labels = folder.appendingPathComponent("labels.json")
 
         let good =
-            #"{"v":1,"sport":"kayak","source":"video","description":"Flat water.","license":"CC-BY-4.0","truth":{"strokes":812,"maneuvers":[{"t":1.5,"type":"tack"}]}}"#
+            #"{"v":1,"sport":"kayak","source":"video","description":"Flat water.","license":"CC-BY-4.0","truth":{"strokes":812,"strokeRateSPM":54.5,"maneuvers":[{"t":1.5,"type":"tack"}]}}"#
         try Data(good.utf8).write(to: labels)
         #expect(FixtureCheck.problems(inFolder: folder) == [])
+
+        try Self.replace(in: labels, #"54.5"#, with: #""54.5""#)
+        #expect(FixtureCheck.problems(inFolder: folder).contains("labels.json: truth.strokeRateSPM must be a number"))
 
         let nested =
             #"{"v":1,"sport":"kayak","source":"video","license":"CC-BY-4.0","truth":{"owner":"Alice","lat":47.6,"lon":-122.4}}"#
