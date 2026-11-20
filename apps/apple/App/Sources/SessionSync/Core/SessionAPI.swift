@@ -105,30 +105,6 @@ final class SessionAPI {
         }
     }
 
-    /// `GET /me` `defaultVisibility`: the visibility the server gives each new upload. Built
-    /// by hand like `deleteAccount`; only that one field is read.
-    func newSessionVisibility(bearer: String) async throws -> NewSessionVisibility {
-        var request = URLRequest(url: baseURL.appending(path: "me"))
-        request.httpMethod = "GET"
-        request.setValue("Bearer " + bearer, forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-        let (data, response) = try await transport.send(request)
-        guard (200..<300).contains(response.statusCode) else {
-            struct Failure: Decodable { let error: String }
-            throw VoyageAPIError.http(
-                status: response.statusCode,
-                code: (try? JSONDecoder().decode(Failure.self, from: data))?.error,
-                retryAfter: response.value(forHTTPHeaderField: "Retry-After").flatMap(TimeInterval.init)
-            )
-        }
-        struct Me: Decodable { let defaultVisibility: NewSessionVisibility }
-        do {
-            return try JSONDecoder().decode(Me.self, from: data).defaultVisibility
-        } catch {
-            throw VoyageAPIError.invalidResponse
-        }
-    }
-
     private func perform<Result>(
         bearer: String, policy: SessionNetworkPolicy, upload: GeneratedSessionTransport.FileUpload? = nil,
         _ operation: (Client) async throws -> Result

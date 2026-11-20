@@ -95,13 +95,15 @@ export function PrivacyPolicy() {
             0.1° grid square (about 11 km across) and sends Apple only that square, plus the
             session's hours for a comparison, never your exact position. While the start screen is
             open, local conditions refresh automatically every 15 minutes; turning them on or
-            refreshing by hand fetches them at once. Answers are kept on the iPhone only in a small
-            temporary cache, which iOS can clear at any time: current conditions for 15 minutes,
-            forecast wind for 1 hour and past wind for 24 hours. Older versions of the app kept
-            these answers in its settings; updating the app removes them. MadeGood's server never
-            sees these requests. Apple says this location is used only to provide weather forecasts,
-            is not associated with personally identifiable information and is not tracked between
-            requests; see{" "}
+            refreshing by hand fetches them at once. Answers are kept only on the iPhone, in a small
+            cache that iOS can clear at any time. The app reuses current conditions for up to 15
+            minutes, forecast wind for up to 1 hour and past wind for up to 24 hours. After that an
+            answer is no longer used, but it stays in the cache until the app's cleanup removes it,
+            which runs when the app starts and each time it returns to the foreground, or until iOS
+            clears the cache. Older versions of the app kept these answers in its settings; updating
+            the app removes them. MadeGood's server never sees these requests. Apple says this
+            location is used only to provide weather forecasts, is not associated with personally
+            identifiable information and is not tracked between requests; see{" "}
             <a href="https://developer.apple.com/weatherkit/" className={link}>
               WeatherKit
             </a>{" "}
@@ -128,21 +130,23 @@ export function PrivacyPolicy() {
           (it carries Apple's identifier for you) and your name if you shared it. This request is
           sent on your first sign-in, before any account exists, and also when signing in then
           fails. Cloudflare handles your IP address for it as for any request (see Where it runs).
-          If the sign-in fails, MadeGood stores nothing from it. A successful sign-in creates your
-          account, or opens your existing one, and stores the following even if you never turn on
-          sync: Apple's identifier for you, an account ID, a handle the server picks, your name if
-          you shared it, when the account was created, your settings (units, and Visibility of new
-          sessions, which starts at Private), and a hash of the sign-in's refresh token with its
-          issue and expiry times (60 days) and whether it is for the app or the website. No session
-          is uploaded.
+          If Apple's confirmation is not valid, MadeGood stores nothing from the attempt. Once it is
+          checked, the server creates your account, or opens your existing one, and stores the
+          following even if you never turn on sync: Apple's identifier for you, an account ID, a
+          handle the server picks, your name if you shared it, when the account was created, and
+          your settings (units, and Visibility of new sessions, which starts at Private). Only then
+          does it issue the sign-in, storing a hash of its refresh token with its issue and expiry
+          times (60 days) and whether it is for the app or the website. So a sign-in that fails at
+          that last step can still leave the account record, and possibly the token hash, on the
+          server. MadeGood does not remove such a record on its own: it stays until you delete the
+          account, which you can do after signing in again. No session is uploaded.
         </p>
         <p>
           <strong>Syncing.</strong> Only when you also turn on <strong>Sync sessions</strong> (off
           after every new sign-in) does the iPhone upload the sessions you record while signed in
           (earlier ones only if you choose), with your account's Visibility of new sessions (see
-          Sharing). The iPhone checks that setting with the server before sync turns on. The server
-          holds the identifiers, settings and sign-in tokens below from sign-in, and the rest once
-          sessions upload:
+          Sharing). The server holds the identifiers, settings and sign-in tokens below from
+          sign-in, and the rest once sessions upload:
         </p>
         <ul>
           <li>
@@ -357,10 +361,11 @@ export function PrivacyPolicy() {
             request deletes your sessions, tracks, privacy zones, settings, voyages, shared
             positions and data exports (any export in progress stops, and its files are deleted). If
             any part of that fails, the server tries again automatically, waiting longer after each
-            failure, until it is done. About 20 minutes after your request (at the next run after
-            that) the account record itself is deleted, with the deleted session IDs; only then can
-            the same Apple ID start a new, empty account. Recordings on your devices and workouts in
-            Apple Health are not affected.
+            failure up to a fixed limit, and keeps trying. The account record itself, with the
+            deleted session IDs, is deleted last: no sooner than 20 minutes after your request, and
+            only once that cleanup has succeeded, so it takes longer while a step keeps failing.
+            Only then can the same Apple ID start a new, empty account. Recordings on your devices
+            and workouts in Apple Health are not affected.
           </li>
           <li>
             Processing a track after upload goes through a queue. A job that keeps failing is set

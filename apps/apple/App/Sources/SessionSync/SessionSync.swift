@@ -22,51 +22,22 @@ final class SessionSync {
     private(set) var preparing = false
     /// Finished recordings this account may receive only by explicit choice.
     private(set) var earlierSessions: [UUID] = []
-    /// The account's "Visibility of new sessions" and when it was last checked. Seeded by
-    /// sign-in, refreshed on the Account screen, on returning to the foreground and before
-    /// Sync sessions is turned on.
-    let visibility = NewSessionVisibilityTracker()
     private let ledger: SessionConsentLedger
     var consent: SessionSyncConsent { ledger.consent }
 
-    /// "Sync sessions": on only for the sign-in that turned it on. Turn it on with
-    /// `turnOn()`, which checks the account's Visibility of new sessions first.
-    var isEnabled: Bool { consent.isEnabled(for: account.binding) }
-
-    /// True while `turnOn()` is checking the account's Visibility of new sessions.
-    private(set) var turningOn = false
-
-    func turnOff() {
-        setEnabled(false)
-    }
-
-    /// Fetches the account's Visibility of new sessions and waits for it, then turns sync on.
-    /// Nothing is uploaded until the fresh value is known: if it can't be fetched (offline,
-    /// server error), sync stays off and this returns false (review of #133).
-    @discardableResult
-    func turnOn() async -> Bool {
-        guard let binding = account.binding, !isEnabled, !turningOn, !deletingAccount else { return isEnabled }
-        turningOn = true
-        defer { turningOn = false }
-        let fresh = await visibility.refreshedValue(for: binding, using: fetchVisibility)
-        guard fresh != nil, account.binding == binding, !deletingAccount else { return false }
-        setEnabled(true)
-        return isEnabled
-    }
-
-    private func setEnabled(_ enabled: Bool) {
-        guard let binding = account.binding, enabled != isEnabled else { return }
-        do {
-            try ledger.update { $0.setEnabled(enabled, for: binding) }
-        } catch {
-            queueUnavailable = true
-            return
+    /// "Sync sessions": on only for the sign-in that turned it on.
+    var isEnabled: Bool {
+        get { consent.isEnabled(for: account.binding) }
+        set {
+            guard let binding = account.binding, newValue != isEnabled else { return }
+            do {
+                try ledger.update { $0.setEnabled(newValue, for: binding) }
+            } catch {
+                queueUnavailable = true
+                return
+            }
+            Task { await settingsDidChange() }
         }
-        Task { await settingsDidChange() }
-    }
-
-    private var fetchVisibility: @MainActor () async throws -> NewSessionVisibility {
-        { [account, api] in try await AccountVisibility.fetch(account: account, api: api) }
     }
 
     var wifiOnly: Bool {
@@ -171,13 +142,7 @@ final class SessionSync {
         outbox.removeOtherSignIns(keeping: binding)
         guard let binding else {
             earlierSessions = []
-            visibility.reset(for: nil)
             return
-        }
-        // Sign-in seeds the value from its response; any other new binding (a saved sign-in
-        // at launch) fetches it.
-        if visibility.binding != binding || visibility.checkedAt == nil {
-            Task { await refreshNewSessionVisibility() }
         }
         do {
             try outbox.restore(for: binding)
@@ -187,27 +152,6 @@ final class SessionSync {
             return
         }
         recordingsChanged()
-    }
-
-    /// Reloads "Visibility of new sessions" for the signed-in account. Settings calls it on
-    /// appearing and when the app returns to the foreground, so a change made on the website
-    /// shows here. A failure keeps the last value with its check time.
-    func refreshNewSessionVisibility() async {
-        guard let binding = account.binding else {
-            visibility.reset(for: nil)
-            return
-        }
-        await visibility.refresh(for: binding, using: fetchVisibility)
-    }
-
-    /// Signs in and keeps the account's Visibility of new sessions from the response, so no
-    /// second request is needed.
-    func signIn(identityToken: String, displayName: String?) async throws {
-        let user = try await account.signIn(identityToken: identityToken, displayName: displayName)
-        guard let binding = account.binding else { return }
-        if let value = NewSessionVisibility(rawValue: user.defaultVisibility.rawValue) {
-            visibility.seed(value, for: binding)
-        }
     }
 
     func signOut() async throws {

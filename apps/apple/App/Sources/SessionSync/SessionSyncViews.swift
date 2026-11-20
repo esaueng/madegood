@@ -90,7 +90,6 @@ struct SessionSyncDetailRow: View {
 /// Settings: the MadeGood account and the session sync switches.
 struct SessionSyncSection: View {
     @Environment(SessionSync.self) private var sync: SessionSync?
-    @Environment(\.scenePhase) private var scenePhase
     @State private var busy = false
     @State private var message: String?
     @State private var confirmingDeletion = false
@@ -108,16 +107,10 @@ struct SessionSyncSection: View {
             Text("Account")
         } footer: {
             Text(
-                "When sync is on, sessions recorded while you are signed in upload to your MadeGood account and take its Visibility of new sessions setting: Private, Unlisted or Public. Signing out turns sync off. Recordings stay on this iPhone."
+                "When sync is on, sessions recorded while you are signed in upload to your MadeGood account. Signing out turns sync off. Recordings stay on this iPhone."
             )
         }
         .disabled(busy)
-        // The website can change Visibility of new sessions at any time: check again whenever
-        // this screen appears or the app returns to the foreground.
-        .task { await sync?.refreshNewSessionVisibility() }
-        .onChange(of: scenePhase) { _, phase in
-            if phase == .active { Task { await sync?.refreshNewSessionVisibility() } }
-        }
         .alert("Delete your MadeGood account?", isPresented: $confirmingDeletion) {
             Button("Delete Account", role: .destructive) {
                 if let sync { deleteAccount(sync) }
@@ -129,6 +122,9 @@ struct SessionSyncSection: View {
         }
     }
 
+    static let visibilityExplanation =
+        "New uploads use your account’s Visibility of new sessions, which you set in Settings on madegood.app. If it’s Unlisted or Public, new sessions are shared that way automatically."
+
     static let deletionWarning =
         "This deletes every session you have uploaded, your privacy zones, your settings and your sign-in from MadeGood’s servers. Recordings on this iPhone and your Apple Watch stay on your devices, and workouts in Apple Health are not affected. This can’t be undone."
 
@@ -138,13 +134,11 @@ struct SessionSyncSection: View {
         if sync.account.binding != nil {
             Label("Signed in", systemImage: "person.crop.circle.badge.checkmark")
                 .accessibilityIdentifier("sessionSync.signedIn")
-            Toggle("Sync sessions", isOn: syncSwitch(sync))
-                .disabled(sync.turningOn)
+            Toggle("Sync sessions", isOn: $sync.isEnabled)
                 .accessibilityIdentifier("sessionSync.enabled")
-            // Shown in every state: an Unlisted or Public account default shares every new
-            // upload automatically, and the value here may be out of date (review of #133).
-            VisibilityRow(tracker: sync.visibility)
-            Text(NewSessionVisibility.explanation)
+            // Static and always true: the server applies the account's default at upload, and
+            // this iPhone doesn't read it (#133).
+            Text(Self.visibilityExplanation)
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .accessibilityIdentifier("sessionSync.visibilityNotice")
@@ -173,7 +167,7 @@ struct SessionSyncSection: View {
             if sync.isDemo {
                 Button("Sign In with Synthetic Account") {
                     perform(failure: "Couldn’t sign in.") {
-                        try await sync.signIn(identityToken: "synthetic-identity", displayName: nil)
+                        try await sync.account.signIn(identityToken: "synthetic-identity", displayName: nil)
                     }
                 }
                 .accessibilityIdentifier("sessionSync.demoSignIn")
@@ -233,33 +227,13 @@ struct SessionSyncSection: View {
             }
             let name = credential.fullName?.formatted()
             perform(failure: "Couldn’t sign in to MadeGood. Try again.") {
-                try await sync.signIn(identityToken: token, displayName: name?.isEmpty == true ? nil : name)
+                try await sync.account.signIn(identityToken: token, displayName: name?.isEmpty == true ? nil : name)
             }
         } catch let error as ASAuthorizationError where error.code == .canceled {
             message = nil
         } catch {
             message = "Couldn’t sign in with Apple. Try again."
         }
-    }
-
-    /// Turning the switch on checks Visibility of new sessions first and stays off if it
-    /// can't be checked; turning it off is immediate.
-    private func syncSwitch(_ sync: SessionSync) -> Binding<Bool> {
-        Binding(
-            get: { sync.isEnabled || sync.turningOn },
-            set: { on in
-                guard on else {
-                    sync.turnOff()
-                    return
-                }
-                message = nil
-                Task {
-                    if await !sync.turnOn() {
-                        message =
-                            "Couldn’t check your Visibility of new sessions, so sync is still off. Check your connection and try again."
-                    }
-                }
-            })
     }
 
     private func deleteAccount(_ sync: SessionSync) {
@@ -287,41 +261,5 @@ struct SessionSyncSection: View {
             defer { busy = false }
             do { try await operation() } catch { message = failure }
         }
-    }
-}
-
-/// "Visibility of new sessions" with when it was last checked, so an old value reads as old.
-private struct VisibilityRow: View {
-    let tracker: NewSessionVisibilityTracker
-
-    var body: some View {
-        LabeledContent {
-            VStack(alignment: .trailing, spacing: 2) {
-                Text(tracker.value?.label ?? "Unknown")
-                TimelineView(.everyMinute) { context in
-                    Text(detail(at: context.date))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-        } label: {
-            Text("Visibility of new sessions")
-        }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Visibility of new sessions, \(tracker.value?.label ?? "Unknown")")
-        .accessibilityValue(detail(at: .now))
-        .accessibilityIdentifier("sessionSync.visibility")
-    }
-
-    private func detail(at now: Date) -> String {
-        if tracker.isChecking { return "Checking…" }
-        guard let checkedAt = tracker.checkedAt else {
-            return tracker.lastCheckFailed ? "Couldn’t check" : "Not checked yet"
-        }
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .short
-        let when =
-            now.timeIntervalSince(checkedAt) < 60 ? "just now" : formatter.localizedString(for: checkedAt, relativeTo: now)
-        return tracker.lastCheckFailed ? "Couldn’t check; last checked \(when)" : "Last checked \(when)"
     }
 }

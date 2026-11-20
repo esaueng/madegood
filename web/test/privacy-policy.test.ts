@@ -83,8 +83,23 @@ describe("/privacy", () => {
     expect(text).toContain("sends MadeGood's server, through Cloudflare");
     expect(text).toContain("before any account exists, and also when signing in then fails");
     expect(text).toContain("stores the following even if you never turn on sync");
-    expect(text).toContain("a hash of the sign-in's refresh token");
+    expect(text).toContain("storing a hash of its refresh token");
     expect(text).toContain("Visibility of new sessions, which starts at Private");
+  });
+
+  // Review of #133 at 58ed722: the account record is written before tokens are issued.
+  it("says a sign-in failing after account creation can leave the account record", async () => {
+    const text = await renderPolicy();
+    expect(text).not.toMatch(/stores nothing from it|failed sign-in stores nothing/);
+    expect(text).toContain("If Apple's confirmation is not valid, MadeGood stores nothing");
+    expect(text).toContain("can still leave the account record");
+    expect(text).toContain("MadeGood does not remove such a record on its own");
+  });
+
+  it("does not say the iPhone shows or checks Visibility of new sessions", async () => {
+    const text = await renderPolicy();
+    expect(text).not.toContain("The iPhone checks that setting");
+    expect(text).not.toMatch(/last checked/i);
   });
 
   it("describes the iPhone weather cache as merged in #141", async () => {
@@ -92,8 +107,11 @@ describe("/privacy", () => {
     expect(text).toContain("refresh automatically every 15 minutes");
     expect(text).toContain("turning them on or refreshing by hand fetches them at once");
     expect(text).toContain(
-      "current conditions for 15 minutes, forecast wind for 1 hour and past wind for 24 hours",
+      "reuses current conditions for up to 15 minutes, forecast wind for up to 1 hour and past wind for up to 24 hours",
     );
+    // Reuse periods, not retention: expired entries wait for cleanup or iOS (review at 58ed722).
+    expect(text).toContain("stays in the cache until the app's cleanup removes it");
+    expect(text).toContain("when the app starts and each time it returns to the foreground");
     expect(text).toContain("updating the app removes them");
     expect(text).not.toContain("at most every 15 minutes");
   });
@@ -102,6 +120,10 @@ describe("/privacy", () => {
     const text = await renderPolicy();
     expect(text).toContain("tries again automatically, waiting longer after each failure");
     expect(text).not.toMatch(/every 6 hours|six hours/);
+    // 20 minutes is the minimum grace period, not a completion time (review at 58ed722).
+    expect(text).not.toContain("About 20 minutes after your request");
+    expect(text).toContain("no sooner than 20 minutes after your request");
+    expect(text).toContain("only once that cleanup has succeeded");
     expect(text).toContain("every sign-in ends and the account is locked");
   });
 
