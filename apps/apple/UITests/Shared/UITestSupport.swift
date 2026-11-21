@@ -172,7 +172,8 @@ extension XCTestCase {
         /// on compact and older-runtime simulators, an accessibility tap on the element (or on
         /// the row's centre, its label) can leave the switch unchanged. `changed` defaults to
         /// the row's value differing from before the tap; pass another check when the tap
-        /// opens a confirmation instead. One retry absorbs a tap lost to a settling scroll.
+        /// opens a confirmation instead. One retry absorbs a tap lost to a settling scroll; it is
+        /// recorded as an attachment, and the change must still hold a second later.
         func tapSwitch(
             _ toggle: XCUIElement, in app: XCUIApplication, until changed: (() -> Bool)? = nil,
             file: StaticString = #filePath, line: UInt = #line
@@ -197,7 +198,21 @@ extension XCTestCase {
                     .tap()
                 let deadline = Date.now.addingTimeInterval(attempt == 0 ? 3 : 8)
                 while !done(), Date.now < deadline { RunLoop.current.run(until: .now.addingTimeInterval(0.25)) }
-                if done() { return }
+                guard done() else { continue }
+                if attempt > 0 {
+                    // Visible in the result bundle, so a switch that needs two taps stands out.
+                    let note = XCTAttachment(string: "\(toggle) needed a second tap")
+                    note.name = "Switch retried"
+                    note.lifetime = .keepAlways
+                    add(note)
+                }
+                // A lost first tap that lands late would toggle the switch back after the
+                // retry; let it settle and require the change to hold.
+                RunLoop.current.run(until: .now.addingTimeInterval(1))
+                XCTAssertTrue(
+                    done(), "\(toggle) changed, then changed back; value \(String(describing: toggle.value))",
+                    file: file, line: line)
+                return
             }
             XCTFail(
                 "\(toggle) did not respond to a tap on its switch; value \(String(describing: toggle.value))",
