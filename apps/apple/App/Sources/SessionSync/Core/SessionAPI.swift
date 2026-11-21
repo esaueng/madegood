@@ -16,6 +16,25 @@ protocol SessionSyncTransport: VoyageTransport {
     func reconcileUploads(keep: (_ taskDescription: String?, _ request: URLRequest?) -> Bool) async
 }
 
+private struct SharingState: Decodable {
+    let sharingEnabled: Bool
+}
+
+/// A session others can see, as Settings → Sharing lists it.
+struct SharedSession: Decodable, Identifiable, Equatable, Sendable {
+    let id: String
+    let sport: String
+    let title: String?
+    /// `unlisted` or `public`.
+    let visibility: String
+    let startedAt: String
+}
+
+struct SharedSessionPage: Decodable, Sendable {
+    let sessions: [SharedSession]
+    let nextCursor: String?
+}
+
 /// A 412: the server stores another upload revision for the session (`Upload-Revision`).
 struct SessionRevisionConflict: Error, Equatable {
     let stored: Int64
@@ -103,6 +122,63 @@ final class SessionAPI {
                 retryAfter: response.value(forHTTPHeaderField: "Retry-After").flatMap(TimeInterval.init)
             )
         }
+    }
+
+    // MARK: Sharing (Settings → Sharing). Built by hand like `deleteAccount`.
+
+    /// `GET /me`: whether the account's sharing switch is on.
+    func sharingEnabled(bearer: String) async throws -> Bool {
+        let data = try await sendJSON("GET", path: "me", bearer: bearer)
+        return try JSONDecoder().decode(SharingState.self, from: data).sharingEnabled
+    }
+
+    /// `PATCH /me {sharingEnabled}`. Off makes every session private on the server at once and
+    /// keeps it so; on shares nothing by itself. Returns the switch as the server now has it.
+    func setSharingEnabled(_ enabled: Bool, bearer: String) async throws -> Bool {
+        let data = try await sendJSON(
+            "PATCH", path: "me", body: try JSONEncoder().encode(["sharingEnabled": enabled]), bearer: bearer)
+        return try JSONDecoder().decode(SharingState.self, from: data).sharingEnabled
+    }
+
+    /// `GET /sessions?shared=true`: one page of the sessions others can see, newest first.
+    func sharedSessions(cursor: String?, bearer: String) async throws -> SharedSessionPage {
+        var query = [URLQueryItem(name: "shared", value: "true"), URLQueryItem(name: "limit", value: "100")]
+        if let cursor { query.append(URLQueryItem(name: "cursor", value: cursor)) }
+        let data = try await sendJSON("GET", path: "sessions", query: query, bearer: bearer)
+        return try JSONDecoder().decode(SharedSessionPage.self, from: data)
+    }
+
+    /// `PATCH /sessions/{id} {visibility: private}`: stops sharing one session.
+    func makePrivate(sessionID: String, bearer: String) async throws {
+        _ = try await sendJSON(
+            "PATCH", path: "sessions/\(sessionID)",
+            body: try JSONEncoder().encode(["visibility": "private"]), bearer: bearer)
+    }
+
+    private func sendJSON(
+        _ method: String, path: String, query: [URLQueryItem] = [], body: Data? = nil, bearer: String
+    ) async throws -> Data {
+        var url = baseURL.appending(path: path)
+        if !query.isEmpty { url.append(queryItems: query) }
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.setValue("Bearer " + bearer, forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        if let body {
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = body
+        }
+        let (data, response) = try await transport.send(request)
+        guard (200..<300).contains(response.statusCode) else {
+            struct Failure: Decodable { let error: String }
+            throw VoyageAPIError.http(
+                status: response.statusCode,
+                code: (try? JSONDecoder().decode(Failure.self, from: data))?.error,
+                retryAfter: response.value(forHTTPHeaderField: "Retry-After").flatMap(TimeInterval.init)
+            )
+        }
+        return data
     }
 
     private func perform<Result>(

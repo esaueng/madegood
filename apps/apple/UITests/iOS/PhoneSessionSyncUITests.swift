@@ -25,14 +25,23 @@ final class PhoneSessionSyncUITests: XCTestCase {
         XCTAssertTrue(notice.exists)
         XCTAssertEqual(
             notice.label,
-            "New uploads use your account’s Visibility of new sessions, which you set in Settings on madegood.app. If it’s Unlisted or Public, new sessions are shared that way automatically."
+            "New uploads use your account’s Visibility of new sessions, which you set in Settings on madegood.app. If it’s Unlisted or Public, new sessions are shared that way automatically. Turn sharing off under Sharing to keep everything private."
         )
         enable.switches.firstMatch.tap()
         XCTAssertTrue(app.switches["sessionSync.wifiOnly"].waitForExistence(timeout: 5))
 
         // The synthetic sessions predate the sign-in: they wait for an explicit choice.
         let earlier = app.buttons["sessionSync.uploadEarlier"]
-        XCTAssertTrue(earlier.waitForExistence(timeout: 15))
+        // The row appears once the scan finishes and may sit below the fold of the lazy list.
+        let deadline = Date.now.addingTimeInterval(15)
+        while !earlier.exists, Date.now < deadline {
+            let window = app.windows.firstMatch
+            window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.7)).press(
+                forDuration: 0.05, thenDragTo: window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)),
+                withVelocity: .slow, thenHoldForDuration: 0.1)
+            _ = earlier.waitForExistence(timeout: 1)
+        }
+        XCTAssertTrue(earlier.exists)
         XCTAssertEqual(earlier.label, "Upload 3 Earlier Sessions")
         waitForLabel(element("sessionSync.syncedCount", in: app), "Synced, 0")
         scrollTo(earlier, in: app)
@@ -113,5 +122,41 @@ final class PhoneSessionSyncUITests: XCTestCase {
 
         app.tabBars.buttons["History"].tap()
         XCTAssertTrue(app.buttons["session.row"].firstMatch.waitForExistence(timeout: 10))
+    }
+
+    /// Settings → Sharing: the shared sessions with Make Private, then the switch turns all
+    /// sharing off after a confirmation.
+    @MainActor
+    func testSharingListsSharedSessionsAndTurnsSharingOff() {
+        continueAfterFailure = false
+        let app = launchDemoHistory(extraArguments: ["-demoSessionSync"])
+        app.tabBars.buttons["Settings"].tap()
+        let signIn = app.buttons["sessionSync.demoSignIn"]
+        scrollTo(signIn, in: app)
+        signIn.tap()
+        XCTAssertTrue(element("sessionSync.signedIn", in: app).waitForExistence(timeout: 10))
+
+        let sharing = app.buttons["sessionSync.sharing"]
+        scrollTo(sharing, in: app)
+        sharing.tap()
+        let rows = app.descendants(matching: .any).matching(identifier: "sharing.session")
+        XCTAssertTrue(rows.firstMatch.waitForExistence(timeout: 10))
+        XCTAssertEqual(rows.count, 2)
+        let toggle = app.switches["sharing.enabled"]
+        XCTAssertEqual(toggle.value as? String, "1")
+        attachScreenshot("Sharing settings")
+
+        app.buttons.matching(identifier: "sharing.makePrivate").firstMatch.tap()
+        let deadline = Date.now.addingTimeInterval(10)
+        while rows.count != 1, Date.now < deadline { RunLoop.current.run(until: .now.addingTimeInterval(0.2)) }
+        XCTAssertEqual(rows.count, 1)
+
+        toggle.switches.firstMatch.tap()
+        let confirm = app.buttons.matching(identifier: "sharing.confirmOff").firstMatch
+        XCTAssertTrue(confirm.waitForExistence(timeout: 5))
+        confirm.tap()
+        XCTAssertTrue(element("sharing.none", in: app).waitForExistence(timeout: 10))
+        XCTAssertEqual(toggle.value as? String, "0")
+        attachScreenshot("Sharing turned off")
     }
 }

@@ -1,5 +1,5 @@
 import { createRoute, z } from "@hono/zod-openapi";
-import { and, desc, eq, isNull, lt, or, sql } from "drizzle-orm";
+import { and, desc, eq, isNull, lt, ne, or, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
 import type { Context } from "hono";
 import { optionalAuth, requireAuth } from "../auth/middleware";
@@ -434,8 +434,12 @@ async function findReadableSession(db: ReturnType<typeof drizzle>, id: string) {
 }
 
 /** Both owners and other viewers use the public track for wind. */
-function sharedWindRequest({ session, zonesVersion }: ReadableSession, now: number): URL | null {
+function sharedWindRequest(
+  { session, zonesVersion, sharingEnabled }: ReadableSession,
+  now: number,
+): URL | null {
   if (
+    !sharingEnabled ||
     session.visibility === "private" ||
     processingState(session) !== "done" ||
     !publicIsCurrent(session, zonesVersion)
@@ -448,9 +452,13 @@ function sharedWindRequest({ session, zonesVersion }: ReadableSession, now: numb
   return windRequest(boundsCenter(box), { startedAt, endedAt }, now);
 }
 
-/** Owners see everything; others see public and unlisted sessions. Private ones 404. */
-const canView = (session: Session, viewerId: string | null) =>
-  session.userId === viewerId || session.visibility !== "private";
+/**
+ * Owners see everything; others see public and unlisted sessions while the owner's sharing
+ * switch is on. Private ones 404. Turning sharing off also makes every session private;
+ * the switch is checked here too, so a reader never depends on that alone.
+ */
+const canView = ({ session, sharingEnabled }: ReadableSession, viewerId: string | null) =>
+  session.userId === viewerId || (sharingEnabled && session.visibility !== "private");
 
 // ---- Routes ------------------------------------------------------------------------
 
@@ -472,6 +480,14 @@ const listRoute = createRoute({
         .max(PAGE_MAX)
         .optional()
         .openapi({ type: "integer", description: `Page size, ${PAGE_DEFAULT} by default.` }),
+      shared: z
+        .enum(["true", "false"])
+        .optional()
+        .openapi({
+          description:
+            "`true` lists only the sessions others can see (unlisted or public), so the " +
+            "user can review and stop sharing them; `false` only private ones.",
+        }),
     }),
   },
   responses: {
@@ -635,6 +651,10 @@ const patchRoute = createRoute({
     400: errorResponse("The ID or body is invalid."),
     401: errorResponse("Missing or invalid access token."),
     404: errorResponse("The caller has no session with this ID."),
+    409: errorResponse(
+      "`visibility` would share the session while the account's sharing is turned off " +
+        "(`sharing_disabled`).",
+    ),
   },
 });
 
@@ -662,11 +682,18 @@ export const sessionRoutes = createRouter<SessionsEnv>();
 
 sessionRoutes.openapi(listRoute, async (c) => {
   c.header("Cache-Control", "private, no-store");
-  const { cursor, limit = PAGE_DEFAULT } = c.req.valid("query");
+  const { cursor, limit = PAGE_DEFAULT, shared } = c.req.valid("query");
   const after = cursor === undefined ? null : decodeCursor(cursor);
   if (cursor !== undefined && !after) return apiError(c, 400, "invalid_request", "Bad cursor.");
 
-  const owned = eq(sessions.userId, c.var.userId);
+  const owned = and(
+    eq(sessions.userId, c.var.userId),
+    shared === undefined
+      ? undefined
+      : shared === "true"
+        ? ne(sessions.visibility, "private")
+        : eq(sessions.visibility, "private"),
+  );
   const live = isNull(sessions.deletedAt);
   // Newest first; the ID breaks ties between sessions that started at the same time.
   const page = after
@@ -769,7 +796,7 @@ sessionRoutes.openapi(getRoute, async (c) => {
   const viewerId = c.var.viewerId;
   const db = drizzle(c.env.DB);
   const row = await findReadableSession(db, id);
-  if (!row || !canView(row.session, viewerId)) return notFound(c);
+  if (!row || !canView(row, viewerId)) return notFound(c);
   c.header("Cache-Control", "private, no-store");
 
   const now = Date.now();
@@ -790,7 +817,7 @@ sessionRoutes.openapi(getRoute, async (c) => {
 
   // The session, track or privacy zones can change while the cache or Apple answers.
   const current = await findReadableSession(db, id);
-  if (!current || !canView(current.session, viewerId)) return notFound(c);
+  if (!current || !canView(current, viewerId)) return notFound(c);
   return c.json(toSessionBody(current, viewerId, matches(current) ? wind : null), 200);
 });
 
@@ -926,8 +953,9 @@ sessionRoutes.openapi(getTrackRoute, async (c) => {
   const { id } = c.req.valid("param");
   const viewerId = c.var.viewerId;
   const db = drizzle(c.env.DB);
-  const session = (await findReadableSession(db, id))?.session;
-  if (!session || !canView(session, viewerId)) return notFound(c);
+  const row = await findReadableSession(db, id);
+  if (!row || !canView(row, viewerId)) return notFound(c);
+  const session = row.session;
 
   const object = session.trackKey ? await c.env.TRACKS.get(session.trackKey) : null;
   if (!object) return apiError(c, 404, "not_found", "This session has no track.");
@@ -959,9 +987,17 @@ sessionRoutes.openapi(getTrackRoute, async (c) => {
     const gzipped = await new Response(
       new Blob([JSON.stringify(shared)]).stream().pipeThrough(new CompressionStream("gzip")),
     ).arrayBuffer();
-    // Deletion can remove the zones after this request obtained the R2 object. Recheck
-    // the owner before sending a projection that may have used the emptied zone list.
-    if (!(await accountActive(db, session.userId))) return notFound(c);
+    // Deletion can remove the zones, and the owner can make the session private or turn
+    // sharing off, after this request obtained the R2 object. Recheck before sending.
+    const current = await findReadableSession(db, id);
+    if (
+      !current ||
+      !canView(current, viewerId) ||
+      current.session.userId !== session.userId ||
+      current.session.trackKey !== session.trackKey
+    ) {
+      return notFound(c);
+    }
     return new Response(gzipped, {
       headers: {
         "content-type": TRACK_CONTENT_TYPE,
@@ -995,6 +1031,9 @@ sessionRoutes.openapi(patchRoute, async (c) => {
   if (body.visibility !== undefined) changes.visibility = body.visibility;
 
   const mine = and(eq(sessions.id, id), eq(sessions.userId, userId), isNull(sessions.deletedAt));
+  // Sharing needs the account's switch on, checked in the same statement, so it can never
+  // land after turning sharing off made everything private (routes/me.ts).
+  const shares = changes.visibility !== undefined && changes.visibility !== "private";
   if (Object.keys(changes).length !== 0) {
     const [updated] = await db
       .update(sessions)
@@ -1003,10 +1042,21 @@ sessionRoutes.openapi(patchRoute, async (c) => {
         and(
           mine,
           sql`EXISTS (SELECT 1 FROM users WHERE users.id = ${userId} AND users.deleted_at IS NULL)`,
+          shares
+            ? sql`EXISTS (SELECT 1 FROM users WHERE users.id = ${userId} AND users.sharing_enabled = 1)`
+            : undefined,
         ),
       )
       .returning({ id: sessions.id });
-    if (!updated) return notFound(c);
+    if (!updated) {
+      if (shares) {
+        const [exists] = await db.select({ id: sessions.id }).from(sessions).where(mine);
+        if (exists) {
+          return apiError(c, 409, "sharing_disabled", "Sharing is turned off for this account.");
+        }
+      }
+      return notFound(c);
+    }
   }
   const [row] = await selectReadableSessions(db).where(mine);
   return row ? c.json(toSessionBody(row, userId), 200) : notFound(c);

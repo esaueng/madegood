@@ -699,3 +699,80 @@ describe("an expired live link", () => {
     expect(await count()).toBe(0);
   });
 });
+
+describe("the account-wide sharing switch", () => {
+  const setSharing = (voyage: Awaited<ReturnType<typeof setup>>, sharingEnabled: boolean) =>
+    api("/me", {
+      method: "PATCH",
+      headers: { ...voyage.headers, "content-type": "application/json" },
+      body: JSON.stringify({ sharingEnabled }),
+    });
+
+  it("closes open viewers on the next update once the switch is off", async () => {
+    const voyage = await setup();
+    const time = clock();
+    const slug = await voyage.issue();
+    const ws = await connect(slug);
+    expect(await ws.next()).toEqual(unavailable);
+    time.at(100);
+    expect((await voyage.ingest([position(time.start + 100, 1)])).status).toBe(200);
+    expect(await ws.next()).toMatchObject({ status: "available" });
+
+    // The switch alone, without the link cleanup PATCH /me also does: the object checks it.
+    await env.DB.prepare("UPDATE users SET sharing_enabled = 0 WHERE id = ?")
+      .bind(voyage.userId)
+      .run();
+    time.at(200);
+    expect((await voyage.ingest([position(time.start + 200, 2)])).status).toBe(200);
+    expect(await ws.next()).toEqual(unavailable);
+    expect(await ws.closed).toBe(1008);
+    expect(await snapshot(slug)).toEqual(unavailable);
+    expect(await (await voyage.state()).json()).toMatchObject({ sharing: "off" });
+  });
+
+  it("refuses new links while off and never restores an old one", async () => {
+    const voyage = await setup();
+    const slug = await voyage.issue();
+    expect(await snapshot(slug)).toMatchObject({ status: expect.any(String) });
+    const hash = await hashSlug(slug);
+    expect(await locateShare(env.DB, hash)).not.toBeNull();
+
+    expect((await setSharing(voyage, false)).status).toBe(200);
+    expect(await locateShare(env.DB, hash)).toBeNull();
+    for (const command of [
+      { action: "rotate", delayS: 0, expiresInS: 600 },
+      { action: "resume" },
+    ]) {
+      const refused = await voyage.share(command);
+      expect(refused.status, command.action).toBe(409);
+      expect(await refused.json()).toMatchObject({ error: "sharing_disabled" });
+    }
+
+    // Turning it back on shares nothing by itself: the old link stays dead.
+    expect((await setSharing(voyage, true)).status).toBe(200);
+    expect(await locateShare(env.DB, hash)).toBeNull();
+    expect(await snapshot(slug)).toEqual(unavailable);
+    // The old grant is over: the owner sees sharing off, it cannot be reopened, and a new
+    // issue (a new link) works.
+    expect(await (await voyage.state()).json()).toMatchObject({ sharing: "off" });
+    expect((await voyage.share({ action: "resume" })).status).toBe(409);
+    const fresh = await voyage.issue();
+    expect(fresh).not.toBe(slug);
+    expect(await locateShare(env.DB, await hashSlug(fresh))).not.toBeNull();
+  });
+
+  it("closes an open viewer even when sharing is turned off and straight back on", async () => {
+    const voyage = await setup();
+    const time = clock();
+    const slug = await voyage.issue();
+    const ws = await connect(slug);
+    expect(await ws.next()).toEqual(unavailable);
+    expect((await setSharing(voyage, false)).status).toBe(200);
+    expect((await setSharing(voyage, true)).status).toBe(200);
+    // The phone still holds the old grant and uploads under it.
+    time.at(100);
+    expect((await voyage.ingest([position(time.start + 100, 1)])).status).toBe(200);
+    expect(await ws.next()).toEqual(unavailable);
+    expect(await ws.closed).toBe(1008);
+  });
+});

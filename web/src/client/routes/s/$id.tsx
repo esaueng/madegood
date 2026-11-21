@@ -150,6 +150,7 @@ function Header({ session, showProfile }: { session: Session; showProfile: boole
   });
   const current = VISIBILITY[session.visibility];
   const owner = showProfile && session.visibility === "public" ? session.owner : null;
+  const sharingOff = useMe().data?.sharingEnabled === false;
   return (
     <header className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
       <div className="min-w-0">
@@ -181,11 +182,16 @@ function Header({ session, showProfile }: { session: Session; showProfile: boole
             title={current.hint}
           >
             {(Object.keys(VISIBILITY) as Visibility[]).map((v) => (
-              <option key={v} value={v}>
+              <option key={v} value={v} disabled={sharingOff && v !== "private"}>
                 {VISIBILITY[v].label}
               </option>
             ))}
           </select>
+          {sharingOff && (
+            <Link to="/settings" className="text-muted-foreground underline underline-offset-4">
+              Sharing is off
+            </Link>
+          )}
           {change.isError && <span className="text-red-600">Not saved</span>}
         </label>
       ) : (

@@ -130,7 +130,13 @@ userRoutes.openapi(profileRoute, async (c) => {
   // sessions cost the same (no timing difference reveals which accounts exist), and all
   // three reads see the same state (no display name next to sessions a concurrent
   // deletion or visibility change has already removed).
-  const shown = and(account, eq(sessions.visibility, "public"), isNull(sessions.deletedAt));
+  // The sharing switch hides every session, even if one were somehow still public.
+  const shown = and(
+    account,
+    eq(users.sharingEnabled, true),
+    eq(sessions.visibility, "public"),
+    isNull(sessions.deletedAt),
+  );
   // Newest first; the ID breaks ties, as in GET /sessions.
   const page = after
     ? or(

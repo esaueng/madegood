@@ -120,6 +120,10 @@
               "public"
             ]
           },
+          "sharingEnabled": {
+            "type": "boolean",
+            "description": "Whether the account may share anything. While false every session is private and nothing can be made unlisted or public."
+          },
           "createdAt": {
             "type": "string",
             "format": "date-time"
@@ -134,6 +138,7 @@
           "publicProfileDisplayName",
           "units",
           "defaultVisibility",
+          "sharingEnabled",
           "createdAt"
         ]
       },
@@ -172,7 +177,8 @@
               "export_in_progress",
               "export_too_large",
               "export_not_ready",
-              "rate_limited"
+              "rate_limited",
+              "sharing_disabled"
             ]
           },
           "message": {
@@ -270,7 +276,11 @@
           },
           "publicProfileEnabled": {
             "type": "boolean",
-            "description": "Enable or disable the public profile. Re-enabling creates a new link."
+            "description": "Enable or disable the public profile. Re-enabling creates a new link. Enabling needs sharing on (`sharingEnabled`)."
+          },
+          "sharingEnabled": {
+            "type": "boolean",
+            "description": "false stops all sharing at once: every session becomes private, the default visibility becomes private, the public profile is turned off (its link revoked), live voyage links stop working, and nothing can be shared again until it is set back to true. Setting it to true shares nothing by itself."
           },
           "publicProfileDisplayName": {
             "type": [
@@ -2002,7 +2012,7 @@
             }
           },
           "409": {
-            "description": "The account differs, or the handle or profile username is unavailable.",
+            "description": "The account differs, the handle or profile username is unavailable, or the request would share while sharing is turned off (`sharing_disabled`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -2577,6 +2587,20 @@
             "description": "Page size, 20 by default.",
             "name": "limit",
             "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ],
+              "description": "`true` lists only the sessions others can see (unlisted or public), so the user can review and stop sharing them; `false` only private ones."
+            },
+            "required": false,
+            "description": "`true` lists only the sessions others can see (unlisted or public), so the user can review and stop sharing them; `false` only private ones.",
+            "name": "shared",
+            "in": "query"
           }
         ],
         "responses": {
@@ -2900,6 +2924,16 @@
           },
           "404": {
             "description": "The caller has no session with this ID.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`visibility` would share the session while the account's sharing is turned off (`sharing_disabled`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -3543,7 +3577,7 @@
             }
           },
           "409": {
-            "description": "The sample ID or share state conflicts, the grant is stale, or the voyage is at capacity.",
+            "description": "The share state conflicts, the grant is stale, or the voyage is at capacity; or the command would issue or reopen a link while the account's sharing is off (`sharing_disabled`).",
             "content": {
               "application/json": {
                 "schema": {

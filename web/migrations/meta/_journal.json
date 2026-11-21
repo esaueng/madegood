@@ -120,6 +120,13 @@
       "when": 1795227882073,
       "tag": "0016_separate_public_profile_name",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "6",
+      "when": 1795229996080,
+      "tag": "0017_sharing_enabled",
+      "breakpoints": true
     }
   ]
 }

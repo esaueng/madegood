@@ -189,6 +189,13 @@ export function SupportPage() {
               new sessions are shared that way automatically.
             </p>
             <p>
+              Settings lists every session you share, each with <em>Make private</em>, on the
+              website and in the iPhone app (Settings → Sharing). Turn off <em>Allow sharing</em>{" "}
+              there to stop sharing everything at once: every session becomes private, its links
+              stop working, your public profile turns off, and new sessions stay private until you
+              turn sharing back on.
+            </p>
+            <p>
               Your public profile is off by default. To publish it, open Settings and select
               <strong> Enable public profile</strong>. Once you have a public session, the profile
               shows your display name and public sessions. The link uses a random ID unless you

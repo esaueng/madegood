@@ -8,6 +8,8 @@ export function selectReadableSessions(db: ReturnType<typeof drizzle>) {
     .select({
       session: sessionColumns,
       zonesVersion: users.zonesVersion,
+      /** The owner's account-wide sharing switch (users.sharing_enabled). */
+      sharingEnabled: users.sharingEnabled,
       owner: {
         publicProfileId: users.publicProfileId,
         publicProfileUsername: users.publicProfileUsername,

@@ -274,6 +274,14 @@ export function PrivacyPolicy() {
             display name, number of public sessions and their total distance. Search engines may
             index public sessions and your profile; unlisted sessions ask them not to.
           </li>
+          <li>
+            <strong>Turning sharing off.</strong> Settings, on this website and in the iPhone app,
+            lists every session others can see and lets you make each one private. Turning off{" "}
+            <em>Allow sharing</em> makes every session private at once: their links, previews and
+            your profile stop working for others, and nothing can be shared again until you turn it
+            back on. Copies that others already saved, and previews a chat app or search engine
+            already fetched, are outside MadeGood's control.
+          </li>
         </ul>
       </Section>
 

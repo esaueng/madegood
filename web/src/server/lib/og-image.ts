@@ -90,6 +90,13 @@ export async function ogInfo(
 }
 
 type Db = ReturnType<typeof drizzle>;
+
+/** The session's owner, while the account is active and its sharing switch is on. */
+const sharingOwner = and(
+  eq(users.id, sessions.userId),
+  isNull(users.deletedAt),
+  eq(users.sharingEnabled, true),
+);
 type OgEnv = Pick<Env, "DB" | "TRACKS">;
 
 function activeSession(db: Db, sessionId: string) {
@@ -113,7 +120,7 @@ function activeSession(db: Db, sessionId: string) {
       zonesVersion: users.zonesVersion,
     })
     .from(sessions)
-    .innerJoin(users, and(eq(users.id, sessions.userId), isNull(users.deletedAt)))
+    .innerJoin(users, sharingOwner)
     .where(and(eq(sessions.id, sessionId), isNull(sessions.deletedAt)));
 }
 
@@ -124,7 +131,7 @@ function currentSession(db: Db, { session, units, zonesVersion }: OgState) {
   return db
     .select({ id: sessions.id })
     .from(sessions)
-    .innerJoin(users, and(eq(users.id, sessions.userId), isNull(users.deletedAt)))
+    .innerJoin(users, sharingOwner)
     .where(
       and(
         eq(sessions.id, session.id),

@@ -31,6 +31,18 @@
     private final class SyntheticSessionTransport: SessionSyncTransport {
         private var sessions: [String: String] = [:]
         private var refusedTracks: Set<String> = []
+        /// Settings → Sharing: the account's switch and two synthetic shared sessions.
+        private var sharingEnabled = true
+        private var shared: [[String: Any]] = [
+            [
+                "id": "00000000-0000-4000-8000-000000000001", "sport": "sailing", "title": "Harbour race",
+                "visibility": "public", "startedAt": "2000-01-02T10:00:00.000Z",
+            ],
+            [
+                "id": "00000000-0000-4000-8000-000000000002", "sport": "kayak", "title": NSNull(),
+                "visibility": "unlisted", "startedAt": "2000-01-01T10:00:00.000Z",
+            ],
+        ]
 
         func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
             try await Task.sleep(for: .milliseconds(300))
@@ -39,7 +51,8 @@
                     {
                         "user": {
                             "id": "synthetic-account", "handle": "synthetic", "displayName": null,
-                            "units": "metric", "defaultVisibility": "private", "createdAt": "2023-11-14T22:13:20.125Z"
+                            "units": "metric", "defaultVisibility": "private", "sharingEnabled": true,
+                            "createdAt": "2023-11-14T22:13:20.125Z"
                         },
                         "accessToken": "synthetic-access", "refreshToken": "synthetic-refresh"
                     }
@@ -53,6 +66,7 @@
                 sessions = [:]
                 return (Data(), response(request, 202))
             }
+            if let sharing = try sharingResponse(request) { return sharing }
             guard request.httpMethod == "PUT", isAuthorized(request), let body = request.httpBody,
                 let fields = try JSONSerialization.jsonObject(with: body) as? [String: Any],
                 let sport = fields["sport"] as? String, let startedAt = fields["startedAt"] as? String,
@@ -92,6 +106,39 @@
         func cancelStaleUploads(currentSignIn: () -> UUID?) async {}
         func activate(onCompletion: @escaping @MainActor (String, Int?) -> Void) {}
         func reconcileUploads(keep: (String?, URLRequest?) -> Bool) async {}
+
+        /// GET/PATCH /me and GET /sessions?shared=true, PATCH /sessions/{id} {visibility}.
+        private func sharingResponse(_ request: URLRequest) throws -> (Data, HTTPURLResponse)? {
+            guard isAuthorized(request), let url = request.url else { return nil }
+            let path = url.pathComponents
+            let body = try request.httpBody.flatMap { try JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+            let me: () throws -> Data = { [self] in
+                try JSONSerialization.data(withJSONObject: [
+                    "id": "synthetic-account", "handle": "synthetic", "displayName": NSNull(), "units": "metric",
+                    "defaultVisibility": "private", "sharingEnabled": sharingEnabled,
+                    "createdAt": "2023-11-14T22:13:20.125Z",
+                ])
+            }
+            switch (request.httpMethod, path) {
+            case ("GET", ["/", "api", "me"]):
+                return (try me(), response(request, 200))
+            case ("PATCH", ["/", "api", "me"]):
+                if let enabled = body?["sharingEnabled"] as? Bool {
+                    sharingEnabled = enabled
+                    if !enabled { shared = [] }
+                }
+                return (try me(), response(request, 200))
+            case ("GET", ["/", "api", "sessions"]):
+                let page: [String: Any] = ["sessions": shared, "nextCursor": NSNull()]
+                return (try JSONSerialization.data(withJSONObject: page), response(request, 200))
+            case ("PATCH", let parts) where parts.count == 4 && parts[2] == "sessions":
+                guard body?["visibility"] as? String == "private" else { return (Data(), response(request, 400)) }
+                shared.removeAll { $0["id"] as? String == parts[3] }
+                return (Data("{}".utf8), response(request, 200))
+            default:
+                return nil
+            }
+        }
 
         private func isAuthorized(_ request: URLRequest) -> Bool {
             request.value(forHTTPHeaderField: "Authorization") == "Bearer synthetic-access"

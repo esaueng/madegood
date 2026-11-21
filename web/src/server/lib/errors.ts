@@ -37,6 +37,7 @@ export const errorCodes = [
   "export_too_large",
   "export_not_ready",
   "rate_limited",
+  "sharing_disabled",
 ] as const;
 export type ErrorCode = (typeof errorCodes)[number];
 

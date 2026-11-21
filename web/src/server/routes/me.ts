@@ -1,5 +1,5 @@
 import { createRoute, z } from "@hono/zod-openapi";
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, eq, isNull, ne, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
 import { HANDLE_PATTERN, normalizeHandle } from "../../shared/handle";
 import { type AuthEnv, requireAuth, requireToken } from "../auth/middleware";
@@ -11,7 +11,7 @@ import {
   UserBody,
 } from "../auth/users";
 import { clearSessionCookies } from "../auth/web-cookies";
-import { sessions, users } from "../db/schema";
+import { sessions, users, voyageLiveRegistry } from "../db/schema";
 import { requestAccountDeletion, runScheduledDeletion } from "../lib/account-deletion";
 import { apiError, errorResponse } from "../lib/errors";
 import { createRouter } from "../lib/router";
@@ -54,9 +54,24 @@ const UpdateMeRequest = z
       }),
     units: z.enum(["metric", "imperial", "nautical"]).optional(),
     defaultVisibility: z.enum(["private", "unlisted", "public"]).optional(),
-    publicProfileEnabled: z.boolean().optional().openapi({
-      description: "Enable or disable the public profile. Re-enabling creates a new link.",
-    }),
+    publicProfileEnabled: z
+      .boolean()
+      .optional()
+      .openapi({
+        description:
+          "Enable or disable the public profile. Re-enabling creates a new link. Enabling needs " +
+          "sharing on (`sharingEnabled`).",
+      }),
+    sharingEnabled: z
+      .boolean()
+      .optional()
+      .openapi({
+        description:
+          "false stops all sharing at once: every session becomes private, the default " +
+          "visibility becomes private, the public profile is turned off (its link revoked), " +
+          "live voyage links stop working, and nothing can be shared again until it is set " +
+          "back to true. Setting it to true shares nothing by itself.",
+      }),
     publicProfileDisplayName: z.string().max(50).nullable().optional().openapi({
       description: "The user-entered name for the public profile. Blank or null clears it.",
     }),
@@ -87,7 +102,10 @@ const patchRoute = createRoute({
     },
     400: errorResponse("The request body is invalid."),
     401: errorResponse("Missing or invalid access token, or the account no longer exists."),
-    409: errorResponse("The account differs, or the handle or profile username is unavailable."),
+    409: errorResponse(
+      "The account differs, the handle or profile username is unavailable, or the request " +
+        "would share while sharing is turned off (`sharing_disabled`).",
+    ),
   },
 });
 
@@ -162,6 +180,9 @@ const activeUser = (userId: string) => and(eq(users.id, userId), isNull(users.de
 const unknownUser = (c: Parameters<typeof apiError>[0]) =>
   apiError(c, 401, "unauthorized", "The account no longer exists.");
 
+const sharingDisabled = (c: Parameters<typeof apiError>[0]) =>
+  apiError(c, 409, "sharing_disabled", "Sharing is turned off for this account.");
+
 export const me = createRouter<AuthEnv>();
 // DELETE /me must work for an account already being deleted (a retry), so /me checks the
 // token only; GET and PATCH treat a deleting account as gone.
@@ -190,6 +211,14 @@ me.openapi(patchRoute, async (c) => {
   }
   if (body.units !== undefined) changes.units = body.units;
   if (body.defaultVisibility !== undefined) changes.defaultVisibility = body.defaultVisibility;
+  // Anything that shares (a non-private default, enabling the profile) needs the switch on.
+  const shares =
+    (body.defaultVisibility !== undefined && body.defaultVisibility !== "private") ||
+    body.publicProfileEnabled === true;
+  const stopSharing = body.sharingEnabled === false;
+  if (stopSharing && shares) return sharingDisabled(c);
+  if (body.sharingEnabled !== undefined) changes.sharingEnabled = body.sharingEnabled;
+  if (stopSharing) changes.defaultVisibility = "private";
   if (body.handle !== undefined) {
     if (isReservedHandle(body.handle)) {
       return apiError(c, 409, "handle_taken", "That handle is not available.");
@@ -207,21 +236,58 @@ me.openapi(patchRoute, async (c) => {
     const [user] = await db.select().from(users).where(activeUser(c.var.userId));
     return user ? c.json(toUserBody(user), 200) : unknownUser(c);
   }
+  // Sharing needs the switch on, checked in the same statement, unless this request turns
+  // it on.
+  const allowed =
+    shares && body.sharingEnabled !== true
+      ? and(activeUser(c.var.userId), eq(users.sharingEnabled, true))
+      : activeUser(c.var.userId);
   try {
-    const [user] = await db
+    const update = db
       .update(users)
       .set({
         ...changes,
         // Enabling twice (including retries) keeps the existing link in a single update.
+        // Turning sharing off turns the profile off too.
         publicProfileId: body.publicProfileEnabled
           ? sql`coalesce(${users.publicProfileId}, ${crypto.randomUUID()})`
-          : body.publicProfileEnabled === false
+          : body.publicProfileEnabled === false || stopSharing
             ? null
             : undefined,
       })
-      .where(activeUser(c.var.userId))
+      .where(allowed)
       .returning();
-    return user ? c.json(toUserBody(user), 200) : unknownUser(c);
+    let user: typeof users.$inferSelect | undefined;
+    if (stopSharing) {
+      // One D1 batch (a transaction): the switch, every session it makes private, and every
+      // live voyage link it unregisters. A live grant counts only while D1 resolves its
+      // link (live/voyage-live.ts), so an old one never shares again, even after sharing
+      // is turned back on. Writes that share check the switch in their own statement, so
+      // none can land between these.
+      const [updated] = await db.batch([
+        update,
+        db
+          .update(sessions)
+          .set({ visibility: "private", updatedAt: Date.now() })
+          .where(and(eq(sessions.userId, c.var.userId), ne(sessions.visibility, "private"))),
+        db
+          .update(voyageLiveRegistry)
+          .set({ slugHash: null })
+          .where(eq(voyageLiveRegistry.userId, c.var.userId)),
+      ]);
+      [user] = updated;
+    } else {
+      [user] = await update;
+    }
+    if (user) return c.json(toUserBody(user), 200);
+    if (shares) {
+      const [active] = await db
+        .select({ id: users.id })
+        .from(users)
+        .where(activeUser(c.var.userId));
+      if (active) return sharingDisabled(c);
+    }
+    return unknownUser(c);
   } catch (err) {
     if (isUniqueViolation(err)) {
       return apiError(c, 409, "handle_taken", "That handle or profile username is not available.");

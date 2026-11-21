@@ -39,6 +39,7 @@ describe("GET /api/me", () => {
       displayName: "Navigator",
       units: "nautical",
       defaultVisibility: "private",
+      sharingEnabled: true,
       publicProfileKey: null,
       publicProfileUsername: null,
       publicProfileDisplayName: null,

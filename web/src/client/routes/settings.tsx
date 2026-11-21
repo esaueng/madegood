@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { Download, Globe, LocateFixed, Trash2, TriangleAlert } from "lucide-react";
 import { lazy, Suspense, useState } from "react";
@@ -10,15 +10,19 @@ import {
   addZone,
   deleteZone,
   fetchLatestExport,
+  fetchSharedSessions,
   fetchZones,
   type Me,
+  type Session,
   signInUrl,
   startExport,
   type Units,
   updateMe,
+  updateSession,
   type Visibility,
 } from "@/lib/api";
 import { meQueryKey, useDeleteAccount, useMe } from "@/lib/auth";
+import { formatDate, sessionTitle } from "@/lib/format";
 import { profileSettingsChanges } from "@/lib/profile-settings";
 
 const ZoneMap = lazy(() => import("@/components/zone-map"));
@@ -45,7 +49,14 @@ function useSaveSettings(userId: string | undefined) {
       queryClient.setQueryData<Me | null>(meQueryKey, (current) =>
         current?.id === updated.id ? updated : current,
       );
+      if (changes.sharingEnabled !== undefined) {
+        // Turning sharing off made sessions private and turned the profile off.
+        void queryClient.invalidateQueries({ queryKey: ["sessions"] });
+        void queryClient.invalidateQueries({ queryKey: ["session"] });
+        void queryClient.invalidateQueries({ queryKey: ["profile"] });
+      }
       if (
+        changes.sharingEnabled !== undefined ||
         changes.publicProfileEnabled !== undefined ||
         changes.publicProfileDisplayName !== undefined ||
         changes.publicProfileUsername !== undefined
@@ -90,6 +101,7 @@ function Settings() {
   return (
     <div className="grid gap-10 py-6">
       <h1 className="text-2xl font-semibold">Settings</h1>
+      <Sharing me={me} save={save} />
       <PublicProfile me={me} save={save} showLink={!isFetching && !isError} />
       <Preferences me={me} save={save} />
       <section>
@@ -175,11 +187,14 @@ function PublicProfile({ me, save, showLink }: { me: Me; save: SettingsSave; sho
               Disable public profile
             </Button>
           ) : (
-            <Button type="submit" value="enable" disabled={save.isPending}>
+            <Button type="submit" value="enable" disabled={save.isPending || !me.sharingEnabled}>
               Enable public profile
             </Button>
           )}
         </div>
+        {!me.sharingEnabled && !profileKey && (
+          <p className="text-sm text-muted-foreground">Turn on sharing to enable your profile.</p>
+        )}
       </form>
       <span className="text-sm text-muted-foreground" role="status">
         {profileKey ? "Public profile enabled" : "Public profile disabled"}
@@ -204,6 +219,150 @@ function PublicProfile({ me, save, showLink }: { me: Me; save: SettingsSave; sho
         </p>
       )}
     </section>
+  );
+}
+
+const SHARED_KEY = ["sessions", "shared"] as const;
+
+/**
+ * The account-wide sharing switch and every session others can see, each with a way to
+ * stop sharing it. Turning sharing off makes all of them private on the server at once and
+ * turns the public profile off.
+ */
+function Sharing({ me, save }: { me: Me; save: SettingsSave }) {
+  const queryClient = useQueryClient();
+  const shared = useInfiniteQuery({
+    queryKey: SHARED_KEY,
+    queryFn: ({ pageParam }) => fetchSharedSessions(pageParam),
+    initialPageParam: null as string | null,
+    getNextPageParam: (last) => last.nextCursor,
+  });
+  const unshare = useMutation({
+    mutationFn: (id: string) => updateSession(id, { visibility: "private" }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["sessions"] });
+      void queryClient.invalidateQueries({ queryKey: ["session"] });
+      void queryClient.invalidateQueries({ queryKey: ["profile"] });
+    },
+  });
+  const sessions = shared.data?.pages.flatMap((page) => page.sessions) ?? [];
+  const count = sessions.length;
+  const more = shared.hasNextPage ? "+" : "";
+
+  const setEnabled = (enabled: boolean) => {
+    if (!enabled) {
+      const what =
+        count > 0
+          ? `${count}${more} shared ${count === 1 && !more ? "session" : "sessions"} will become private right away, and their links will stop working.`
+          : "New sessions will stay private.";
+      const profile = me.publicProfileKey ? " Your public profile will be turned off." : "";
+      if (!window.confirm(`Turn off sharing? ${what}${profile}`)) return;
+    }
+    save.mutate({ sharingEnabled: enabled });
+  };
+
+  return (
+    <section className="grid gap-4" aria-labelledby="sharing-heading">
+      <div>
+        <h2 id="sharing-heading" className="text-lg font-semibold">
+          Sharing
+        </h2>
+        <p className="mt-1 max-w-prose text-sm text-muted-foreground">
+          Unlisted sessions can be opened by anyone with the link; public ones also appear on your
+          profile. Turn sharing off to make every session private at once, turn your profile off,
+          and keep it that way.
+        </p>
+      </div>
+      <label className="flex w-fit items-center gap-3 text-sm font-medium">
+        <input
+          type="checkbox"
+          role="switch"
+          aria-checked={me.sharingEnabled}
+          className="size-4 accent-primary"
+          checked={me.sharingEnabled}
+          disabled={save.isPending}
+          onChange={(e) => setEnabled(e.target.checked)}
+          data-testid="sharing-enabled"
+        />
+        Allow sharing
+      </label>
+      {save.isError && save.variables?.sharingEnabled !== undefined && (
+        <p role="alert" className="text-sm text-destructive">
+          Could not save. Try again.
+        </p>
+      )}
+      <div className="grid gap-2">
+        <h3 className="text-sm font-medium">Shared sessions</h3>
+        {shared.isPending ? (
+          <p className="text-sm text-muted-foreground">Loading…</p>
+        ) : shared.isError ? (
+          <p className="text-sm">Could not load your shared sessions.</p>
+        ) : count === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            Nothing is shared. Every session is private.
+          </p>
+        ) : (
+          <ul className="grid gap-2">
+            {sessions.map((session) => (
+              <SharedRow
+                key={session.id}
+                session={session}
+                busy={unshare.isPending && unshare.variables === session.id}
+                onUnshare={() => unshare.mutate(session.id)}
+              />
+            ))}
+          </ul>
+        )}
+        {shared.hasNextPage && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="w-fit"
+            disabled={shared.isFetchingNextPage}
+            onClick={() => shared.fetchNextPage()}
+          >
+            {shared.isFetchingNextPage ? "Loading…" : "Show more"}
+          </Button>
+        )}
+        {unshare.isError && (
+          <p role="alert" className="text-sm text-destructive">
+            Could not stop sharing. Try again.
+          </p>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function SharedRow({
+  session,
+  busy,
+  onUnshare,
+}: {
+  session: Session;
+  busy: boolean;
+  onUnshare: () => void;
+}) {
+  const visibility = VISIBILITY[session.visibility];
+  return (
+    <li className="flex items-center justify-between gap-3 rounded-xl border bg-card p-3">
+      <div className="min-w-0">
+        <Link
+          to="/s/$id"
+          params={{ id: session.id }}
+          className="block truncate text-sm font-medium underline-offset-4 hover:underline"
+        >
+          {sessionTitle(session)}
+        </Link>
+        <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+          <visibility.icon className="size-3" aria-hidden />
+          {visibility.label} · {formatDate(session.startedAt)}
+        </p>
+      </div>
+      <Button variant="outline" size="sm" disabled={busy} onClick={onUnshare}>
+        {busy ? "Saving…" : "Make private"}
+      </Button>
+    </li>
   );
 }
 
@@ -234,11 +393,16 @@ function Preferences({ me, save }: { me: Me; save: SettingsSave }) {
           onChange={(e) => save.mutate({ defaultVisibility: e.target.value as Visibility })}
         >
           {(Object.keys(VISIBILITY) as Visibility[]).map((v) => (
-            <option key={v} value={v}>
+            <option key={v} value={v} disabled={!me.sharingEnabled && v !== "private"}>
               {VISIBILITY[v].label}: {VISIBILITY[v].hint}
             </option>
           ))}
         </select>
+        {!me.sharingEnabled && (
+          <span className="text-muted-foreground">
+            Sharing is off, so new sessions stay private.
+          </span>
+        )}
       </label>
       {save.isError &&
         (save.variables?.units !== undefined ||
