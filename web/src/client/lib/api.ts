@@ -31,6 +31,7 @@ export type Session = {
   title: string | null;
   notes: string | null;
   visibility: Visibility;
+  owner: Pick<PublicProfile, "handle" | "displayName"> | null;
   startedAt: string;
   endedAt: string | null;
   durationS: number | null;
@@ -293,5 +294,5 @@ export async function deleteZone(id: string): Promise<void> {
 }
 
 export const updateMe = (
-  changes: Partial<Pick<Me, "units" | "defaultVisibility" | "sharingEnabled">>,
+  changes: Partial<Pick<Me, "handle" | "units" | "defaultVisibility" | "sharingEnabled">>,
 ) => apiJson<Me>("/me", jsonInit("PATCH", changes));

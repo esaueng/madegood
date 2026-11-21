@@ -1,10 +1,10 @@
 import { createRoute, z } from "@hono/zod-openapi";
 import { and, eq, isNull, ne, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
+import { HANDLE_PATTERN, normalizeHandle } from "../../shared/handle";
 import { type AuthEnv, requireAuth, requireToken } from "../auth/middleware";
 import {
   cleanDisplayName,
-  HANDLE_PATTERN,
   isReservedHandle,
   isUniqueViolation,
   toUserBody,
@@ -41,7 +41,7 @@ const UpdateMeRequest = z
       .openapi({ description: "Blank or null clears it." }),
     handle: z
       .string()
-      .transform((s) => s.trim().toLowerCase())
+      .transform(normalizeHandle)
       .pipe(z.string().regex(HANDLE_PATTERN, "3–30 characters: a–z, 0–9 or _"))
       .optional()
       .openapi({

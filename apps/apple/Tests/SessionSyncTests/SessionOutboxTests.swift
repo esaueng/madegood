@@ -7,9 +7,11 @@ import WaterKit
 /// The session upload queue against an in-memory transport: no network.
 @MainActor
 struct SessionOutboxTests {
-    @Test func uploadsMetadataThenTheFrozenTrackAndSurvivesARelaunch() async throws {
+    @Test(arguments: [false, true])
+    func uploadsMetadataThenTheFrozenTrackAndSurvivesARelaunch(publicResponse: Bool) async throws {
         let rig = try Rig()
         defer { rig.cleanUp() }
+        rig.transport.publicMetadataResponse = publicResponse
         let binding = try await rig.signIn()
         let (snapshot, bytes) = try rig.session()
         let outbox = rig.outbox()
@@ -914,6 +916,7 @@ private final class StubTransport: SessionSyncTransport {
     var calls: [Call] = []
     var uploaded: [Data] = []
     var metadataStatuses: [Int] = []
+    var publicMetadataResponse = false
     /// Sent as `Upload-Revision` with every 412.
     var storedRevision: Int64?
     var metadataErrors: [URLError] = []
@@ -957,9 +960,12 @@ private final class StubTransport: SessionSyncTransport {
             return (Data(#"{"error":"synthetic","message":"synthetic"}"#.utf8), response(request, status))
         }
         let id = request.url!.lastPathComponent
+        let visibility = publicMetadataResponse ? "public" : "private"
+        let owner = publicMetadataResponse ? #"{"handle":"synthetic_paddler","displayName":null}"# : "null"
         let body = """
             {
-                "id": "\(id)", "sport": "kayak", "title": null, "notes": null, "visibility": "private",
+                "id": "\(id)", "sport": "kayak", "title": null, "notes": null,
+                "visibility": "\(visibility)", "owner": \(owner),
                 "startedAt": "2023-11-14T21:13:20.125Z", "endedAt": null, "durationS": null, "movingS": null,
                 "distanceM": null, "maxSpeedMps": null, "avgSpeedMps": null, "summary": null,
                 "analyzerVersion": null, "hasTrack": false, "isOwner": true,

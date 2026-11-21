@@ -42,10 +42,10 @@ final class AnchorGPSWatchdog {
         let ownership: AlarmOwnership?
     }
 
-    // This slot belongs to the arming whose deadline we persist alongside it.
-    // A present ownership record with no slot means no watchdog was installed.
+    // These slots belong to the arming whose deadline we persist alongside them.
     private struct AlarmOwnership: Codable {
         var currentID: UUID?
+        var installingID: UUID?
     }
 
     private static let storageKey = "anchorWatch.watchdog"
@@ -154,9 +154,9 @@ final class AnchorGPSWatchdog {
 
     func reconcileAfterSystemStop(id: UUID) async {
         guard Self.slots.contains(id) else { return }
-        // A Stop action confirms that a known pending alarm fired, even if a
-        // clock change or delayed observation hid the alerting transition.
-        if knownAlarms.pending[id] != nil {
+        // A Stop action can confirm delivery before we've seen the alarm ring
+        // or received the result of an install.
+        if knownAlarms.pending[id] != nil || ownership.installingID == id {
             knownAlarms.sounding.insert(id)
             persistDeadline()
         }
@@ -232,6 +232,14 @@ final class AnchorGPSWatchdog {
                 loss.adoptLegacyAlarm(remaining: fallback.value.timeIntervalSince(now.wallTime), at: now.uptime)
             }
         }
+        if let installing = ownership.installingID,
+            snapshot.pending[installing] != nil || snapshot.sounding.contains(installing)
+                || knownAlarms.sounding.contains(installing)
+        {
+            ownership.currentID = installing
+            ownership.installingID = nil
+            changed = true
+        }
         if let current = ownership.currentID, snapshot.stoppedAlarms(since: knownAlarms).contains(current) {
             ownership.currentID = nil
             loss.snooze(at: now.uptime)
@@ -256,9 +264,23 @@ final class AnchorGPSWatchdog {
             try cancelPending(in: snapshot, keeping: fallback)
             throw ScheduleError.noFreeSlot
         case .install(let next):
-            try await system.schedule(next, desired)
+            // AlarmKit may install this free slot before schedule returns. Save
+            // its ownership now so a relaunch can recognize it, and keep the
+            // current owner in case the replacement never reaches AlarmKit.
+            ownership.installingID = next
+            persistDeadline()
+            do {
+                try await system.schedule(next, desired)
+            } catch {
+                if loss.isCurrent(request), ownership.installingID == next {
+                    ownership.installingID = nil
+                    persistDeadline()
+                }
+                throw error
+            }
             if loss.isCurrent(request) {
                 ownership.currentID = next
+                ownership.installingID = nil
                 knownAlarms.pending[next] = desired
                 hasSystemAlarm = true
                 persistDeadline()

@@ -23,6 +23,7 @@ import {
 } from "@/lib/api";
 import { meQueryKey, useDeleteAccount, useMe } from "@/lib/auth";
 import { formatDate, sessionTitle } from "@/lib/format";
+import { HANDLE_PATTERN, normalizeHandle } from "../../shared/handle";
 
 const ZoneMap = lazy(() => import("@/components/zone-map"));
 
@@ -65,7 +66,7 @@ function Settings() {
   return (
     <div className="grid gap-10 py-6">
       <h1 className="text-2xl font-semibold">Settings</h1>
-      <PublicProfile me={me} />
+      <PublicProfile key={me.id} me={me} />
       <Sharing me={me} />
       <Preferences me={me} />
       <section>
@@ -83,6 +84,42 @@ function Settings() {
 }
 
 function PublicProfile({ me }: { me: Me }) {
+  const queryClient = useQueryClient();
+  const [draft, setDraft] = useState<{ from: string; value: string } | null>(null);
+  const input = draft?.from === me.handle ? draft.value : me.handle;
+  const handle = normalizeHandle(input);
+  const valid = HANDLE_PATTERN.test(handle);
+  const save = useMutation({
+    // Both settings forms write the complete account response into the same cache entry.
+    scope: { id: "settings" },
+    mutationFn: (handle: string) => updateMe({ handle }),
+    onSuccess: (updated) => {
+      setDraft(null);
+      queryClient.setQueryData<Me | null>(meQueryKey, (current) =>
+        current?.id === updated.id ? updated : current,
+      );
+      queryClient.setQueriesData<Session>(
+        { predicate: (query) => query.queryKey[0] === "session" && query.queryKey.length === 2 },
+        (current) =>
+          current?.isOwner && current.visibility === "public" && current.owner
+            ? { ...current, owner: { handle: updated.handle, displayName: updated.displayName } }
+            : current,
+      );
+      void queryClient.invalidateQueries({ queryKey: ["profile"] });
+      void queryClient.invalidateQueries({ queryKey: ["sessions"] });
+    },
+  });
+  const canSave = valid && handle !== me.handle && !save.isPending;
+  const showError = save.isError && draft?.from === me.handle;
+  const showSuccess = save.isSuccess && save.data.handle === me.handle;
+  const error =
+    save.error instanceof ApiError &&
+    (save.error.status === 409 || save.error.code === "handle_taken")
+      ? "That handle is not available."
+      : save.error instanceof ApiError && save.error.status === 400
+        ? "Enter a handle with 3–30 characters using a–z, 0–9 or _."
+        : "Could not save your handle. Try again.";
+
   return (
     <section className="grid gap-2">
       <h2 className="text-lg font-semibold">Public profile</h2>
@@ -90,6 +127,47 @@ function PublicProfile({ me }: { me: Me }) {
         Your name, handle and the sessions you make public, with their totals. Private and unlisted
         sessions never appear there, and nobody else can open it until you have a public session.
       </p>
+      <form
+        className="grid max-w-sm gap-1"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (canSave) save.mutate(handle);
+        }}
+      >
+        <label htmlFor="profile-handle" className="text-sm font-medium">
+          Handle
+        </label>
+        <div className="flex gap-2">
+          <input
+            id="profile-handle"
+            className="h-9 min-w-0 flex-1 rounded-md border bg-background px-2 text-sm aria-invalid:border-red-600"
+            value={input}
+            autoCapitalize="none"
+            spellCheck={false}
+            disabled={save.isPending}
+            aria-describedby={showError ? "handle-hint handle-error" : "handle-hint"}
+            aria-invalid={(handle !== "" && !valid) || showError}
+            onChange={(event) => {
+              save.reset();
+              setDraft({ from: me.handle, value: event.target.value });
+            }}
+          />
+          <Button type="submit" disabled={!canSave}>
+            {save.isPending ? "Saving…" : "Save handle"}
+          </Button>
+        </div>
+        <p id="handle-hint" className="text-sm text-muted-foreground">
+          3–30 characters: a–z, 0–9 or _. Changing your handle changes your public profile link.
+        </p>
+        {showError && (
+          <p id="handle-error" className="text-sm text-red-600" role="alert">
+            {error}
+          </p>
+        )}
+        <p className="text-sm text-muted-foreground" role="status">
+          {showSuccess && "Handle saved."}
+        </p>
+      </form>
       <Link
         to="/u/$handle"
         params={{ handle: me.handle }}
@@ -250,6 +328,7 @@ function SharedRow({
 function Preferences({ me }: { me: Me }) {
   const queryClient = useQueryClient();
   const save = useMutation({
+    scope: { id: "settings" },
     mutationFn: updateMe,
     onSuccess: (updated) => queryClient.setQueryData(meQueryKey, updated),
   });
