@@ -301,8 +301,7 @@ private struct StartLinePage: View {
                     startLine: startLine, remaining: countdown.timer.remaining(at: SessionController.now),
                     display: UserSettings.display(for: .sailing), compact: true
                 )
-                // Clear of the page indicator on the right edge.
-                .padding(.trailing, 8)
+                .clearOfPageIndicator()
             }
         }
         .toolbar(.hidden, for: .navigationBar)
@@ -745,6 +744,10 @@ private struct SailingPage: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("sailing.content")
+        // The wind dial sits top right, where the page dots are.
+        .clearOfPageIndicator()
     }
 }
 
@@ -786,6 +789,18 @@ private struct MapPage: View {
             UserAnnotation()
         }
         .accessibilityIdentifier("page.map")
+        // Top left: the time is top right, the page dots right, and the map's Legal link
+        // bottom left.
+        .overlay(alignment: .topLeading) {
+            Text("Not for navigation")
+                .font(.caption2)
+                .foregroundStyle(.white.opacity(0.85))
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(.black.opacity(0.6), in: Capsule())
+                .padding(.leading, 4)
+                .accessibilityIdentifier("map.notForNavigation")
+        }
     }
 }
 
@@ -826,6 +841,8 @@ private struct ControlsPage: View {
                 ControlButton(title: "End", symbol: "xmark", tint: .red) { confirmEnd = true }
             }
         }
+        // Lap and the right-hand column would otherwise sit under the page dots.
+        .clearOfPageIndicator()
         .confirmationDialog("End session?", isPresented: $confirmEnd) {
             Button("End", role: .destructive) {
                 Task { await recorder.stop() }
@@ -904,6 +921,15 @@ struct ManOverboardPage: View {
                 }
             }
         }
+    }
+}
+
+extension View {
+    /// Keeps the page clear of the vertical page indicator (the dots on the right edge of
+    /// a `.verticalPage` TabView). The dots are 6 pt wide and sit 2 pt from the edge on
+    /// every watch size, so 10 pt leaves a small gap.
+    fileprivate func clearOfPageIndicator() -> some View {
+        padding(.trailing, 10)
     }
 }
 
