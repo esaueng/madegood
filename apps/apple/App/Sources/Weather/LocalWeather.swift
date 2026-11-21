@@ -33,7 +33,7 @@ final class LocalWeather {
     private(set) var choice: Bool?
 
     private let location = OneShotLocation()
-    private var refreshing = false
+    private let refresher = RefreshCoalescer()
     private let defaults = UserDefaults.standard
 
     var isEnabled: Bool { choice == true }
@@ -75,16 +75,20 @@ final class LocalWeather {
         }
     }
 
-    /// Fetches new conditions unless the last ones are recent (or `force`).
+    /// Fetches new conditions unless the last ones are recent (or `force`). A call made
+    /// while a fetch is running waits for that fetch instead of starting another.
     func refresh(force: Bool = false) async {
-        guard isEnabled, !refreshing else { return }
+        guard isEnabled else { return }
+        await refresher.run { [self] in await load(force: force) }
+    }
+
+    private func load(force: Bool) async {
+        guard isEnabled else { return }
         prune()
         if !force, current != nil {
             status = .ready
             return
         }
-        refreshing = true
-        defer { refreshing = false }
         if current == nil { status = .loading }
 
         do {
