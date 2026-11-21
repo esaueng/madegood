@@ -403,7 +403,7 @@ function toSessionBody(
 }
 
 // Cursors are opaque to clients: base64url JSON of the last item's [startedAt, id].
-// Shared with GET /users/:handle (routes/users.ts), which pages in the same order.
+// Shared with GET /users/:profileKey (routes/users.ts), which pages in the same order.
 const Cursor = z.tuple([z.number().int(), z.string().regex(UUID_PATTERN)]);
 
 export function encodeCursor(session: Pick<Session, "startedAt" | "id">): string {

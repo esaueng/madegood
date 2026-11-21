@@ -38,14 +38,16 @@ function Dashboard() {
         <h1 className="text-2xl font-semibold">
           {me.displayName ? `${me.displayName}'s sessions` : "Your sessions"}
         </h1>
-        <Link
-          to="/u/$handle"
-          params={{ handle: me.handle }}
-          className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
-        >
-          <Globe className="size-3.5" aria-hidden />
-          Public profile
-        </Link>
+        {me.publicProfileKey && (
+          <Link
+            to="/u/$profileKey"
+            params={{ profileKey: me.publicProfileKey }}
+            className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
+          >
+            <Globe className="size-3.5" aria-hidden />
+            Public profile
+          </Link>
+        )}
       </div>
       <Totals units={me.units} />
       <SessionList units={me.units} />

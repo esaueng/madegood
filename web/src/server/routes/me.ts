@@ -33,6 +33,9 @@ const getRoute = createRoute({
 
 const UpdateMeRequest = z
   .object({
+    userId: z.string().min(1).optional().openapi({
+      description: "If provided, the account ID the user intended to update.",
+    }),
     displayName: z
       .string()
       .max(50)
@@ -51,6 +54,17 @@ const UpdateMeRequest = z
       }),
     units: z.enum(["metric", "imperial", "nautical"]).optional(),
     defaultVisibility: z.enum(["private", "unlisted", "public"]).optional(),
+    publicProfileEnabled: z.boolean().optional().openapi({
+      description:
+        "Enable or disable the public profile. An opaque link changes after re-enabling.",
+    }),
+    publicProfileUsername: z
+      .string()
+      .transform((s) => s.trim().toLowerCase())
+      .pipe(z.string().regex(HANDLE_PATTERN, "3–30 characters: a–z, 0–9 or _"))
+      .nullable()
+      .optional()
+      .openapi({ description: "A custom public URL username. Null restores an opaque URL." }),
   })
   .strict()
   .openapi("UpdateMeRequest");
@@ -71,7 +85,7 @@ const patchRoute = createRoute({
     },
     400: errorResponse("The request body is invalid."),
     401: errorResponse("Missing or invalid access token, or the account no longer exists."),
-    409: errorResponse("The handle is taken or reserved."),
+    409: errorResponse("The account differs, or the handle or profile username is unavailable."),
   },
 });
 
@@ -152,12 +166,17 @@ export const me = createRouter<AuthEnv>();
 me.use("/me", requireToken);
 
 me.openapi(getRoute, async (c) => {
+  c.header("Cache-Control", "private, no-store");
   const [user] = await drizzle(c.env.DB).select().from(users).where(activeUser(c.var.userId));
   return user ? c.json(toUserBody(user), 200) : unknownUser(c);
 });
 
 me.openapi(patchRoute, async (c) => {
+  c.header("Cache-Control", "private, no-store");
   const body = c.req.valid("json");
+  if (body.userId !== undefined && body.userId !== c.var.userId) {
+    return apiError(c, 409, "account_mismatch", "You are signed in to a different account.");
+  }
   const db = drizzle(c.env.DB);
   const changes: Partial<typeof users.$inferInsert> = {};
   if (body.displayName !== undefined) changes.displayName = cleanDisplayName(body.displayName);
@@ -169,17 +188,35 @@ me.openapi(patchRoute, async (c) => {
     }
     changes.handle = body.handle;
   }
+  if (body.publicProfileUsername !== undefined) {
+    if (body.publicProfileUsername && isReservedHandle(body.publicProfileUsername)) {
+      return apiError(c, 409, "handle_taken", "That profile username is not available.");
+    }
+    changes.publicProfileUsername = body.publicProfileUsername;
+  }
 
-  if (Object.keys(changes).length === 0) {
+  if (Object.keys(changes).length === 0 && body.publicProfileEnabled === undefined) {
     const [user] = await db.select().from(users).where(activeUser(c.var.userId));
     return user ? c.json(toUserBody(user), 200) : unknownUser(c);
   }
   try {
-    const [user] = await db.update(users).set(changes).where(activeUser(c.var.userId)).returning();
+    const [user] = await db
+      .update(users)
+      .set({
+        ...changes,
+        // Enabling twice (including retries) keeps the existing link in a single update.
+        publicProfileId: body.publicProfileEnabled
+          ? sql`coalesce(${users.publicProfileId}, ${crypto.randomUUID()})`
+          : body.publicProfileEnabled === false
+            ? null
+            : undefined,
+      })
+      .where(activeUser(c.var.userId))
+      .returning();
     return user ? c.json(toUserBody(user), 200) : unknownUser(c);
   } catch (err) {
     if (isUniqueViolation(err)) {
-      return apiError(c, 409, "handle_taken", "That handle is not available.");
+      return apiError(c, 409, "handle_taken", "That handle or profile username is not available.");
     }
     throw err;
   }

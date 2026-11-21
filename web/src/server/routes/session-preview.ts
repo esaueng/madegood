@@ -2,7 +2,7 @@ import { and, eq, isNull, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
 import { Hono } from "hono";
 import type { AppEnv } from "../app";
-import { HANDLE_PATTERN } from "../auth/users";
+import { publicProfileLookup } from "../auth/users";
 import { sessionColumns, sessions, users } from "../db/schema";
 import { logFailure } from "../lib/logging";
 import { ogImage, ogInfo } from "../lib/og-image";
@@ -23,8 +23,8 @@ import {
 // bounds or times of day; the image (lib/og-image.ts) draws only what the shared track
 // shows anyone.
 //
-// /u/:handle, the public profile, works the same way: tags only while the profile is
-// visible to everyone (routes/users.ts: at least one public session), generic otherwise.
+// /u/:profileKey, the public profile, works the same way: tags only while the profile is
+// enabled and has at least one public session, generic otherwise.
 // Profiles use the brand image.
 
 type Image = { path: string; alt: string };
@@ -35,6 +35,7 @@ type Preview = {
   indexable: boolean;
   image: Image;
   pageTitle?: string;
+  cacheControl?: "no-store";
 };
 
 const SITE = "MadeGood";
@@ -54,6 +55,7 @@ const GENERIC_PROFILE: Preview = {
   description: SITE_DESCRIPTION,
   indexable: false,
   image: BRAND_IMAGE,
+  cacheControl: "no-store",
 };
 
 const distance = (m: number, units: keyof typeof UNITS) =>
@@ -92,12 +94,11 @@ export async function sessionPreview(db: D1Database, id: string): Promise<Previe
 }
 
 /** The preview for a profile; GENERIC_PROFILE unless the user has a public session. */
-export async function profilePreview(db: D1Database, rawHandle: string): Promise<Preview> {
-  const handle = rawHandle.toLowerCase();
-  if (!HANDLE_PATTERN.test(handle)) return GENERIC_PROFILE;
+export async function profilePreview(db: D1Database, profileKey: string): Promise<Preview> {
+  const account = publicProfileLookup(profileKey);
+  if (!account) return GENERIC_PROFILE;
   const [row] = await drizzle(db)
     .select({
-      handle: users.handle,
       displayName: users.displayName,
       units: users.units,
       count: sql<number>`count(${sessions.id})`,
@@ -112,17 +113,18 @@ export async function profilePreview(db: D1Database, rawHandle: string): Promise
         isNull(sessions.deletedAt),
       ),
     )
-    .where(and(eq(users.handle, handle), isNull(users.deletedAt)))
+    .where(account)
     .groupBy(users.id);
   if (!row || row.count === 0) return GENERIC_PROFILE;
   const sessionCount = `${row.count} public ${row.count === 1 ? "session" : "sessions"}`;
   const parts = [sessionCount];
   if (row.distanceM > 0) parts.push(distance(row.distanceM, row.units));
   return {
-    title: row.displayName ? `${row.displayName} (@${row.handle})` : `@${row.handle}`,
+    title: row.displayName ?? "A profile on MadeGood",
     description: `${parts.join(" · ")} on MadeGood`,
     indexable: true,
     image: BRAND_IMAGE,
+    cacheControl: "no-store",
   };
 }
 
@@ -154,6 +156,7 @@ export function injectPreview(shell: Response, preview: Preview, url: string): R
     ["name", "twitter:image:alt", preview.image.alt],
     ["name", "robots", preview.indexable ? "index, follow" : "noindex"],
   ]
+    .filter(([, key]) => key !== "og:url" || preview !== GENERIC_PROFILE)
     .map(([attr, key, value]) => `<meta ${attr}="${key}" content="${escapeHtml(value ?? "")}" />`)
     .join("\n    ");
 
@@ -177,7 +180,7 @@ export function injectPreview(shell: Response, preview: Preview, url: string): R
 
   const headers = new Headers(rewritten.headers);
   // Visibility can change at any time; never let a cache keep a session's tags.
-  headers.set("cache-control", "no-cache");
+  headers.set("cache-control", preview.cacheControl ?? "no-cache");
   headers.delete("content-length");
   headers.delete("etag");
   return new Response(rewritten.body, { status: 200, headers });
@@ -227,11 +230,11 @@ export const sessionPreviewPage = new Hono<AppEnv>()
   .get("/s/*", (c) => c.env.ASSETS.fetch(c.req.raw));
 
 export const profilePreviewPage = new Hono<AppEnv>()
-  .get("/u/:handle", (c) =>
+  .get("/u/:profileKey", (c) =>
     previewPage(
       c.env,
       c.req.raw,
-      () => profilePreview(c.env.DB, c.req.param("handle")),
+      () => profilePreview(c.env.DB, c.req.param("profileKey")),
       GENERIC_PROFILE,
     ),
   )

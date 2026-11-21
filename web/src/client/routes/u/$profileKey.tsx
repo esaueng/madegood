@@ -21,7 +21,7 @@ import {
   sessionTitle,
 } from "@/lib/format";
 
-export const Route = createFileRoute("/u/$handle")({
+export const Route = createFileRoute("/u/$profileKey")({
   component: ProfilePage,
 });
 
@@ -29,17 +29,19 @@ export const Route = createFileRoute("/u/$handle")({
 // ones) and answers 404 to everyone but the owner while there are none.
 
 function ProfilePage() {
-  const { handle } = Route.useParams();
+  const { profileKey } = Route.useParams();
   const { data: me } = useMe();
   const units: Units = me?.units ?? "nautical";
   const query = useInfiniteQuery({
-    queryKey: ["profile", handle.toLowerCase()],
-    queryFn: ({ pageParam }) => fetchProfile(handle, pageParam),
+    queryKey: ["profile", profileKey.toLowerCase()],
+    queryFn: ({ pageParam }) => fetchProfile(profileKey, pageParam),
+    gcTime: 0,
     initialPageParam: null as string | null,
     getNextPageParam: (last) => last.nextCursor,
     retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 2,
   });
-  const profile = query.data?.pages[0];
+  const missing = query.error instanceof ApiError && query.error.status === 404;
+  const profile = missing ? undefined : query.data?.pages[0];
 
   useEffect(() => {
     if (profile) document.title = `${profileName(profile)} · MadeGood`;
@@ -49,25 +51,14 @@ function ProfilePage() {
   if (query.isPending) return <p className="py-16 text-muted-foreground">Loading…</p>;
   // Only a failed first page replaces the profile; a failed "Load more" keeps what is shown.
   if (!profile) {
-    const missing = query.error instanceof ApiError && query.error.status === 404;
     return (
       <section className="mx-auto max-w-md py-24 text-center">
         <h1 className="text-2xl font-semibold">
           {missing ? "Profile not found" : "Could not load this profile"}
         </h1>
         <p className="mt-2 text-muted-foreground">
-          {missing
-            ? "There is no one with this handle, or they have not shared any sessions publicly yet."
-            : "Try again in a moment."}
+          {missing ? "This profile is unavailable." : "Try again in a moment."}
         </p>
-        {missing && !me && (
-          <p className="mt-4 text-sm">
-            <Link to="/signin" search={{ next: `/u/${handle}` }} className="underline">
-              Sign in
-            </Link>{" "}
-            if it is yours.
-          </p>
-        )}
       </section>
     );
   }
@@ -114,12 +105,12 @@ function ProfilePage() {
   );
 }
 
-const profileName = (profile: PublicProfile) => profile.displayName ?? `@${profile.handle}`;
+const profileName = (profile: PublicProfile) => profile.displayName ?? "MadeGood profile";
 
-/** Up to two initials from the display name, or the handle's first letter. */
+/** Up to two initials from the display name. */
 function initials(profile: PublicProfile): string {
   const words = (profile.displayName ?? "").trim().split(/\s+/).filter(Boolean);
-  const letters = words.length > 0 ? words.slice(0, 2).map((w) => w[0]) : [profile.handle[0]];
+  const letters = words.length > 0 ? words.slice(0, 2).map((w) => w[0]) : ["M"];
   return letters.join("").toUpperCase();
 }
 
@@ -136,9 +127,6 @@ function ProfileHeader({ profile }: { profile: PublicProfile }) {
         </div>
         <div className="min-w-0">
           <h1 className="truncate text-2xl font-semibold sm:text-3xl">{profileName(profile)}</h1>
-          {profile.displayName && (
-            <p className="truncate text-muted-foreground">@{profile.handle}</p>
-          )}
           {sports.length > 0 && (
             <ul className="mt-2 flex flex-wrap gap-1.5" aria-label="Sports">
               {sports.map((sport) => (
@@ -191,11 +179,11 @@ function OwnerNote({ count }: { count: number }) {
         <p className="font-medium">This is your public profile</p>
         <p className="mt-1 text-muted-foreground">
           {count > 0
-            ? "Anyone can see your name, handle and the sessions below, which are the ones you made public. Private and unlisted sessions never appear here."
+            ? "Anyone with this link can see your profile name and public sessions."
             : "Only you can see this page until you make a session public. Private and unlisted sessions never appear here."}{" "}
-          Change a session's visibility from its page on your{" "}
-          <Link to="/sessions" className="underline">
-            dashboard
+          Manage the link in{" "}
+          <Link to="/settings" className="underline">
+            Settings
           </Link>
           .
         </p>

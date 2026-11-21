@@ -79,7 +79,7 @@ const PAGE_META: Record<string, { title: string; description: string }> = {
 
 function RootLayout() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
-  // The Worker puts a session's or profile's title into /s/:id and /u/:handle (Open Graph);
+  // The Worker puts a session's or profile's title into /s/:id and /u/:profileKey (Open Graph);
   // those pages keep it current, and every other page sets its own or the site's.
   useEffect(() => {
     if (pathname.startsWith("/s/") || pathname.startsWith("/u/")) return;

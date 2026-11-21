@@ -43,8 +43,13 @@ describe("/privacy", () => {
     expect(text).toContain("Cloudflare's documentation");
   });
 
-  it("names the public profile API as exposing the handle and name", async () => {
-    expect(await renderPolicy()).toContain("directly from the public profile API");
+  it("discloses the opt-in profile's public display name, URL and API", async () => {
+    const text = await renderPolicy();
+    expect(text).toContain("Profiles start off");
+    expect(text).toContain("The link uses a random ID by default");
+    expect(text).toContain(
+      "the enabled profile's display name and public session data from the public profile API",
+    );
   });
 
   it("describes website privacy zones apart from iPhone sync", async () => {

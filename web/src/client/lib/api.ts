@@ -18,6 +18,8 @@ export type Me = {
   id: string;
   handle: string;
   displayName: string | null;
+  publicProfileKey: string | null;
+  publicProfileUsername: string | null;
   units: Units;
   defaultVisibility: Visibility;
   createdAt: string;
@@ -69,7 +71,7 @@ export type SessionList = { sessions: Session[]; nextCursor: string | null };
 type Totals = { sessions: number; distanceM: number; movingS: number; durationS: number };
 export type MeStats = Totals & { bySport: (Totals & { sport: Sport })[] };
 
-/** A public session as a profile lists it (GET /api/users/:handle). */
+/** A public session as a profile lists it (GET /api/users/:profileKey). */
 export type PublicSessionSummary = Pick<
   Session,
   | "id"
@@ -85,7 +87,6 @@ export type PublicSessionSummary = Pick<
 
 /** A user's public profile: totals and sessions cover public sessions only. */
 export type PublicProfile = {
-  handle: string;
   displayName: string | null;
   isOwner: boolean;
   totals: MeStats;
@@ -207,9 +208,9 @@ export const fetchSessions = (cursor: string | null) =>
     `/sessions?limit=20${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
   );
 
-export const fetchProfile = (handle: string, cursor: string | null) =>
+export const fetchProfile = (profileKey: string, cursor: string | null) =>
   apiJson<PublicProfile>(
-    `/users/${encodeURIComponent(handle)}?limit=20${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
+    `/users/${encodeURIComponent(profileKey)}?limit=20${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
   );
 
 export const fetchSession = (id: string) => apiJson<Session>(`/sessions/${encodeURIComponent(id)}`);
@@ -284,5 +285,11 @@ export async function deleteZone(id: string): Promise<void> {
   if (!response.ok) throw await failure(response);
 }
 
-export const updateMe = (changes: Partial<Pick<Me, "units" | "defaultVisibility">>) =>
-  apiJson<Me>("/me", jsonInit("PATCH", changes));
+export const updateMe = (
+  userId: string,
+  changes: Partial<
+    Pick<Me, "units" | "defaultVisibility" | "displayName" | "publicProfileUsername">
+  > & {
+    publicProfileEnabled?: boolean;
+  },
+) => apiJson<Me>("/me", jsonInit("PATCH", { userId, ...changes }));

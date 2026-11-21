@@ -323,7 +323,7 @@ waypoints). Voyages reuse the Sessions engine, track format, sync, and backend.
   The Worker adds Open Graph tags to the HTML so shared links show a preview.
 - `/v/:slug` voyage page: live boat position, legs, track, log highlights (Phase 5).
 - `/routes` route planner that syncs to the phone (Phase 5).
-- `/u/:handle` public profile (public sessions only).
+- `/u/:profileKey` opt-in public profile with a random ID by default or a chosen `@username`.
 - `/sessions` dashboard (my sessions, totals), `/settings` (privacy zones, visibility
   default, export all data, delete account).
 
@@ -335,7 +335,8 @@ waypoints). Voyages reuse the Sessions engine, track format, sync, and backend.
 
 ```
 users          id, apple_sub (unique), handle (unique), display_name, units,
-               default_visibility, created_at, deleted_at
+               default_visibility, public_profile_id (unique, null while off),
+               public_profile_username (unique, optional), created_at, deleted_at
 refresh_tokens id, user_id, token_hash, expires_at, created_at, revoked_at
 sessions       id (device UUID), user_id, sport, title, notes, visibility
                (private|unlisted|public), started_at, ended_at, duration_s, moving_s,
@@ -371,7 +372,7 @@ GET    /api/sessions/:id           respects visibility
 GET    /api/sessions/:id/track     privacy zones applied for non-owners
 PATCH  /api/sessions/:id           title, notes, visibility
 DELETE /api/sessions/:id
-GET    /api/users/:handle          public profile + public sessions
+GET    /api/users/:profileKey      enabled public profile + public sessions
 GET    /api/health
 
 -- Phase 5 (Voyages)

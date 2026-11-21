@@ -1,13 +1,38 @@
 import { z } from "@hono/zod-openapi";
-import { eq } from "drizzle-orm";
+import { and, eq, isNotNull, isNull } from "drizzle-orm";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
 import { type User, users } from "../db/schema";
 import { AccountDeleting } from "./account-state";
 
 type Db = DrizzleD1Database<Record<string, unknown>>;
 
-/** Handles are lowercase, 3–30 of a–z, 0–9 and `_`, and appear in URLs (`/u/<handle>`). */
+/** Account handles are lowercase, 3–30 of a–z, 0–9 and `_`. */
 export const HANDLE_PATTERN = /^[a-z0-9_]{3,30}$/;
+
+// UUIDs are generated independently of the account ID, display name and handle.
+const PUBLIC_PROFILE_ID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+// A leading @ puts custom usernames in a separate namespace from legacy name-based links.
+export function publicProfileLookup(key: string) {
+  const normalized = key.toLowerCase();
+  const username = normalized.slice(1);
+  if (normalized.startsWith("@") && HANDLE_PATTERN.test(username)) {
+    return and(
+      eq(users.publicProfileUsername, username),
+      isNotNull(users.publicProfileId),
+      isNull(users.deletedAt),
+    );
+  }
+  if (PUBLIC_PROFILE_ID_PATTERN.test(normalized)) {
+    return and(
+      eq(users.publicProfileId, normalized),
+      isNull(users.publicProfileUsername),
+      isNull(users.deletedAt),
+    );
+  }
+  return undefined;
+}
 
 // Words a handle must not be, because they would read as official or clash with routes.
 const RESERVED_HANDLES = new Set([
@@ -41,6 +66,12 @@ export const UserBody = z
     id: z.string(),
     handle: z.string().openapi({ example: "skipper_4821" }),
     displayName: z.string().nullable(),
+    publicProfileKey: z.string().nullable().openapi({
+      description: "The public profile URL segment, or null while the profile is disabled.",
+    }),
+    publicProfileUsername: z.string().nullable().openapi({
+      description: "The optional username chosen for the public URL.",
+    }),
     units: z.enum(["metric", "imperial", "nautical"]),
     defaultVisibility: z.enum(["private", "unlisted", "public"]),
     createdAt: z.string().datetime().openapi({ format: "date-time" }),
@@ -51,6 +82,10 @@ export const toUserBody = (user: User): z.infer<typeof UserBody> => ({
   id: user.id,
   handle: user.handle,
   displayName: user.displayName,
+  publicProfileKey:
+    user.publicProfileId &&
+    (user.publicProfileUsername ? `@${user.publicProfileUsername}` : user.publicProfileId),
+  publicProfileUsername: user.publicProfileUsername,
   units: user.units,
   defaultVisibility: user.defaultVisibility,
   createdAt: new Date(user.createdAt).toISOString(),

@@ -18,7 +18,7 @@ import { Route as SupportRouteImport } from './routes/support'
 import { Route as AppIndexRouteImport } from './routes/app/index'
 import { Route as AppSettingsRouteImport } from './routes/app/settings'
 import { Route as SIdRouteImport } from './routes/s/$id'
-import { Route as UHandleRouteImport } from './routes/u/$handle'
+import { Route as UProfileKeyRouteImport } from './routes/u/$profileKey'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -65,9 +65,9 @@ const SIdRoute = SIdRouteImport.update({
   path: '/s/$id',
   getParentRoute: () => rootRouteImport,
 } as any)
-const UHandleRoute = UHandleRouteImport.update({
-  id: '/u/$handle',
-  path: '/u/$handle',
+const UProfileKeyRoute = UProfileKeyRouteImport.update({
+  id: '/u/$profileKey',
+  path: '/u/$profileKey',
   getParentRoute: () => rootRouteImport,
 } as any)
 
@@ -80,7 +80,7 @@ export interface FileRoutesByFullPath {
   '/support': typeof SupportRoute
   '/app/settings': typeof AppSettingsRoute
   '/s/$id': typeof SIdRoute
-  '/u/$handle': typeof UHandleRoute
+  '/u/$profileKey': typeof UProfileKeyRoute
   '/app/': typeof AppIndexRoute
 }
 export interface FileRoutesByTo {
@@ -92,7 +92,7 @@ export interface FileRoutesByTo {
   '/support': typeof SupportRoute
   '/app/settings': typeof AppSettingsRoute
   '/s/$id': typeof SIdRoute
-  '/u/$handle': typeof UHandleRoute
+  '/u/$profileKey': typeof UProfileKeyRoute
   '/app': typeof AppIndexRoute
 }
 export interface FileRoutesById {
@@ -105,7 +105,7 @@ export interface FileRoutesById {
   '/support': typeof SupportRoute
   '/app/settings': typeof AppSettingsRoute
   '/s/$id': typeof SIdRoute
-  '/u/$handle': typeof UHandleRoute
+  '/u/$profileKey': typeof UProfileKeyRoute
   '/app/': typeof AppIndexRoute
 }
 export interface FileRouteTypes {
@@ -119,7 +119,7 @@ export interface FileRouteTypes {
     | '/support'
     | '/app/settings'
     | '/s/$id'
-    | '/u/$handle'
+    | '/u/$profileKey'
     | '/app/'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -131,7 +131,7 @@ export interface FileRouteTypes {
     | '/support'
     | '/app/settings'
     | '/s/$id'
-    | '/u/$handle'
+    | '/u/$profileKey'
     | '/app'
   id:
     | '__root__'
@@ -143,7 +143,7 @@ export interface FileRouteTypes {
     | '/support'
     | '/app/settings'
     | '/s/$id'
-    | '/u/$handle'
+    | '/u/$profileKey'
     | '/app/'
   fileRoutesById: FileRoutesById
 }
@@ -156,7 +156,7 @@ export interface RootRouteChildren {
   SupportRoute: typeof SupportRoute
   AppSettingsRoute: typeof AppSettingsRoute
   SIdRoute: typeof SIdRoute
-  UHandleRoute: typeof UHandleRoute
+  UProfileKeyRoute: typeof UProfileKeyRoute
   AppIndexRoute: typeof AppIndexRoute
 }
 
@@ -225,11 +225,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SIdRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/u/$handle': {
-      id: '/u/$handle'
-      path: '/u/$handle'
-      fullPath: '/u/$handle'
-      preLoaderRoute: typeof UHandleRouteImport
+    '/u/$profileKey': {
+      id: '/u/$profileKey'
+      path: '/u/$profileKey'
+      fullPath: '/u/$profileKey'
+      preLoaderRoute: typeof UProfileKeyRouteImport
       parentRoute: typeof rootRouteImport
     }
   }
@@ -244,7 +244,7 @@ const rootRouteChildren: RootRouteChildren = {
   SupportRoute: SupportRoute,
   AppSettingsRoute: AppSettingsRoute,
   SIdRoute: SIdRoute,
-  UHandleRoute: UHandleRoute,
+  UProfileKeyRoute: UProfileKeyRoute,
   AppIndexRoute: AppIndexRoute,
 }
 export const routeTree = rootRouteImport

@@ -13,15 +13,20 @@ const json = (method: string, body: unknown, token: string) => ({
   body: JSON.stringify(body),
 });
 
-const uniqueHandle = () => `p_${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}`;
+const setProfile = (owner: SignIn, changes: Record<string, unknown>) =>
+  api("/me", json("PATCH", changes, owner.accessToken));
 
-/** A signed-in user with a known handle and display name. */
-async function profileUser(displayName: string | null = "Test Skipper") {
-  const user = await signIn();
-  const handle = uniqueHandle();
-  const response = await api("/me", json("PATCH", { handle, displayName }, user.accessToken));
+async function profileKeyOf(response: Response): Promise<string> {
   expect(response.status).toBe(200);
-  return { ...user, handle };
+  const { publicProfileKey } = (await response.json()) as { publicProfileKey: string };
+  expect(publicProfileKey).toEqual(expect.any(String));
+  return publicProfileKey;
+}
+
+async function profileUser(displayName: string | null = "Test Skipper") {
+  const user = await signIn({ displayName: displayName ?? undefined });
+  const profileKey = await profileKeyOf(await setProfile(user, { publicProfileEnabled: true }));
+  return { ...user, profileKey };
 }
 
 let minute = 0;
@@ -54,11 +59,10 @@ async function addSession(
   return id;
 }
 
-const getProfile = (handle: string, token?: string, query = "") =>
-  api(`/users/${handle}${query}`, { headers: token ? bearer(token) : {} });
+const getProfile = (key: string, token?: string, query = "") =>
+  api(`/users/${encodeURIComponent(key)}${query}`, { headers: token ? bearer(token) : {} });
 
 type Profile = {
-  handle: string;
   displayName: string | null;
   isOwner: boolean;
   totals: { sessions: number; distanceM: number; bySport: { sport: string; sessions: number }[] };
@@ -66,21 +70,80 @@ type Profile = {
   nextCursor: string | null;
 };
 
-async function profileOf(handle: string, token?: string, query = ""): Promise<Profile> {
-  const response = await getProfile(handle, token, query);
+async function profileOf(key: string, token?: string, query = ""): Promise<Profile> {
+  const response = await getProfile(key, token, query);
   expect(response.status).toBe(200);
-  expect(response.headers.get("cache-control")).toBe("private, no-cache");
+  expect(response.headers.get("cache-control")).toBe("private, no-store");
   return response.json();
 }
 
-describe("GET /api/users/:handle", () => {
-  it("shows the handle, display name, public totals and public sessions", async () => {
+describe("GET /api/users/:profileKey", () => {
+  it("requires opt-in and revokes the opaque link without altering session visibility", async () => {
+    const owner = await signIn({ displayName: "Test Skipper" });
+    const id = await addSession(owner, "public");
+    const me = await api("/me", { headers: bearer(owner.accessToken) });
+    expect(await me.json()).toMatchObject({ publicProfileKey: null });
+    expect((await getProfile(owner.user.handle, owner.accessToken)).status).toBe(404);
+
+    const enable = () => setProfile(owner, { publicProfileEnabled: true });
+    const first = await profileKeyOf(await enable());
+    expect(first).not.toBe(owner.user.id);
+    expect(await profileKeyOf(await enable())).toBe(first);
+    expect((await profileOf(first)).sessions.map((session) => session.id)).toEqual([id]);
+    expect((await getProfile(owner.user.handle)).status).toBe(404);
+
+    const disabled = await setProfile(owner, { publicProfileEnabled: false });
+    expect(await disabled.json()).toMatchObject({ publicProfileKey: null });
+    expect((await getProfile(first)).status).toBe(404);
+    expect((await getProfile(first, owner.accessToken)).status).toBe(404);
+    expect((await api(`/sessions/${id}`)).status).toBe(200);
+
+    const second = await profileKeyOf(await enable());
+    expect(second).not.toBe(first);
+    expect((await getProfile(first)).status).toBe(404);
+    expect((await getProfile(second)).status).toBe(200);
+  });
+
+  it("uses a custom URL only when explicitly chosen and keeps the display name independent", async () => {
+    const owner = await profileUser();
+    await addSession(owner, "public");
+    const username = owner.user.handle;
+    const custom = await profileKeyOf(
+      await setProfile(owner, {
+        publicProfileUsername: username.toUpperCase(),
+        displayName: "Chosen Name",
+      }),
+    );
+    expect(custom).toBe(`@${username}`);
+    expect((await profileOf(custom)).displayName).toBe("Chosen Name");
+    expect((await getProfile(username)).status).toBe(404);
+    expect((await getProfile(owner.profileKey)).status).toBe(404);
+
+    const other = await signIn();
+    expect((await setProfile(other, { publicProfileUsername: username })).status).toBe(409);
+    expect((await setProfile(other, { publicProfileUsername: "admin" })).status).toBe(409);
+
+    expect((await setProfile(owner, { publicProfileEnabled: false })).status).toBe(200);
+    expect((await getProfile(custom, owner.accessToken)).status).toBe(404);
+    expect((await getProfile(custom)).status).toBe(404);
+    expect((await setProfile(other, { publicProfileUsername: username })).status).toBe(409);
+    const disabled = await setProfile(owner, { publicProfileUsername: null });
+    expect(await disabled.json()).toMatchObject({
+      publicProfileKey: null,
+      publicProfileUsername: null,
+    });
+    const opaque = await profileKeyOf(await setProfile(owner, { publicProfileEnabled: true }));
+    expect(opaque).not.toBe(custom);
+    expect((await getProfile(custom)).status).toBe(404);
+    expect((await profileOf(opaque)).displayName).toBe("Chosen Name");
+  });
+
+  it("shows the display name, public totals and public sessions", async () => {
     const owner = await profileUser("Anne <Sailor>");
     const a = await addSession(owner, "public", { sport: "sailing", distanceM: 2000 });
     const b = await addSession(owner, "public");
-    const profile = await profileOf(owner.handle);
+    const profile = await profileOf(owner.profileKey);
     expect(profile).toMatchObject({
-      handle: owner.handle,
       displayName: "Anne <Sailor>",
       isOwner: false,
       nextCursor: null,
@@ -97,7 +160,7 @@ describe("GET /api/users/:handle", () => {
       ],
     });
     // Either case finds the same profile.
-    expect((await profileOf(owner.handle.toUpperCase())).handle).toBe(owner.handle);
+    expect(await profileOf(owner.profileKey.toUpperCase())).toEqual(profile);
   });
 
   it("never lists or counts private or unlisted sessions", async () => {
@@ -109,7 +172,7 @@ describe("GET /api/users/:handle", () => {
       await addSession(owner, "private", { sport: "sup" }),
     ];
     for (const token of [undefined, (await signIn()).accessToken, owner.accessToken]) {
-      const profile = await profileOf(owner.handle, token);
+      const profile = await profileOf(owner.profileKey, token);
       expect(profile.sessions.map((s) => s.id)).toEqual([shown]);
       expect(profile.totals.sessions).toBe(1);
       expect(profile.totals.bySport.map((s) => s.sport)).toEqual(["kayak"]);
@@ -121,10 +184,10 @@ describe("GET /api/users/:handle", () => {
 
     // Making it private again takes it off at once; so does deleting it.
     await api(`/sessions/${shown}`, json("PATCH", { visibility: "unlisted" }, owner.accessToken));
-    expect((await getProfile(owner.handle)).status).toBe(404);
+    expect((await getProfile(owner.profileKey)).status).toBe(404);
     const again = await addSession(owner, "public");
     await api(`/sessions/${again}`, { method: "DELETE", headers: bearer(owner.accessToken) });
-    expect((await getProfile(owner.handle)).status).toBe(404);
+    expect((await getProfile(owner.profileKey)).status).toBe(404);
   });
 
   it("returns no positions, notes, summaries or account details", async () => {
@@ -136,11 +199,11 @@ describe("GET /api/users/:handle", () => {
       json("POST", { lat: 0, lon: 0, radiusM: 5000 }, owner.accessToken),
     );
     for (const token of [undefined, owner.accessToken]) {
-      const response = await getProfile(owner.handle, token);
+      const response = await getProfile(owner.profileKey, token);
       const text = await response.text();
       const profile = JSON.parse(text) as Record<string, unknown>;
       expect(Object.keys(profile).sort()).toEqual(
-        ["displayName", "handle", "isOwner", "nextCursor", "sessions", "totals"].sort(),
+        ["displayName", "isOwner", "nextCursor", "sessions", "totals"].sort(),
       );
       const [session] = profile.sessions as Record<string, unknown>[];
       expect(Object.keys(session ?? {}).sort()).toEqual(
@@ -158,10 +221,11 @@ describe("GET /api/users/:handle", () => {
       );
       expect(text).not.toMatch(/lat|lon|bounds|notes|secret|summary|heartRate|units|visibility/i);
       expect(text).not.toContain(owner.user.id);
+      expect(text).not.toContain(owner.user.handle);
     }
   });
 
-  it("is not found for unknown, malformed or reserved handles", async () => {
+  it("is not found for unknown keys and legacy handles", async () => {
     for (const handle of ["nobody_here_123", "x", "a-b", "admin", "%F0%9F%9B%B6"]) {
       const response = await getProfile(handle);
       expect(response.status, handle).toBe(404);
@@ -175,14 +239,13 @@ describe("GET /api/users/:handle", () => {
     await addSession(owner, "unlisted");
     const other = await signIn();
     for (const token of [undefined, other.accessToken]) {
-      const response = await getProfile(owner.handle, token);
+      const response = await getProfile(owner.profileKey, token);
       expect(response.status).toBe(404);
       // The same answer as for a handle nobody has: no name, nothing to tell them apart.
       expect(await response.json()).toEqual({ error: "not_found", message: "No such profile." });
     }
-    const own = await profileOf(owner.handle, owner.accessToken);
+    const own = await profileOf(owner.profileKey, owner.accessToken);
     expect(own).toEqual({
-      handle: owner.handle,
       displayName: "Quiet Person",
       isOwner: true,
       totals: { sessions: 0, distanceM: 0, movingS: 0, durationS: 0, bySport: [] },
@@ -191,7 +254,7 @@ describe("GET /api/users/:handle", () => {
     });
   });
 
-  it("does the same database work for an unknown handle as for a hidden profile", async () => {
+  it("does the same database work for an unknown key as for a hidden profile", async () => {
     // Regression (PR #95 review): a second query only for existing accounts made a timing
     // signal for which handles exist. Every request now reads in one batch.
     const hidden = await profileUser("Never Shared");
@@ -223,17 +286,17 @@ describe("GET /api/users/:handle", () => {
       expect(response.status).toBe(404);
       return calls;
     };
-    const unknown = await trace(uniqueHandle());
+    const unknown = await trace(crypto.randomUUID());
     expect(unknown.filter((call) => call.startsWith("batch"))).toEqual(["batch:3"]);
-    expect(await trace(hidden.handle)).toEqual(unknown);
+    expect(await trace(hidden.profileKey)).toEqual(unknown);
   });
 
   it("is not found once the account is being deleted", async () => {
     const owner = await profileUser();
     await addSession(owner, "public");
-    expect((await getProfile(owner.handle)).status).toBe(200);
+    expect((await getProfile(owner.profileKey)).status).toBe(200);
     expect((await deleteMe(owner.accessToken, { finish: false })).status).toBe(202);
-    expect((await getProfile(owner.handle)).status).toBe(404);
+    expect((await getProfile(owner.profileKey)).status).toBe(404);
   });
 
   it("pages newest first with a cursor, totals covering every page", async () => {
@@ -243,51 +306,59 @@ describe("GET /api/users/:handle", () => {
     await addSession(owner, "private");
     const newestFirst = ids.reverse();
 
-    const first = await profileOf(owner.handle, undefined, "?limit=2");
+    const first = await profileOf(owner.profileKey, undefined, "?limit=2");
     expect(first.sessions.map((s) => s.id)).toEqual(newestFirst.slice(0, 2));
     expect(first.totals.sessions).toBe(5);
     expect(first.nextCursor).not.toBeNull();
-    const second = await profileOf(owner.handle, undefined, `?limit=2&cursor=${first.nextCursor}`);
+    const second = await profileOf(
+      owner.profileKey,
+      undefined,
+      `?limit=2&cursor=${first.nextCursor}`,
+    );
     expect(second.sessions.map((s) => s.id)).toEqual(newestFirst.slice(2, 4));
-    const last = await profileOf(owner.handle, undefined, `?limit=2&cursor=${second.nextCursor}`);
+    const last = await profileOf(
+      owner.profileKey,
+      undefined,
+      `?limit=2&cursor=${second.nextCursor}`,
+    );
     expect(last.sessions.map((s) => s.id)).toEqual(newestFirst.slice(4));
     expect(last.nextCursor).toBeNull();
 
-    expect((await getProfile(owner.handle, undefined, "?cursor=nope")).status).toBe(400);
-    expect((await getProfile(owner.handle, undefined, "?limit=51")).status).toBe(400);
+    expect((await getProfile(owner.profileKey, undefined, "?cursor=nope")).status).toBe(400);
+    expect((await getProfile(owner.profileKey, undefined, "?limit=51")).status).toBe(400);
   });
 
   it("answers 401 to an invalid token, so the client can refresh it", async () => {
     const owner = await profileUser();
     await addSession(owner, "public");
-    expect((await getProfile(owner.handle, "not-a-token")).status).toBe(401);
+    expect((await getProfile(owner.profileKey, "not-a-token")).status).toBe(401);
   });
 });
 
-describe("Open Graph tags on /u/:handle", () => {
+describe("Open Graph tags on /u/:profileKey", () => {
   const SHELL =
     '<!doctype html><html><head><meta name="description" content="Default" /><title>MadeGood</title></head><body><div id="root"></div></body></html>';
   const assets = {
     fetch: async () => new Response(SHELL, { headers: { "content-type": "text/html" } }),
   };
-  const page = async (handle: string) => {
+  const page = async (key: string) => {
     const response = await profilePreviewPage.request(
-      `https://madegood.test/u/${handle}`,
+      `https://madegood.test/u/${key}`,
       {},
       { ...env, ASSETS: assets },
     );
     expect(response.status).toBe(200);
-    expect(response.headers.get("cache-control")).toBe("no-cache");
+    expect(response.headers.get("cache-control")).toBe("no-store");
     return response.text();
   };
 
-  it("previews a profile with public sessions: name, handle, count and distance", async () => {
+  it("previews an enabled profile with its name, public count and distance", async () => {
     const owner = await profileUser("Anne <Sailor>");
     await addSession(owner, "public", { distanceM: 1852 });
     await addSession(owner, "public", { distanceM: 1852 });
     await addSession(owner, "private", { distanceM: 100_000 });
-    const html = await page(owner.handle.toUpperCase());
-    const name = `Anne &lt;Sailor&gt; (@${owner.handle})`;
+    const html = await page(owner.profileKey.toUpperCase());
+    const name = "Anne &lt;Sailor&gt;";
     expect(html).toContain(`<title>${name} · MadeGood</title>`);
     expect(html).toContain(`property="og:title" content="${name}"`);
     // The owner's default units are nautical; the private session is not counted.
@@ -298,13 +369,15 @@ describe("Open Graph tags on /u/:handle", () => {
     expect(html).toContain('<div id="root"></div>');
   });
 
-  it("uses the handle alone without a display name", async () => {
+  it("uses a generic title without a display name", async () => {
     const owner = await profileUser(null);
     await addSession(owner, "public");
-    expect(await page(owner.handle)).toContain(`property="og:title" content="@${owner.handle}"`);
+    expect(await page(owner.profileKey)).toContain(
+      'property="og:title" content="A profile on MadeGood"',
+    );
   });
 
-  it("never names a user without public sessions, or tells them from unknown handles", async () => {
+  it("hides personal data and URLs on unavailable profile pages", async () => {
     const quiet = await profileUser("Quiet Person");
     await addSession(quiet, "private");
     await addSession(quiet, "unlisted");
@@ -312,14 +385,29 @@ describe("Open Graph tags on /u/:handle", () => {
     await addSession(leaving, "public");
     await deleteMe(leaving.accessToken, { finish: false });
     const pages = await Promise.all(
-      [quiet.handle, leaving.handle, "nobody_here_123", "a-b"].map((h) => page(h)),
+      [quiet.profileKey, leaving.profileKey, crypto.randomUUID(), leaving.user.handle, "a-b"].map(
+        (h) => page(h),
+      ),
     );
     for (const html of pages) {
       expect(html).toContain("<title>A profile on MadeGood</title>");
       expect(html).not.toContain("Person");
       expect(html).toContain('name="robots" content="noindex"');
     }
-    const normalized = pages.map((html) => html.replace(/\/u\/[^"]+/g, "/u/HANDLE"));
-    expect(new Set(normalized).size).toBe(1);
+    expect(new Set(pages).size).toBe(1);
+  });
+
+  it("removes the chosen name and URL from previews as soon as the profile is disabled", async () => {
+    const owner = await profileUser("Test Skipper");
+    await addSession(owner, "public");
+    const key = await profileKeyOf(
+      await setProfile(owner, { publicProfileUsername: owner.user.handle }),
+    );
+    expect(await page(key)).toContain('property="og:title" content="Test Skipper"');
+    expect((await setProfile(owner, { publicProfileEnabled: false })).status).toBe(200);
+    const html = await page(key);
+    expect(html).toBe(await page(crypto.randomUUID()));
+    expect(html).not.toContain(key);
+    expect(html).not.toContain("Test Skipper");
   });
 });
