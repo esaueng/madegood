@@ -339,10 +339,12 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
     }
 
     /// Applies a settings snapshot from the other device (unless this launch keeps its
-    /// settings to itself, `syncsSettings`) and returns whether to push this device's own.
+    /// settings to itself, `syncsSettings`) and returns whether to push this device's context.
+    /// An isolated launch still honours `alwaysPush`: its push carries no settings, but the
+    /// phone's still tells the watch which recording formats it can receive.
     @MainActor
     func applyReceivedSettings(_ snapshot: [String: Any]?, alwaysPush: Bool = false) -> Bool {
-        guard syncsSettings else { return false }
+        guard syncsSettings else { return alwaysPush }
         var push = alwaysPush
         if let outcome = snapshot.map({ UserSettings.apply($0) }) {
             if outcome.changed {

@@ -55,7 +55,9 @@ final class WatchSailingUITests: XCTestCase {
         let expectation = XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "label MATCHES %@", pattern), object: element)
         let result = XCTWaiter().wait(for: [expectation], timeout: timeout)
-        if result != .completed { attachDiagnostics("\(element.identifier) timeout", app: app) }
+        // `element.identifier` would resolve a missing element and stop the test before the
+        // attachments are saved; the query description does not.
+        if result != .completed { attachDiagnostics("\(element.description) timeout", app: app) }
         XCTAssertEqual(
             result, .completed,
             "\(element) never matched \(pattern); last label: \(element.exists ? element.label : "missing")",

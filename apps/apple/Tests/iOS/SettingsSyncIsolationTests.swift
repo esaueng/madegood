@@ -39,7 +39,9 @@ final class SettingsSyncIsolationTests: XCTestCase {
         XCTAssertFalse(UserSettings.settings(for: .windsurfing).isHidden)
 
         let isolated = RecordingTransfer(syncsSettings: false)
-        XCTAssertFalse(isolated.applyReceivedSettings(remote, alwaysPush: true))
+        XCTAssertFalse(isolated.applyReceivedSettings(remote))
+        // Activation still pushes, so the phone advertises its readable recording formats.
+        XCTAssertTrue(isolated.applyReceivedSettings(remote, alwaysPush: true))
         XCTAssertFalse(UserSettings.settings(for: .windsurfing).isHidden)
         XCTAssertEqual(UserSettings.settings(for: .sailing).countdownMinutes, 0)
     }
