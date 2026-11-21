@@ -24,6 +24,11 @@ const errors = {
 const conflict = errorResponse(
   "The sample ID or share state conflicts, the grant is stale, or the voyage is at capacity.",
 );
+const conflictOrSharingDisabled = errorResponse(
+  "The share state conflicts, the grant is stale, or the voyage is at capacity; or the " +
+    "command would issue or reopen a link while the account's sharing is off " +
+    "(`sharing_disabled`).",
+);
 const payloadTooLarge = errorResponse("The request body exceeds 64 KiB.");
 
 const Fix = z.object({
@@ -136,7 +141,7 @@ const changeShare = createRoute({
       content: envelope(ChangeShareResult),
     },
     ...errors,
-    409: conflict,
+    409: conflictOrSharingDisabled,
     413: payloadTooLarge,
   },
 });
@@ -207,7 +212,20 @@ voyageLiveRoutes.openapi(getShare, async (c) => {
 });
 voyageLiveRoutes.openapi(changeShare, async (c) => {
   const key = { userId: c.var.userId, ...c.req.valid("param") };
-  const result = await liveVoyage(c.env, key).configure(key, c.req.valid("json"));
+  const command = c.req.valid("json");
+  // A link stops resolving while the account's sharing is off (live/registry.ts); refuse
+  // to hand out or reopen one too.
+  if (["issue", "rotate", "resume"].includes(command.action)) {
+    const enabled = await c.env.DB.prepare(
+      "SELECT 1 FROM users WHERE id = ? AND deleted_at IS NULL AND sharing_enabled = 1",
+    )
+      .bind(key.userId)
+      .first();
+    if (!enabled) {
+      return apiError(c, 409, "sharing_disabled", "Sharing is turned off for this account.");
+    }
+  }
+  const result = await liveVoyage(c.env, key).configure(key, command);
   if (result.status !== "ok") return error(c, result.status);
   return result.response as Response &
     TypedResponse<z.infer<typeof ChangeShareResult>, 200, "json">;

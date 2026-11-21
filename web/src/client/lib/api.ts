@@ -20,6 +20,8 @@ export type Me = {
   displayName: string | null;
   units: Units;
   defaultVisibility: Visibility;
+  /** Off: every session is private and nothing can be shared until it is turned back on. */
+  sharingEnabled: boolean;
   createdAt: string;
 };
 
@@ -207,6 +209,12 @@ export const fetchSessions = (cursor: string | null) =>
     `/sessions?limit=20${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
   );
 
+/** The signed-in user's sessions that others can see (unlisted or public), newest first. */
+export const fetchSharedSessions = (cursor: string | null) =>
+  apiJson<SessionList>(
+    `/sessions?shared=true&limit=50${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
+  );
+
 export const fetchProfile = (handle: string, cursor: string | null) =>
   apiJson<PublicProfile>(
     `/users/${encodeURIComponent(handle)}?limit=20${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
@@ -284,5 +292,6 @@ export async function deleteZone(id: string): Promise<void> {
   if (!response.ok) throw await failure(response);
 }
 
-export const updateMe = (changes: Partial<Pick<Me, "units" | "defaultVisibility">>) =>
-  apiJson<Me>("/me", jsonInit("PATCH", changes));
+export const updateMe = (
+  changes: Partial<Pick<Me, "units" | "defaultVisibility" | "sharingEnabled">>,
+) => apiJson<Me>("/me", jsonInit("PATCH", changes));

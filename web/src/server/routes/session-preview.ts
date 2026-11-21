@@ -18,8 +18,9 @@ import {
 // /s/:id is the SPA's session page. The Worker serves it (wrangler.jsonc
 // `run_worker_first`) to put Open Graph tags into the HTML, so shared links preview with
 // the session's title, headline stats and route image. Only public and unlisted sessions
-// get them; a private, deleted or unknown session gets the same generic tags and the brand
-// image, so the preview never tells whether it exists. Text tags never contain positions,
+// get them, and only while the owner's sharing switch is on; a private, deleted or unknown
+// session gets the same generic tags and the brand image, so the preview never tells
+// whether it exists. Text tags never contain positions,
 // bounds or times of day; the image (lib/og-image.ts) draws only what the shared track
 // shows anyone.
 //
@@ -67,7 +68,10 @@ export async function sessionPreview(db: D1Database, id: string): Promise<Previe
   const [row] = await drizzle(db)
     .select({ session: sessionColumns, units: users.units, zonesVersion: users.zonesVersion })
     .from(sessions)
-    .innerJoin(users, and(eq(users.id, sessions.userId), isNull(users.deletedAt)))
+    .innerJoin(
+      users,
+      and(eq(users.id, sessions.userId), isNull(users.deletedAt), eq(users.sharingEnabled, true)),
+    )
     .where(and(eq(sessions.id, id.toLowerCase()), isNull(sessions.deletedAt)));
   if (!row || row.session.visibility === "private") return GENERIC;
 
@@ -112,7 +116,7 @@ export async function profilePreview(db: D1Database, rawHandle: string): Promise
         isNull(sessions.deletedAt),
       ),
     )
-    .where(and(eq(users.handle, handle), isNull(users.deletedAt)))
+    .where(and(eq(users.handle, handle), isNull(users.deletedAt), eq(users.sharingEnabled, true)))
     .groupBy(users.id);
   if (!row || row.count === 0) return GENERIC_PROFILE;
   const sessionCount = `${row.count} public ${row.count === 1 ? "session" : "sessions"}`;

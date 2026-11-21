@@ -188,6 +188,17 @@ final class SessionSync {
         deletingAccount = false
     }
 
+    /// Runs one account request (Settings → Sharing) with the signed-in account's token,
+    /// refreshed once if the server refuses it. Throws `signInRequired` when signed out or
+    /// when the account changed before it ran.
+    func withAccount<Result>(_ operation: (SessionAPI, String) async throws -> Result) async throws -> Result {
+        guard let binding = account.binding else { throw VoyageAccountError.signInRequired }
+        var result: Result?
+        try await account.authorized(for: binding) { token in result = try await operation(api, token) }
+        guard let result else { throw VoyageAPIError.invalidResponse }
+        return result
+    }
+
     private func settingsDidChange() async {
         stopWork()
         // The drain is interrupted; the journal keeps its place.

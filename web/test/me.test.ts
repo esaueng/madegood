@@ -39,6 +39,7 @@ describe("GET /api/me", () => {
       displayName: "Navigator",
       units: "nautical",
       defaultVisibility: "private",
+      sharingEnabled: true,
       createdAt: expect.stringMatching(/^\d{4}-\d\d-\d\dT/),
     });
   });

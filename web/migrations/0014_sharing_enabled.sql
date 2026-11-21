@@ -1,0 +1,1 @@
+ALTER TABLE `users` ADD `sharing_enabled` integer DEFAULT true NOT NULL;

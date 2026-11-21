@@ -123,7 +123,7 @@ struct SessionSyncSection: View {
     }
 
     static let visibilityExplanation =
-        "New uploads use your account’s Visibility of new sessions, which you set in Settings on madegood.app. If it’s Unlisted or Public, new sessions are shared that way automatically."
+        "New uploads use your account’s Visibility of new sessions, which you set in Settings on madegood.app. If it’s Unlisted or Public, new sessions are shared that way automatically. Turn sharing off under Sharing to keep everything private."
 
     static let deletionWarning =
         "This deletes every session you have uploaded, your privacy zones, your settings and your sign-in from MadeGood’s servers. Recordings on this iPhone and your Apple Watch stay on your devices, and workouts in Apple Health are not affected. This can’t be undone."
@@ -136,6 +136,12 @@ struct SessionSyncSection: View {
                 .accessibilityIdentifier("sessionSync.signedIn")
             Toggle("Sync sessions", isOn: $sync.isEnabled)
                 .accessibilityIdentifier("sessionSync.enabled")
+            NavigationLink {
+                SharingSettingsView(sync: sync)
+            } label: {
+                Label("Sharing", systemImage: "person.2")
+            }
+            .accessibilityIdentifier("sessionSync.sharing")
             // Static and always true: the server applies the account's default at upload, and
             // this iPhone doesn't read it (#133).
             Text(Self.visibilityExplanation)

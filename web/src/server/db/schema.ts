@@ -30,6 +30,13 @@ export const users = sqliteTable(
     defaultVisibility: text("default_visibility", { enum: ["private", "unlisted", "public"] })
       .notNull()
       .default("private"),
+    /**
+     * The account-wide sharing switch. While false, every session is private and stays
+     * private, default_visibility is private, and live voyage links stop resolving: turning
+     * it off (PATCH /me) makes all of that true in one D1 batch, and every write that would
+     * share something checks it in the same statement. Readers check it too.
+     */
+    sharingEnabled: integer("sharing_enabled", { mode: "boolean" }).notNull().default(true),
     createdAt: timestamp("created_at").notNull().default(sql`(unixepoch('subsec') * 1000)`),
     /** Set when the account is being deleted (lib/account-deletion.ts); the row is the job. */
     deletedAt: timestamp("deleted_at"),

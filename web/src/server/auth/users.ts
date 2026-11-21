@@ -43,6 +43,11 @@ export const UserBody = z
     displayName: z.string().nullable(),
     units: z.enum(["metric", "imperial", "nautical"]),
     defaultVisibility: z.enum(["private", "unlisted", "public"]),
+    sharingEnabled: z.boolean().openapi({
+      description:
+        "Whether the account may share anything. While false every session is private and " +
+        "nothing can be made unlisted or public.",
+    }),
     createdAt: z.string().datetime().openapi({ format: "date-time" }),
   })
   .openapi("User");
@@ -53,6 +58,7 @@ export const toUserBody = (user: User): z.infer<typeof UserBody> => ({
   displayName: user.displayName,
   units: user.units,
   defaultVisibility: user.defaultVisibility,
+  sharingEnabled: user.sharingEnabled,
   createdAt: new Date(user.createdAt).toISOString(),
 });
 
