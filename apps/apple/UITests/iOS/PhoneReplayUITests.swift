@@ -119,7 +119,7 @@ final class PhoneReplayUITests: XCTestCase {
         XCTAssertTrue(sailing.waitForExistence(timeout: 15))
         let totals = app.staticTexts["history.totals"]
         let ready = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "label CONTAINS %@", " km"), object: totals)
+            predicate: NSPredicate(format: "label CONTAINS %@", "\u{00A0}km"), object: totals)
         XCTAssertEqual(XCTWaiter().wait(for: [ready], timeout: 15), .completed)
         let originalTotals = totals.label
         scrollTo(sailing, in: app)
