@@ -7,6 +7,8 @@ import WaterKit
 
 @MainActor
 final class AnchorGPSWatchdogTests: XCTestCase {
+    private static let watchdogStorageKey = "anchorWatch.watchdog"
+
     func testRapidRearmSchedulesWithoutAnotherFixAndRemovesLateAlarm() async {
         let system = FakeAlarms()
         let started = expectation(description: "first arming passed its request to AlarmKit")
@@ -301,6 +303,191 @@ final class AnchorGPSWatchdogTests: XCTestCase {
         XCTAssertEqual(system.attempts.count, 2)
         XCTAssertEqual(Array(system.pending.values), [system.wallTime.addingTimeInterval(120)])
         XCTAssertTrue(system.stoppedByApp.isEmpty)
+    }
+
+    func testRelaunchKeepsInterruptedFirstInstallAndSnoozesWhenStopped() async throws {
+        let suite = "AnchorGPSWatchdogTests.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let original = FakeAlarms()
+        let first = original.makeWatchdog(defaults: defaults)
+        let system = try await captureInterruptedInstall(in: original, defaults: defaults) { first.start() }
+        let alarm = try XCTUnwrap(system.pending.first)
+
+        let restored = system.makeWatchdog(defaults: defaults)
+        let read = expectation(description: "relaunch sees the pending alarm")
+        system.onSnapshot = {
+            system.onSnapshot = nil
+            read.fulfill()
+        }
+        restored.start(restoring: true)
+        await waitFor(read)
+        XCTAssertTrue(system.attempts.isEmpty)
+        XCTAssertEqual(system.pending, [alarm.key: alarm.value])
+
+        system.advance(by: 120)
+        system.fire(alarm.key)
+        system.sounding.remove(alarm.key)
+        await restored.reconcileAfterSystemStop(id: alarm.key)
+
+        XCTAssertEqual(system.attempts.count, 1)
+        XCTAssertEqual(Array(system.pending.values), [system.wallTime.addingTimeInterval(120)])
+    }
+
+    func testLockScreenStopOnRelaunchSnoozesInterruptedFirstInstall() async throws {
+        let suite = "AnchorGPSWatchdogTests.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let original = FakeAlarms()
+        let first = original.makeWatchdog(defaults: defaults)
+        let system = try await captureInterruptedInstall(in: original, defaults: defaults) { first.start() }
+        let id = try XCTUnwrap(system.pending.keys.first)
+
+        system.advance(by: 120)
+        system.fire(id)
+        system.sounding.remove(id)
+        system.wallTime.addTimeInterval(-3_600)
+        let restored = system.makeWatchdog(defaults: defaults)
+        restored.start(restoring: true)
+        await restored.reconcileAfterSystemStop(id: id)
+
+        XCTAssertEqual(system.attempts.count, 1)
+        XCTAssertEqual(Array(system.pending.values), [system.wallTime.addingTimeInterval(120)])
+    }
+
+    func testObservedStopSnoozesInterruptedInstallBeforeSnapshotCanSeeIt() async throws {
+        let suite = "AnchorGPSWatchdogTests.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let original = FakeAlarms()
+        let first = original.makeWatchdog(defaults: defaults)
+        let system = try await captureInterruptedInstall(in: original, defaults: defaults) { first.start() }
+        let id = try XCTUnwrap(system.pending.keys.first)
+
+        system.advance(by: 120)
+        system.fire(id)
+        system.snapshotFailures = 1
+        let restored = system.makeWatchdog(defaults: defaults, retryDelay: .seconds(60))
+        let snoozed = expectation(description: "the observed Stop installed a snooze")
+        system.onSchedule = { _ in snoozed.fulfill() }
+        restored.start(restoring: true)
+        let observer = Task {
+            await restored.observeAlarmChanges { snapshot in
+                if snapshot.sounding.contains(id) {
+                    system.sounding.remove(id)
+                    system.snapshotFailures = 0
+                    restored.reconcile()
+                }
+            }
+        }
+        defer { observer.cancel() }
+        system.emitChange()
+        await waitFor(snoozed)
+
+        XCTAssertEqual(system.attempts.count, 1)
+        XCTAssertEqual(Array(system.pending.values), [system.wallTime.addingTimeInterval(120)])
+    }
+
+    func testRelaunchDuringRenewalSnoozesReplacementButNotPreviousAlarm() async throws {
+        let suite = "AnchorGPSWatchdogTests.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let original = FakeAlarms()
+        let first = original.makeWatchdog(defaults: defaults)
+        let initial = expectation(description: "initial alarm installed and recorded")
+        original.onSchedule = { _ in initial.fulfill() }
+        first.start()
+        await waitFor(initial)
+        let old = try XCTUnwrap(original.pending.keys.first)
+
+        original.advance(by: 112)
+        let system = try await captureInterruptedInstall(in: original, defaults: defaults) {
+            first.renew(fixAge: 0, assessment: .withinOrUncertain)
+        }
+        XCTAssertEqual(system.pending.count, 2)
+        let replacement = try XCTUnwrap(system.pending.first { $0.key != old })
+        system.advance(by: 8)
+        system.fire(old)
+        system.sounding.remove(old)
+        let restored = system.makeWatchdog(defaults: defaults)
+        restored.start(restoring: true)
+        await restored.reconcileAfterSystemStop(id: old)
+        XCTAssertTrue(system.attempts.isEmpty)
+        XCTAssertEqual(system.pending, [replacement.key: replacement.value])
+
+        system.advance(by: replacement.value.timeIntervalSince(system.wallTime))
+        system.fire(replacement.key)
+        system.sounding.remove(replacement.key)
+        await restored.reconcileAfterSystemStop(id: replacement.key)
+
+        XCTAssertEqual(system.attempts.count, 1)
+        XCTAssertEqual(Array(system.pending.values), [system.wallTime.addingTimeInterval(120)])
+    }
+
+    func testRelaunchDuringRenewalKeepsPreviousOwnerIfReplacementIsMissing() async throws {
+        let suite = "AnchorGPSWatchdogTests.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let original = FakeAlarms()
+        let first = original.makeWatchdog(defaults: defaults, retryDelay: .seconds(60))
+        defer { first.stop() }
+        let initial = expectation(description: "initial alarm installed and recorded")
+        original.onSchedule = { _ in initial.fulfill() }
+        first.start()
+        await waitFor(initial)
+        let old = try XCTUnwrap(original.pending.keys.first)
+
+        original.advance(by: 112)
+        original.failScheduleAttempts = [2]
+        let system = try await captureInterruptedInstall(in: original, defaults: defaults) {
+            first.renew(fixAge: 0, assessment: .withinOrUncertain)
+        }
+        XCTAssertEqual(Set(system.pending.keys), [old])
+        system.advance(by: 8)
+        system.fire(old)
+        system.sounding.remove(old)
+        let restored = system.makeWatchdog(defaults: defaults)
+        restored.start(restoring: true)
+        await restored.reconcileAfterSystemStop(id: old)
+
+        XCTAssertEqual(system.attempts.count, 1)
+        XCTAssertEqual(Array(system.pending.values), [system.wallTime.addingTimeInterval(120)])
+    }
+
+    func testRearmClearsInterruptedInstallBeforeNewAlarmIsScheduled() async throws {
+        let suite = "AnchorGPSWatchdogTests.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let original = FakeAlarms()
+        original.holdSchedule = 1
+        let first = original.makeWatchdog(defaults: defaults)
+        defer {
+            first.stop()
+            original.resumeSchedule()
+        }
+        let installed = expectation(description: "old alarm is installed but schedule has not returned")
+        original.onSchedule = { _ in installed.fulfill() }
+        first.start()
+        await waitFor(installed)
+        original.onSchedule = nil
+        let old = try XCTUnwrap(original.pending.keys.first)
+
+        original.advance(by: 112)
+        first.stop()
+        XCTAssertNotNil(original.pending[old])
+        first.start()
+        let deadline = original.wallTime.addingTimeInterval(120)
+        XCTAssertEqual(original.attempts.count, 1)
+        // The old alarm fires and is stopped before the new arming can install its backup.
+        original.advance(by: 8)
+        original.fire(old)
+        original.sounding.remove(old)
+        let restored = original.makeWatchdog(defaults: defaults)
+        restored.start(restoring: true)
+        await restored.reconcileAfterSystemStop(id: old)
+
+        XCTAssertEqual(original.attempts.count, 2)
+        XCTAssertEqual(Array(original.pending.values), [deadline])
     }
 
     func testTimerReinstallsAnOverdueAlarmThatDisappearedWithoutAlerting() async {
@@ -618,6 +805,29 @@ final class AnchorGPSWatchdogTests: XCTestCase {
         watch.ingest(point: try XCTUnwrap(AnchorAlarm.Point(latitude: 0, longitude: 0)), accuracy: 5, measuredAt: .now)
         XCTAssertEqual(watch.watch?.isDrifting, false)
         XCTAssertTrue(system.pending.isEmpty)
+    }
+
+    private func captureInterruptedInstall(
+        in original: FakeAlarms, defaults: UserDefaults, install: () -> Void
+    ) async throws -> FakeAlarms {
+        let attempted = expectation(description: "schedule has reached AlarmKit")
+        let restored = FakeAlarms()
+        var checkpoint: Data?
+        original.onSchedule = { _ in
+            // Capture the system state and the checkpoint before the app can
+            // handle the schedule result or clean up any older alarms.
+            checkpoint = defaults.data(forKey: Self.watchdogStorageKey)
+            restored.pending = original.pending
+            restored.sounding = original.sounding
+            restored.wallTime = original.wallTime
+            restored.uptime = original.uptime
+            attempted.fulfill()
+        }
+        defer { original.onSchedule = nil }
+        install()
+        await waitFor(attempted)
+        defaults.set(try XCTUnwrap(checkpoint), forKey: Self.watchdogStorageKey)
+        return restored
     }
 
     private func waitFor(_ event: XCTestExpectation) async {
