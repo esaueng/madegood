@@ -12,6 +12,7 @@ import {
   fetchLatestExport,
   fetchZones,
   type Me,
+  type Session,
   signInUrl,
   startExport,
   type Units,
@@ -93,10 +94,20 @@ function PublicProfile({ me }: { me: Me }) {
       queryClient.setQueryData<Me | null>(meQueryKey, (current) =>
         current?.id === updated.id ? updated : current,
       );
+      queryClient.setQueriesData<Session>(
+        { predicate: (query) => query.queryKey[0] === "session" && query.queryKey.length === 2 },
+        (current) =>
+          current?.isOwner && current.visibility === "public" && current.owner
+            ? { ...current, owner: { handle: updated.handle, displayName: updated.displayName } }
+            : current,
+      );
       void queryClient.invalidateQueries({ queryKey: ["profile"] });
+      void queryClient.invalidateQueries({ queryKey: ["sessions"] });
     },
   });
   const canSave = valid && handle !== me.handle && !save.isPending;
+  const showError = save.isError && draft?.from === me.handle;
+  const showSuccess = save.isSuccess && save.data.handle === me.handle;
   const error =
     save.error instanceof ApiError &&
     (save.error.status === 409 || save.error.code === "handle_taken")
@@ -125,13 +136,13 @@ function PublicProfile({ me }: { me: Me }) {
         <div className="flex gap-2">
           <input
             id="profile-handle"
-            className="h-9 min-w-0 flex-1 rounded-md border bg-background px-2 text-sm"
+            className="h-9 min-w-0 flex-1 rounded-md border bg-background px-2 text-sm aria-invalid:border-red-600"
             value={input}
             autoCapitalize="none"
             spellCheck={false}
             disabled={save.isPending}
-            aria-describedby={save.isError ? "handle-hint handle-error" : "handle-hint"}
-            aria-invalid={(handle !== "" && !valid) || save.isError}
+            aria-describedby={showError ? "handle-hint handle-error" : "handle-hint"}
+            aria-invalid={(handle !== "" && !valid) || showError}
             onChange={(event) => {
               save.reset();
               setDraft({ from: me.handle, value: event.target.value });
@@ -144,13 +155,13 @@ function PublicProfile({ me }: { me: Me }) {
         <p id="handle-hint" className="text-sm text-muted-foreground">
           3–30 characters: a–z, 0–9 or _. Changing your handle changes your public profile link.
         </p>
-        {save.isError && (
+        {showError && (
           <p id="handle-error" className="text-sm text-red-600" role="alert">
             {error}
           </p>
         )}
         <p className="text-sm text-muted-foreground" role="status">
-          {save.isSuccess && "Handle saved."}
+          {showSuccess && "Handle saved."}
         </p>
       </form>
       <Link

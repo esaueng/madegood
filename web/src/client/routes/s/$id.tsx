@@ -145,6 +145,7 @@ function Header({ session }: { session: Session }) {
       }));
       queryClient.invalidateQueries({ queryKey: key, exact: true });
       queryClient.invalidateQueries({ queryKey: ["sessions"] });
+      queryClient.invalidateQueries({ queryKey: ["profile"] });
     },
   });
   const current = VISIBILITY[session.visibility];
@@ -170,7 +171,7 @@ function Header({ session }: { session: Session }) {
         </p>
       </div>
       {session.isOwner ? (
-        <label className="flex items-center gap-2 text-sm">
+        <label className="flex shrink-0 items-center gap-2 text-sm">
           <span className="text-muted-foreground">Visibility</span>
           <select
             className="h-9 rounded-md border bg-background px-2"
@@ -188,7 +189,7 @@ function Header({ session }: { session: Session }) {
           {change.isError && <span className="text-red-600">Not saved</span>}
         </label>
       ) : (
-        <span className="inline-flex items-center gap-1.5 self-start rounded-full border px-3 py-1 text-sm text-muted-foreground sm:self-auto">
+        <span className="inline-flex shrink-0 items-center gap-1.5 self-start rounded-full border px-3 py-1 text-sm text-muted-foreground sm:self-auto">
           <current.icon className="size-3.5" aria-hidden />
           {current.label}
         </span>
