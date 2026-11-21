@@ -7,11 +7,10 @@ struct AnchorAlarmView: View {
     @State private var selectedPoint: AnchorAlarm.Point?
     @State private var mapReset = 0
     @State private var radius = 40.0
+    @State private var choosingRadius = false
     @State private var confirmDisarm = false
     @State private var confirmOutside = false
     @Environment(\.openURL) private var openURL
-
-    private static let radii = [10.0, 15, 20, 30, 40, 50, 75, 100, 150, 200, 300, 500]
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { _ in
@@ -47,11 +46,21 @@ struct AnchorAlarmView: View {
                     }
                 } else {
                     Section {
-                        Picker("Swing radius", selection: $radius) {
-                            ForEach(Self.radii, id: \.self) { candidate in
-                                Text(length(candidate, unit: unit)).tag(candidate)
+                        Button {
+                            choosingRadius = true
+                        } label: {
+                            LabeledContent("Swing radius") {
+                                HStack(spacing: 6) {
+                                    Text(length(radius, unit: unit))
+                                    Image(systemName: "chevron.up.chevron.down")
+                                        .font(.caption.weight(.semibold))
+                                        .accessibilityHidden(true)
+                                }
                             }
                         }
+                        .foregroundStyle(.primary)
+                        .accessibilityLabel("Swing radius")
+                        .accessibilityValue(length(radius, unit: unit))
                         .accessibilityIdentifier("anchor.radius")
                         accuracyRow(position?.accuracy, unit: unit)
                         Button("Arm anchor alarm", systemImage: "bell", action: confirmThenArm)
@@ -111,6 +120,10 @@ struct AnchorAlarmView: View {
         .navigationBarTitleDisplayMode(.inline)
         .onAppear { anchorWatch.beginSetup() }
         .onDisappear { anchorWatch.endSetup() }
+        // Present outside the live GPS timeline so the choices stay stable during updates.
+        .sheet(isPresented: $choosingRadius) {
+            AnchorRadiusPicker(radius: $radius, unit: UserSettings.display(for: .motorboating).distance)
+        }
         .confirmationDialog("Disarm the anchor alarm?", isPresented: $confirmDisarm, titleVisibility: .visible) {
             Button("Disarm", role: .destructive) {
                 anchorWatch.disarm()
@@ -186,6 +199,43 @@ struct AnchorAlarmView: View {
     private func bearing(_ degrees: Double?) -> String {
         guard let degrees else { return "–" }
         return "\(LiveDisplay.course(degrees)) true"
+    }
+}
+
+private struct AnchorRadiusPicker: View {
+    @Environment(\.dismiss) private var dismiss
+    @Binding var radius: Double
+    let unit: DistanceUnit
+
+    private static let radii = [10.0, 15, 20, 30, 40, 50, 75, 100, 150, 200, 300, 500]
+
+    var body: some View {
+        NavigationStack {
+            List(Self.radii, id: \.self) { candidate in
+                Button {
+                    radius = candidate
+                    dismiss()
+                } label: {
+                    HStack {
+                        Text(unit.shortLength(candidate).text)
+                        Spacer()
+                        if candidate == radius {
+                            Image(systemName: "checkmark")
+                                .foregroundStyle(Color.accentColor)
+                                .accessibilityHidden(true)
+                        }
+                    }
+                    .foregroundStyle(.primary)
+                }
+                .accessibilityAddTraits(candidate == radius ? .isSelected : [])
+            }
+            .monospacedDigit()
+            .navigationTitle("Swing radius")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+            }
+        }
     }
 }
 
