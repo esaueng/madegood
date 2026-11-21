@@ -39,6 +39,9 @@ describe("GET /api/me", () => {
       displayName: "Navigator",
       units: "nautical",
       defaultVisibility: "private",
+      publicProfileKey: null,
+      publicProfileUsername: null,
+      publicProfileDisplayName: null,
       createdAt: expect.stringMatching(/^\d{4}-\d\d-\d\dT/),
     });
   });
@@ -83,6 +86,19 @@ describe("unauthorized access", () => {
 });
 
 describe("PATCH /api/me", () => {
+  it("refuses to enable a profile from a stale settings page for another account", async () => {
+    const first = await signIn();
+    const second = await signIn();
+    const response = await patchMe(second.accessToken, {
+      userId: first.user.id,
+      publicProfileEnabled: true,
+    });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: "account_mismatch" });
+    const me = await api("/me", { headers: bearer(second.accessToken) });
+    expect(await me.json()).toMatchObject({ publicProfileKey: null });
+  });
+
   it("updates the profile and settings", async () => {
     const session = await signIn();
     const response = await patchMe(session.accessToken, {
@@ -130,6 +146,9 @@ describe("PATCH /api/me", () => {
       { units: "furlongs" },
       { defaultVisibility: "everyone" },
       { displayName: "x".repeat(51) },
+      { publicProfileEnabled: "false" },
+      { publicProfileUsername: "has space" },
+      { publicProfileKey: "not-client-editable" },
       { unknownField: 1 },
     ]) {
       const response = await patchMe(session.accessToken, body);

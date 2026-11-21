@@ -187,19 +187,27 @@ describe("public reads while account deletion is blocked", () => {
       const request = (path: string, init?: RequestInit, db = env.DB) =>
         app.request(new URL(path, ORIGIN), init, { ...bindings, DB: db }, createExecutionContext());
       const unknownId = crypto.randomUUID();
-      const handle = owner.user.handle;
-      const unknownHandle = `unknown_${unknownId.slice(0, 8)}`;
-      const profile = `/u/${handle}`;
+      const enabled = await api(
+        "/me",
+        json(
+          "PATCH",
+          { publicProfileEnabled: true, publicProfileDisplayName: "Test Skipper" },
+          owner.accessToken,
+        ),
+      );
+      expect(enabled.status).toBe(200);
+      const { publicProfileKey } = (await enabled.json()) as { publicProfileKey: string };
+      const profile = `/u/${publicProfileKey}`;
       const sessionPage = `/s/${id}`;
       const paths = [
         [`/api/sessions/${id}`, `/api/sessions/${unknownId}`, 200],
         [`/api/sessions/${id}/track`, `/api/sessions/${unknownId}/track`, 200],
         [sessionPage, `/s/${unknownId}`, 200],
         [path, imagePath(unknownId, fingerprint), 200],
-        [profile, `/u/${unknownHandle}`, 200],
+        [profile, `/u/${unknownId}`, 200],
         [
-          `/api/users/${handle}`,
-          `/api/users/${unknownHandle}`,
+          `/api/users/${publicProfileKey}`,
+          `/api/users/${unknownId}`,
           visibility === "public" ? 200 : 404,
         ],
       ] as const;
@@ -209,7 +217,7 @@ describe("public reads while account deletion is blocked", () => {
         if (url === sessionPage) {
           expect(ogImageTag(await response.text())).toBe(`${ORIGIN}${path}`);
         } else if (url === profile && visibility === "public") {
-          expect(await response.text()).toContain(`@${handle}`);
+          expect(await response.text()).toContain("Test Skipper");
         } else {
           await response.body?.cancel();
         }

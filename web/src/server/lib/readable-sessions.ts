@@ -8,7 +8,11 @@ export function selectReadableSessions(db: ReturnType<typeof drizzle>) {
     .select({
       session: sessionColumns,
       zonesVersion: users.zonesVersion,
-      owner: { handle: users.handle, displayName: users.displayName },
+      owner: {
+        publicProfileId: users.publicProfileId,
+        publicProfileUsername: users.publicProfileUsername,
+        displayName: users.publicProfileDisplayName,
+      },
     })
     .from(sessions)
     .innerJoin(users, and(eq(users.id, sessions.userId), isNull(users.deletedAt)));

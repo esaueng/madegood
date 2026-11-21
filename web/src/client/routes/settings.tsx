@@ -12,7 +12,6 @@ import {
   fetchLatestExport,
   fetchZones,
   type Me,
-  type Session,
   signInUrl,
   startExport,
   type Units,
@@ -20,7 +19,7 @@ import {
   type Visibility,
 } from "@/lib/api";
 import { meQueryKey, useDeleteAccount, useMe } from "@/lib/auth";
-import { HANDLE_PATTERN, normalizeHandle } from "../../shared/handle";
+import { profileSettingsChanges } from "@/lib/profile-settings";
 
 const ZoneMap = lazy(() => import("@/components/zone-map"));
 
@@ -34,8 +33,36 @@ const UNIT_LABELS: Record<Units, string> = {
   imperial: "Imperial (mph, mi)",
 };
 
+function useSaveSettings(userId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (changes: Parameters<typeof updateMe>[1]) => {
+      if (!userId) throw new Error("Sign in to change your settings.");
+      return updateMe(userId, changes);
+    },
+    onSuccess: async (updated, changes) => {
+      await queryClient.cancelQueries({ queryKey: meQueryKey, exact: true });
+      queryClient.setQueryData<Me | null>(meQueryKey, (current) =>
+        current?.id === updated.id ? updated : current,
+      );
+      if (
+        changes.publicProfileEnabled !== undefined ||
+        changes.publicProfileDisplayName !== undefined ||
+        changes.publicProfileUsername !== undefined
+      ) {
+        void queryClient.invalidateQueries({
+          predicate: ({ queryKey }) => queryKey[0] === "session" && queryKey.length === 2,
+        });
+      }
+    },
+  });
+}
+
+type SettingsSave = ReturnType<typeof useSaveSettings>;
+
 function Settings() {
-  const { data: me, isPending } = useMe();
+  const { data: me, isPending, isFetching, isError } = useMe({ staleTime: 0 });
+  const save = useSaveSettings(me?.id);
   const [deleted, setDeleted] = useState(false);
   if (deleted) {
     return (
@@ -63,8 +90,8 @@ function Settings() {
   return (
     <div className="grid gap-10 py-6">
       <h1 className="text-2xl font-semibold">Settings</h1>
-      <PublicProfile key={me.id} me={me} />
-      <Preferences me={me} />
+      <PublicProfile me={me} save={save} showLink={!isFetching && !isError} />
+      <Preferences me={me} save={save} />
       <section>
         <h2 className="text-lg font-semibold">Heart rate zones</h2>
         <p className="mt-1 max-w-prose text-sm text-muted-foreground">
@@ -79,110 +106,108 @@ function Settings() {
   );
 }
 
-function PublicProfile({ me }: { me: Me }) {
-  const queryClient = useQueryClient();
-  const [draft, setDraft] = useState<{ from: string; value: string } | null>(null);
-  const input = draft?.from === me.handle ? draft.value : me.handle;
-  const handle = normalizeHandle(input);
-  const valid = HANDLE_PATTERN.test(handle);
-  const save = useMutation({
-    // Both settings forms write the complete account response into the same cache entry.
-    scope: { id: "settings" },
-    mutationFn: (handle: string) => updateMe({ handle }),
-    onSuccess: (updated) => {
-      setDraft(null);
-      queryClient.setQueryData<Me | null>(meQueryKey, (current) =>
-        current?.id === updated.id ? updated : current,
-      );
-      queryClient.setQueriesData<Session>(
-        { predicate: (query) => query.queryKey[0] === "session" && query.queryKey.length === 2 },
-        (current) =>
-          current?.isOwner && current.visibility === "public" && current.owner
-            ? { ...current, owner: { handle: updated.handle, displayName: updated.displayName } }
-            : current,
-      );
-      void queryClient.invalidateQueries({ queryKey: ["profile"] });
-      void queryClient.invalidateQueries({ queryKey: ["sessions"] });
-    },
-  });
-  const canSave = valid && handle !== me.handle && !save.isPending;
-  const showError = save.isError && draft?.from === me.handle;
-  const showSuccess = save.isSuccess && save.data.handle === me.handle;
-  const error =
-    save.error instanceof ApiError &&
-    (save.error.status === 409 || save.error.code === "handle_taken")
-      ? "That handle is not available."
-      : save.error instanceof ApiError && save.error.status === 400
-        ? "Enter a handle with 3–30 characters using a–z, 0–9 or _."
-        : "Could not save your handle. Try again.";
-
+function PublicProfile({ me, save, showLink }: { me: Me; save: SettingsSave; showLink: boolean }) {
+  const profileKey = me.publicProfileKey;
+  const profileError =
+    save.isError &&
+    (save.variables?.publicProfileEnabled !== undefined ||
+      save.variables?.publicProfileDisplayName !== undefined ||
+      save.variables?.publicProfileUsername !== undefined);
   return (
-    <section className="grid gap-2">
+    <section className="grid gap-3">
       <h2 className="text-lg font-semibold">Public profile</h2>
       <p className="max-w-prose text-sm text-muted-foreground">
-        Your name, handle and the sessions you make public, with their totals. Private and unlisted
-        sessions never appear there, and nobody else can open it until you have a public session.
+        When enabled, your profile shows your display name and public sessions once you have a
+        public session. Turning it off hides the profile and its link. Each session keeps its own
+        visibility.
       </p>
       <form
-        className="grid max-w-sm gap-1"
+        key={me.id}
+        className="grid gap-3 sm:max-w-md"
         onSubmit={(event) => {
           event.preventDefault();
-          if (canSave) save.mutate(handle);
+          const fields = new FormData(event.currentTarget);
+          const enable = event.nativeEvent.submitter?.getAttribute("value") === "enable";
+          save.mutate(profileSettingsChanges(me, fields, enable));
         }}
       >
-        <label htmlFor="profile-handle" className="text-sm font-medium">
-          Handle
-        </label>
-        <div className="flex gap-2">
+        <label className="grid gap-1 text-sm">
+          <span className="font-medium">Public display name (optional)</span>
           <input
-            id="profile-handle"
-            className="h-9 min-w-0 flex-1 rounded-md border bg-background px-2 text-sm aria-invalid:border-red-600"
-            value={input}
+            key={me.publicProfileDisplayName}
+            name="displayName"
+            className="h-9 rounded-md border bg-background px-2"
+            maxLength={50}
+            defaultValue={me.publicProfileDisplayName ?? ""}
+            disabled={save.isPending}
+          />
+        </label>
+        <label className="grid gap-1 text-sm">
+          <span className="font-medium">Username in profile URL (optional)</span>
+          <input
+            key={me.publicProfileUsername}
+            name="username"
+            className="h-9 rounded-md border bg-background px-2"
             autoCapitalize="none"
             spellCheck={false}
+            maxLength={30}
+            pattern="[A-Za-z0-9_]{3,30}"
+            aria-describedby="profile-url-hint"
+            defaultValue={me.publicProfileUsername ?? ""}
             disabled={save.isPending}
-            aria-describedby={showError ? "handle-hint handle-error" : "handle-hint"}
-            aria-invalid={(handle !== "" && !valid) || showError}
-            onChange={(event) => {
-              save.reset();
-              setDraft({ from: me.handle, value: event.target.value });
-            }}
           />
-          <Button type="submit" disabled={!canSave}>
-            {save.isPending ? "Saving…" : "Save handle"}
+        </label>
+        <p id="profile-url-hint" className="text-sm text-muted-foreground">
+          Leave blank for a random link. Use 3–30 letters, numbers, or underscores to put a username
+          before the random ID. Your display name is never added automatically.
+        </p>
+        <div className="flex flex-wrap gap-2">
+          <Button type="submit" variant="outline" disabled={save.isPending}>
+            Save profile details
           </Button>
+          {profileKey ? (
+            <Button
+              type="button"
+              variant="outline"
+              disabled={save.isPending}
+              onClick={() => save.mutate({ publicProfileEnabled: false })}
+            >
+              Disable public profile
+            </Button>
+          ) : (
+            <Button type="submit" value="enable" disabled={save.isPending}>
+              Enable public profile
+            </Button>
+          )}
         </div>
-        <p id="handle-hint" className="text-sm text-muted-foreground">
-          3–30 characters: a–z, 0–9 or _. Changing your handle changes your public profile link.
-        </p>
-        {showError && (
-          <p id="handle-error" className="text-sm text-red-600" role="alert">
-            {error}
-          </p>
-        )}
-        <p className="text-sm text-muted-foreground" role="status">
-          {showSuccess && "Handle saved."}
-        </p>
       </form>
-      <Link
-        to="/u/$handle"
-        params={{ handle: me.handle }}
-        className="inline-flex w-fit max-w-full items-center gap-1.5 truncate text-sm font-medium text-primary underline-offset-4 hover:underline"
-      >
-        <Globe className="size-3.5 shrink-0" aria-hidden />
-        <span className="truncate">/u/{me.handle}</span>
-      </Link>
+      <span className="text-sm text-muted-foreground" role="status">
+        {profileKey ? "Public profile enabled" : "Public profile disabled"}
+      </span>
+      {showLink && profileKey && (
+        <Link
+          to="/u/$profileKey"
+          params={{ profileKey }}
+          className="inline-flex w-fit max-w-full items-center gap-1.5 truncate text-sm font-medium text-primary underline-offset-4 hover:underline"
+        >
+          <Globe className="size-3.5 shrink-0" aria-hidden />
+          <span className="truncate">/u/{profileKey}</span>
+        </Link>
+      )}
+      {profileError && (
+        <p role="alert" className="text-sm text-destructive">
+          {save.error instanceof ApiError && save.error.code === "handle_taken"
+            ? "That username is unavailable. Try another one."
+            : save.error instanceof ApiError && save.error.code === "account_mismatch"
+              ? "Your signed-in account changed. Reload Settings before trying again."
+              : "Could not save your public profile settings. Try again."}
+        </p>
+      )}
     </section>
   );
 }
 
-function Preferences({ me }: { me: Me }) {
-  const queryClient = useQueryClient();
-  const save = useMutation({
-    scope: { id: "settings" },
-    mutationFn: updateMe,
-    onSuccess: (updated) => queryClient.setQueryData(meQueryKey, updated),
-  });
+function Preferences({ me, save }: { me: Me; save: SettingsSave }) {
   return (
     <section className="grid gap-4 sm:max-w-md">
       <label className="grid gap-1 text-sm">
@@ -215,7 +240,13 @@ function Preferences({ me }: { me: Me }) {
           ))}
         </select>
       </label>
-      {save.isError && <p className="text-sm text-red-600">Could not save. Try again.</p>}
+      {save.isError &&
+        (save.variables?.units !== undefined ||
+          save.variables?.defaultVisibility !== undefined) && (
+          <p role="alert" className="text-sm text-destructive">
+            Could not save. Try again.
+          </p>
+        )}
     </section>
   );
 }

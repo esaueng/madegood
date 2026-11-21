@@ -43,20 +43,22 @@ describe("/privacy", () => {
     expect(text).toContain("Cloudflare's documentation");
   });
 
-  it("names the public profile API as exposing the handle and name", async () => {
-    expect(await renderPolicy()).toContain("directly from the public profile API");
+  it("discloses the opt-in profile's public display name, URL and API", async () => {
+    const text = await renderPolicy();
+    expect(text).toContain("Profiles start off");
+    expect(text).toContain("The link uses a random ID by default");
+    expect(text).toContain(
+      "the enabled profile's display name and public session data from the public profile API",
+    );
   });
 
   it("discloses profile identity on public session pages and in their API responses", async () => {
     const text = await renderPolicy();
     expect(text).toContain("public session API (/api/sessions/ and the session ID)");
+    expect(text).toContain("link to an enabled profile and show its chosen name if present");
     expect(text).toContain(
-      "Public session pages link to your profile and show your handle and, if you shared it, your name.",
+      "Private and unlisted sessions omit the profile, as do all session link previews.",
     );
-    expect(text).toContain(
-      "Unlisted and private session pages and all session link previews do not show your handle or name.",
-    );
-    expect(text).not.toContain("Session pages and their previews do not show your handle or name.");
   });
 
   it("describes website privacy zones apart from iPhone sync", async () => {

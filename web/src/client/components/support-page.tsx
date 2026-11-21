@@ -189,9 +189,11 @@ export function SupportPage() {
               new sessions are shared that way automatically.
             </p>
             <p>
-              Your public profile lists your name, handle and the sessions you make public, with
-              their totals. Private and unlisted sessions never appear there, and nobody else can
-              open it until you have a public session.
+              Your public profile is off by default. To publish it, open Settings and select
+              <strong> Enable public profile</strong>. Once you have a public session, the profile
+              shows your display name and public sessions. The link uses a random ID unless you
+              choose a custom URL username. Turn the profile off at any time to hide its link and
+              page. Each session keeps its own visibility.
             </p>
             <p>
               Privacy zones hide the parts of your track near places such as home or your usual

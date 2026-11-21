@@ -1,10 +1,34 @@
 import { z } from "@hono/zod-openapi";
-import { eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
 import { type User, users } from "../db/schema";
 import { AccountDeleting } from "./account-state";
 
 type Db = DrizzleD1Database<Record<string, unknown>>;
+
+// UUIDs are generated independently of the account ID, display name and handle.
+const PUBLIC_PROFILE_ID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+// Keep the random ID in custom URLs so reusing a username cannot take over old links.
+export function publicProfileLookup(key: string) {
+  const normalized = key.toLowerCase();
+  const [, username, profileId = normalized] = /^@([a-z0-9_]{3,30})~(.+)$/.exec(normalized) ?? [];
+  if (!PUBLIC_PROFILE_ID_PATTERN.test(profileId)) return undefined;
+  return and(
+    eq(users.publicProfileId, profileId),
+    username ? eq(users.publicProfileUsername, username) : isNull(users.publicProfileUsername),
+    isNull(users.deletedAt),
+  );
+}
+
+export function publicProfileKey({
+  publicProfileId,
+  publicProfileUsername,
+}: Pick<User, "publicProfileId" | "publicProfileUsername">) {
+  if (!publicProfileId) return null;
+  return publicProfileUsername ? `@${publicProfileUsername}~${publicProfileId}` : publicProfileId;
+}
 
 // Words a handle must not be, because they would read as official or clash with routes.
 const RESERVED_HANDLES = new Set([
@@ -38,6 +62,15 @@ export const UserBody = z
     id: z.string(),
     handle: z.string().openapi({ example: "skipper_4821" }),
     displayName: z.string().nullable(),
+    publicProfileKey: z.string().nullable().openapi({
+      description: "The public profile URL segment, or null while the profile is disabled.",
+    }),
+    publicProfileUsername: z.string().nullable().openapi({
+      description: "The optional username chosen for the public URL.",
+    }),
+    publicProfileDisplayName: z.string().nullable().openapi({
+      description: "The name chosen for the public profile.",
+    }),
     units: z.enum(["metric", "imperial", "nautical"]),
     defaultVisibility: z.enum(["private", "unlisted", "public"]),
     createdAt: z.string().datetime().openapi({ format: "date-time" }),
@@ -48,6 +81,9 @@ export const toUserBody = (user: User): z.infer<typeof UserBody> => ({
   id: user.id,
   handle: user.handle,
   displayName: user.displayName,
+  publicProfileKey: publicProfileKey(user),
+  publicProfileUsername: user.publicProfileUsername,
+  publicProfileDisplayName: user.publicProfileDisplayName,
   units: user.units,
   defaultVisibility: user.defaultVisibility,
   createdAt: new Date(user.createdAt).toISOString(),
@@ -93,7 +129,7 @@ export { AccountDeleting } from "./account-state";
 /**
  * Finds the user for an Apple `sub`, creating one with a generated handle on first sign-in.
  * Apple sends the name only on the first authorization, so a provided display name also
- * fills in an existing account that has none. Throws AccountDeleting for an account that
+ * fills in an existing account that has never chosen a name. Throws AccountDeleting for an account that
  * is being deleted (lib/account-deletion.ts).
  */
 export async function findOrCreateUser(
@@ -104,11 +140,18 @@ export async function findOrCreateUser(
   const [existing] = await db.select().from(users).where(eq(users.appleSub, appleSub));
   if (existing?.deletedAt != null) throw new AccountDeleting(existing.id, existing.deletedAt);
   if (existing) {
-    if (existing.displayName === null && displayName !== null) {
+    if (existing.displayName === null && !existing.displayNameEdited && displayName !== null) {
       const [updated] = await db
         .update(users)
         .set({ displayName })
-        .where(eq(users.id, existing.id))
+        .where(
+          and(
+            eq(users.id, existing.id),
+            isNull(users.deletedAt),
+            isNull(users.displayName),
+            eq(users.displayNameEdited, false),
+          ),
+        )
         .returning();
       return { user: updated ?? existing, created: false };
     }

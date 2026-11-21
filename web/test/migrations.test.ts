@@ -68,7 +68,7 @@ describe("D1 migrations: sessions, tokens, privacy zones", () => {
     }
   });
 
-  it("clears existing wind values and preserves the sessions during rollout", async () => {
+  it("clears stored wind, preserves blank names, and keeps existing accounts opted out", async () => {
     const db = env.TEST_MIGRATION_DB;
     const name = "0013_clear_stored_wind.sql";
     await applyD1Migrations(
@@ -79,18 +79,31 @@ describe("D1 migrations: sessions, tokens, privacy zones", () => {
       db.prepare(
         "INSERT INTO users (id, apple_sub, handle) VALUES ('u50', 'sub-50', 'wind-test-owner')",
       ),
-      db.prepare(`INSERT INTO sessions (id, user_id, sport, started_at, wind_json)
-        VALUES ('s50', 'u50', 'kayak', 1, '{"source":"open-meteo-archive"}'),
-               ('s51', 'u50', 'kayak', 1, NULL)`),
+      db.prepare(`INSERT INTO sessions (id, user_id, sport, started_at, visibility, wind_json)
+        VALUES ('s50', 'u50', 'kayak', 1, 'public', '{"source":"open-meteo-archive"}'),
+               ('s51', 'u50', 'kayak', 1, 'private', NULL)`),
     ]);
     await applyD1Migrations(db, env.TEST_MIGRATIONS);
     // The previous queue consumer may still finish a pending wind update during deployment.
     await db.prepare("UPDATE sessions SET wind_json = '{}' WHERE id = 's51'").run();
-    const { results } = await db.prepare("SELECT id, wind_json FROM sessions ORDER BY id").all();
+    const { results } = await db
+      .prepare("SELECT id, visibility, wind_json FROM sessions ORDER BY id")
+      .all();
     expect(results).toEqual([
-      { id: "s50", wind_json: null },
-      { id: "s51", wind_json: null },
+      { id: "s50", visibility: "public", wind_json: null },
+      { id: "s51", visibility: "private", wind_json: null },
     ]);
+    expect(
+      await db
+        .prepare(`SELECT display_name_edited, public_profile_id, public_profile_username,
+          public_profile_display_name FROM users WHERE id = 'u50'`)
+        .first(),
+    ).toEqual({
+      display_name_edited: 1,
+      public_profile_id: null,
+      public_profile_username: null,
+      public_profile_display_name: null,
+    });
   });
 
   it("reject a session for an unknown user and a reused token hash", async () => {

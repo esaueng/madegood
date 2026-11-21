@@ -153,12 +153,10 @@ export function PrivacyPolicy() {
         </p>
         <ul>
           <li>
-            <strong>Identifiers:</strong> Apple's identifier for your sign-in, an account ID and a
-            handle, and your name if you shared it. While you have a public session, anyone can see
-            your handle and any name you shared on your profile page, in its link preview, on your
-            public session pages, and directly from the public profile API (<code>/api/users/</code>{" "}
-            and your handle) and public session API (<code>/api/sessions/</code> and the session
-            ID).
+            <strong>Identifiers:</strong> Apple's identifier for your sign-in, an account ID, an
+            account handle and your name if you shared it. The public profile has a random link when
+            you enable it. You can choose a custom URL username and edit the name on your profile in
+            Settings (see Sharing).
           </li>
           <li>
             <strong>Sessions:</strong> sport, times, distance, speeds, laps and other statistics,
@@ -166,7 +164,8 @@ export function PrivacyPolicy() {
             heart rate.
           </li>
           <li>
-            <strong>Settings:</strong> units and the default visibility of new sessions.
+            <strong>Settings:</strong> units, the default visibility of new sessions, and your
+            public profile settings.
           </li>
           <li>
             <strong>Sign-in tokens</strong>, stored as hashes, so the apps and this website stay
@@ -254,14 +253,16 @@ export function PrivacyPolicy() {
         </p>
         <ul>
           <li>
-            <strong>Public profile.</strong> Once you have at least one public session, your profile
-            page (<code>/u/</code> and your handle) shows your handle, your name if you shared it,
-            your totals, and your public sessions with their sport, title, start time, duration,
-            distance and speeds. It never lists private or unlisted sessions. With no public
-            sessions, the page, its data and its link preview look to others exactly like a profile
-            that does not exist. Public session pages link to your profile and show your handle and,
-            if you shared it, your name. Unlisted and private session pages and all session link
-            previews do not show your handle or name.
+            <strong>Public profile.</strong> Profiles start off. Enable yours in Settings to show
+            the display name you enter for the profile, your totals and your public sessions once
+            you have at least one public session. The link uses a random ID by default. If you
+            choose a custom URL username, that username appears in the link. Anyone can also get the
+            enabled profile's display name and public session data from the public profile API (
+            <code>/api/users/</code> and the profile's URL identifier). Turning off your profile
+            hides its page, public API data and personalized link preview. Public session pages and
+            the public session API (<code>/api/sessions/</code> and the session ID) link to an
+            enabled profile and show its chosen name if present. Private and unlisted sessions omit
+            the profile, as do all session link previews. Each session keeps its own visibility.
           </li>
           <li>
             <strong>Link previews.</strong> When an unlisted or public session's link is posted in a
@@ -269,9 +270,9 @@ export function PrivacyPolicy() {
             sport, distance, duration and top speed, and an image of the route with your privacy
             zones cut out. The server draws the image when it is requested and keeps it in
             Cloudflare's cache for at most five minutes; it is not stored with your data. Private
-            sessions get a generic MadeGood image. Your profile link previews with your name,
-            handle, number of public sessions and their total distance. Search engines may index
-            public sessions and your profile; unlisted sessions ask them not to.
+            sessions get a generic MadeGood image. An enabled public profile link previews with your
+            display name, number of public sessions and their total distance. Search engines may
+            index public sessions and your profile; unlisted sessions ask them not to.
           </li>
         </ul>
       </Section>
