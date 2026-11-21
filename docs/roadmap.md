@@ -56,7 +56,7 @@ Fixture hosting is decided (PLAN §10): a public R2 bucket with checksums pinned
 | 5. HealthKit save (workout, route, HR) | ✅ | #28 |
 | 6. iPhone history and session detail | ✅ | #26, #49, #50, #51, #88 |
 | 7. GPX export, units settings | ✅ | #24, #39 |
-| 8. TestFlight pipeline | ✅ | #35, #46, #73, #94 |
+| 8. TestFlight pipeline | ✅ | #35, #46, #73, #94; `MADEGOOD_API_URL` configured (#109) |
 
 Also merged: watch complication (#32), appearance setting (#43), sport icons and rows
 (#41, #44), start countdown keep-awake (#40), 32-bit watch recording fix (#68), start
@@ -66,8 +66,6 @@ screen reordering and conditions (#75, #90), brand and app icon (#83).
 
 - ⬜ **Exit criterion:** 10 real sessions on TestFlight with no crashes or data loss,
   and a 3-hour watch session at ≤ 20 %/h battery. **Unverified.**
-- ⬜ Set the `MADEGOOD_API_URL` repository variable so TestFlight builds sync (#73; empty
-  in `MadeGood.xcconfig` by design).
 - ⬜ Watch → iPhone handoff on physical devices. **Unverified**: simulators report file
   transfers as finished but never deliver them.
 
@@ -76,11 +74,11 @@ screen reordering and conditions (#75, #90), brand and app icon (#83).
 | Task | Status | Pull requests |
 |---|---|---|
 | 1. Paddling stroke detection and sport page | ✅ | #59; stroke-based intervals: #102 |
-| 2. Sailing maneuvers, wind estimate (+ Apple Weather), VMG, sport page | ✅ | #54, #67 |
+| 2. Sailing maneuvers, wind estimate (+ Apple Weather), VMG, sport page | ✅ | #54, #67; Apple WeatherKit: #137, #141 |
 | 3. Race countdown and start line | ✅ | countdown: #39, #40; start line: #77 |
 | 4. Windsurf speed categories and speed page | ✅ | #57; planing time and gybes: #100 |
-| 5. Motorboat profile: nm log, fuel estimate, anchor alarm | ✅ | #60; anchor alarm: #101 |
-| 6. Man-overboard on watch and phone | ✅ | watch and Action button: #27, #58; iPhone: #81 |
+| 5. Motorboat profile: nm log, fuel estimate, anchor alarm | ✅ | #60; anchor alarm: #101, #150 |
+| 6. Man-overboard on watch and phone | ✅ | watch and Action button: #27, #58; iPhone: #81, #134 |
 | 7. Post-session screens (maneuver list, stroke charts, speed bests) | ✅ | #50, #54, #57, #59, #67 |
 | 8. `docs/metrics.md` | ✅ | with each metric PR, completed in #70 |
 
@@ -93,12 +91,8 @@ Also merged: heart-rate zones for every sport (#97).
   recordings.
 - ⬜ Anchor alarm on a locked physical iPhone: alarm delivery and Stop, several hours in
   the background, battery, permission and clock changes. **Unverified.** Known limits,
-  documented in #101: drift alarms more than 5 m outside the swing radius with good GPS,
-  and AlarmKit has no atomic cancel.
-- ⬜ Anchor alarm follow-ups from the final #101 review (both fail toward ringing, not
-  silence): if the app exits between installing the first GPS backup and saving its
-  ownership, Stop on that alarm re-alerts after 1 s instead of snoozing 120 s; and the
-  alarm screen should mention the cancellation limit, as docs/metrics.md does.
+  documented in #101 and #150: drift alarms more than 5 m outside the swing radius with
+  good GPS, and AlarmKit has no atomic cancel.
 - ⬜ Windsurf planing and gybe accuracy on real recordings. **Unverified.**
 
 ## Phase 3: Cloudflare backend and website
@@ -106,14 +100,15 @@ Also merged: heart-rate zones for every sport (#97).
 | Task | Status | Pull requests |
 |---|---|---|
 | 1. D1 schema, Drizzle, OpenAPI, Swift client codegen | ✅ | #34, #37 |
-| 2. Sign in with Apple (iOS + web), tokens, account deletion, data export | ✅ | #36, #63, #76; deletion: #78; export: #79 |
+| 2. Sign in with Apple (iOS + web), tokens, account deletion, data export | ✅ | #36, #63, #76; deletion: #78, #135; export: #79 |
 | 3. iPhone sync: background upload queue, retries, status | ✅ | #65 |
 | 4. Upload endpoints, R2, queue consumer (bounds, fix times) | ✅ | #37; consumer: #72 |
-| 5. Web dashboard, session page, profile, settings | ✅ | #63, #64, #86; profile `/u/:handle`: #95 |
+| 5. Web dashboard, session page, profile, settings | ✅ | #63, #64, #86; profile `/u/:handle`: #95; handle editor & public profile link: #149 |
 | 6. Visibility, privacy zones, Open Graph | ✅ | #64; route images: #96 |
 
 Also merged: settings sync between devices (#62), rate limits on auth and uploads (#98),
-one public address at madegood.app (#85), Cloudflare IDs from secrets (#84).
+one public address at madegood.app (#85), Cloudflare IDs from secrets (#84), shared-session
+WeatherKit wind (#140), redacted Worker diagnostics (#135).
 
 **Left**
 
@@ -123,28 +118,24 @@ one public address at madegood.app (#85), Cloudflare IDs from secrets (#84).
 - ⬜ Measure route-image CPU on a deployed preview. Images render on a cache miss
   (capped input), and simultaneous misses each render (#96).
 - ⬜ Check the rate limits against real Cloudflare behavior (#98).
-- ⬜ Optional: a handle editor on the website (handles change through the API only) and
-  a link from a session page to its owner's profile (#95 left this open because it
-  would expose the handle on unlisted sessions).
 
 ## Phase 4: Public launch (Sessions)
 
 | Task | Status | Pull requests |
 |---|---|---|
-| Landing page | ✅ | #69 |
-| Docs: self-hosting, metrics, App Store drafts | ✅ | #70 |
-| Roadmap for contributors | ✅ | this file (issues not created yet) |
-| Account deletion in the app and on the web | ✅ | #78 |
-| Privacy policy, privacy manifests, purpose strings | ✅ | #82, #93 |
-| App Store review materials | 🟡 | drafted in docs/app-store.md (#70), owner to confirm |
+| Landing page & support | ✅ | #69; runtime `DOWNLOAD_URL`: #105; `/support`: #136 |
+| Docs: self-hosting, metrics, App Store review materials | ✅ | #70, #133 |
+| Roadmap for contributors | ✅ | this file; issues created (#106–#132) |
+| Account deletion in the app and on the web | ✅ | #78, #135 |
+| Privacy policy, privacy manifests, purpose strings | ✅ | #82, #93, #133, #135, #149 |
+| App Store screenshots & Release scoping | ✅ | Voyages hidden in Release (#138); repeatable iPhone + Watch screenshots (#139) |
 
 **Left** (details in docs/app-store.md, "Open items")
 
-- ⬜ App Store screenshots at the required sizes from the demo-session UI tests,
-  including Apple Watch.
-- ⬜ Public TestFlight link, then set `DOWNLOAD_URL` on the landing page (still `null`).
-- ⬜ App Store Connect listing, nutrition label, review notes, submission (owner).
-- ⬜ Turn the "Left" rows on this page into GitHub issues (owner).
+- ⬜ Public TestFlight link, then set `DOWNLOAD_URL` on the landing page (#119; runtime
+  config shipped in #105).
+- ⬜ App Store Connect listing, nutrition label, review notes, submission (owner; #120;
+  remaining items 13–16 in docs/app-store.md).
 
 ## Phase 5: Voyages
 
