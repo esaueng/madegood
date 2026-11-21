@@ -101,7 +101,12 @@ struct AnchorAlarmView: View {
                         }
                         .accessibilityIdentifier("anchor.disarm")
                     } footer: {
-                        Text("The alarm uses location while armed, including with the screen locked.")
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("The alarm uses location while armed, including with the screen locked.")
+                            Text(
+                                "If iOS suspends the app during automatic cancellation, an alarm may be silenced just as it starts ringing."
+                            )
+                        }
                     }
                 }
             }
