@@ -81,6 +81,22 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
         return RawFormat.readableVersions.contains(version)
     }
 
+    /// Whether settings go to and come from the other device. A Debug launch with
+    /// `-demoSession` (UI tests, screenshots) keeps its settings to itself: it neither applies
+    /// the paired device's settings (which would undo `-resetSettings` and leak one test's
+    /// edits into the next) nor sends its own (which would overwrite the paired device's).
+    let syncsSettings: Bool
+
+    /// Whether a launch with these arguments syncs settings (`syncsSettings`).
+    static func syncsSettings(arguments: [String]) -> Bool {
+        !DemoFeed.isEnabled(arguments: arguments)
+    }
+
+    init(syncsSettings: Bool = RecordingTransfer.syncsSettings(arguments: ProcessInfo.processInfo.arguments)) {
+        self.syncsSettings = syncsSettings
+        super.init()
+    }
+
     /// Folder names of recordings being written right now; never sent or deleted.
     private let active = Mutex<Set<String>>([])
     /// Files the phone has confirmed storing, by folder name (watch side).
@@ -279,12 +295,14 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
         #else
             guard session.isCompanionAppInstalled else { return }
         #endif
+        var context: [String: Any] = [:]
+        if syncsSettings { context[Key.settings] = UserSettings.snapshot() }
+        #if os(iOS)
+            // Tells the watch which recordings this build can receive.
+            context[Key.rawVersions] = Self.readableRawVersions
+        #endif
+        guard !context.isEmpty else { return }
         do {
-            var context: [String: Any] = [Key.settings: UserSettings.snapshot()]
-            #if os(iOS)
-                // Tells the watch which recordings this build can receive.
-                context[Key.rawVersions] = Self.readableRawVersions
-            #endif
             try session.updateApplicationContext(context)
         } catch {
             print("RecordingTransfer: settings update failed: \(error)")
@@ -315,21 +333,31 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
         let snapshot = SendableSnapshot(value: context[Key.settings] as? [String: Any])
         DispatchQueue.main.async {
             MainActor.assumeIsolated {
-                var push = alwaysPush
-                if let outcome = snapshot.value.map({ UserSettings.apply($0) }) {
-                    if outcome.changed {
-                        NotificationCenter.default.post(name: UserSettings.didChangeRemotely, object: nil)
-                        #if os(iOS)
-                            // Keep the phone's outgoing context current, for a watch app
-                            // reinstalled later.
-                            push = true
-                        #endif
-                    }
-                    if outcome.replyNeeded { push = true }
-                }
-                if push { self.pushSettings() }
+                if self.applyReceivedSettings(snapshot.value, alwaysPush: alwaysPush) { self.pushSettings() }
             }
         }
+    }
+
+    /// Applies a settings snapshot from the other device (unless this launch keeps its
+    /// settings to itself, `syncsSettings`) and returns whether to push this device's context.
+    /// An isolated launch still honours `alwaysPush`: its push carries no settings, but the
+    /// phone's still tells the watch which recording formats it can receive.
+    @MainActor
+    func applyReceivedSettings(_ snapshot: [String: Any]?, alwaysPush: Bool = false) -> Bool {
+        guard syncsSettings else { return alwaysPush }
+        var push = alwaysPush
+        if let outcome = snapshot.map({ UserSettings.apply($0) }) {
+            if outcome.changed {
+                NotificationCenter.default.post(name: UserSettings.didChangeRemotely, object: nil)
+                #if os(iOS)
+                    // Keep the phone's outgoing context current, for a watch app
+                    // reinstalled later.
+                    push = true
+                #endif
+            }
+            if outcome.replyNeeded { push = true }
+        }
+        return push
     }
 
     /// Property-list values from WatchConnectivity, handed to the main queue unchanged.

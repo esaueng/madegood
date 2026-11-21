@@ -20,9 +20,9 @@ final class WatchSailingUITests: XCTestCase {
         attachScreenshot("1 sailing before an estimate")
         // Only the axis is known live: both ends, and one maneuver count.
         let wind = app.staticTexts["field.Wind axis"]
-        waitFor(wind, label: "(00[0-5]|35[5-9])°/(17[5-9]|18[0-5])°", timeout: 120)
+        waitFor(wind, label: "(00[0-5]|35[5-9])°/(17[5-9]|18[0-5])°", timeout: 120, app: app)
         let maneuvers = app.staticTexts["field.Tacks/gybes"]
-        waitFor(maneuvers, label: "[1-9][0-9]*", timeout: 30)
+        waitFor(maneuvers, label: "[1-9][0-9]*", timeout: 30, app: app)
         XCTAssertEqual(app.staticTexts["metric.vmg"].label, "VMG")
         XCTAssertFalse(app.staticTexts["field.Tacks"].exists)
         attachScreenshot("2 sailing with wind")
@@ -46,11 +46,21 @@ final class WatchSailingUITests: XCTestCase {
         done.tap()
     }
 
-    private func waitFor(_ element: XCUIElement, label pattern: String, timeout: TimeInterval) {
+    /// Waits for the label to match; on a timeout, attaches a screenshot and the element
+    /// tree first (QA-01: `field.Wind axis` once went missing and did not reproduce).
+    private func waitFor(
+        _ element: XCUIElement, label pattern: String, timeout: TimeInterval, app: XCUIApplication,
+        file: StaticString = #filePath, line: UInt = #line
+    ) {
         let expectation = XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "label MATCHES %@", pattern), object: element)
+        let result = XCTWaiter().wait(for: [expectation], timeout: timeout)
+        // `element.identifier` would resolve a missing element and stop the test before the
+        // attachments are saved; the query description does not.
+        if result != .completed { attachDiagnostics("\(element.description) timeout", app: app) }
         XCTAssertEqual(
-            XCTWaiter().wait(for: [expectation], timeout: timeout), .completed,
-            "\(element) never matched \(pattern); last label: \(element.exists ? element.label : "missing")")
+            result, .completed,
+            "\(element) never matched \(pattern); last label: \(element.exists ? element.label : "missing")",
+            file: file, line: line)
     }
 }

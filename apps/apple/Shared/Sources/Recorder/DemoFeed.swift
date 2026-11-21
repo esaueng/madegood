@@ -8,8 +8,13 @@ enum DemoFeed {
     static let launchArgument = "-demoSession"
 
     static var isEnabled: Bool {
+        isEnabled(arguments: ProcessInfo.processInfo.arguments)
+    }
+
+    /// Whether a launch with these arguments uses the demo feed (always false in Release).
+    static func isEnabled(arguments: [String]) -> Bool {
         #if DEBUG
-            ProcessInfo.processInfo.arguments.contains(launchArgument)
+            arguments.contains(launchArgument)
         #else
             false
         #endif
