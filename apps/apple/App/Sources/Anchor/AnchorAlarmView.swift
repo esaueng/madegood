@@ -4,7 +4,7 @@ import WaterKit
 
 struct AnchorAlarmView: View {
     @State private var anchorWatch = AnchorWatch.shared
-    @State private var position: AnchorFixDisplay?
+    @State private var position: AnchorFixDisplay? = AnchorFixDisplay.current(from: AnchorWatch.shared.position)
     @State private var selectedPoint: AnchorAlarm.Point?
     @State private var mapReset = 0
     @State private var radius = 40.0
@@ -199,6 +199,11 @@ private struct AnchorFixDisplay: Equatable {
     let point: AnchorAlarm.Point
     let accuracy: Double?
     let isUsable: Bool
+
+    static func current(from position: AnchorWatch.Position?) -> Self? {
+        guard let position, position.isFresh else { return nil }
+        return Self(point: position.point, accuracy: position.accuracy, isUsable: position.isUsable)
+    }
 }
 
 /// Observe GPS timestamps separately so a renewed fix with identical readings leaves the list alone.
@@ -209,13 +214,11 @@ private struct AnchorFixUpdates: View {
     var body: some View {
         let position = anchorWatch.position
         Color.clear
-            .task(id: position?.measuredAt) { @MainActor in
-                guard let position, position.isFresh else {
+            .task(id: position?.measuredAt) {
+                guard let position, let display = AnchorFixDisplay.current(from: position) else {
                     if fix != nil { fix = nil }
                     return
                 }
-                let display = AnchorFixDisplay(
-                    point: position.point, accuracy: position.accuracy, isUsable: position.isUsable)
                 if fix != display { fix = display }
 
                 // Expire a fix once, even if Core Location stops sending updates.

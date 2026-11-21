@@ -20,9 +20,11 @@ final class PhoneAnchorAlarmUITests: XCTestCase {
         picker.tap()
         let radiusLabel = "20.0 m"
         let radius = app.buttons[radiusLabel]
-        XCTAssertTrue(radius.wait(for: \.isHittable, toEqual: true, timeout: 5), "Radius option never became tappable")
+        let defaultOption = app.buttons["40.0 m"]
+        XCTAssertTrue(waitUntilTappable(radius, in: app, timeout: 5), "Radius option never became tappable")
+        XCTAssertTrue(defaultOption.exists, "Expected current radius option in open picker menu")
         radius.tap()
-        XCTAssertTrue(radius.waitForNonExistence(timeout: 5), "Radius picker menu stayed open")
+        XCTAssertTrue(defaultOption.waitForNonExistence(timeout: 5), "Radius picker menu stayed open")
 
         let arm = app.buttons["anchor.arm"]
         scrollTo(arm, in: app)
@@ -85,5 +87,27 @@ final class PhoneAnchorAlarmUITests: XCTestCase {
         XCTAssertTrue(recording.waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["anchor.banner"].exists)
         endSession(app)
+    }
+
+    /// Guard `isHittable` behind existence and a finite on-screen frame so a menu item
+    /// mid-presentation (`{{inf, inf}, {0, 0}}`) cannot fail the test on the first poll.
+    private func waitUntilTappable(
+        _ element: XCUIElement, in app: XCUIApplication, timeout: TimeInterval
+    ) -> Bool {
+        let window = app.windows.firstMatch
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if element.exists {
+                let frame = element.frame
+                if frame.origin.x.isFinite, frame.origin.y.isFinite,
+                    frame.width.isFinite, frame.height.isFinite,
+                    !frame.isEmpty, window.frame.intersects(frame), element.isHittable
+                {
+                    return true
+                }
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        }
+        return false
     }
 }

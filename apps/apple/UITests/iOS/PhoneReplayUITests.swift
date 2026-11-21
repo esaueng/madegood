@@ -69,13 +69,18 @@ final class PhoneReplayUITests: XCTestCase {
         XCTAssertEqual(marker.value as? String, elapsed.label)
         XCTAssertNotEqual(marker.frame, startFrame)
 
-        coordinate(in: map.frame, at: startOffset).tap()
+        let mapFrame = map.frame
+        XCTAssertGreaterThan(mapFrame.width, 0)
+        XCTAssertGreaterThan(mapFrame.height, 0)
+        coordinate(in: mapFrame, at: startOffset).tap()
         XCTAssertNotEqual(elapsed.label, scrubbedTime)
         XCTAssertTrue(elapsed.label.hasPrefix("0:"), "Route tap should return to the start of the sailing route")
         XCTAssertEqual(marker.value as? String, elapsed.label)
 
         // A vertical drag starting inside the plot still scrolls the detail list.
-        let scrollStart = coordinate(in: chart.frame, at: dragEnd)
+        let shiftedChartFrame = chartFrame.offsetBy(
+            dx: mapFrame.minX - startMapFrame.minX, dy: mapFrame.minY - startMapFrame.minY)
+        let scrollStart = coordinate(in: shiftedChartFrame, at: dragEnd)
         scrollStart.press(forDuration: 0.05, thenDragTo: scrollStart.withOffset(CGVector(dx: 0, dy: -300)))
         let total = app.staticTexts["stat.Total time"]
         XCTAssertTrue(total.waitForExistence(timeout: 10))

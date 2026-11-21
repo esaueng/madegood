@@ -160,6 +160,7 @@ final class AnchorWatch: NSObject {
     }
 
     func becameActive() {
+        if position?.isFresh == false { position = nil }
         refreshPermissions()
         updateLocationDemand()
         if locationRunning, !DemoFeed.isEnabled { location.startUpdatingLocation() }
