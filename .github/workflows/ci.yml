@@ -269,18 +269,47 @@ jobs:
       # The hosted runner has timed out connecting to Instruments during cold boot,
       # including on the paired iPhone during a watch test run.
       - name: Boot test destination
+        id: boot
         env:
           PLATFORM: ${{ matrix.platform }}
           SIMULATOR_UDID: ${{ steps.simulator.outputs.udid }}
         run: |
+          companion=""
           if [[ "$PLATFORM" == watchOS ]]; then
             companion=$(xcrun simctl list pairs --json | jq -r --arg watch "$SIMULATOR_UDID" '
               first(.pairs[] | select(.watch.udid == $watch and (.state | startswith("(active,"))) | .phone.udid) // empty')
             if [[ -n "$companion" ]]; then
               xcrun simctl bootstatus "$companion" -b
+            else
+              echo "::warning::Watch simulator has no active iPhone pair; skipping companion install"
             fi
           fi
           xcrun simctl bootstatus "$SIMULATOR_UDID" -b
+          echo "companion=$companion" >> "$GITHUB_OUTPUT"
+
+      # Pair sync can uninstall a dependent watch app while XCTest is using it
+      # if the companion iPhone does not have the iOS app.
+      - name: Install watch companion
+        if: matrix.platform == 'watchOS' && steps.boot.outputs.companion != ''
+        env:
+          COMPANION_UDID: ${{ steps.boot.outputs.companion }}
+          SIMULATOR_UDID: ${{ steps.simulator.outputs.udid }}
+        run: |
+          xcodebuild build -quiet -workspace MadeGood.xcworkspace -scheme MadeGood \
+            -destination "id=$COMPANION_UDID" -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual
+          xcrun simctl install "$COMPANION_UDID" \
+            "$RUNNER_TEMP/DerivedData/Build/Products/Debug-iphonesimulator/MadeGood.app"
+          xcrun simctl get_app_container "$COMPANION_UDID" app.madegood app >/dev/null
+          # The embedded watch app is copied asynchronously. Give pair sync a chance
+          # to finish before XCTest installs and opens the same bundle.
+          for _ in {1..30}; do
+            if xcrun simctl get_app_container "$SIMULATOR_UDID" app.madegood.watchkitapp app >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::warning::The watch app has not synced from the companion; XCTest will install it"
 
       # The demo recordings use a synthetic route and need no GPS or Health permissions.
       # Ad-hoc signing keeps the apps' entitlements.

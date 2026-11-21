@@ -9,7 +9,8 @@ final class PhoneWindsurfUITests: XCTestCase {
 
     @MainActor
     func testLiveSpeedBests() {
-        let app = launchDemoApp(extraArguments: ["-app.appearance", "light"])
+        // MapKit can stall accessibility snapshots on the simulator while the route updates.
+        let app = launchDemoApp(extraArguments: ["-demoOmitMapKit", "-app.appearance", "light"])
         let start = app.buttons["sport.windsurfing"]
         XCTAssertTrue(start.waitForExistence(timeout: 15))
         scrollTo(start, in: app)
@@ -17,11 +18,10 @@ final class PhoneWindsurfUITests: XCTestCase {
 
         let speed = element("metric.speed", in: app)
         XCTAssertTrue(speed.waitForExistence(timeout: 15))
-        waitForValue(speed, "15.6 knots", timeout: 15)
+        waitForValue("15.6 knots", on: "metric.speed", in: app, timeout: 15)
         let bests = element("live.speedBests", in: app)
         XCTAssertTrue(bests.waitForExistence(timeout: 10))
-        let hundred = element("speed.100m", in: app)
-        waitForValue(hundred, "15.6 knots", timeout: 40)
+        waitForValue("15.6 knots", on: "speed.100m", in: app, timeout: 40)
         XCTAssertEqual(element("speed.2s", in: app).value as? String, "15.6 knots")
         XCTAssertEqual(element("speed.alpha500", in: app).value as? String, "Unavailable")
         scrollTo(element("speed.alpha500", in: app), in: app)
@@ -59,10 +59,16 @@ final class PhoneWindsurfUITests: XCTestCase {
         attachScreenshot("3 five by ten in replay")
     }
 
-    private func waitForValue(_ element: XCUIElement, _ value: String, timeout: TimeInterval) {
-        let expectation = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", value), object: element)
-        XCTAssertEqual(
-            XCTWaiter().wait(for: [expectation], timeout: timeout), .completed,
-            "\(element) never showed \(value); last value: \(String(describing: element.value))")
+    @MainActor
+    private func waitForValue(
+        _ value: String, on identifier: String, in app: XCUIApplication, timeout: TimeInterval,
+        file: StaticString = #filePath, line: UInt = #line
+    ) {
+        // Match the identifier and value in a single accessibility query on each check.
+        let match = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier == %@ AND value == %@", identifier, value)
+        ).firstMatch
+        XCTAssertTrue(
+            match.waitForExistence(timeout: timeout), "\(identifier) never showed \(value)", file: file, line: line)
     }
 }
