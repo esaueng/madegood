@@ -90,7 +90,7 @@ stage at which each type is collected:
 
 | App Store category | Data type | Collected | Linked to the user | Used for tracking | Purpose | What it is in the code |
 |---|---|---|---|---|---|---|
-| Identifiers | User ID | Yes, at sign-in | Yes | No | App Functionality | Apple's stable user identifier (`apple_sub`), the account ID and handle. The handle is public only while the account has a public session (below) |
+| Identifiers | User ID | Yes, at sign-in | Yes | No | App Functionality | Apple's stable user identifier (`apple_sub`), the account ID and handle. Enabled profiles can expose an independent random ID and an optional URL username |
 | Contact Info | Name | Yes, at sign-in or in profile settings, optional | Yes | No | App Functionality | The account name Apple shares if the user allows it, plus a separate name the user can enter for their public profile. The chosen profile name is public while the profile is enabled and the account has a public session. Email is not requested (`requestedScopes = [.fullName]`) |
 | Location | Precise location | Yes: tracks with Sync sessions on; privacy zones whenever added on the website | Yes | No | App Functionality | The session's GPS track (track v1 in R2), its bounding box and start geohash (D1), uploaded from the iPhone only with Sync sessions on. Separately, privacy zone centers (`privacy-zones.ts`), which a signed-in user saves on the website, from the map or the browser's location, whether or not iPhone sync is on. Covers the rounded server wind lookup below |
 | Location | Coarse location | Yes, from the first sign-in attempt (any API request) | Yes | No | App Functionality | The client IP address, and the country Cloudflare shows for it, in sampled request records that zone Security Analytics keeps up to 31 days, used only for security (below) |
@@ -216,8 +216,10 @@ can enable it, enter a public display name and choose an optional URL username. 
 URL uses a random ID. A chosen `@username` can appear before that ID.
 The enabled profile lists public sessions and their totals. To others it is visible
 only while the account has a public session. Its page, link metadata and
-`GET /api/users/{profileKey}` can then show the display name. Disabling the profile
-hides it on all three surfaces. Each session keeps its own visibility.
+`GET /api/users/{profileKey}` can then show the chosen display name. Public session
+pages and responses from `GET /api/sessions/{id}` include the profile link and chosen
+name while the profile is enabled. Disabling the profile hides these details on
+all surfaces. Each session keeps its own visibility.
 
 **Account deletion (#135).** The deletion marker is committed before any purge. From
 then on every public read requires an active owner: the session metadata and track

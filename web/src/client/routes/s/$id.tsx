@@ -97,7 +97,7 @@ function SessionPage() {
   const s = session.data;
   return (
     <article className="grid gap-6 py-6">
-      <Header session={s} />
+      <Header session={s} showProfile={!session.isFetching} />
       <Stats session={s} units={units} />
       {s.hasTrack ? (
         track.isPending ? (
@@ -132,7 +132,7 @@ function SessionPage() {
   );
 }
 
-function Header({ session }: { session: Session }) {
+function Header({ session, showProfile }: { session: Session; showProfile: boolean }) {
   const queryClient = useQueryClient();
   const change = useMutation({
     mutationFn: (visibility: Visibility) => updateSession(session.id, { visibility }),
@@ -145,19 +145,33 @@ function Header({ session }: { session: Session }) {
       }));
       queryClient.invalidateQueries({ queryKey: key, exact: true });
       queryClient.invalidateQueries({ queryKey: ["sessions"] });
+      queryClient.invalidateQueries({ queryKey: ["profile"] });
     },
   });
   const current = VISIBILITY[session.visibility];
+  const owner = showProfile && session.visibility === "public" ? session.owner : null;
   return (
     <header className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
       <div className="min-w-0">
         <h1 className="truncate text-2xl font-semibold sm:text-3xl">{sessionTitle(session)}</h1>
-        <p className="text-muted-foreground">
+        <p className="wrap-anywhere text-muted-foreground">
           {SPORT_NAMES[session.sport]} · {formatDate(session.startedAt)}
+          {owner && (
+            <>
+              {owner.displayName ? " · by " : " · "}
+              <Link
+                to="/u/$profileKey"
+                params={{ profileKey: owner.profileKey }}
+                className="text-primary underline underline-offset-4"
+              >
+                {owner.displayName ?? "Public profile"}
+              </Link>
+            </>
+          )}
         </p>
       </div>
       {session.isOwner ? (
-        <label className="flex items-center gap-2 text-sm">
+        <label className="flex shrink-0 items-center gap-2 text-sm">
           <span className="text-muted-foreground">Visibility</span>
           <select
             className="h-9 rounded-md border bg-background px-2"
@@ -175,7 +189,7 @@ function Header({ session }: { session: Session }) {
           {change.isError && <span className="text-red-600">Not saved</span>}
         </label>
       ) : (
-        <span className="inline-flex items-center gap-1.5 self-start rounded-full border px-3 py-1 text-sm text-muted-foreground sm:self-auto">
+        <span className="inline-flex shrink-0 items-center gap-1.5 self-start rounded-full border px-3 py-1 text-sm text-muted-foreground sm:self-auto">
           <current.icon className="size-3.5" aria-hidden />
           {current.label}
         </span>

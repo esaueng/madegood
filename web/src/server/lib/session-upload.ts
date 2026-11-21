@@ -1,6 +1,6 @@
 import { and, eq, isNull } from "drizzle-orm";
 import type { drizzle } from "drizzle-orm/d1";
-import { pendingR2Deletes, type Session, sessionColumns, sessions, users } from "../db/schema";
+import { pendingR2Deletes, type Session, sessions, users } from "../db/schema";
 import { logFailure } from "./logging";
 import { CLEARED_DERIVED } from "./postprocess";
 import {
@@ -13,6 +13,7 @@ import {
   selectSessionTrackKeys,
   UPLOAD_GRACE_MS,
 } from "./r2-garbage";
+import { type ReadableSession, selectReadableSessions } from "./readable-sessions";
 import { userPrefix } from "./storage";
 import { TRACK_CONTENT_TYPE } from "./track";
 
@@ -36,7 +37,7 @@ export type SessionFields = Pick<
 >;
 
 export type ReplaceResult =
-  | { kind: "updated"; session: Session }
+  | { kind: "updated"; row: ReadableSession }
   | { kind: "stale"; stored: number }
   | { kind: "missing" };
 
@@ -125,7 +126,7 @@ export async function replaceSessionMetadata(
       if (!(await accountActive(db, userId))) return { kind: "missing" };
       continue;
     }
-    const [updated] = await db.select(sessionColumns).from(sessions).where(own);
+    const [updated] = await selectReadableSessions(db).where(own);
     if (!updated) return { kind: "missing" };
     if (newer) {
       // The detached track goes now (its data may be what the user has trimmed away);
@@ -134,7 +135,7 @@ export async function replaceSessionMetadata(
       await recordLegacyLeftovers(db, bucket, userId, id, null);
       await collectUserGarbage(db, bucket, userId);
     }
-    return { kind: "updated", session: updated };
+    return { kind: "updated", row: updated };
   }
   const [now] = await db
     .select({ uploadRevision: sessions.uploadRevision })
@@ -151,7 +152,7 @@ export async function replaceSessionMetadata(
 export async function insertSession(
   db: Db,
   input: { id: string; userId: string; revision: number; fields: SessionFields },
-): Promise<Session | null> {
+): Promise<ReadableSession | null> {
   const { id, userId, revision, fields } = input;
   const result = await db.$client
     .prepare(
@@ -179,10 +180,9 @@ export async function insertSession(
     )
     .run();
   if (result.meta.changes !== 1) return null;
-  const [created] = await db
-    .select(sessionColumns)
-    .from(sessions)
-    .where(and(eq(sessions.id, id), eq(sessions.userId, userId)));
+  const [created] = await selectReadableSessions(db).where(
+    and(eq(sessions.id, id), eq(sessions.userId, userId), isNull(sessions.deletedAt)),
+  );
   return created ?? null;
 }
 

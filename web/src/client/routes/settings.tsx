@@ -40,11 +40,20 @@ function useSaveSettings(userId: string | undefined) {
       if (!userId) throw new Error("Sign in to change your settings.");
       return updateMe(userId, changes);
     },
-    onSuccess: async (updated) => {
+    onSuccess: async (updated, changes) => {
       await queryClient.cancelQueries({ queryKey: meQueryKey, exact: true });
       queryClient.setQueryData<Me | null>(meQueryKey, (current) =>
         current?.id === updated.id ? updated : current,
       );
+      if (
+        changes.publicProfileEnabled !== undefined ||
+        changes.publicProfileDisplayName !== undefined ||
+        changes.publicProfileUsername !== undefined
+      ) {
+        void queryClient.invalidateQueries({
+          predicate: ({ queryKey }) => queryKey[0] === "session" && queryKey.length === 2,
+        });
+      }
     },
   });
 }

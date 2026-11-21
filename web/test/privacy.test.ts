@@ -425,7 +425,7 @@ describe("Open Graph tags on /s/:id", () => {
   };
 
   it("previews public and unlisted sessions with title and stats, escaped", async () => {
-    const owner = await signIn();
+    const owner = await signIn({ displayName: "Test Paddler" });
     const id = await publicSession(owner, lineTrack);
     const html = await page(id);
     expect(html).toContain("<title>Evening &lt;paddle&gt; · MadeGood</title>");
@@ -440,7 +440,12 @@ describe("Open Graph tags on /s/:id", () => {
     expect(html).toContain('<div id="root"></div>');
 
     await api(`/sessions/${id}`, json("PATCH", { visibility: "unlisted" }, owner.accessToken));
-    expect(await page(id)).toContain('name="robots" content="noindex"');
+    const unlisted = await page(id);
+    expect(unlisted).toContain('name="robots" content="noindex"');
+    for (const preview of [html, unlisted]) {
+      expect(preview).not.toContain(owner.user.handle);
+      expect(preview).not.toContain("Test Paddler");
+    }
   });
 
   it("never reveals a private, deleted or unknown session, nor any position", async () => {

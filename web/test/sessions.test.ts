@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 import { drizzle } from "drizzle-orm/d1";
 import { describe, expect, it } from "vitest";
+import { requestAccountDeletion } from "../src/server/lib/account-deletion";
 import { CLAIM_LEASE_MS, collectR2Garbage } from "../src/server/lib/r2-garbage";
 import { replaceSessionMetadata } from "../src/server/lib/session-upload";
 import { api, bearer, deleteMe, type SignIn, signIn } from "./apple";
@@ -32,6 +33,13 @@ const putSession = (token: string | null, id: string, body: unknown = metadata()
 
 const patchSession = (token: string, id: string, body: unknown) =>
   api(`/sessions/${id}`, {
+    method: "PATCH",
+    headers: { ...bearer(token), "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+const patchAccount = (token: string, body: unknown) =>
+  api("/me", {
     method: "PATCH",
     headers: { ...bearer(token), "content-type": "application/json" },
     body: JSON.stringify(body),
@@ -363,6 +371,142 @@ describe("PUT /api/sessions/:id/track", () => {
 });
 
 describe("visibility", () => {
+  it("exposes a public session's profile only while opted in", async () => {
+    const owner = await signIn({ displayName: "Account Name" });
+    const other = await signIn();
+    const id = crypto.randomUUID();
+    const put = await putSession(owner.accessToken, id);
+    expect(put.status).toBe(201);
+    expect(await put.json()).toMatchObject({ owner: null });
+    const published = await patchSession(owner.accessToken, id, { visibility: "public" });
+    expect(published.status).toBe(200);
+    expect(await published.json()).toMatchObject({ owner: null });
+    expect(await (await getSession(null, id)).json()).toMatchObject({ owner: null });
+
+    const enabled = await patchAccount(owner.accessToken, {
+      publicProfileEnabled: true,
+      publicProfileDisplayName: "Test Paddler",
+    });
+    expect(enabled.status).toBe(200);
+    const { publicProfileKey: profileKey } = (await enabled.json()) as { publicProfileKey: string };
+    const profile = { profileKey, displayName: "Test Paddler" };
+    expect(profileKey).not.toBe(owner.user.handle);
+
+    for (const token of [null, other.accessToken, owner.accessToken]) {
+      const detail = await getSession(token, id);
+      expect(detail.status).toBe(200);
+      expect(detail.headers.get("cache-control")).toBe("private, no-store");
+      expect((await detail.json<{ owner: unknown }>()).owner).toEqual(profile);
+    }
+
+    const updated = await patchAccount(owner.accessToken, {
+      publicProfileUsername: "New_Paddler",
+      publicProfileDisplayName: null,
+    });
+    expect(updated.status).toBe(200);
+    const customKey = `@new_paddler~${profileKey}`;
+    expect(await (await getSession(null, id)).json()).toMatchObject({
+      owner: { profileKey: customKey, displayName: null },
+    });
+    expect((await api(`/users/${encodeURIComponent(customKey)}`)).status).toBe(200);
+    expect((await api(`/users/${profileKey}`)).status).toBe(404);
+
+    const disabled = await patchAccount(owner.accessToken, { publicProfileEnabled: false });
+    expect(disabled.status).toBe(200);
+    const detail = await getSession(null, id);
+    expect(detail.status).toBe(200);
+    const hidden = await detail.text();
+    expect(JSON.parse(hidden)).toMatchObject({ visibility: "public", owner: null });
+    expect(hidden).not.toContain(customKey);
+    expect(hidden).not.toContain("Account Name");
+    expect((await api(`/users/${encodeURIComponent(customKey)}`)).status).toBe(404);
+  });
+
+  it("drops the profile from detail and write responses as soon as visibility changes", async () => {
+    const owner = await signIn({ displayName: "Test Skipper" });
+    const other = await signIn();
+    const enabled = await patchAccount(owner.accessToken, { publicProfileEnabled: true });
+    expect(enabled.status).toBe(200);
+    const { publicProfileKey: profileKey } = (await enabled.json()) as { publicProfileKey: string };
+    const id = crypto.randomUUID();
+    expect((await putSession(owner.accessToken, id)).status).toBe(201);
+    for (const visibility of ["unlisted", "private"]) {
+      const published = await patchSession(owner.accessToken, id, { visibility: "public" });
+      expect(published.status).toBe(200);
+      expect(await published.json()).toMatchObject({ owner: { profileKey } });
+
+      const changed = await patchSession(owner.accessToken, id, { visibility });
+      expect(changed.status).toBe(200);
+      expect(await changed.json()).toMatchObject({ visibility, owner: null });
+      for (const token of [owner.accessToken, other.accessToken, null]) {
+        const detail = await getSession(token, id);
+        const visible = visibility === "unlisted" || token === owner.accessToken;
+        expect(detail.status).toBe(visible ? 200 : 404);
+        expect(await detail.json()).toMatchObject(
+          visible ? { visibility, owner: null } : { error: "not_found" },
+        );
+      }
+      const retried = await putSession(owner.accessToken, id);
+      expect(retried.status).toBe(200);
+      expect(await retried.json()).toMatchObject({ visibility, owner: null });
+    }
+  });
+
+  it("returns profiles for public uploads and only public entries in the session list", async () => {
+    const owner = await signIn();
+    const preferences = await patchAccount(owner.accessToken, {
+      defaultVisibility: "public",
+      publicProfileEnabled: true,
+    });
+    expect(preferences.status).toBe(200);
+    const { publicProfileKey: profileKey } = (await preferences.json()) as {
+      publicProfileKey: string;
+    };
+    const publicId = crypto.randomUUID();
+    const profile = { profileKey, displayName: null };
+    for (const status of [201, 200]) {
+      const response = await putSession(owner.accessToken, publicId);
+      expect(response.status).toBe(status);
+      expect(await response.json()).toMatchObject({ visibility: "public", owner: profile });
+    }
+    const unchanged = await patchSession(owner.accessToken, publicId, {});
+    expect(unchanged.status).toBe(200);
+    expect(await unchanged.json()).toMatchObject({ owner: profile });
+
+    const hidden = [];
+    for (const visibility of ["unlisted", "private"]) {
+      const id = crypto.randomUUID();
+      expect((await putSession(owner.accessToken, id)).status).toBe(201);
+      expect((await patchSession(owner.accessToken, id, { visibility })).status).toBe(200);
+      hidden.push({ id, visibility, owner: null });
+    }
+    const response = await api("/sessions", { headers: bearer(owner.accessToken) });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      sessions: expect.arrayContaining([
+        expect.objectContaining({ id: publicId, visibility: "public", owner: profile }),
+        ...hidden.map((session) => expect.objectContaining(session)),
+      ]),
+    });
+  });
+
+  it("404s while the public session owner's deletion is pending", async () => {
+    const owner = await signIn();
+    const other = await signIn();
+    const id = crypto.randomUUID();
+    expect((await putSession(owner.accessToken, id)).status).toBe(201);
+    expect((await patchSession(owner.accessToken, id, { visibility: "public" })).status).toBe(200);
+    expect((await getSession(null, id)).status).toBe(200);
+
+    // Mark the account for deletion without running the purge, so the session still exists.
+    expect(await requestAccountDeletion(env.DB, owner.user.id)).toBe(true);
+    for (const token of [null, other.accessToken]) {
+      const response = await getSession(token, id);
+      expect(response.status).toBe(404);
+      expect(await response.json()).toMatchObject({ error: "not_found" });
+    }
+  });
+
   it("lets the owner see a private session, and nobody else know it exists", async () => {
     const owner = await signIn();
     const other = await signIn();

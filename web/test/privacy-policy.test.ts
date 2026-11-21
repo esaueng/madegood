@@ -52,6 +52,15 @@ describe("/privacy", () => {
     );
   });
 
+  it("discloses profile identity on public session pages and in their API responses", async () => {
+    const text = await renderPolicy();
+    expect(text).toContain("public session API (/api/sessions/ and the session ID)");
+    expect(text).toContain("link to an enabled profile and show its chosen name if present");
+    expect(text).toContain(
+      "Private and unlisted sessions omit the profile, as do all session link previews.",
+    );
+  });
+
   it("describes website privacy zones apart from iPhone sync", async () => {
     expect(await renderPolicy()).toContain(
       "whether or not Sync sessions is on and even if you never use the iPhone app",

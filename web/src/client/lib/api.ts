@@ -32,6 +32,7 @@ export type Session = {
   title: string | null;
   notes: string | null;
   visibility: Visibility;
+  owner: { profileKey: string; displayName: string | null } | null;
   startedAt: string;
   endedAt: string | null;
   durationS: number | null;

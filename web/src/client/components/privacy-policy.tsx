@@ -259,8 +259,10 @@ export function PrivacyPolicy() {
             choose a custom URL username, that username appears in the link. Anyone can also get the
             enabled profile's display name and public session data from the public profile API (
             <code>/api/users/</code> and the profile's URL identifier). Turning off your profile
-            hides its page, public API data and personalized link preview. Each session keeps its
-            own visibility.
+            hides its page, public API data and personalized link preview. Public session pages and
+            the public session API (<code>/api/sessions/</code> and the session ID) link to an
+            enabled profile and show its chosen name if present. Private and unlisted sessions omit
+            the profile, as do all session link previews. Each session keeps its own visibility.
           </li>
           <li>
             <strong>Link previews.</strong> When an unlisted or public session's link is posted in a

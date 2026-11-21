@@ -6,9 +6,6 @@ import { AccountDeleting } from "./account-state";
 
 type Db = DrizzleD1Database<Record<string, unknown>>;
 
-/** Account handles are lowercase, 3–30 of a–z, 0–9 and `_`. */
-export const HANDLE_PATTERN = /^[a-z0-9_]{3,30}$/;
-
 // UUIDs are generated independently of the account ID, display name and handle.
 const PUBLIC_PROFILE_ID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -23,6 +20,14 @@ export function publicProfileLookup(key: string) {
     username ? eq(users.publicProfileUsername, username) : isNull(users.publicProfileUsername),
     isNull(users.deletedAt),
   );
+}
+
+export function publicProfileKey({
+  publicProfileId,
+  publicProfileUsername,
+}: Pick<User, "publicProfileId" | "publicProfileUsername">) {
+  if (!publicProfileId) return null;
+  return publicProfileUsername ? `@${publicProfileUsername}~${publicProfileId}` : publicProfileId;
 }
 
 // Words a handle must not be, because they would read as official or clash with routes.
@@ -76,11 +81,7 @@ export const toUserBody = (user: User): z.infer<typeof UserBody> => ({
   id: user.id,
   handle: user.handle,
   displayName: user.displayName,
-  publicProfileKey:
-    user.publicProfileId &&
-    (user.publicProfileUsername
-      ? `@${user.publicProfileUsername}~${user.publicProfileId}`
-      : user.publicProfileId),
+  publicProfileKey: publicProfileKey(user),
   publicProfileUsername: user.publicProfileUsername,
   publicProfileDisplayName: user.publicProfileDisplayName,
   units: user.units,

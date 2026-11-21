@@ -3,18 +3,13 @@ import { and, desc, eq, isNull, lt, or, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
 import type { Context } from "hono";
 import { optionalAuth, requireAuth } from "../auth/middleware";
-import {
-  privacyZones,
-  type Session,
-  sessionColumns,
-  sessions,
-  sessionTombstones,
-  users,
-} from "../db/schema";
+import { publicProfileKey } from "../auth/users";
+import { privacyZones, type Session, sessions, sessionTombstones } from "../db/schema";
 import { apiError, errorResponse } from "../lib/errors";
 import { logFailure } from "../lib/logging";
 import { enqueuePostprocess, ensureUserRequeued, publicIsCurrent } from "../lib/postprocess";
 import { limitSessionUpload, rateLimitedResponse } from "../lib/rate-limit";
+import { type ReadableSession, selectReadableSessions } from "../lib/readable-sessions";
 import { createRouter } from "../lib/router";
 import { SHARED_TRACK_MAX_FIXES, shareTrack } from "../lib/session-privacy";
 import {
@@ -225,6 +220,12 @@ const SessionBody = z
     title: z.string().nullable(),
     notes: z.string().nullable(),
     visibility: z.enum(VISIBILITIES),
+    owner: z
+      .object({ profileKey: z.string(), displayName: z.string().nullable() })
+      .nullable()
+      .openapi({
+        description: "The owner's enabled profile for a public session. Null otherwise.",
+      }),
     startedAt: isoTime,
     endedAt: isoTime.nullable(),
     durationS: z.number().nullable(),
@@ -358,21 +359,17 @@ function windBody(wind: SessionWind): z.infer<typeof WindBody> {
   };
 }
 
-/**
- * `ownerZonesVersion` is the owner's users.zones_version. Others get public derived data
- * only while it was computed at that version (lib/postprocess.ts); without it, none.
- */
 function toSessionBody(
-  session: Session,
+  { session, zonesVersion, owner }: ReadableSession,
   viewerId: string | null,
-  ownerZonesVersion?: number | null,
   wind: SessionWind | null = null,
 ): z.infer<typeof SessionBody> {
-  const owner = session.userId === viewerId;
+  const isOwner = session.userId === viewerId;
+  const profileKey = session.visibility === "public" ? publicProfileKey(owner) : null;
   const processed = processingState(session) === "done";
-  const shown = processed && (owner || publicIsCurrent(session, ownerZonesVersion));
+  const shown = processed && (isOwner || publicIsCurrent(session, zonesVersion));
   // The owner's times cover the whole track; others get the first and last visible fix.
-  const [startedAt, endedAt] = owner
+  const [startedAt, endedAt] = isOwner
     ? [session.trackStartedAt, session.trackEndedAt]
     : [session.publicTrackStartedAt, session.publicTrackEndedAt];
   return {
@@ -381,6 +378,7 @@ function toSessionBody(
     title: session.title,
     notes: session.notes,
     visibility: session.visibility,
+    owner: profileKey ? { profileKey, displayName: owner.displayName } : null,
     startedAt: iso(session.startedAt),
     endedAt: session.endedAt === null ? null : iso(session.endedAt),
     durationS: session.durationS,
@@ -392,11 +390,11 @@ function toSessionBody(
     analyzerVersion: session.analyzerVersion,
     hasTrack: session.trackKey !== null,
     processing: processingState(session),
-    bounds: shown ? boundsOf(session, owner) : null,
+    bounds: shown ? boundsOf(session, isOwner) : null,
     trackStartedAt: shown && startedAt !== null ? iso(startedAt) : null,
     trackEndedAt: shown && endedAt !== null ? iso(endedAt) : null,
     wind: wind && windBody(wind),
-    isOwner: owner,
+    isOwner,
     createdAt: iso(session.createdAt),
     updatedAt: iso(session.updatedAt),
   };
@@ -429,19 +427,14 @@ const unknownUser = (c: Context) =>
 
 /** Read the session and its owner's sharing state in the same D1 snapshot. */
 async function findReadableSession(db: ReturnType<typeof drizzle>, id: string) {
-  const [row] = await db
-    .select({ session: sessionColumns, zonesVersion: users.zonesVersion })
-    .from(sessions)
-    .innerJoin(users, and(eq(users.id, sessions.userId), isNull(users.deletedAt)))
-    .where(and(eq(sessions.id, id), isNull(sessions.deletedAt)));
+  const [row] = await selectReadableSessions(db).where(
+    and(eq(sessions.id, id), isNull(sessions.deletedAt)),
+  );
   return row;
 }
 
 /** Both owners and other viewers use the public track for wind. */
-function sharedWindRequest(
-  { session, zonesVersion }: NonNullable<Awaited<ReturnType<typeof findReadableSession>>>,
-  now: number,
-): URL | null {
+function sharedWindRequest({ session, zonesVersion }: ReadableSession, now: number): URL | null {
   if (
     session.visibility === "private" ||
     processingState(session) !== "done" ||
@@ -668,6 +661,7 @@ const deleteRoute = createRoute({
 export const sessionRoutes = createRouter<SessionsEnv>();
 
 sessionRoutes.openapi(listRoute, async (c) => {
+  c.header("Cache-Control", "private, no-store");
   const { cursor, limit = PAGE_DEFAULT } = c.req.valid("query");
   const after = cursor === undefined ? null : decodeCursor(cursor);
   if (cursor !== undefined && !after) return apiError(c, 400, "invalid_request", "Bad cursor.");
@@ -681,9 +675,7 @@ sessionRoutes.openapi(listRoute, async (c) => {
         and(eq(sessions.startedAt, after[0]), lt(sessions.id, after[1])),
       )
     : undefined;
-  const rows = await drizzle(c.env.DB)
-    .select(sessionColumns)
-    .from(sessions)
+  const rows = await selectReadableSessions(drizzle(c.env.DB))
     .where(and(owned, live, page))
     .orderBy(desc(sessions.startedAt), desc(sessions.id))
     .limit(limit + 1);
@@ -693,7 +685,7 @@ sessionRoutes.openapi(listRoute, async (c) => {
   return c.json(
     {
       sessions: items.map((s) => toSessionBody(s, c.var.userId)),
-      nextCursor: rows.length > limit && last ? encodeCursor(last) : null,
+      nextCursor: rows.length > limit && last ? encodeCursor(last.session) : null,
     },
     200,
   );
@@ -742,12 +734,12 @@ sessionRoutes.openapi(putRoute, async (c) => {
     analyzerVersion: body.analyzerVersion ?? null,
   };
   // A DELETE that raced this PUT leaves a tombstone: remove what the PUT wrote.
-  const settle = async (session: Session, status: 200 | 201) => {
+  const settle = async (row: ReadableSession, status: 200 | 201) => {
     if (await isTombstoned(db, userId, id)) {
       await deleteSessionRow(db, c.env.TRACKS, id, userId);
       return sessionDeleted(c);
     }
-    return c.json(toSessionBody(session, userId), status);
+    return c.json(toSessionBody(row, userId), status);
   };
 
   // Replace the caller's own session, unless it holds a newer revision. A newer revision
@@ -757,7 +749,7 @@ sessionRoutes.openapi(putRoute, async (c) => {
 
   const replaced = await replace();
   if (replaced.kind === "stale") return revisionError(c, replaced.stored);
-  if (replaced.kind === "updated") return settle(replaced.session, 200);
+  if (replaced.kind === "updated") return settle(replaced.row, 200);
 
   // One statement: the account must be active, and it supplies the default visibility.
   const created = await insertSession(db, { id, userId, revision, fields });
@@ -768,7 +760,7 @@ sessionRoutes.openapi(putRoute, async (c) => {
   // first upload, which a retry of the update above handles.
   const raced = await replace();
   if (raced.kind === "stale") return revisionError(c, raced.stored);
-  if (raced.kind === "updated") return settle(raced.session, 200);
+  if (raced.kind === "updated") return settle(raced.row, 200);
   return apiError(c, 409, "session_id_taken", "This session ID is already in use.");
 });
 
@@ -784,7 +776,7 @@ sessionRoutes.openapi(getRoute, async (c) => {
   const url = sharedWindRequest(row, now);
   const credentials = weatherKitCredentials(c.env);
   if (!url || !credentials) {
-    return c.json(toSessionBody(row.session, viewerId, row.zonesVersion), 200);
+    return c.json(toSessionBody(row, viewerId), 200);
   }
 
   const matches = (current: typeof row) =>
@@ -799,10 +791,7 @@ sessionRoutes.openapi(getRoute, async (c) => {
   // The session, track or privacy zones can change while the cache or Apple answers.
   const current = await findReadableSession(db, id);
   if (!current || !canView(current.session, viewerId)) return notFound(c);
-  return c.json(
-    toSessionBody(current.session, viewerId, current.zonesVersion, matches(current) ? wind : null),
-    200,
-  );
+  return c.json(toSessionBody(current, viewerId, matches(current) ? wind : null), 200);
 });
 
 sessionRoutes.openapi(putTrackRoute, async (c) => {
@@ -1005,23 +994,22 @@ sessionRoutes.openapi(patchRoute, async (c) => {
   if (body.notes !== undefined) changes.notes = clean(body.notes);
   if (body.visibility !== undefined) changes.visibility = body.visibility;
 
-  const mine = and(
-    eq(sessions.id, id),
-    eq(sessions.userId, userId),
-    isNull(sessions.deletedAt),
-    sql`EXISTS (SELECT 1 FROM users WHERE users.id = ${userId} AND users.deleted_at IS NULL)`,
-  );
-  if (Object.keys(changes).length === 0) {
-    const [session] = await db.select(sessionColumns).from(sessions).where(mine);
-    return session ? c.json(toSessionBody(session, userId), 200) : notFound(c);
+  const mine = and(eq(sessions.id, id), eq(sessions.userId, userId), isNull(sessions.deletedAt));
+  if (Object.keys(changes).length !== 0) {
+    const [updated] = await db
+      .update(sessions)
+      .set({ ...changes, updatedAt: Date.now() })
+      .where(
+        and(
+          mine,
+          sql`EXISTS (SELECT 1 FROM users WHERE users.id = ${userId} AND users.deleted_at IS NULL)`,
+        ),
+      )
+      .returning({ id: sessions.id });
+    if (!updated) return notFound(c);
   }
-  const [session] = await db
-    .update(sessions)
-    .set({ ...changes, updatedAt: Date.now() })
-    .where(mine)
-    .returning(sessionColumns);
-  if (!session) return notFound(c);
-  return c.json(toSessionBody(session, userId), 200);
+  const [row] = await selectReadableSessions(db).where(mine);
+  return row ? c.json(toSessionBody(row, userId), 200) : notFound(c);
 });
 
 sessionRoutes.openapi(deleteRoute, async (c) => {
