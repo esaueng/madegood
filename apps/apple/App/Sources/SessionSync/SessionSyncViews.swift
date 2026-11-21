@@ -136,12 +136,6 @@ struct SessionSyncSection: View {
                 .accessibilityIdentifier("sessionSync.signedIn")
             Toggle("Sync sessions", isOn: $sync.isEnabled)
                 .accessibilityIdentifier("sessionSync.enabled")
-            NavigationLink {
-                SharingSettingsView(sync: sync)
-            } label: {
-                Label("Sharing", systemImage: "person.2")
-            }
-            .accessibilityIdentifier("sessionSync.sharing")
             // Static and always true: the server applies the account's default at upload, and
             // this iPhone doesn't read it (#133).
             Text(Self.visibilityExplanation)
@@ -163,6 +157,12 @@ struct SessionSyncSection: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            NavigationLink {
+                SharingSettingsView(sync: sync)
+            } label: {
+                Label("Sharing", systemImage: "person.2")
+            }
+            .accessibilityIdentifier("sessionSync.sharing")
             Button("Sign Out", role: .destructive) {
                 perform(failure: "Couldn’t clear the saved sign-in. Try again.") { try await sync.signOut() }
             }

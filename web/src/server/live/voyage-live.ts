@@ -28,10 +28,23 @@ export type ShareCommand =
 
 type Settings = VoyageKey & { share: VoyageShare | null; paused: boolean; delayS: number };
 type Zones = NonNullable<VoyageSharingSnapshot["privacyZones"]>;
-/** `sharing` is the owner's account-wide switch (users.sharing_enabled). */
+/**
+ * `sharing` is the owner's account-wide switch (users.sharing_enabled); `registered` is the
+ * link hash D1 resolves for this voyage (voyage_live_registry.slug_hash), cleared when
+ * sharing is turned off.
+ */
 type Access =
   | { status: "unauthorized" | "not_found" }
-  | { status: "ok"; zones: Zones; sharing: boolean };
+  | { status: "ok"; zones: Zones; sharing: boolean; registered: string | null };
+
+/**
+ * A grant is live only while sharing is on and D1 still resolves its link. Turning sharing
+ * off clears the link in the same batch (routes/me.ts), so a grant from before that is dead
+ * for good, even after sharing is turned back on: open viewers close, owner state reads
+ * off, and only a new issue (new link) shares again.
+ */
+const published = (access: Access, share: VoyageShare | null) =>
+  access.status === "ok" && access.sharing && !!share && access.registered === share.slugHash;
 
 type ViewerView = { snapshot: VoyageSharingSnapshot; now: number };
 
@@ -89,9 +102,11 @@ export class VoyageLive extends DurableObject<Env> {
   /** The owner's access; an account being deleted has none (lib/account-deletion.ts). */
   private async readAccess({ userId, voyageId }: VoyageKey): Promise<Access> {
     const { results } = await this.env.DB.prepare(
-      `SELECT v.id AS id, u.sharing_enabled AS sharing, p.lat, p.lon, p.radius_m AS radiusM
+      `SELECT v.id AS id, u.sharing_enabled AS sharing, r.slug_hash AS registered,
+         p.lat, p.lon, p.radius_m AS radiusM
        FROM users u
        LEFT JOIN voyages v ON v.user_id = u.id AND v.id = ? AND v.ended_at IS NULL
+       LEFT JOIN voyage_live_registry r ON r.user_id = u.id AND r.voyage_id = v.id
        LEFT JOIN privacy_zones p ON p.user_id = v.user_id
        WHERE u.id = ? AND u.deleted_at IS NULL`,
     )
@@ -99,6 +114,7 @@ export class VoyageLive extends DurableObject<Env> {
       .all<{
         id: string | null;
         sharing: number;
+        registered: string | null;
         lat: number;
         lon: number;
         radiusM: number | null;
@@ -108,6 +124,7 @@ export class VoyageLive extends DurableObject<Env> {
     return {
       status: "ok",
       sharing: results[0].sharing === 1,
+      registered: results[0].registered,
       zones: results.flatMap(({ lat, lon, radiusM }) =>
         radiusM === null ? [] : [{ lat, lon, radiusM }],
       ),
@@ -161,9 +178,10 @@ export class VoyageLive extends DurableObject<Env> {
     const settings = this.settings();
     const { access } = this.latestViewerAccess;
     if (!settings || (access && access.status !== "ok")) return null;
-    // Sharing turned off: viewers get nothing and their sockets close on the next refresh
-    // (every ingest, command and privacy poll), and the owner sees sharing as off.
-    if (access?.status === "ok" && !access.sharing) return null;
+    // Sharing off, or the grant's link no longer registered: viewers get nothing and their
+    // sockets close on the next refresh (every ingest, command and privacy poll), and the
+    // owner sees sharing as off.
+    if (access?.status === "ok" && !published(access, settings.share)) return null;
     const zones = accessReadSucceeded && access?.status === "ok" ? access.zones : null;
     return { snapshot: this.snapshot(settings, zones), now: Date.now() };
   }
@@ -267,8 +285,9 @@ export class VoyageLive extends DurableObject<Env> {
     const access = await this.readAccess(key);
     if (access.status !== "ok") return { status: access.status };
     // No link is handed out or reopened while the account's sharing is off. A switch-off
-    // that lands after this read clears the registry's link (routes/me.ts), and the
-    // registry write below requires the switch, so such a link can never resolve.
+    // that lands after this read clears the registry's link (routes/me.ts), the registry
+    // write below requires the switch, and `published` requires the registered link, so
+    // such a grant never shares anything.
     const opens = ["issue", "rotate", "resume"].includes(command.action);
     if (opens && !access.sharing) return { status: "sharing_disabled" };
     const issuing = command.action === "issue" || command.action === "rotate";
@@ -276,8 +295,12 @@ export class VoyageLive extends DurableObject<Env> {
     if (!(await this.register(key)) || this.isPurged()) return { status: "unauthorized" };
     const settings = this.settings() ?? { ...key, share: null, paused: false, delayS: 0 };
     const now = Date.now();
+    // A grant whose link D1 no longer resolves is over: issue replaces it, the rest conflict.
     const active =
-      settings.share && settings.share.revokedAtMs === null && now < settings.share.expiresAtMs;
+      published(access, settings.share) &&
+      settings.share &&
+      settings.share.revokedAtMs === null &&
+      now < settings.share.expiresAtMs;
     if (command.action === "issue" && active) return { status: "sync_conflict" };
     if (command.action !== "issue" && command.action !== "revoke" && !active) {
       return { status: "sync_conflict" };
@@ -338,7 +361,11 @@ export class VoyageLive extends DurableObject<Env> {
     if (this.isPurged()) return { status: "unauthorized" };
     const latest = this.latestViewerAccess.access;
     if (latest && latest.status !== "ok") return { status: latest.status };
-    if (opens && latest?.status === "ok" && !latest.sharing) return { status: "sharing_disabled" };
+    if (opens && !(latest && published(latest, this.settings()?.share ?? null))) {
+      return {
+        status: latest?.status === "ok" && !latest.sharing ? "sharing_disabled" : "sync_conflict",
+      };
+    }
     if (credential) {
       const current = this.settings()?.share;
       if (

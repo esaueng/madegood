@@ -14,10 +14,8 @@ import { clearSessionCookies } from "../auth/web-cookies";
 import { sessions, users, voyageLiveRegistry } from "../db/schema";
 import { requestAccountDeletion, runScheduledDeletion } from "../lib/account-deletion";
 import { apiError, errorResponse } from "../lib/errors";
-import { logFailure } from "../lib/logging";
 import { createRouter } from "../lib/router";
 import { TRACK_SPORTS } from "../lib/track";
-import { liveVoyage } from "../live/registry";
 
 const security = [{ bearerAuth: [] }];
 
@@ -160,22 +158,6 @@ const activeUser = (userId: string) => and(eq(users.id, userId), isNull(users.de
 const unknownUser = (c: Parameters<typeof apiError>[0]) =>
   apiError(c, 401, "unauthorized", "The account no longer exists.");
 
-/** Revokes every live voyage grant of the account (after sharing is turned off). */
-async function revokeLiveShares(env: Env, userId: string) {
-  if (!env.VOYAGE_LIVE) return;
-  const { results } = await env.DB.prepare(
-    "SELECT voyage_id AS voyageId FROM voyage_live_registry WHERE user_id = ?",
-  )
-    .bind(userId)
-    .all<{ voyageId: string }>();
-  for (const { voyageId } of results) {
-    const key = { userId, voyageId };
-    await liveVoyage(env, key)
-      .configure(key, { action: "revoke" })
-      .catch((error: unknown) => logFailure("live_share_revoke_failed", error));
-  }
-}
-
 const sharingDisabled = (c: Parameters<typeof apiError>[0]) =>
   apiError(c, 409, "sharing_disabled", "Sharing is turned off for this account.");
 
@@ -223,9 +205,10 @@ me.openapi(patchRoute, async (c) => {
     let user: typeof users.$inferSelect | undefined;
     if (stopSharing) {
       // One D1 batch (a transaction): the switch, every session it makes private, and every
-      // live voyage link it unregisters, so an old link never resolves again even after
-      // sharing is turned back on. Writes that share check the switch in their own
-      // statement, so none can land between these.
+      // live voyage link it unregisters. A live grant counts only while D1 resolves its
+      // link (live/voyage-live.ts), so an old one never shares again, even after sharing
+      // is turned back on. Writes that share check the switch in their own statement, so
+      // none can land between these.
       const [updated] = await db.batch([
         update,
         db
@@ -238,9 +221,6 @@ me.openapi(patchRoute, async (c) => {
           .where(eq(voyageLiveRegistry.userId, c.var.userId)),
       ]);
       [user] = updated;
-      // Then revoke each live grant, which also deletes its positions. Viewers already get
-      // nothing (live/voyage-live.ts checks the switch); this is cleanup, so best effort.
-      if (user) c.executionCtx.waitUntil(revokeLiveShares(c.env, c.var.userId));
     } else {
       [user] = await update;
     }

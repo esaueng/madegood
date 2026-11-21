@@ -161,6 +161,8 @@ struct SharingSettingsView: View {
                 enabled = try await sync.withAccount { api, token in
                     try await api.setSharingEnabled(value, bearer: token)
                 }
+                // The server made every session private; never keep showing them as shared.
+                if !value { sessions = [] }
                 await load()
             } catch {
                 message = failure(error, doing: value ? "turn sharing on" : "turn sharing off")

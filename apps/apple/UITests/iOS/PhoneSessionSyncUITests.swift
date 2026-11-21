@@ -32,7 +32,16 @@ final class PhoneSessionSyncUITests: XCTestCase {
 
         // The synthetic sessions predate the sign-in: they wait for an explicit choice.
         let earlier = app.buttons["sessionSync.uploadEarlier"]
-        XCTAssertTrue(earlier.waitForExistence(timeout: 15))
+        // The row appears once the scan finishes and may sit below the fold of the lazy list.
+        let deadline = Date.now.addingTimeInterval(15)
+        while !earlier.exists, Date.now < deadline {
+            let window = app.windows.firstMatch
+            window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.7)).press(
+                forDuration: 0.05, thenDragTo: window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)),
+                withVelocity: .slow, thenHoldForDuration: 0.1)
+            _ = earlier.waitForExistence(timeout: 1)
+        }
+        XCTAssertTrue(earlier.exists)
         XCTAssertEqual(earlier.label, "Upload 3 Earlier Sessions")
         waitForLabel(element("sessionSync.syncedCount", in: app), "Synced, 0")
         scrollTo(earlier, in: app)
@@ -143,7 +152,7 @@ final class PhoneSessionSyncUITests: XCTestCase {
         XCTAssertEqual(rows.count, 1)
 
         toggle.switches.firstMatch.tap()
-        let confirm = app.buttons["sharing.confirmOff"]
+        let confirm = app.buttons.matching(identifier: "sharing.confirmOff").firstMatch
         XCTAssertTrue(confirm.waitForExistence(timeout: 5))
         confirm.tap()
         XCTAssertTrue(element("sharing.none", in: app).waitForExistence(timeout: 10))

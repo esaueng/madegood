@@ -752,12 +752,27 @@ describe("the account-wide sharing switch", () => {
     expect((await setSharing(voyage, true)).status).toBe(200);
     expect(await locateShare(env.DB, hash)).toBeNull();
     expect(await snapshot(slug)).toEqual(unavailable);
-    // A new link can be issued again (the old grant may still be revoking: rotate or issue).
-    const fresh = await voyage.share({ action: "rotate", delayS: 0, expiresInS: 600 });
-    const reissued =
-      fresh.status === 200
-        ? fresh
-        : await voyage.share({ action: "issue", delayS: 0, expiresInS: 600 });
-    expect(reissued.status).toBe(200);
+    // The old grant is over: the owner sees sharing off, it cannot be reopened, and a new
+    // issue (a new link) works.
+    expect(await (await voyage.state()).json()).toMatchObject({ sharing: "off" });
+    expect((await voyage.share({ action: "resume" })).status).toBe(409);
+    const fresh = await voyage.issue();
+    expect(fresh).not.toBe(slug);
+    expect(await locateShare(env.DB, await hashSlug(fresh))).not.toBeNull();
+  });
+
+  it("closes an open viewer even when sharing is turned off and straight back on", async () => {
+    const voyage = await setup();
+    const time = clock();
+    const slug = await voyage.issue();
+    const ws = await connect(slug);
+    expect(await ws.next()).toEqual(unavailable);
+    expect((await setSharing(voyage, false)).status).toBe(200);
+    expect((await setSharing(voyage, true)).status).toBe(200);
+    // The phone still holds the old grant and uploads under it.
+    time.at(100);
+    expect((await voyage.ingest([position(time.start + 100, 1)])).status).toBe(200);
+    expect(await ws.next()).toEqual(unavailable);
+    expect(await ws.closed).toBe(1008);
   });
 });
