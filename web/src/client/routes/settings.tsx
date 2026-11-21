@@ -51,7 +51,7 @@ function useSaveSettings(userId: string | undefined) {
 type SettingsSave = ReturnType<typeof useSaveSettings>;
 
 function Settings() {
-  const { data: me, isPending } = useMe();
+  const { data: me, isPending, isFetching, isError } = useMe({ staleTime: 0 });
   const save = useSaveSettings(me?.id);
   const [deleted, setDeleted] = useState(false);
   if (deleted) {
@@ -80,7 +80,7 @@ function Settings() {
   return (
     <div className="grid gap-10 py-6">
       <h1 className="text-2xl font-semibold">Settings</h1>
-      <PublicProfile me={me} save={save} />
+      <PublicProfile me={me} save={save} showLink={!isFetching && !isError} />
       <Preferences me={me} save={save} />
       <section>
         <h2 className="text-lg font-semibold">Heart rate zones</h2>
@@ -96,12 +96,13 @@ function Settings() {
   );
 }
 
-function PublicProfile({ me, save }: { me: Me; save: SettingsSave }) {
+function PublicProfile({ me, save, showLink }: { me: Me; save: SettingsSave; showLink: boolean }) {
   const profileKey = me.publicProfileKey;
   const profileError =
     save.isError &&
     (save.variables?.publicProfileEnabled !== undefined ||
-      save.variables?.displayName !== undefined);
+      save.variables?.displayName !== undefined ||
+      save.variables?.publicProfileUsername !== undefined);
   return (
     <section className="grid gap-3">
       <h2 className="text-lg font-semibold">Public profile</h2>
@@ -111,15 +112,20 @@ function PublicProfile({ me, save }: { me: Me; save: SettingsSave }) {
         visibility.
       </p>
       <form
-        key={JSON.stringify([me.id, me.displayName, me.publicProfileUsername])}
+        key={me.id}
         className="grid gap-3 sm:max-w-md"
         onSubmit={(event) => {
           event.preventDefault();
           const fields = new FormData(event.currentTarget);
           const enable = event.nativeEvent.submitter?.getAttribute("value") === "enable";
+          const displayName = String(fields.get("displayName") ?? "").trim() || null;
+          const username =
+            String(fields.get("username") ?? "")
+              .trim()
+              .toLowerCase() || null;
           save.mutate({
-            displayName: String(fields.get("displayName") ?? "").trim() || null,
-            publicProfileUsername: String(fields.get("username") ?? "").trim() || null,
+            displayName: displayName !== me.displayName ? displayName : undefined,
+            publicProfileUsername: username !== me.publicProfileUsername ? username : undefined,
             publicProfileEnabled: enable ? true : undefined,
           });
         }}
@@ -127,6 +133,7 @@ function PublicProfile({ me, save }: { me: Me; save: SettingsSave }) {
         <label className="grid gap-1 text-sm">
           <span className="font-medium">Display name</span>
           <input
+            key={me.displayName}
             name="displayName"
             className="h-9 rounded-md border bg-background px-2"
             maxLength={50}
@@ -137,6 +144,7 @@ function PublicProfile({ me, save }: { me: Me; save: SettingsSave }) {
         <label className="grid gap-1 text-sm">
           <span className="font-medium">Username in profile URL (optional)</span>
           <input
+            key={me.publicProfileUsername}
             name="username"
             className="h-9 rounded-md border bg-background px-2"
             autoCapitalize="none"
@@ -149,8 +157,8 @@ function PublicProfile({ me, save }: { me: Me; save: SettingsSave }) {
           />
         </label>
         <p id="profile-url-hint" className="text-sm text-muted-foreground">
-          Leave blank for a random link. Use 3–30 letters, numbers, or underscores for a custom
-          link. Your display name is never added automatically.
+          Leave blank for a random link. Use 3–30 letters, numbers, or underscores to put a username
+          before the random ID. Your display name is never added automatically.
         </p>
         <div className="flex flex-wrap gap-2">
           <Button type="submit" variant="outline" disabled={save.isPending}>
@@ -175,7 +183,7 @@ function PublicProfile({ me, save }: { me: Me; save: SettingsSave }) {
       <span className="text-sm text-muted-foreground" role="status">
         {profileKey ? "Public profile enabled" : "Public profile disabled"}
       </span>
-      {profileKey && (
+      {showLink && profileKey && (
         <Link
           to="/u/$profileKey"
           params={{ profileKey }}

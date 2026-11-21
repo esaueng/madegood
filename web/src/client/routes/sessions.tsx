@@ -1,6 +1,5 @@
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { Globe } from "lucide-react";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { VISIBILITY } from "@/components/visibility";
 import { fetchSessions, fetchStats, type Session, signInUrl, type Units } from "@/lib/api";
@@ -34,21 +33,9 @@ function Dashboard() {
   }
   return (
     <div className="py-6">
-      <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-        <h1 className="text-2xl font-semibold">
-          {me.displayName ? `${me.displayName}'s sessions` : "Your sessions"}
-        </h1>
-        {me.publicProfileKey && (
-          <Link
-            to="/u/$profileKey"
-            params={{ profileKey: me.publicProfileKey }}
-            className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
-          >
-            <Globe className="size-3.5" aria-hidden />
-            Public profile
-          </Link>
-        )}
-      </div>
+      <h1 className="text-2xl font-semibold">
+        {me.displayName ? `${me.displayName}'s sessions` : "Your sessions"}
+      </h1>
       <Totals units={me.units} />
       <SessionList units={me.units} />
     </div>

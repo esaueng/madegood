@@ -4,8 +4,8 @@ import { deleteAccount, fetchMe, signOut } from "./api";
 export const meQueryKey = ["me"] as const;
 
 /** The signed-in user (null when signed out). */
-export function useMe() {
-  return useQuery({ queryKey: meQueryKey, queryFn: fetchMe, staleTime: 60_000 });
+export function useMe({ staleTime = 60_000 } = {}) {
+  return useQuery({ queryKey: meQueryKey, queryFn: fetchMe, staleTime });
 }
 
 export function useSignOut() {

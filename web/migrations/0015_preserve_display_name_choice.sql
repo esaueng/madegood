@@ -1,0 +1,1 @@
+ALTER TABLE `users` ADD `display_name_edited` integer DEFAULT false NOT NULL;

@@ -213,7 +213,7 @@ collection by a third party; the privacy policy explains it.
 
 **Public profile (#95).** The profile is off by default. In website Settings, users
 can enable it, change their display name and choose an optional URL username. The
-default URL uses a random ID. Only an explicit choice gives it an `@username` URL.
+URL uses a random ID. A chosen `@username` can appear before that ID.
 The enabled profile lists public sessions and their totals. To others it is visible
 only while the account has a public session. Its page, link metadata and
 `GET /api/users/{profileKey}` can then show the display name. Disabling the profile

@@ -3,7 +3,7 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { createApp } from "../src/server/app";
 import { profilePreviewPage } from "../src/server/routes/session-preview";
-import { api, bearer, deleteMe, type SignIn, signIn } from "./apple";
+import { api, bearer, deleteMe, identityToken, type SignIn, signIn } from "./apple";
 
 // Synthetic data only (AGENTS.md): positions near 0,0 and dates in 2000.
 
@@ -114,8 +114,9 @@ describe("GET /api/users/:profileKey", () => {
         displayName: "Chosen Name",
       }),
     );
-    expect(custom).toBe(`@${username}`);
+    expect(custom).toBe(`@${username}~${owner.profileKey}`);
     expect((await profileOf(custom)).displayName).toBe("Chosen Name");
+    expect((await getProfile(`@${username}`)).status).toBe(404);
     expect((await getProfile(username)).status).toBe(404);
     expect((await getProfile(owner.profileKey)).status).toBe(404);
 
@@ -132,10 +133,44 @@ describe("GET /api/users/:profileKey", () => {
       publicProfileKey: null,
       publicProfileUsername: null,
     });
+    const reassigned = await profileKeyOf(
+      await setProfile(other, { publicProfileEnabled: true, publicProfileUsername: username }),
+    );
+    await addSession(other, "public");
+    expect((await getProfile(reassigned)).status).toBe(200);
+    expect((await getProfile(custom)).status).toBe(404);
     const opaque = await profileKeyOf(await setProfile(owner, { publicProfileEnabled: true }));
     expect(opaque).not.toBe(custom);
     expect((await getProfile(custom)).status).toBe(404);
     expect((await profileOf(opaque)).displayName).toBe("Chosen Name");
+  });
+
+  it("keeps a cleared profile display name blank when Apple supplies a name again", async () => {
+    const sub = crypto.randomUUID();
+    const owner = await signIn({
+      identityToken: await identityToken({ sub }),
+      displayName: "Test Skipper",
+    });
+    await addSession(owner, "public");
+    const key = await profileKeyOf(
+      await setProfile(owner, { displayName: null, publicProfileEnabled: true }),
+    );
+    const signedInAgain = await signIn({
+      identityToken: await identityToken({ sub }),
+      displayName: "Test Skipper",
+    });
+    expect(signedInAgain.user.displayName).toBeNull();
+    expect((await profileOf(key)).displayName).toBeNull();
+  });
+
+  it("preserves the other profile field during a partial edit", async () => {
+    const owner = await profileUser();
+    await addSession(owner, "public");
+    const key = await profileKeyOf(
+      await setProfile(owner, { publicProfileUsername: owner.user.handle }),
+    );
+    expect(await profileKeyOf(await setProfile(owner, { displayName: "Updated Name" }))).toBe(key);
+    expect((await profileOf(key)).displayName).toBe("Updated Name");
   });
 
   it("shows the display name, public totals and public sessions", async () => {

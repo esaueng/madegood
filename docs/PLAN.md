@@ -323,7 +323,7 @@ waypoints). Voyages reuse the Sessions engine, track format, sync, and backend.
   The Worker adds Open Graph tags to the HTML so shared links show a preview.
 - `/v/:slug` voyage page: live boat position, legs, track, log highlights (Phase 5).
 - `/routes` route planner that syncs to the phone (Phase 5).
-- `/u/:profileKey` opt-in public profile with a random ID by default or a chosen `@username`.
+- `/u/:profileKey` opt-in public profile with a random ID and an optional `@username` prefix.
 - `/sessions` dashboard (my sessions, totals), `/settings` (privacy zones, visibility
   default, export all data, delete account).
 

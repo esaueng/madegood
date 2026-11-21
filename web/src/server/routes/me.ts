@@ -55,8 +55,7 @@ const UpdateMeRequest = z
     units: z.enum(["metric", "imperial", "nautical"]).optional(),
     defaultVisibility: z.enum(["private", "unlisted", "public"]).optional(),
     publicProfileEnabled: z.boolean().optional().openapi({
-      description:
-        "Enable or disable the public profile. An opaque link changes after re-enabling.",
+      description: "Enable or disable the public profile. Re-enabling creates a new link.",
     }),
     publicProfileUsername: z
       .string()
@@ -180,6 +179,7 @@ me.openapi(patchRoute, async (c) => {
   const db = drizzle(c.env.DB);
   const changes: Partial<typeof users.$inferInsert> = {};
   if (body.displayName !== undefined) changes.displayName = cleanDisplayName(body.displayName);
+  if (body.displayName !== undefined || body.publicProfileEnabled) changes.displayNameEdited = true;
   if (body.units !== undefined) changes.units = body.units;
   if (body.defaultVisibility !== undefined) changes.defaultVisibility = body.defaultVisibility;
   if (body.handle !== undefined) {

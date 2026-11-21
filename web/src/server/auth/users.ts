@@ -1,5 +1,5 @@
 import { z } from "@hono/zod-openapi";
-import { and, eq, isNotNull, isNull } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
 import { type User, users } from "../db/schema";
 import { AccountDeleting } from "./account-state";
@@ -13,25 +13,16 @@ export const HANDLE_PATTERN = /^[a-z0-9_]{3,30}$/;
 const PUBLIC_PROFILE_ID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
-// A leading @ puts custom usernames in a separate namespace from legacy name-based links.
+// Keep the random ID in custom URLs so reusing a username cannot take over old links.
 export function publicProfileLookup(key: string) {
   const normalized = key.toLowerCase();
-  const username = normalized.slice(1);
-  if (normalized.startsWith("@") && HANDLE_PATTERN.test(username)) {
-    return and(
-      eq(users.publicProfileUsername, username),
-      isNotNull(users.publicProfileId),
-      isNull(users.deletedAt),
-    );
-  }
-  if (PUBLIC_PROFILE_ID_PATTERN.test(normalized)) {
-    return and(
-      eq(users.publicProfileId, normalized),
-      isNull(users.publicProfileUsername),
-      isNull(users.deletedAt),
-    );
-  }
-  return undefined;
+  const [, username, profileId = normalized] = /^@([a-z0-9_]{3,30})~(.+)$/.exec(normalized) ?? [];
+  if (!PUBLIC_PROFILE_ID_PATTERN.test(profileId)) return undefined;
+  return and(
+    eq(users.publicProfileId, profileId),
+    username ? eq(users.publicProfileUsername, username) : isNull(users.publicProfileUsername),
+    isNull(users.deletedAt),
+  );
 }
 
 // Words a handle must not be, because they would read as official or clash with routes.
@@ -84,7 +75,9 @@ export const toUserBody = (user: User): z.infer<typeof UserBody> => ({
   displayName: user.displayName,
   publicProfileKey:
     user.publicProfileId &&
-    (user.publicProfileUsername ? `@${user.publicProfileUsername}` : user.publicProfileId),
+    (user.publicProfileUsername
+      ? `@${user.publicProfileUsername}~${user.publicProfileId}`
+      : user.publicProfileId),
   publicProfileUsername: user.publicProfileUsername,
   units: user.units,
   defaultVisibility: user.defaultVisibility,
@@ -131,7 +124,7 @@ export { AccountDeleting } from "./account-state";
 /**
  * Finds the user for an Apple `sub`, creating one with a generated handle on first sign-in.
  * Apple sends the name only on the first authorization, so a provided display name also
- * fills in an existing account that has none. Throws AccountDeleting for an account that
+ * fills in an existing account that has never chosen a name. Throws AccountDeleting for an account that
  * is being deleted (lib/account-deletion.ts).
  */
 export async function findOrCreateUser(
@@ -142,11 +135,18 @@ export async function findOrCreateUser(
   const [existing] = await db.select().from(users).where(eq(users.appleSub, appleSub));
   if (existing?.deletedAt != null) throw new AccountDeleting(existing.id, existing.deletedAt);
   if (existing) {
-    if (existing.displayName === null && displayName !== null) {
+    if (existing.displayName === null && !existing.displayNameEdited && displayName !== null) {
       const [updated] = await db
         .update(users)
         .set({ displayName })
-        .where(eq(users.id, existing.id))
+        .where(
+          and(
+            eq(users.id, existing.id),
+            isNull(users.deletedAt),
+            isNull(users.displayName),
+            eq(users.displayNameEdited, false),
+          ),
+        )
         .returning();
       return { user: updated ?? existing, created: false };
     }

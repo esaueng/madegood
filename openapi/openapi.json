@@ -262,7 +262,7 @@
           },
           "publicProfileEnabled": {
             "type": "boolean",
-            "description": "Enable or disable the public profile. An opaque link changes after re-enabling."
+            "description": "Enable or disable the public profile. Re-enabling creates a new link."
           },
           "publicProfileUsername": {
             "type": [
@@ -3187,11 +3187,11 @@
           {
             "schema": {
               "type": "string",
-              "description": "The opaque profile ID or an explicitly chosen @username.",
-              "example": "@skipper_4821"
+              "description": "The opaque profile ID, optionally prefixed with a chosen @username and a ~.",
+              "example": "@skipper_4821~f81570bf-2352-4d5f-aaf0-af1d995ccc28"
             },
             "required": true,
-            "description": "The opaque profile ID or an explicitly chosen @username.",
+            "description": "The opaque profile ID, optionally prefixed with a chosen @username and a ~.",
             "name": "profileKey",
             "in": "path"
           },

@@ -23,13 +23,13 @@ const isoTime = z.iso.datetime({ offset: true }).openapi({ format: "date-time" }
 const ProfileParams = z.object({
   profileKey: z
     .string()
-    .max(64)
+    .max(68)
     .transform((s) => s.toLowerCase())
     .openapi({
       param: { name: "profileKey", in: "path" },
       type: "string",
-      description: "The opaque profile ID or an explicitly chosen @username.",
-      example: "@skipper_4821",
+      description: "The opaque profile ID, optionally prefixed with a chosen @username and a ~.",
+      example: "@skipper_4821~f81570bf-2352-4d5f-aaf0-af1d995ccc28",
     }),
 });
 

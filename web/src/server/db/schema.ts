@@ -24,6 +24,7 @@ export const users = sqliteTable(
     appleSub: text("apple_sub").notNull(),
     handle: text("handle").notNull(),
     displayName: text("display_name"),
+    displayNameEdited: integer("display_name_edited", { mode: "boolean" }).notNull().default(false),
     /** Random URL identifier, present only while the user has enabled their profile. */
     publicProfileId: text("public_profile_id"),
     /** An optional username chosen explicitly for the public link. */
