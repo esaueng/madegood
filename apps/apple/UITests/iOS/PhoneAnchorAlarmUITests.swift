@@ -22,6 +22,8 @@ final class PhoneAnchorAlarmUITests: XCTestCase {
         let radius = app.buttons[radiusLabel]
         XCTAssertTrue(radius.waitForExistence(timeout: 5))
         radius.tap()
+        XCTAssertTrue(app.navigationBars["Swing radius"].waitForNonExistence(timeout: 5))
+        XCTAssertEqual(picker.value as? String, radiusLabel)
 
         let arm = app.buttons["anchor.arm"]
         scrollTo(arm, in: app)

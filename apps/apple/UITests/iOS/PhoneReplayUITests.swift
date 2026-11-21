@@ -16,7 +16,7 @@ final class PhoneReplayUITests: XCTestCase {
         scrollTo(sailing, in: app)
         sailing.tap()
 
-        let chart = element("chart.speed", in: app)
+        let chart = app.otherElements["chart.speed"].firstMatch
         let elapsed = app.staticTexts["stat.Elapsed"]
         let speed = app.staticTexts["stat.GPS speed"]
         let distance = app.staticTexts["stat.Route distance"]
@@ -24,7 +24,6 @@ final class PhoneReplayUITests: XCTestCase {
         let map = element("replay.map", in: app)
         XCTAssertTrue(elapsed.waitForExistence(timeout: 10))
         XCTAssertTrue(chart.waitForExistence(timeout: 10))
-        XCTAssertGreaterThan(chart.frame.width, 0)
         let initialTime = elapsed.label
         let initialSpeed = speed.label
         let initialDistance = distance.label
@@ -39,14 +38,26 @@ final class PhoneReplayUITests: XCTestCase {
             dx: (startFrame.midX - startMapFrame.minX) / startMapFrame.width,
             dy: (startFrame.midY - startMapFrame.minY) / startMapFrame.height)
 
-        let from = chart.coordinate(withNormalizedOffset: CGVector(dx: 0.1, dy: 0.4))
-        let to = chart.coordinate(withNormalizedOffset: CGVector(dx: 0.75, dy: 0.4))
-        from.tap()
+        let leading = CGVector(dx: 0.1, dy: 0.4)
+        let trailing = CGVector(dx: 0.75, dy: 0.4)
+        XCTAssertGreaterThan(chart.frame.width, 0)
+        chart.coordinate(withNormalizedOffset: leading).tap()
         let tappedTime = elapsed.label
         XCTAssertNotEqual(tappedTime, initialTime)
         XCTAssertEqual(marker.value as? String, tappedTime)
 
-        from.press(forDuration: 0.05, thenDragTo: to)
+        // XCTest resolves the drag endpoints repeatedly. Measure the chart once
+        // and anchor the horizontal scrub to the window to avoid those chart queries.
+        let window = app.windows.firstMatch
+        let windowFrame = window.frame
+        let windowOrigin = window.coordinate(withNormalizedOffset: .zero)
+        let scrubFrame = chart.frame
+        func scrubPoint(_ offset: CGVector) -> XCUICoordinate {
+            windowOrigin.withOffset(CGVector(
+                dx: scrubFrame.minX - windowFrame.minX + scrubFrame.width * offset.dx,
+                dy: scrubFrame.minY - windowFrame.minY + scrubFrame.height * offset.dy))
+        }
+        scrubPoint(leading).press(forDuration: 0.05, thenDragTo: scrubPoint(trailing))
         let scrubbedTime = elapsed.label
         XCTAssertNotEqual(scrubbedTime, tappedTime)
         XCTAssertNotEqual(speed.label, initialSpeed)
@@ -61,7 +72,8 @@ final class PhoneReplayUITests: XCTestCase {
         XCTAssertEqual(marker.value as? String, elapsed.label)
 
         // A vertical drag starting inside the plot still scrolls the detail list.
-        to.press(forDuration: 0.05, thenDragTo: to.withOffset(CGVector(dx: 0, dy: -300)))
+        let scrollStart = chart.coordinate(withNormalizedOffset: trailing)
+        scrollStart.press(forDuration: 0.05, thenDragTo: scrollStart.withOffset(CGVector(dx: 0, dy: -300)))
         let total = app.staticTexts["stat.Total time"]
         XCTAssertTrue(total.waitForExistence(timeout: 10))
         XCTAssertTrue(total.isHittable)
