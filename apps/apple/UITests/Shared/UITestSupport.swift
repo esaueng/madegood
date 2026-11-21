@@ -14,13 +14,16 @@ extension XCTestCase {
         return app
     }
 
-    /// Launches `app` in a new process with this test's arguments and environment. The
-    /// system can start the app on its own: after a voyage test terminates it during a leg,
+    /// Launches `app` in a new process with this test's arguments and environment. On iOS,
+    /// the system can start the app on its own: after a voyage test terminates it during a leg,
     /// Core Location relaunches it in the background. XCUITest did not launch that copy, so
     /// `launch()` does not terminate it and the test ends up driving a process without its
     /// arguments (no demo mode, the real voyage library). Terminate any running copy first.
     func launchFresh(_ app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
-        if app.state != .notRunning { terminateAndSettle(app, file: file, line: line) }
+        #if os(iOS)
+            if app.state != .notRunning { terminateAndSettle(app, file: file, line: line) }
+        #endif
+        // On watchOS, let XCTest coordinate termination and launch with the simulator.
         app.launch()
     }
 
