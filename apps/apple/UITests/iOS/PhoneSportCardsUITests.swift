@@ -128,7 +128,8 @@ final class PhoneSportOrderUITests: XCTestCase {
         XCTAssertTrue(sailing.waitForExistence(timeout: 5))
         let canoeWasBelow = canoe.frame.minY > sailing.frame.minY
         let (moving, target) = canoeWasBelow ? (canoe, sailing) : (sailing, canoe)
-        moving.press(forDuration: 1.0, thenDragTo: target)
+        // Give the lifted row time to follow the drag and settle before release.
+        moving.press(forDuration: 1.0, thenDragTo: target, withVelocity: .slow, thenHoldForDuration: 0.5)
         let moved = XCTNSPredicateExpectation(
             predicate: NSPredicate { _, _ in (canoe.frame.minY > sailing.frame.minY) != canoeWasBelow }, object: nil)
         XCTAssertEqual(XCTWaiter().wait(for: [moved], timeout: 5), .completed, "The drag didn't reorder the cards")
