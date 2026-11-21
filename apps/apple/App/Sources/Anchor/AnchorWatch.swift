@@ -43,7 +43,8 @@ final class AnchorWatch: NSObject {
         let accuracy: Double?
         let measuredAt: ContinuousClock.Instant
 
-        var isFresh: Bool { measuredAt.duration(to: .now) <= .seconds(15) }
+        var freshUntil: ContinuousClock.Instant { measuredAt + .seconds(15) }
+        var isFresh: Bool { ContinuousClock.now <= freshUntil }
         var isUsable: Bool {
             isFresh && accuracy.map { $0 <= AnchorAlarm.maximumAccuracy } == true
         }

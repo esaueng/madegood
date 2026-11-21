@@ -4,6 +4,7 @@ import WaterKit
 
 struct AnchorAlarmView: View {
     @State private var anchorWatch = AnchorWatch.shared
+    @State private var position: AnchorFixDisplay?
     @State private var selectedPoint: AnchorAlarm.Point?
     @State private var mapReset = 0
     @State private var radius = 40.0
@@ -14,103 +15,108 @@ struct AnchorAlarmView: View {
     private static let radii = [10.0, 15, 20, 30, 40, 50, 75, 100, 150, 200, 300, 500]
 
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 1)) { _ in
-            let unit = UserSettings.display(for: .motorboating).distance
-            let position = anchorWatch.position.flatMap { $0.isFresh ? $0 : nil }
-            List {
-                Section {
-                    status(position: position)
-                    if anchorWatch.gpsLossSounding {
-                        Button("Stop GPS backup alarm", systemImage: "bell.slash", action: anchorWatch.stopGPSLossAlarm)
-                    }
-                    if anchorWatch.canStopDrift {
-                        Button("Stop drift alarm", systemImage: "bell.slash", action: anchorWatch.stopDriftAlarm)
-                            .accessibilityIdentifier("anchor.stopDrift")
-                    }
-                    if anchorWatch.locationBlocked || anchorWatch.alarmPermissionDenied || anchorWatch.alarmError {
-                        Button("Open Settings", systemImage: "gearshape") {
-                            if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
-                        }
-                    }
+        let unit = UserSettings.display(for: .motorboating).distance
+        List {
+            Section {
+                status(position: position)
+                if anchorWatch.gpsLossSounding {
+                    Button("Stop GPS backup alarm", systemImage: "bell.slash", action: anchorWatch.stopGPSLossAlarm)
                 }
-
-                if let watch = anchorWatch.watch {
-                    let reading = position.map { watch.reading(at: $0.point) }
-                    Section {
-                        LabeledContent("Distance to anchor", value: length(reading?.distance, unit: unit))
-                            .accessibilityIdentifier("anchor.distance")
-                        LabeledContent("Bearing to anchor", value: bearing(reading?.bearing))
-                            .accessibilityIdentifier("anchor.bearing")
-                        LabeledContent("Swing radius", value: length(watch.radius, unit: unit))
-                            .accessibilityIdentifier("anchor.armedRadius")
-                        accuracyRow(position?.accuracy, unit: unit)
-                    }
-                } else {
-                    Section {
-                        Picker("Swing radius", selection: $radius) {
-                            ForEach(Self.radii, id: \.self) { candidate in
-                                Text(length(candidate, unit: unit)).tag(candidate)
-                            }
-                        }
-                        .accessibilityIdentifier("anchor.radius")
-                        accuracyRow(position?.accuracy, unit: unit)
-                        Button("Arm anchor alarm", systemImage: "bell", action: confirmThenArm)
-                            .disabled(
-                                position?.isUsable != true || anchorWatch.isArming
-                                    || anchorWatch.locationBlocked || anchorWatch.alarmPermissionDenied
-                            )
-                            .accessibilityIdentifier("anchor.arm")
-                    } footer: {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("With good GPS, the drift alarm triggers more than 5 m outside this circle.")
-                            Text("Allow room for the anchor rode and the boat to swing.")
-                        }
-                    }
+                if anchorWatch.canStopDrift {
+                    Button("Stop drift alarm", systemImage: "bell.slash", action: anchorWatch.stopDriftAlarm)
+                        .accessibilityIdentifier("anchor.stopDrift")
                 }
-
-                if let center = anchorWatch.watch?.anchor ?? selectedPoint ?? position?.point {
-                    Section {
-                        AnchorCircleMap(
-                            center: center, boat: position?.point, radius: anchorWatch.watch?.radius ?? radius,
-                            canAdjust: anchorWatch.watch == nil, reset: mapReset,
-                            select: { selectedPoint = $0 }
-                        )
-                        .frame(height: 220)
-                        .listRowInsets(EdgeInsets())
-                        if anchorWatch.watch == nil {
-                            Button("Use current position", systemImage: "location") {
-                                selectedPoint = nil
-                                mapReset += 1
-                            }
-                            .disabled(selectedPoint == nil || position?.isUsable != true)
-                            .accessibilityIdentifier("anchor.useCurrent")
-                        }
-                    } footer: {
-                        if anchorWatch.watch == nil {
-                            Text("Tap the map to adjust the anchor point. Not for navigation.")
-                        } else {
-                            Text("Not for navigation.")
-                        }
-                    }
-                }
-
-                if anchorWatch.watch != nil {
-                    Section {
-                        Button("Disarm anchor alarm", systemImage: "bell.slash", role: .destructive) {
-                            confirmDisarm = true
-                        }
-                        .accessibilityIdentifier("anchor.disarm")
-                    } footer: {
-                        Text("The alarm uses location while armed, including with the screen locked.")
+                if anchorWatch.locationBlocked || anchorWatch.alarmPermissionDenied || anchorWatch.alarmError {
+                    Button("Open Settings", systemImage: "gearshape") {
+                        if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
                     }
                 }
             }
-            .monospacedDigit()
+
+            if let watch = anchorWatch.watch {
+                let reading = position.map { watch.reading(at: $0.point) }
+                Section {
+                    LabeledContent("Distance to anchor", value: length(reading?.distance, unit: unit))
+                        .accessibilityIdentifier("anchor.distance")
+                    LabeledContent("Bearing to anchor", value: bearing(reading?.bearing))
+                        .accessibilityIdentifier("anchor.bearing")
+                    LabeledContent("Swing radius", value: length(watch.radius, unit: unit))
+                        .accessibilityIdentifier("anchor.armedRadius")
+                    accuracyRow(position?.accuracy, unit: unit)
+                }
+            } else {
+                Section {
+                    Picker("Swing radius", selection: $radius) {
+                        ForEach(Self.radii, id: \.self) { candidate in
+                            Text(length(candidate, unit: unit)).tag(candidate)
+                        }
+                    }
+                    .accessibilityIdentifier("anchor.radius")
+                    accuracyRow(position?.accuracy, unit: unit)
+                    Button("Arm anchor alarm", systemImage: "bell", action: confirmThenArm)
+                        .disabled(
+                            position?.isUsable != true || anchorWatch.isArming
+                                || anchorWatch.locationBlocked || anchorWatch.alarmPermissionDenied
+                        )
+                        .accessibilityIdentifier("anchor.arm")
+                } footer: {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("With good GPS, the drift alarm triggers more than 5 m outside this circle.")
+                        Text("Allow room for the anchor rode and the boat to swing.")
+                    }
+                }
+            }
+
+            if let center = anchorWatch.watch?.anchor ?? selectedPoint ?? position?.point {
+                Section {
+                    AnchorCircleMap(
+                        center: center, boat: position?.point, radius: anchorWatch.watch?.radius ?? radius,
+                        canAdjust: anchorWatch.watch == nil, reset: mapReset,
+                        select: { selectedPoint = $0 }
+                    )
+                    .frame(height: 220)
+                    .listRowInsets(EdgeInsets())
+                    if anchorWatch.watch == nil {
+                        Button("Use current position", systemImage: "location") {
+                            selectedPoint = nil
+                            mapReset += 1
+                        }
+                        .disabled(selectedPoint == nil || position?.isUsable != true)
+                        .accessibilityIdentifier("anchor.useCurrent")
+                    }
+                } footer: {
+                    if anchorWatch.watch == nil {
+                        Text("Tap the map to adjust the anchor point. Not for navigation.")
+                    } else {
+                        Text("Not for navigation.")
+                    }
+                }
+            }
+
+            if anchorWatch.watch != nil {
+                Section {
+                    Button("Disarm anchor alarm", systemImage: "bell.slash", role: .destructive) {
+                        confirmDisarm = true
+                    }
+                    .accessibilityIdentifier("anchor.disarm")
+                } footer: {
+                    Text("The alarm uses location while armed, including with the screen locked.")
+                }
+            }
+        }
+        .monospacedDigit()
+        .background {
+            AnchorFixUpdates(anchorWatch: anchorWatch, fix: $position)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
         }
         .navigationTitle("Anchor Alarm")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear { anchorWatch.beginSetup() }
-        .onDisappear { anchorWatch.endSetup() }
+        .onDisappear {
+            position = nil
+            anchorWatch.endSetup()
+        }
         .confirmationDialog("Disarm the anchor alarm?", isPresented: $confirmDisarm, titleVisibility: .visible) {
             Button("Disarm", role: .destructive) {
                 anchorWatch.disarm()
@@ -144,7 +150,7 @@ struct AnchorAlarmView: View {
         Task { await anchorWatch.arm(at: selectedPoint, radius: radius) }
     }
 
-    private func status(position: AnchorWatch.Position?) -> some View {
+    private func status(position: AnchorFixDisplay?) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Label {
                 Text(anchorWatch.isAlarming ? "Anchor dragging" : anchorWatch.watch == nil ? "Alarm off" : "Armed")
@@ -186,6 +192,41 @@ struct AnchorAlarmView: View {
     private func bearing(_ degrees: Double?) -> String {
         guard let degrees else { return "–" }
         return "\(LiveDisplay.course(degrees)) true"
+    }
+}
+
+private struct AnchorFixDisplay: Equatable {
+    let point: AnchorAlarm.Point
+    let accuracy: Double?
+    let isUsable: Bool
+}
+
+/// Observe GPS timestamps separately so a renewed fix with identical readings leaves the list alone.
+private struct AnchorFixUpdates: View {
+    let anchorWatch: AnchorWatch
+    @Binding var fix: AnchorFixDisplay?
+
+    var body: some View {
+        let position = anchorWatch.position
+        Color.clear
+            .task(id: position?.measuredAt) { @MainActor in
+                guard let position, position.isFresh else {
+                    if fix != nil { fix = nil }
+                    return
+                }
+                let display = AnchorFixDisplay(
+                    point: position.point, accuracy: position.accuracy, isUsable: position.isUsable)
+                if fix != display { fix = display }
+
+                // Expire a fix once, even if Core Location stops sending updates.
+                do {
+                    try await ContinuousClock().sleep(until: position.freshUntil)
+                } catch {
+                    return
+                }
+                guard !Task.isCancelled, anchorWatch.position?.measuredAt == position.measuredAt else { return }
+                fix = nil
+            }
     }
 }
 

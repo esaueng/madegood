@@ -24,7 +24,9 @@ final class PhoneReplayUITests: XCTestCase {
         let map = element("replay.map", in: app)
         XCTAssertTrue(elapsed.waitForExistence(timeout: 10))
         XCTAssertTrue(chart.waitForExistence(timeout: 10))
-        XCTAssertGreaterThan(chart.frame.width, 0)
+        let chartFrame = chart.frame
+        XCTAssertGreaterThan(chartFrame.width, 0)
+        XCTAssertGreaterThan(chartFrame.height, 0)
         let initialTime = elapsed.label
         let initialSpeed = speed.label
         let initialDistance = distance.label
@@ -39,8 +41,20 @@ final class PhoneReplayUITests: XCTestCase {
             dx: (startFrame.midX - startMapFrame.minX) / startMapFrame.width,
             dy: (startFrame.midY - startMapFrame.minY) / startMapFrame.height)
 
-        let from = chart.coordinate(withNormalizedOffset: CGVector(dx: 0.1, dy: 0.4))
-        let to = chart.coordinate(withNormalizedOffset: CGVector(dx: 0.75, dy: 0.4))
+        // Resolve gestures against the window so they don't repeat the chart's
+        // descendant query against the updated MapKit hierarchy after a seek.
+        let window = app.windows.firstMatch
+        let windowFrame = window.frame
+        let windowOrigin = window.coordinate(withNormalizedOffset: .zero)
+        func coordinate(in frame: CGRect, at offset: CGVector) -> XCUICoordinate {
+            windowOrigin.withOffset(CGVector(
+                dx: frame.minX - windowFrame.minX + frame.width * offset.dx,
+                dy: frame.minY - windowFrame.minY + frame.height * offset.dy))
+        }
+
+        let from = coordinate(in: chartFrame, at: CGVector(dx: 0.1, dy: 0.4))
+        let dragEnd = CGVector(dx: 0.75, dy: 0.4)
+        let to = coordinate(in: chartFrame, at: dragEnd)
         from.tap()
         let tappedTime = elapsed.label
         XCTAssertNotEqual(tappedTime, initialTime)
@@ -55,13 +69,14 @@ final class PhoneReplayUITests: XCTestCase {
         XCTAssertEqual(marker.value as? String, elapsed.label)
         XCTAssertNotEqual(marker.frame, startFrame)
 
-        map.coordinate(withNormalizedOffset: startOffset).tap()
+        coordinate(in: map.frame, at: startOffset).tap()
         XCTAssertNotEqual(elapsed.label, scrubbedTime)
         XCTAssertTrue(elapsed.label.hasPrefix("0:"), "Route tap should return to the start of the sailing route")
         XCTAssertEqual(marker.value as? String, elapsed.label)
 
         // A vertical drag starting inside the plot still scrolls the detail list.
-        to.press(forDuration: 0.05, thenDragTo: to.withOffset(CGVector(dx: 0, dy: -300)))
+        let scrollStart = coordinate(in: chart.frame, at: dragEnd)
+        scrollStart.press(forDuration: 0.05, thenDragTo: scrollStart.withOffset(CGVector(dx: 0, dy: -300)))
         let total = app.staticTexts["stat.Total time"]
         XCTAssertTrue(total.waitForExistence(timeout: 10))
         XCTAssertTrue(total.isHittable)

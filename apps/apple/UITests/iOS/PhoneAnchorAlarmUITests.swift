@@ -20,8 +20,9 @@ final class PhoneAnchorAlarmUITests: XCTestCase {
         picker.tap()
         let radiusLabel = "20.0 m"
         let radius = app.buttons[radiusLabel]
-        XCTAssertTrue(radius.waitForExistence(timeout: 5))
+        XCTAssertTrue(radius.wait(for: \.isHittable, toEqual: true, timeout: 5), "Radius option never became tappable")
         radius.tap()
+        XCTAssertTrue(radius.waitForNonExistence(timeout: 5), "Radius picker menu stayed open")
 
         let arm = app.buttons["anchor.arm"]
         scrollTo(arm, in: app)
