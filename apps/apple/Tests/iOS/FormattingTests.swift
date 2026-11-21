@@ -11,5 +11,9 @@ final class FormattingTests: XCTestCase {
         XCTAssertEqual(line.replacingOccurrences(of: "\u{00A0}", with: " "), "3 sessions · 24.2 km · 1 h 46 min")
         XCTAssertEqual(Formatting.metricLine(["1 session"]), "1\u{00A0}session")
         XCTAssertEqual(Formatting.metricLine([]), "")
+        // A word phrase keeps its breakable space so it can wrap at the largest text size.
+        XCTAssertEqual(
+            Formatting.metricLine(["1 session", "1 awaiting metrics"]),
+            "1\u{00A0}session\u{00A0}· 1\u{00A0}awaiting metrics")
     }
 }
