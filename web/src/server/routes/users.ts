@@ -1,8 +1,8 @@
 import { createRoute, z } from "@hono/zod-openapi";
 import { and, desc, eq, isNull, lt, or, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
+import { HANDLE_PATTERN } from "../../shared/handle";
 import { optionalAuth, type ViewerEnv } from "../auth/middleware";
-import { HANDLE_PATTERN } from "../auth/users";
 import { sessions, users } from "../db/schema";
 import { apiError, errorResponse } from "../lib/errors";
 import { createRouter } from "../lib/router";

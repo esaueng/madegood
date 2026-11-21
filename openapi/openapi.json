@@ -539,6 +539,28 @@
               "public"
             ]
           },
+          "owner": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "handle": {
+                "type": "string"
+              },
+              "displayName": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "handle",
+              "displayName"
+            ],
+            "description": "The owner's public profile. Null for private and unlisted sessions."
+          },
           "startedAt": {
             "type": "string",
             "format": "date-time"
@@ -649,6 +671,7 @@
           "title",
           "notes",
           "visibility",
+          "owner",
           "startedAt",
           "endedAt",
           "durationS",

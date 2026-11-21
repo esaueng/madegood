@@ -6,9 +6,6 @@ import { AccountDeleting } from "./account-state";
 
 type Db = DrizzleD1Database<Record<string, unknown>>;
 
-/** Handles are lowercase, 3–30 of a–z, 0–9 and `_`, and appear in URLs (`/u/<handle>`). */
-export const HANDLE_PATTERN = /^[a-z0-9_]{3,30}$/;
-
 // Words a handle must not be, because they would read as official or clash with routes.
 const RESERVED_HANDLES = new Set([
   "about",

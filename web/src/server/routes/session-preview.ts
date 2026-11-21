@@ -1,8 +1,8 @@
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
 import { Hono } from "hono";
+import { HANDLE_PATTERN } from "../../shared/handle";
 import type { AppEnv } from "../app";
-import { HANDLE_PATTERN } from "../auth/users";
 import { sessionColumns, sessions, users } from "../db/schema";
 import { logFailure } from "../lib/logging";
 import { ogImage, ogInfo } from "../lib/og-image";

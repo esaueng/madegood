@@ -148,12 +148,25 @@ function Header({ session }: { session: Session }) {
     },
   });
   const current = VISIBILITY[session.visibility];
+  const owner = session.visibility === "public" ? session.owner : null;
   return (
     <header className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
       <div className="min-w-0">
         <h1 className="truncate text-2xl font-semibold sm:text-3xl">{sessionTitle(session)}</h1>
-        <p className="text-muted-foreground">
+        <p className="wrap-anywhere text-muted-foreground">
           {SPORT_NAMES[session.sport]} · {formatDate(session.startedAt)}
+          {owner && (
+            <>
+              {" · by "}
+              <Link
+                to="/u/$handle"
+                params={{ handle: owner.handle }}
+                className="text-primary underline underline-offset-4"
+              >
+                {owner.displayName ? `${owner.displayName} (@${owner.handle})` : `@${owner.handle}`}
+              </Link>
+            </>
+          )}
         </p>
       </div>
       {session.isOwner ? (

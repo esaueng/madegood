@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 import { drizzle } from "drizzle-orm/d1";
 import { describe, expect, it } from "vitest";
+import { requestAccountDeletion } from "../src/server/lib/account-deletion";
 import { CLAIM_LEASE_MS, collectR2Garbage } from "../src/server/lib/r2-garbage";
 import { replaceSessionMetadata } from "../src/server/lib/session-upload";
 import { api, bearer, deleteMe, type SignIn, signIn } from "./apple";
@@ -363,6 +364,118 @@ describe("PUT /api/sessions/:id/track", () => {
 });
 
 describe("visibility", () => {
+  it("returns the public session's current profile to every viewer", async () => {
+    const owner = await signIn({ displayName: "Test Paddler" });
+    const other = await signIn();
+    const id = crypto.randomUUID();
+    const put = await putSession(owner.accessToken, id);
+    expect(put.status).toBe(201);
+    expect(await put.json()).toMatchObject({ owner: null });
+    const published = await patchSession(owner.accessToken, id, { visibility: "public" });
+    expect(published.status).toBe(200);
+    const profile = { handle: owner.user.handle, displayName: "Test Paddler" };
+    expect(await published.json()).toMatchObject({ owner: profile });
+
+    for (const token of [null, other.accessToken, owner.accessToken]) {
+      const detail = await getSession(token, id);
+      expect(detail.status).toBe(200);
+      expect(detail.headers.get("cache-control")).toBe("private, no-store");
+      expect(await detail.json()).toMatchObject({ owner: profile });
+    }
+
+    const updated = await api("/me", {
+      method: "PATCH",
+      headers: { ...bearer(owner.accessToken), "content-type": "application/json" },
+      body: JSON.stringify({ handle: "  New_Paddler ", displayName: null }),
+    });
+    expect(updated.status).toBe(200);
+    expect(await (await getSession(null, id)).json()).toMatchObject({
+      owner: { handle: "new_paddler", displayName: null },
+    });
+    expect((await api("/users/new_paddler")).status).toBe(200);
+    expect((await api(`/users/${profile.handle}`)).status).toBe(404);
+  });
+
+  it("drops the profile from detail and write responses as soon as visibility changes", async () => {
+    const owner = await signIn({ displayName: "Test Skipper" });
+    const other = await signIn();
+    const id = crypto.randomUUID();
+    expect((await putSession(owner.accessToken, id)).status).toBe(201);
+    for (const visibility of ["unlisted", "private"]) {
+      const published = await patchSession(owner.accessToken, id, { visibility: "public" });
+      expect(published.status).toBe(200);
+      expect(await published.json()).toMatchObject({ owner: { handle: owner.user.handle } });
+
+      const changed = await patchSession(owner.accessToken, id, { visibility });
+      expect(changed.status).toBe(200);
+      expect(await changed.json()).toMatchObject({ visibility, owner: null });
+      for (const token of [owner.accessToken, other.accessToken, null]) {
+        const detail = await getSession(token, id);
+        const visible = visibility === "unlisted" || token === owner.accessToken;
+        expect(detail.status).toBe(visible ? 200 : 404);
+        expect(await detail.json()).toMatchObject(
+          visible ? { visibility, owner: null } : { error: "not_found" },
+        );
+      }
+      const retried = await putSession(owner.accessToken, id);
+      expect(retried.status).toBe(200);
+      expect(await retried.json()).toMatchObject({ visibility, owner: null });
+    }
+  });
+
+  it("returns profiles for public uploads and only public entries in the session list", async () => {
+    const owner = await signIn();
+    const preferences = await api("/me", {
+      method: "PATCH",
+      headers: { ...bearer(owner.accessToken), "content-type": "application/json" },
+      body: JSON.stringify({ defaultVisibility: "public" }),
+    });
+    expect(preferences.status).toBe(200);
+    const publicId = crypto.randomUUID();
+    const profile = { handle: owner.user.handle, displayName: null };
+    for (const status of [201, 200]) {
+      const response = await putSession(owner.accessToken, publicId);
+      expect(response.status).toBe(status);
+      expect(await response.json()).toMatchObject({ visibility: "public", owner: profile });
+    }
+    const unchanged = await patchSession(owner.accessToken, publicId, {});
+    expect(unchanged.status).toBe(200);
+    expect(await unchanged.json()).toMatchObject({ owner: profile });
+
+    const hidden = [];
+    for (const visibility of ["unlisted", "private"]) {
+      const id = crypto.randomUUID();
+      expect((await putSession(owner.accessToken, id)).status).toBe(201);
+      expect((await patchSession(owner.accessToken, id, { visibility })).status).toBe(200);
+      hidden.push({ id, visibility, owner: null });
+    }
+    const response = await api("/sessions", { headers: bearer(owner.accessToken) });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      sessions: expect.arrayContaining([
+        expect.objectContaining({ id: publicId, visibility: "public", owner: profile }),
+        ...hidden.map((session) => expect.objectContaining(session)),
+      ]),
+    });
+  });
+
+  it("404s while the public session owner's deletion is pending", async () => {
+    const owner = await signIn();
+    const other = await signIn();
+    const id = crypto.randomUUID();
+    expect((await putSession(owner.accessToken, id)).status).toBe(201);
+    expect((await patchSession(owner.accessToken, id, { visibility: "public" })).status).toBe(200);
+    expect((await getSession(null, id)).status).toBe(200);
+
+    // Mark the account for deletion without running the purge, so the session still exists.
+    expect(await requestAccountDeletion(env.DB, owner.user.id)).toBe(true);
+    for (const token of [null, other.accessToken]) {
+      const response = await getSession(token, id);
+      expect(response.status).toBe(404);
+      expect(await response.json()).toMatchObject({ error: "not_found" });
+    }
+  });
+
   it("lets the owner see a private session, and nobody else know it exists", async () => {
     const owner = await signIn();
     const other = await signIn();
