@@ -60,7 +60,7 @@ Fixture hosting is decided (PLAN §10): a public R2 bucket with checksums pinned
 
 Also merged: watch complication (#32), appearance setting (#43), sport icons and rows
 (#41, #44), start countdown keep-awake (#40), 32-bit watch recording fix (#68), start
-screen reordering and conditions (#75, #90), brand and app icon (#83).
+screen reordering and conditions (#75, #90; pull-to-refresh waits for the fetch: #155), brand and app icon (#83).
 
 **Left**
 
@@ -103,8 +103,8 @@ Also merged: heart-rate zones for every sport (#97).
 | 2. Sign in with Apple (iOS + web), tokens, account deletion, data export | ✅ | #36, #63, #76; deletion: #78, #135; export: #79 |
 | 3. iPhone sync: background upload queue, retries, status | ✅ | #65 |
 | 4. Upload endpoints, R2, queue consumer (bounds, fix times) | ✅ | #37; consumer: #72 |
-| 5. Web dashboard, session page, profile, settings | ✅ | #63, #64, #86; profile `/u/:handle`: #95; handle editor & public profile link: #149 |
-| 6. Visibility, privacy zones, Open Graph | ✅ | #64; route images: #96 |
+| 5. Web dashboard, session page, profile, settings | ✅ | #63, #64, #86; profile `/u/:handle`: #95; handle editor & public profile link: #149; opt-in public profiles with random-ID URLs: #152 |
+| 6. Visibility, privacy zones, Open Graph | ✅ | #64; route images: #96; account-wide sharing switch and shared-sessions list (web + iPhone): #154 |
 
 Also merged: settings sync between devices (#62), rate limits on auth and uploads (#98),
 one public address at madegood.app (#85), Cloudflare IDs from secrets (#84), shared-session
