@@ -353,8 +353,7 @@ private struct StartView: View {
         }
         .listStyle(.insetGrouped)
         .scrollContentBackground(.hidden)
-        // Pull to refresh only reloads the conditions, so it's offered only when they show.
-        .modifier(WeatherRefresh(weather: weather))
+        .refreshable { if weather.isEnabled { await weather.refresh(force: true) } }
         .listSectionSpacing(12)
         // The cards and Recent are about one screen tall: when they fit, don't let the
         // list rubber-band; when they don't, it scrolls just the overflow.
@@ -423,20 +422,6 @@ private struct StartView: View {
             return LastSessionText.text(distance: local.distance, date: local.date, unit: unit)
         case (nil, nil):
             return nil
-        }
-    }
-}
-
-/// Pull to refresh for the start screen while local conditions are on. With them off,
-/// a pull would show a spinner that does nothing and snaps straight back.
-private struct WeatherRefresh: ViewModifier {
-    let weather: LocalWeather
-
-    func body(content: Content) -> some View {
-        if weather.isEnabled {
-            content.refreshable { await weather.refresh(force: true) }
-        } else {
-            content
         }
     }
 }

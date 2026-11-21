@@ -25,8 +25,8 @@ final class RefreshCoalescerTests: XCTestCase {
             await refresher.run { runs += 1 }
             return finished
         }
-        // The second caller is still waiting while the first refresh is held open.
-        for _ in 0..<20 { await Task.yield() }
+        // The second caller has joined and is still waiting while the first is held open.
+        while refresher.joined == 0 { await Task.yield() }
         XCTAssertFalse(finished)
 
         release.continuation.yield()

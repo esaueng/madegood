@@ -79,6 +79,13 @@ final class LocalWeather {
     /// while a fetch is running waits for that fetch instead of starting another.
     func refresh(force: Bool = false) async {
         guard isEnabled else { return }
+        prune()
+        // Recent conditions answer at once, before joining a fetch, so this never takes
+        // the place of a forced refresh that would fetch.
+        if !force, current != nil {
+            status = .ready
+            return
+        }
         await refresher.run { [self] in await load(force: force) }
     }
 
