@@ -4,7 +4,7 @@ import WaterKit
 
 struct AnchorAlarmView: View {
     @State private var anchorWatch = AnchorWatch.shared
-    @State private var position: AnchorFixDisplay? = AnchorFixDisplay.current(from: AnchorWatch.shared.position)
+    @State private var position: AnchorFixDisplay?
     @State private var selectedPoint: AnchorAlarm.Point?
     @State private var mapReset = 0
     @State private var radius = 40.0
@@ -112,7 +112,10 @@ struct AnchorAlarmView: View {
         }
         .navigationTitle("Anchor Alarm")
         .navigationBarTitleDisplayMode(.inline)
-        .onAppear { anchorWatch.beginSetup() }
+        .onAppear {
+            position = AnchorFixDisplay.current(from: anchorWatch.position)
+            anchorWatch.beginSetup()
+        }
         .onDisappear {
             position = nil
             anchorWatch.endSetup()
