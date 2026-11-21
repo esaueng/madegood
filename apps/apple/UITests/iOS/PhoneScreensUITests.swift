@@ -82,7 +82,7 @@ final class HistoryFiltersUITests: XCTestCase {
         let totals = app.staticTexts["history.totals"]
         XCTAssertTrue(totals.waitForExistence(timeout: 15))
         let ready = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "label CONTAINS %@", " km"), object: totals)
+            predicate: NSPredicate(format: "label CONTAINS %@", "\u{00A0}km"), object: totals)
         XCTAssertEqual(XCTWaiter().wait(for: [ready], timeout: 15), .completed)
         let allTotals = totals.label
 
@@ -91,9 +91,9 @@ final class HistoryFiltersUITests: XCTestCase {
         app.buttons["Windsurfing"].tap()
         XCTAssertEqual(rows.count, 1)
         XCTAssertTrue(rows.firstMatch.staticTexts["Windsurfing"].exists)
-        XCTAssertTrue(totals.label.hasPrefix("1 session · "))
-        XCTAssertTrue(totals.label.contains(" nm"))
-        XCTAssertTrue(totals.label.hasSuffix("25 min"))
+        XCTAssertTrue(totals.label.hasPrefix("1\u{00A0}session\u{00A0}· "))
+        XCTAssertTrue(totals.label.contains("\u{00A0}nm"))
+        XCTAssertTrue(totals.label.hasSuffix("25\u{00A0}min"))
         XCTAssertEqual(app.staticTexts["month.totals"].firstMatch.label, totals.label)
         attachScreenshot("Windsurfing history with route preview")
 
@@ -113,6 +113,35 @@ final class HistoryFiltersUITests: XCTestCase {
         app.buttons["Clear Filters"].tap()
         waitForLabel(totals, allTotals)
         XCTAssertGreaterThanOrEqual(rows.count, 3)
+    }
+
+    /// Regression (QA-02): at the largest text size the totals wrapped "24.2" / "km" onto
+    /// separate lines. They may wrap between metrics, after a "·", but never inside one.
+    @MainActor
+    func testTotalsWrapOnlyBetweenMetricsAtLargestText() {
+        let app = launchDemoHistory(extraArguments: [
+            "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL",
+        ])
+        app.tabBars.buttons["History"].tap()
+        XCTAssertTrue(app.navigationBars["History"].waitForExistence(timeout: 10))
+        let totals = app.staticTexts["history.totals"]
+        XCTAssertTrue(totals.waitForExistence(timeout: 15))
+        let ready = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "label CONTAINS %@", "\u{00A0}km"), object: totals)
+        XCTAssertEqual(XCTWaiter().wait(for: [ready], timeout: 15), .completed, totals.label)
+        let monthTotals = app.staticTexts["month.totals"].firstMatch
+        XCTAssertTrue(monthTotals.waitForExistence(timeout: 5))
+        attachScreenshot("History totals at the largest text size")
+
+        for label in [totals.label, monthTotals.label] {
+            // Text breaks only at ordinary spaces; each must follow a metric separator.
+            let pieces = label.split(separator: " ")
+            XCTAssertGreaterThanOrEqual(pieces.count, 3, label)
+            for piece in pieces.dropLast() {
+                XCTAssertTrue(piece.hasSuffix("\u{00A0}·"), "line break inside a metric: \(label)")
+            }
+            XCTAssertNotNil(label.range(of: #"\d\x{00A0}km"#, options: .regularExpression), label)
+        }
     }
 }
 

@@ -17,6 +17,13 @@ enum Formatting {
         return m > 0 ? "\(m) min" : "\(total) s"
     }
 
+    /// Metrics on one line, "3 sessions · 24.2 km · 1 h 46 min", that wrap only between
+    /// metrics: spaces inside a metric are non-breaking, so a value never leaves its unit,
+    /// and each "·" stays at the end of a line rather than starting the next.
+    static func metricLine(_ metrics: [String]) -> String {
+        metrics.map { $0.replacingOccurrences(of: " ", with: "\u{00A0}") }.joined(separator: "\u{00A0}· ")
+    }
+
     static func bytes(_ count: Int64) -> String {
         ByteCountFormatter.string(fromByteCount: count, countStyle: .file)
     }
