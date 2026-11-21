@@ -142,8 +142,7 @@ final class HistorySettingsUITests: XCTestCase {
         row.tap()
         let toggle = app.switches["sportSettings.autoPause"]
         XCTAssertTrue(toggle.waitForExistence(timeout: 10))
-        if (toggle.value as? String == "1") != on { toggle.switches.firstMatch.tap() }
-        XCTAssertEqual(toggle.value as? String, on ? "1" : "0")
+        setSwitch(toggle, on: on, in: app)
         app.navigationBars.buttons.firstMatch.tap()
     }
 

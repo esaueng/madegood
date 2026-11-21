@@ -18,7 +18,7 @@ final class PhoneSessionSyncUITests: XCTestCase {
         signIn.tap()
         XCTAssertTrue(element("sessionSync.signedIn", in: app).waitForExistence(timeout: 10))
         let enable = app.switches["sessionSync.enabled"]
-        scrollTo(enable, in: app)
+        scrollFullyIntoView(enable, in: app)
         XCTAssertEqual(enable.value as? String, "0")
         // Under the switch: where new uploads take their visibility from (#133).
         let notice = element("sessionSync.visibilityNotice", in: app)
@@ -27,8 +27,12 @@ final class PhoneSessionSyncUITests: XCTestCase {
             notice.label,
             "New uploads use your account’s Visibility of new sessions, which you set in Settings on madegood.app. If it’s Unlisted or Public, new sessions are shared that way automatically. Turn sharing off under Sharing to keep everything private."
         )
-        enable.switches.firstMatch.tap()
-        XCTAssertTrue(app.switches["sessionSync.wifiOnly"].waitForExistence(timeout: 5))
+        setSwitch(enable, on: true, in: app)
+        // Turning sync on reveals the row below it, which can start under the tab bar.
+        let wifiOnly = app.switches["sessionSync.wifiOnly"]
+        // It may not exist until scrolled to (a lazy row); scrollFullyIntoView fails if it never does.
+        _ = wifiOnly.waitForExistence(timeout: 5)
+        scrollFullyIntoView(wifiOnly, in: app)
 
         // The synthetic sessions predate the sign-in: they wait for an explicit choice.
         let earlier = app.buttons["sessionSync.uploadEarlier"]
@@ -151,8 +155,9 @@ final class PhoneSessionSyncUITests: XCTestCase {
         while rows.count != 1, Date.now < deadline { RunLoop.current.run(until: .now.addingTimeInterval(0.2)) }
         XCTAssertEqual(rows.count, 1)
 
-        toggle.switches.firstMatch.tap()
+        // Turning sharing off asks first; the switch stays on until confirmed.
         let confirm = app.buttons.matching(identifier: "sharing.confirmOff").firstMatch
+        tapSwitch(toggle, in: app, until: { confirm.exists })
         XCTAssertTrue(confirm.waitForExistence(timeout: 5))
         confirm.tap()
         XCTAssertTrue(element("sharing.none", in: app).waitForExistence(timeout: 10))

@@ -107,6 +107,114 @@ extension XCTestCase {
     }
 
     #if os(iOS)
+        /// The part of the window a finger can reach content in: below the navigation bar and
+        /// above the tab bar or toolbar. On iOS 26 and later the bars float over the scrolling
+        /// content, so an element under one still reports itself hittable while a tap on it
+        /// lands on the bar.
+        func unobstructedArea(in app: XCUIApplication) -> CGRect {
+            let window = app.windows.firstMatch.frame
+            var top = window.minY
+            var bottom = window.maxY
+            let navigationBar = app.navigationBars.firstMatch
+            if navigationBar.exists, !navigationBar.frame.isEmpty, navigationBar.frame.maxY < window.midY {
+                top = max(top, navigationBar.frame.maxY)
+            }
+            for bar in [app.tabBars.firstMatch, app.toolbars.firstMatch] where bar.exists {
+                let frame = bar.frame
+                if !frame.isEmpty, frame.minY > window.midY { bottom = min(bottom, frame.minY) }
+            }
+            return CGRect(x: window.minX, y: top, width: window.width, height: max(0, bottom - top))
+        }
+
+        /// Scrolls until the whole of `element` is inside the window and clear of the bars
+        /// (`unobstructedArea`), dragging by about the distance it is off rather than a fixed
+        /// swipe that can overshoot it under the navigation bar. An element that does not
+        /// exist yet (a lazy row below the fold) is looked for further down. `column` is where
+        /// across the window the drags run, as in `scrollTo`.
+        func scrollFullyIntoView(
+            _ element: XCUIElement, in app: XCUIApplication, column: CGFloat = 0.5,
+            file: StaticString = #filePath, line: UInt = #line
+        ) {
+            let window = app.windows.firstMatch
+            func clear(_ area: CGRect) -> Bool {
+                guard element.exists else { return false }
+                let frame = element.frame
+                return !frame.isEmpty && frame.minY >= area.minY && frame.maxY <= area.maxY
+                    && frame.minX >= window.frame.minX && frame.maxX <= window.frame.maxX && element.isHittable
+            }
+            // Settings at the largest text sizes runs to several screens, and a lazy row only
+            // exists once it is near the screen, so allow for many drags.
+            for _ in 0..<24 {
+                let area = unobstructedArea(in: app).insetBy(dx: 0, dy: 8)
+                if clear(area) { return }
+                // Positive: the element sits below the middle of the clear area, so drag up.
+                var distance = area.height * 0.6
+                if element.exists, !element.frame.isEmpty { distance = element.frame.midY - area.midY }
+                distance = min(max(distance, -area.height * 0.6), area.height * 0.6)
+                // A drag shorter than the scroll view's touch slop does not scroll at all.
+                if abs(distance) < 30 { distance = distance < 0 ? -30 : 30 }
+                let origin = window.coordinate(withNormalizedOffset: .zero)
+                let x = window.frame.minX + window.frame.width * column
+                let from = origin.withOffset(CGVector(dx: x, dy: area.midY + distance / 2))
+                let to = origin.withOffset(CGVector(dx: x, dy: area.midY - distance / 2))
+                // Slow, and held at the end, so the list does not coast past the element.
+                from.press(forDuration: 0.05, thenDragTo: to, withVelocity: .slow, thenHoldForDuration: 0.2)
+            }
+            XCTAssertTrue(
+                clear(unobstructedArea(in: app).insetBy(dx: 0, dy: 8)),
+                "\(element) never came fully into view (frame \(element.exists ? element.frame : .null), clear area \(unobstructedArea(in: app)))",
+                file: file, line: line)
+        }
+
+        /// Taps a SwiftUI `Toggle` the way a finger does and waits for the tap to take effect.
+        /// `toggle` is the toggle's row (`app.switches[identifier]`); the native switch inside it
+        /// is scrolled fully clear of the bars and tapped on its trailing half by coordinate:
+        /// on compact and older-runtime simulators, an accessibility tap on the element (or on
+        /// the row's centre, its label) can leave the switch unchanged. `changed` defaults to
+        /// the row's value differing from before the tap; pass another check when the tap
+        /// opens a confirmation instead. One retry absorbs a tap lost to a settling scroll.
+        func tapSwitch(
+            _ toggle: XCUIElement, in app: XCUIApplication, until changed: (() -> Bool)? = nil,
+            file: StaticString = #filePath, line: UInt = #line
+        ) {
+            if !toggle.exists { scrollFullyIntoView(toggle, in: app, file: file, line: line) }
+            let inner = toggle.switches.firstMatch
+            let knob = inner.exists ? inner : toggle
+            let before = toggle.value as? String
+            let done =
+                changed ?? {
+                    let now = toggle.value as? String
+                    return now != nil && now != before
+                }
+            for attempt in 0..<2 {
+                scrollFullyIntoView(knob, in: app, file: file, line: line)
+                let frame = knob.frame
+                // The native switch is about 63 pt wide; if the runtime reports the whole row
+                // instead, its switch sits at the trailing edge.
+                let x = frame.width > 100 ? frame.maxX - 36 : frame.maxX - frame.width * 0.3
+                app.windows.firstMatch.coordinate(withNormalizedOffset: .zero)
+                    .withOffset(CGVector(dx: x, dy: frame.midY))
+                    .tap()
+                let deadline = Date.now.addingTimeInterval(attempt == 0 ? 3 : 8)
+                while !done(), Date.now < deadline { RunLoop.current.run(until: .now.addingTimeInterval(0.25)) }
+                if done() { return }
+            }
+            XCTFail(
+                "\(toggle) did not respond to a tap on its switch; value \(String(describing: toggle.value))",
+                file: file, line: line)
+        }
+
+        /// Sets a SwiftUI `Toggle` to `on`, tapping it only if needed, and checks its value.
+        func setSwitch(
+            _ toggle: XCUIElement, on: Bool, in app: XCUIApplication,
+            file: StaticString = #filePath, line: UInt = #line
+        ) {
+            if !toggle.exists { scrollFullyIntoView(toggle, in: app, file: file, line: line) }
+            let want = on ? "1" : "0"
+            if toggle.value as? String != want { tapSwitch(toggle, in: app, file: file, line: line) }
+            XCTAssertEqual(toggle.value as? String, want, "\(toggle)", file: file, line: line)
+        }
+
         /// Clears the app's location permission so a test that records positions starts from
         /// "not determined" and answers the prompt itself. Earlier tests can leave it denied:
         /// a live session's map asks for location, and when a test does not answer, XCTest's

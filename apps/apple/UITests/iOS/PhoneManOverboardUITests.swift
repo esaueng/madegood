@@ -16,7 +16,7 @@ final class PhoneManOverboardUITests: XCTestCase {
 
         let toggle = openButtonSetting(app)
         XCTAssertEqual(toggle.value as? String, "0")
-        setPhoneButton(toggle, enabled: true)
+        setSwitch(toggle, on: true, in: app)
         app.tabBars.buttons["Record"].tap()
         XCTAssertTrue(element("control.mob", in: app).waitForExistence(timeout: 5))
 
@@ -26,7 +26,7 @@ final class PhoneManOverboardUITests: XCTestCase {
 
         let persistedToggle = openButtonSetting(app)
         XCTAssertEqual(persistedToggle.value as? String, "1")
-        setPhoneButton(persistedToggle, enabled: false)
+        setSwitch(persistedToggle, on: false, in: app)
         app.tabBars.buttons["Record"].tap()
         XCTAssertTrue(app.buttons["sport.kayak"].waitForExistence(timeout: 5))
         XCTAssertTrue(mob.waitForNonExistence(timeout: 5))
@@ -242,35 +242,23 @@ final class PhoneManOverboardUITests: XCTestCase {
         XCTAssertTrue(settings.waitForExistence(timeout: 15))
         settings.tap()
         let toggle = app.switches["settings.showManOverboardButton"]
-        scrollTo(toggle.switches.firstMatch, in: app)
+        scrollFullyIntoView(toggle, in: app)
         return toggle
     }
 
     private func launchWithPhoneButton(countdownMinutes: Int = 0, extraArguments: [String]) -> XCUIApplication {
         let app = launchDemoApp(extraArguments: ["-settings.countdown.kayak", String(countdownMinutes)] + extraArguments)
-        let toggle = openButtonSetting(app)
-        setPhoneButton(toggle, enabled: true)
+        setSwitch(openButtonSetting(app), on: true, in: app)
         app.tabBars.buttons["Record"].tap()
         return app
     }
 
-    private func setPhoneButton(
-        _ toggle: XCUIElement, enabled: Bool, file: StaticString = #filePath, line: UInt = #line
-    ) {
-        // Hit the current thumb of the native switch inside the SwiftUI row.
-        let knob = toggle.switches.firstMatch.coordinate(
-            withNormalizedOffset: CGVector(dx: enabled ? 0.25 : 0.75, dy: 0.5))
-        knob.tap()
-        let value = enabled ? "1" : "0"
-        let changed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", value), object: toggle)
-        XCTAssertEqual(
-            XCTWaiter().wait(for: [changed], timeout: 5), .completed,
-            "MOB switch never reported \(value)", file: file, line: line)
-    }
-
     private func startKayak(_ app: XCUIApplication, waitForSpeed: Bool = true) {
+        // At the largest text sizes Kayak (in the default sport order) starts below the fold,
+        // where the lazy grid has not made it yet: scroll to it instead of waiting for it.
         let kayak = app.buttons["sport.kayak"]
-        XCTAssertTrue(kayak.waitForExistence(timeout: 15))
+        XCTAssertTrue(app.tabBars.buttons["Record"].waitForExistence(timeout: 15))
+        _ = kayak.waitForExistence(timeout: 5)
         scrollTo(kayak, in: app)
         kayak.tap()
         XCTAssertTrue(app.buttons["control.pause"].waitForExistence(timeout: 15))
