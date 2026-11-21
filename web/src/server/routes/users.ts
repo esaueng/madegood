@@ -1,26 +1,16 @@
 import { createRoute, z } from "@hono/zod-openapi";
 import { and, desc, eq, isNull, lt, or, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
-import { HANDLE_PATTERN } from "../../shared/handle";
 import { optionalAuth, type ViewerEnv } from "../auth/middleware";
+import { publicProfileLookup } from "../auth/users";
 import { sessions, users } from "../db/schema";
 import { apiError, errorResponse } from "../lib/errors";
 import { createRouter } from "../lib/router";
 import { TRACK_SPORTS } from "../lib/track";
 import { decodeCursor, encodeCursor } from "./sessions";
 
-// GET /users/:handle: a user's public profile (docs/PLAN.md §6 `/u/:handle`).
-//
-// Only sessions whose visibility is `public` count or appear here; unlisted sessions are
-// for people who were given the link, so a profile never lists them. Each session is a
-// summary row with no positions, bounds, track times, wind, summary object or notes:
-// nothing a privacy zone would have to cut. Of the account, only the handle and display
-// name are shown, never its ID, units, settings or dates.
-//
-// A profile exists for others only while the user has at least one public session.
-// Sessions are private by default, so an account that never shared anything (or is being
-// deleted) gets the same 404 as a handle nobody has. The owner always sees their own
-// profile, with exactly what others would see, so they can check it before sharing.
+// Only an enabled profile can be found by its current URL. It lists public sessions
+// and their totals, with a preview available to its owner even before they share a session.
 
 const PAGE_DEFAULT = 20;
 const PAGE_MAX = 50;
@@ -30,16 +20,16 @@ const optionalSecurity: Record<string, string[]>[] = [{ bearerAuth: [] }, {}];
 
 const isoTime = z.iso.datetime({ offset: true }).openapi({ format: "date-time" });
 
-const HandleParams = z.object({
-  handle: z
+const ProfileParams = z.object({
+  profileKey: z
     .string()
-    .max(64)
+    .max(68)
     .transform((s) => s.toLowerCase())
     .openapi({
-      param: { name: "handle", in: "path" },
+      param: { name: "profileKey", in: "path" },
       type: "string",
-      description: "The user's handle, in either case. Stored lowercase.",
-      example: "skipper_4821",
+      description: "The opaque profile ID, optionally prefixed with a chosen @username and a ~.",
+      example: "@skipper_4821~f81570bf-2352-4d5f-aaf0-af1d995ccc28",
     }),
 });
 
@@ -72,7 +62,6 @@ const PublicSessionSummary = z
 
 const PublicProfile = z
   .object({
-    handle: z.string().openapi({ example: "skipper_4821" }),
     displayName: z.string().nullable(),
     isOwner: z.boolean().openapi({ description: "Whether the caller is this user." }),
     totals: ProfileTotals,
@@ -86,19 +75,18 @@ const PublicProfile = z
 
 const profileRoute = createRoute({
   method: "get",
-  path: "/users/{handle}",
+  path: "/users/{profileKey}",
   operationId: "getUserProfile",
   summary: "A user's public profile and public sessions",
   description:
-    "The handle, display name, totals and a page of sessions, all over the user's public " +
-    "sessions only (never unlisted or private ones). Anyone else gets 404 for a user with " +
-    "no public sessions, as for an unknown handle; the user themself always gets their " +
-    "profile as others would see it. `totals` covers every public session, not just this page.",
+    "The display name, totals and a page of public sessions. Disabled profiles return 404 " +
+    "to everyone. An enabled profile with no public sessions is visible only to its owner. " +
+    "`totals` covers every public session across all pages.",
   tags: ["users"],
   security: optionalSecurity,
   middleware: [optionalAuth] as const,
   request: {
-    params: HandleParams,
+    params: ProfileParams,
     query: z.object({
       cursor: z.string().max(200).optional().openapi({ description: "From `nextCursor`." }),
       limit: z.coerce
@@ -117,7 +105,7 @@ const profileRoute = createRoute({
     },
     400: errorResponse("The cursor or limit is invalid."),
     401: errorResponse("An access token was sent but is invalid."),
-    404: errorResponse("No such user, or the user has no public sessions."),
+    404: errorResponse("The profile is unavailable."),
   },
 });
 
@@ -127,21 +115,21 @@ const notFound = (c: Parameters<typeof apiError>[0]) =>
 export const userRoutes = createRouter<ViewerEnv>();
 
 userRoutes.openapi(profileRoute, async (c) => {
-  const { handle } = c.req.valid("param");
+  const { profileKey } = c.req.valid("param");
   const { cursor, limit = PAGE_DEFAULT } = c.req.valid("query");
   // Visibility can change at any time; never let a shared cache keep a profile.
-  c.header("Cache-Control", "private, no-cache");
+  c.header("Cache-Control", "private, no-store");
   const after = cursor === undefined ? null : decodeCursor(cursor);
   if (cursor !== undefined && !after) return apiError(c, 400, "invalid_request", "Bad cursor.");
-  if (!HANDLE_PATTERN.test(handle)) return notFound(c);
+  const account = publicProfileLookup(profileKey);
+  if (!account) return notFound(c);
 
   const db = drizzle(c.env.DB);
   // The account, the totals and the page are read in one batch: one round trip that D1
-  // runs as a single transaction. So an unknown handle and an account without public
+  // runs as a single transaction. So an unknown profile key and an account without public
   // sessions cost the same (no timing difference reveals which accounts exist), and all
   // three reads see the same state (no display name next to sessions a concurrent
   // deletion or visibility change has already removed).
-  const account = and(eq(users.handle, handle), isNull(users.deletedAt));
   // The sharing switch hides every session, even if one were somehow still public.
   const shown = and(
     account,
@@ -157,7 +145,7 @@ userRoutes.openapi(profileRoute, async (c) => {
       )
     : undefined;
   const userQuery = db
-    .select({ id: users.id, handle: users.handle, displayName: users.displayName })
+    .select({ id: users.id, displayName: users.publicProfileDisplayName })
     .from(users)
     .where(account);
   const totalsQuery = db
@@ -208,7 +196,6 @@ userRoutes.openapi(profileRoute, async (c) => {
 
   return c.json(
     {
-      handle: user.handle,
       displayName: user.displayName,
       isOwner,
       totals: { ...totals, bySport },

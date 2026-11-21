@@ -43,11 +43,13 @@ async function sharedIds(owner: SignIn, query = "?shared=true") {
   return body.sessions;
 }
 
+/** A signed-in user with an enabled public profile; `handle` is its profile key. */
 async function withHandle() {
   const owner = await signIn();
-  const handle = `s_${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}`;
-  expect((await patchMe(owner, { handle })).status).toBe(200);
-  return { ...owner, handle };
+  const response = await patchMe(owner, { publicProfileEnabled: true });
+  expect(response.status).toBe(200);
+  const { publicProfileKey } = (await response.json()) as { publicProfileKey: string };
+  return { ...owner, handle: publicProfileKey };
 }
 
 describe("GET /api/sessions?shared=", () => {
@@ -90,7 +92,12 @@ describe("turning sharing off", () => {
 
     const off = await patchMe(owner, { sharingEnabled: false });
     expect(off.status).toBe(200);
-    expect(await off.json()).toMatchObject({ sharingEnabled: false, defaultVisibility: "private" });
+    // The public profile goes off too, revoking its link.
+    expect(await off.json()).toMatchObject({
+      sharingEnabled: false,
+      defaultVisibility: "private",
+      publicProfileKey: null,
+    });
 
     expect(await sharedIds(owner)).toEqual([]);
     for (const id of [unlisted, pub]) {
@@ -130,6 +137,9 @@ describe("turning sharing off", () => {
       expect(defaults.status, visibility).toBe(409);
       expect(await defaults.json()).toMatchObject({ error: "sharing_disabled" });
     }
+    const profile = await patchMe(owner, { publicProfileEnabled: true });
+    expect(profile.status).toBe(409);
+    expect(await profile.json()).toMatchObject({ error: "sharing_disabled" });
     // Private stays allowed, and so do other edits.
     expect((await setVisibility(owner, id, "private")).status).toBe(200);
     expect(

@@ -10,7 +10,11 @@ export function selectReadableSessions(db: ReturnType<typeof drizzle>) {
       zonesVersion: users.zonesVersion,
       /** The owner's account-wide sharing switch (users.sharing_enabled). */
       sharingEnabled: users.sharingEnabled,
-      owner: { handle: users.handle, displayName: users.displayName },
+      owner: {
+        publicProfileId: users.publicProfileId,
+        publicProfileUsername: users.publicProfileUsername,
+        displayName: users.publicProfileDisplayName,
+      },
     })
     .from(sessions)
     .innerJoin(users, and(eq(users.id, sessions.userId), isNull(users.deletedAt)));

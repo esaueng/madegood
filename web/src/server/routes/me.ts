@@ -33,6 +33,9 @@ const getRoute = createRoute({
 
 const UpdateMeRequest = z
   .object({
+    userId: z.string().min(1).optional().openapi({
+      description: "If provided, the account ID the user intended to update.",
+    }),
     displayName: z
       .string()
       .max(50)
@@ -51,15 +54,34 @@ const UpdateMeRequest = z
       }),
     units: z.enum(["metric", "imperial", "nautical"]).optional(),
     defaultVisibility: z.enum(["private", "unlisted", "public"]).optional(),
+    publicProfileEnabled: z
+      .boolean()
+      .optional()
+      .openapi({
+        description:
+          "Enable or disable the public profile. Re-enabling creates a new link. Enabling needs " +
+          "sharing on (`sharingEnabled`).",
+      }),
     sharingEnabled: z
       .boolean()
       .optional()
       .openapi({
         description:
           "false stops all sharing at once: every session becomes private, the default " +
-          "visibility becomes private, live voyage links stop working, and nothing can be " +
-          "shared again until it is set back to true. Setting it to true shares nothing by itself.",
+          "visibility becomes private, the public profile is turned off (its link revoked), " +
+          "live voyage links stop working, and nothing can be shared again until it is set " +
+          "back to true. Setting it to true shares nothing by itself.",
       }),
+    publicProfileDisplayName: z.string().max(50).nullable().optional().openapi({
+      description: "The user-entered name for the public profile. Blank or null clears it.",
+    }),
+    publicProfileUsername: z
+      .string()
+      .transform(normalizeHandle)
+      .pipe(z.string().regex(HANDLE_PATTERN, "3–30 characters: a–z, 0–9 or _"))
+      .nullable()
+      .optional()
+      .openapi({ description: "A custom public URL username. Null restores an opaque URL." }),
   })
   .strict()
   .openapi("UpdateMeRequest");
@@ -81,8 +103,8 @@ const patchRoute = createRoute({
     400: errorResponse("The request body is invalid."),
     401: errorResponse("Missing or invalid access token, or the account no longer exists."),
     409: errorResponse(
-      "The handle is taken or reserved (`handle_taken`), or `defaultVisibility` would share " +
-        "while sharing is turned off (`sharing_disabled`).",
+      "The account differs, the handle or profile username is unavailable, or the request " +
+        "would share while sharing is turned off (`sharing_disabled`).",
     ),
   },
 });
@@ -167,18 +189,32 @@ export const me = createRouter<AuthEnv>();
 me.use("/me", requireToken);
 
 me.openapi(getRoute, async (c) => {
+  c.header("Cache-Control", "private, no-store");
   const [user] = await drizzle(c.env.DB).select().from(users).where(activeUser(c.var.userId));
   return user ? c.json(toUserBody(user), 200) : unknownUser(c);
 });
 
 me.openapi(patchRoute, async (c) => {
+  c.header("Cache-Control", "private, no-store");
   const body = c.req.valid("json");
+  if (body.userId !== undefined && body.userId !== c.var.userId) {
+    return apiError(c, 409, "account_mismatch", "You are signed in to a different account.");
+  }
   const db = drizzle(c.env.DB);
   const changes: Partial<typeof users.$inferInsert> = {};
-  if (body.displayName !== undefined) changes.displayName = cleanDisplayName(body.displayName);
+  if (body.displayName !== undefined) {
+    changes.displayName = cleanDisplayName(body.displayName);
+    changes.displayNameEdited = true;
+  }
+  if (body.publicProfileDisplayName !== undefined) {
+    changes.publicProfileDisplayName = cleanDisplayName(body.publicProfileDisplayName);
+  }
   if (body.units !== undefined) changes.units = body.units;
   if (body.defaultVisibility !== undefined) changes.defaultVisibility = body.defaultVisibility;
-  const shares = body.defaultVisibility !== undefined && body.defaultVisibility !== "private";
+  // Anything that shares (a non-private default, enabling the profile) needs the switch on.
+  const shares =
+    (body.defaultVisibility !== undefined && body.defaultVisibility !== "private") ||
+    body.publicProfileEnabled === true;
   const stopSharing = body.sharingEnabled === false;
   if (stopSharing && shares) return sharingDisabled(c);
   if (body.sharingEnabled !== undefined) changes.sharingEnabled = body.sharingEnabled;
@@ -189,19 +225,38 @@ me.openapi(patchRoute, async (c) => {
     }
     changes.handle = body.handle;
   }
+  if (body.publicProfileUsername !== undefined) {
+    if (body.publicProfileUsername && isReservedHandle(body.publicProfileUsername)) {
+      return apiError(c, 409, "handle_taken", "That profile username is not available.");
+    }
+    changes.publicProfileUsername = body.publicProfileUsername;
+  }
 
-  if (Object.keys(changes).length === 0) {
+  if (Object.keys(changes).length === 0 && body.publicProfileEnabled === undefined) {
     const [user] = await db.select().from(users).where(activeUser(c.var.userId));
     return user ? c.json(toUserBody(user), 200) : unknownUser(c);
   }
-  // A non-private default needs sharing on, checked in the same statement, unless this
-  // request turns it on.
+  // Sharing needs the switch on, checked in the same statement, unless this request turns
+  // it on.
   const allowed =
     shares && body.sharingEnabled !== true
       ? and(activeUser(c.var.userId), eq(users.sharingEnabled, true))
       : activeUser(c.var.userId);
   try {
-    const update = db.update(users).set(changes).where(allowed).returning();
+    const update = db
+      .update(users)
+      .set({
+        ...changes,
+        // Enabling twice (including retries) keeps the existing link in a single update.
+        // Turning sharing off turns the profile off too.
+        publicProfileId: body.publicProfileEnabled
+          ? sql`coalesce(${users.publicProfileId}, ${crypto.randomUUID()})`
+          : body.publicProfileEnabled === false || stopSharing
+            ? null
+            : undefined,
+      })
+      .where(allowed)
+      .returning();
     let user: typeof users.$inferSelect | undefined;
     if (stopSharing) {
       // One D1 batch (a transaction): the switch, every session it makes private, and every
@@ -235,7 +290,7 @@ me.openapi(patchRoute, async (c) => {
     return unknownUser(c);
   } catch (err) {
     if (isUniqueViolation(err)) {
-      return apiError(c, 409, "handle_taken", "That handle is not available.");
+      return apiError(c, 409, "handle_taken", "That handle or profile username is not available.");
     }
     throw err;
   }

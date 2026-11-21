@@ -2,6 +2,7 @@ import { drizzle } from "drizzle-orm/d1";
 import { Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { createMiddleware } from "hono/factory";
+import { safeNext } from "../../shared/sign-in";
 import type { AppEnv } from "../app";
 import { InvalidIdentityToken, parseAudiences, verifyAppleIdentityToken } from "../auth/apple";
 import {
@@ -42,14 +43,6 @@ const randomToken = () => {
     .replaceAll("/", "_")
     .replace(/=+$/, "");
 };
-
-/** A same-site path to return to after sign-in; anything else falls back to /sessions. */
-export function safeNext(value: string | undefined | null): string {
-  if (!value?.startsWith("/") || value.startsWith("//") || value.includes("\\")) {
-    return "/sessions";
-  }
-  return value.length > 512 ? "/sessions" : value;
-}
 
 const callbackUrl = (requestUrl: string) =>
   `${new URL(requestUrl).origin}${WEB_AUTH_PATH}/apple/callback`;

@@ -24,6 +24,13 @@ export const users = sqliteTable(
     appleSub: text("apple_sub").notNull(),
     handle: text("handle").notNull(),
     displayName: text("display_name"),
+    displayNameEdited: integer("display_name_edited", { mode: "boolean" }).notNull().default(false),
+    /** Random URL identifier, present only while the user has enabled their profile. */
+    publicProfileId: text("public_profile_id"),
+    /** An optional username chosen explicitly for the public link. */
+    publicProfileUsername: text("public_profile_username"),
+    /** User-entered name for the public page, independent of the Apple account name. */
+    publicProfileDisplayName: text("public_profile_display_name"),
     units: text("units", { enum: ["metric", "imperial", "nautical"] })
       .notNull()
       .default("nautical"),
@@ -59,6 +66,8 @@ export const users = sqliteTable(
   (table) => [
     uniqueIndex("users_apple_sub_unique").on(table.appleSub),
     uniqueIndex("users_handle_unique").on(table.handle),
+    uniqueIndex("users_public_profile_id_unique").on(table.publicProfileId),
+    uniqueIndex("users_public_profile_username_unique").on(table.publicProfileUsername),
   ],
 );
 

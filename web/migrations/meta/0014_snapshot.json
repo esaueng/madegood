@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "169b5fd4-9758-4404-9ada-4bc08e750268",
+  "id": "2949eae7-ab05-453d-9088-f5c238c20e99",
   "prevId": "814da468-4675-4315-a7fe-ba2a17a488c5",
   "tables": {
     "export_jobs": {
@@ -854,6 +854,20 @@
           "notNull": false,
           "autoincrement": false
         },
+        "public_profile_id": {
+          "name": "public_profile_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "public_profile_username": {
+          "name": "public_profile_username",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
         "units": {
           "name": "units",
           "type": "text",
@@ -869,14 +883,6 @@
           "notNull": true,
           "autoincrement": false,
           "default": "'private'"
-        },
-        "sharing_enabled": {
-          "name": "sharing_enabled",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": true
         },
         "created_at": {
           "name": "created_at",
@@ -937,6 +943,20 @@
           "name": "users_handle_unique",
           "columns": [
             "handle"
+          ],
+          "isUnique": true
+        },
+        "users_public_profile_id_unique": {
+          "name": "users_public_profile_id_unique",
+          "columns": [
+            "public_profile_id"
+          ],
+          "isUnique": true
+        },
+        "users_public_profile_username_unique": {
+          "name": "users_public_profile_username_unique",
+          "columns": [
+            "public_profile_username"
           ],
           "isUnique": true
         }

@@ -97,7 +97,7 @@ function SessionPage() {
   const s = session.data;
   return (
     <article className="grid gap-6 py-6">
-      <Header session={s} />
+      <Header session={s} showProfile={!session.isFetching} />
       <Stats session={s} units={units} />
       {s.hasTrack ? (
         track.isPending ? (
@@ -132,7 +132,7 @@ function SessionPage() {
   );
 }
 
-function Header({ session }: { session: Session }) {
+function Header({ session, showProfile }: { session: Session; showProfile: boolean }) {
   const queryClient = useQueryClient();
   const change = useMutation({
     mutationFn: (visibility: Visibility) => updateSession(session.id, { visibility }),
@@ -149,8 +149,8 @@ function Header({ session }: { session: Session }) {
     },
   });
   const current = VISIBILITY[session.visibility];
+  const owner = showProfile && session.visibility === "public" ? session.owner : null;
   const sharingOff = useMe().data?.sharingEnabled === false;
-  const owner = session.visibility === "public" ? session.owner : null;
   return (
     <header className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
       <div className="min-w-0">
@@ -159,13 +159,13 @@ function Header({ session }: { session: Session }) {
           {SPORT_NAMES[session.sport]} · {formatDate(session.startedAt)}
           {owner && (
             <>
-              {" · by "}
+              {owner.displayName ? " · by " : " · "}
               <Link
-                to="/u/$handle"
-                params={{ handle: owner.handle }}
+                to="/u/$profileKey"
+                params={{ profileKey: owner.profileKey }}
                 className="text-primary underline underline-offset-4"
               >
-                {owner.displayName ? `${owner.displayName} (@${owner.handle})` : `@${owner.handle}`}
+                {owner.displayName ?? "Public profile"}
               </Link>
             </>
           )}

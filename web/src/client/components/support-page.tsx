@@ -192,12 +192,15 @@ export function SupportPage() {
               Settings lists every session you share, each with <em>Make private</em>, on the
               website and in the iPhone app (Settings → Sharing). Turn off <em>Allow sharing</em>{" "}
               there to stop sharing everything at once: every session becomes private, its links
-              stop working, and new sessions stay private until you turn sharing back on.
+              stop working, your public profile turns off, and new sessions stay private until you
+              turn sharing back on.
             </p>
             <p>
-              Your public profile lists your name, handle and the sessions you make public, with
-              their totals. Private and unlisted sessions never appear there, and nobody else can
-              open it until you have a public session.
+              Your public profile is off by default. To publish it, open Settings and select
+              <strong> Enable public profile</strong>. Once you have a public session, the profile
+              shows your display name and public sessions. The link uses a random ID unless you
+              choose a custom URL username. Turn the profile off at any time to hide its link and
+              page. Each session keeps its own visibility.
             </p>
             <p>
               Privacy zones hide the parts of your track near places such as home or your usual

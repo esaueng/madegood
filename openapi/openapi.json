@@ -83,6 +83,27 @@
               "null"
             ]
           },
+          "publicProfileKey": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The public profile URL segment, or null while the profile is disabled."
+          },
+          "publicProfileUsername": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The optional username chosen for the public URL."
+          },
+          "publicProfileDisplayName": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The name chosen for the public profile."
+          },
           "units": {
             "type": "string",
             "enum": [
@@ -112,6 +133,9 @@
           "id",
           "handle",
           "displayName",
+          "publicProfileKey",
+          "publicProfileUsername",
+          "publicProfileDisplayName",
           "units",
           "defaultVisibility",
           "sharingEnabled",
@@ -216,6 +240,11 @@
       "UpdateMeRequest": {
         "type": "object",
         "properties": {
+          "userId": {
+            "type": "string",
+            "minLength": 1,
+            "description": "If provided, the account ID the user intended to update."
+          },
           "displayName": {
             "type": [
               "string",
@@ -245,9 +274,28 @@
               "public"
             ]
           },
+          "publicProfileEnabled": {
+            "type": "boolean",
+            "description": "Enable or disable the public profile. Re-enabling creates a new link. Enabling needs sharing on (`sharingEnabled`)."
+          },
           "sharingEnabled": {
             "type": "boolean",
-            "description": "false stops all sharing at once: every session becomes private, the default visibility becomes private, live voyage links stop working, and nothing can be shared again until it is set back to true. Setting it to true shares nothing by itself."
+            "description": "false stops all sharing at once: every session becomes private, the default visibility becomes private, the public profile is turned off (its link revoked), live voyage links stop working, and nothing can be shared again until it is set back to true. Setting it to true shares nothing by itself."
+          },
+          "publicProfileDisplayName": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 50,
+            "description": "The user-entered name for the public profile. Blank or null clears it."
+          },
+          "publicProfileUsername": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A custom public URL username. Null restores an opaque URL."
           }
         },
         "additionalProperties": false
@@ -555,7 +603,7 @@
               "null"
             ],
             "properties": {
-              "handle": {
+              "profileKey": {
                 "type": "string"
               },
               "displayName": {
@@ -566,10 +614,10 @@
               }
             },
             "required": [
-              "handle",
+              "profileKey",
               "displayName"
             ],
-            "description": "The owner's public profile. Null for private and unlisted sessions."
+            "description": "The owner's enabled profile for a public session. Null otherwise."
           },
           "startedAt": {
             "type": "string",
@@ -939,10 +987,6 @@
       "PublicProfile": {
         "type": "object",
         "properties": {
-          "handle": {
-            "type": "string",
-            "example": "skipper_4821"
-          },
           "displayName": {
             "type": [
               "string",
@@ -972,7 +1016,6 @@
           }
         },
         "required": [
-          "handle",
           "displayName",
           "isOwner",
           "totals",
@@ -1969,7 +2012,7 @@
             }
           },
           "409": {
-            "description": "The handle is taken or reserved (`handle_taken`), or `defaultVisibility` would share while sharing is turned off (`sharing_disabled`).",
+            "description": "The account differs, the handle or profile username is unavailable, or the request would share while sharing is turned off (`sharing_disabled`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -3199,11 +3242,11 @@
         }
       }
     },
-    "/users/{handle}": {
+    "/users/{profileKey}": {
       "get": {
         "operationId": "getUserProfile",
         "summary": "A user's public profile and public sessions",
-        "description": "The handle, display name, totals and a page of sessions, all over the user's public sessions only (never unlisted or private ones). Anyone else gets 404 for a user with no public sessions, as for an unknown handle; the user themself always gets their profile as others would see it. `totals` covers every public session, not just this page.",
+        "description": "The display name, totals and a page of public sessions. Disabled profiles return 404 to everyone. An enabled profile with no public sessions is visible only to its owner. `totals` covers every public session across all pages.",
         "tags": [
           "users"
         ],
@@ -3217,12 +3260,12 @@
           {
             "schema": {
               "type": "string",
-              "description": "The user's handle, in either case. Stored lowercase.",
-              "example": "skipper_4821"
+              "description": "The opaque profile ID, optionally prefixed with a chosen @username and a ~.",
+              "example": "@skipper_4821~f81570bf-2352-4d5f-aaf0-af1d995ccc28"
             },
             "required": true,
-            "description": "The user's handle, in either case. Stored lowercase.",
-            "name": "handle",
+            "description": "The opaque profile ID, optionally prefixed with a chosen @username and a ~.",
+            "name": "profileKey",
             "in": "path"
           },
           {
@@ -3279,7 +3322,7 @@
             }
           },
           "404": {
-            "description": "No such user, or the user has no public sessions.",
+            "description": "The profile is unavailable.",
             "content": {
               "application/json": {
                 "schema": {

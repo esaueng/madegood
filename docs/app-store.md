@@ -90,8 +90,8 @@ stage at which each type is collected:
 
 | App Store category | Data type | Collected | Linked to the user | Used for tracking | Purpose | What it is in the code |
 |---|---|---|---|---|---|---|
-| Identifiers | User ID | Yes, at sign-in | Yes | No | App Functionality | Apple's stable user identifier (`apple_sub`), the account ID and handle. The handle is public only while the account has a public session (below) |
-| Contact Info | Name | Yes, at sign-in, optional | Yes | No | App Functionality | The display name Apple shares on first sign-in, if the user allows it. Public only while the account has a public session. It appears on the profile page, in the profile link preview, on public session pages, and in the public profile and public session API responses (below). Email is not requested (`requestedScopes = [.fullName]`) |
+| Identifiers | User ID | Yes, at sign-in | Yes | No | App Functionality | Apple's stable user identifier (`apple_sub`), the account ID and handle. Enabled profiles can expose an independent random ID and an optional URL username |
+| Contact Info | Name | Yes, at sign-in or in profile settings, optional | Yes | No | App Functionality | The account name Apple shares if the user allows it, plus a separate name the user can enter for their public profile. The chosen profile name is public while the profile is enabled and the account has a public session. Email is not requested (`requestedScopes = [.fullName]`) |
 | Location | Precise location | Yes: tracks with Sync sessions on; privacy zones whenever added on the website | Yes | No | App Functionality | The session's GPS track (track v1 in R2), its bounding box and start geohash (D1), uploaded from the iPhone only with Sync sessions on. Separately, privacy zone centers (`privacy-zones.ts`), which a signed-in user saves on the website, from the map or the browser's location, whether or not iPhone sync is on. Covers the rounded server wind lookup below |
 | Location | Coarse location | Yes, from the first sign-in attempt (any API request) | Yes | No | App Functionality | The client IP address, and the country Cloudflare shows for it, in sampled request records that zone Security Analytics keeps up to 31 days, used only for security (below) |
 | Health & Fitness | Health | Yes, with Sync sessions on | Yes | No | App Functionality | Heart rate samples in the track, average and max heart rate in the summary |
@@ -211,17 +211,15 @@ public session's page shows its track (with privacy zones cut out), stats, title
 notes to anyone with the link, but not heart rate. This is user-initiated sharing, not
 collection by a third party; the privacy policy explains it.
 
-**Public profile (#95).** `/u/<handle>` shows the handle, the display name (if Apple
-shared one), totals, and the account's public sessions: sport, title, start time,
-duration, distance and speeds, with no track, notes or bounds. To anyone else the
-profile exists only while the account is active and has at least one public session.
-Otherwise the profile API (`users.ts`) and the page answer exactly as for an unknown
-handle, and the Open Graph tags are generic and `noindex`. The profile page, its link
-metadata (`session-preview.ts`), and `GET /api/users/{handle}` include the handle and
-display name. Public session pages show both and link to the owner's public profile.
-`GET /api/sessions/{id}` includes those fields for public sessions. Unlisted and
-private session pages and all session link previews omit both fields. Unlisted
-sessions never appear on the profile. The handle and name are already in the table above.
+**Public profile (#95).** The profile is off by default. In website Settings, users
+can enable it, enter a public display name and choose an optional URL username. The
+URL uses a random ID. A chosen `@username` can appear before that ID.
+The enabled profile lists public sessions and their totals. To others it is visible
+only while the account has a public session. Its page, link metadata and
+`GET /api/users/{profileKey}` can then show the chosen display name. Public session
+pages and responses from `GET /api/sessions/{id}` include the profile link and chosen
+name while the profile is enabled. Disabling the profile hides these details on
+all surfaces. Each session keeps its own visibility.
 
 **Account deletion (#135).** The deletion marker is committed before any purge. From
 then on every public read requires an active owner: the session metadata and track
@@ -582,7 +580,7 @@ APPLE HEALTH
 Save sessions to Apple Health as workouts with the route and heart rate. You choose per sport.
 
 OPTIONAL ACCOUNT
-Sign in with Apple and turn on Sync sessions to upload them to madegood.app, where you can browse, replay and share them. Uploads are private unless you share them, one by one or with a default you set. An unlisted session is visible to anyone with its link; a public one also appears on your public profile. Privacy zones cut places you choose, like home, out of shared tracks. Shared links preview with a route image. You can export everything in your account and delete the account from the app or the website.
+Sign in with Apple and turn on Sync sessions to upload them to madegood.app, where you can browse, replay and share them. Uploads are private unless you share them, one by one or with a default you set. An unlisted session is visible to anyone with its link; a public one appears on your public profile if you enable it in website Settings. Privacy zones cut places you choose, like home, out of shared tracks. Shared links preview with a route image. You can export everything in your account and delete the account from the app or the website.
 
 PRIVACY
 No ads, no analytics, no tracking. Without an account, your sessions stay on your devices unless you share or export them.

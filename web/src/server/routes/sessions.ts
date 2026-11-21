@@ -3,6 +3,7 @@ import { and, desc, eq, isNull, lt, ne, or, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
 import type { Context } from "hono";
 import { optionalAuth, requireAuth } from "../auth/middleware";
+import { publicProfileKey } from "../auth/users";
 import { privacyZones, type Session, sessions, sessionTombstones } from "../db/schema";
 import { apiError, errorResponse } from "../lib/errors";
 import { logFailure } from "../lib/logging";
@@ -219,9 +220,12 @@ const SessionBody = z
     title: z.string().nullable(),
     notes: z.string().nullable(),
     visibility: z.enum(VISIBILITIES),
-    owner: z.object({ handle: z.string(), displayName: z.string().nullable() }).nullable().openapi({
-      description: "The owner's public profile. Null for private and unlisted sessions.",
-    }),
+    owner: z
+      .object({ profileKey: z.string(), displayName: z.string().nullable() })
+      .nullable()
+      .openapi({
+        description: "The owner's enabled profile for a public session. Null otherwise.",
+      }),
     startedAt: isoTime,
     endedAt: isoTime.nullable(),
     durationS: z.number().nullable(),
@@ -361,6 +365,7 @@ function toSessionBody(
   wind: SessionWind | null = null,
 ): z.infer<typeof SessionBody> {
   const isOwner = session.userId === viewerId;
+  const profileKey = session.visibility === "public" ? publicProfileKey(owner) : null;
   const processed = processingState(session) === "done";
   const shown = processed && (isOwner || publicIsCurrent(session, zonesVersion));
   // The owner's times cover the whole track; others get the first and last visible fix.
@@ -373,7 +378,7 @@ function toSessionBody(
     title: session.title,
     notes: session.notes,
     visibility: session.visibility,
-    owner: session.visibility === "public" ? owner : null,
+    owner: profileKey ? { profileKey, displayName: owner.displayName } : null,
     startedAt: iso(session.startedAt),
     endedAt: session.endedAt === null ? null : iso(session.endedAt),
     durationS: session.durationS,
@@ -396,7 +401,7 @@ function toSessionBody(
 }
 
 // Cursors are opaque to clients: base64url JSON of the last item's [startedAt, id].
-// Shared with GET /users/:handle (routes/users.ts), which pages in the same order.
+// Shared with GET /users/:profileKey (routes/users.ts), which pages in the same order.
 const Cursor = z.tuple([z.number().int(), z.string().regex(UUID_PATTERN)]);
 
 export function encodeCursor(session: Pick<Session, "startedAt" | "id">): string {
@@ -676,6 +681,7 @@ const deleteRoute = createRoute({
 export const sessionRoutes = createRouter<SessionsEnv>();
 
 sessionRoutes.openapi(listRoute, async (c) => {
+  c.header("Cache-Control", "private, no-store");
   const { cursor, limit = PAGE_DEFAULT, shared } = c.req.valid("query");
   const after = cursor === undefined ? null : decodeCursor(cursor);
   if (cursor !== undefined && !after) return apiError(c, 400, "invalid_request", "Bad cursor.");

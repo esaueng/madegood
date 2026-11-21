@@ -18,6 +18,9 @@ export type Me = {
   id: string;
   handle: string;
   displayName: string | null;
+  publicProfileKey: string | null;
+  publicProfileUsername: string | null;
+  publicProfileDisplayName: string | null;
   units: Units;
   defaultVisibility: Visibility;
   /** Off: every session is private and nothing can be shared until it is turned back on. */
@@ -31,7 +34,7 @@ export type Session = {
   title: string | null;
   notes: string | null;
   visibility: Visibility;
-  owner: Pick<PublicProfile, "handle" | "displayName"> | null;
+  owner: { profileKey: string; displayName: string | null } | null;
   startedAt: string;
   endedAt: string | null;
   durationS: number | null;
@@ -72,7 +75,7 @@ export type SessionList = { sessions: Session[]; nextCursor: string | null };
 type Totals = { sessions: number; distanceM: number; movingS: number; durationS: number };
 export type MeStats = Totals & { bySport: (Totals & { sport: Sport })[] };
 
-/** A public session as a profile lists it (GET /api/users/:handle). */
+/** A public session as a profile lists it (GET /api/users/:profileKey). */
 export type PublicSessionSummary = Pick<
   Session,
   | "id"
@@ -88,7 +91,6 @@ export type PublicSessionSummary = Pick<
 
 /** A user's public profile: totals and sessions cover public sessions only. */
 export type PublicProfile = {
-  handle: string;
   displayName: string | null;
   isOwner: boolean;
   totals: MeStats;
@@ -216,9 +218,9 @@ export const fetchSharedSessions = (cursor: string | null) =>
     `/sessions?shared=true&limit=50${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
   );
 
-export const fetchProfile = (handle: string, cursor: string | null) =>
+export const fetchProfile = (profileKey: string, cursor: string | null) =>
   apiJson<PublicProfile>(
-    `/users/${encodeURIComponent(handle)}?limit=20${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
+    `/users/${encodeURIComponent(profileKey)}?limit=20${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
   );
 
 export const fetchSession = (id: string) => apiJson<Session>(`/sessions/${encodeURIComponent(id)}`);
@@ -276,7 +278,7 @@ export async function startExport(): Promise<AccountExport> {
 }
 
 /** Full-page navigation to Apple's sign-in, returning to `next` afterwards. */
-export const signInUrl = (next: string) => `/api/auth/web/apple?next=${encodeURIComponent(next)}`;
+export { signInUrl } from "../../shared/sign-in";
 
 export type PrivacyZone = { id: string; lat: number; lon: number; radiusM: number };
 
@@ -294,5 +296,17 @@ export async function deleteZone(id: string): Promise<void> {
 }
 
 export const updateMe = (
-  changes: Partial<Pick<Me, "handle" | "units" | "defaultVisibility" | "sharingEnabled">>,
-) => apiJson<Me>("/me", jsonInit("PATCH", changes));
+  userId: string,
+  changes: Partial<
+    Pick<
+      Me,
+      | "units"
+      | "defaultVisibility"
+      | "sharingEnabled"
+      | "publicProfileDisplayName"
+      | "publicProfileUsername"
+    >
+  > & {
+    publicProfileEnabled?: boolean;
+  },
+) => apiJson<Me>("/me", jsonInit("PATCH", { userId, ...changes }));
