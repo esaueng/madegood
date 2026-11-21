@@ -166,7 +166,13 @@ const readViewer = createRoute({
 
 const error = (
   c: Context,
-  status: "unauthorized" | "not_found" | "sync_conflict" | "live_capacity" | "stale_grant",
+  status:
+    | "unauthorized"
+    | "not_found"
+    | "sync_conflict"
+    | "live_capacity"
+    | "stale_grant"
+    | "sharing_disabled",
 ) => {
   switch (status) {
     case "unauthorized":
@@ -212,20 +218,8 @@ voyageLiveRoutes.openapi(getShare, async (c) => {
 });
 voyageLiveRoutes.openapi(changeShare, async (c) => {
   const key = { userId: c.var.userId, ...c.req.valid("param") };
-  const command = c.req.valid("json");
-  // A link stops resolving while the account's sharing is off (live/registry.ts); refuse
-  // to hand out or reopen one too.
-  if (["issue", "rotate", "resume"].includes(command.action)) {
-    const enabled = await c.env.DB.prepare(
-      "SELECT 1 FROM users WHERE id = ? AND deleted_at IS NULL AND sharing_enabled = 1",
-    )
-      .bind(key.userId)
-      .first();
-    if (!enabled) {
-      return apiError(c, 409, "sharing_disabled", "Sharing is turned off for this account.");
-    }
-  }
-  const result = await liveVoyage(c.env, key).configure(key, command);
+  // The object refuses to issue or reopen a link while the account's sharing is off.
+  const result = await liveVoyage(c.env, key).configure(key, c.req.valid("json"));
   if (result.status !== "ok") return error(c, result.status);
   return result.response as Response &
     TypedResponse<z.infer<typeof ChangeShareResult>, 200, "json">;

@@ -5,6 +5,7 @@ const levels = {
   export_message_invalid: "warn",
   export_queue_failed: "error",
   export_step_retry: "error",
+  live_share_revoke_failed: "warn",
   og_cache_read_failed: "warn",
   og_cache_write_failed: "warn",
   og_image_failed: "error",

@@ -9,6 +9,9 @@ struct SharingSettingsView: View {
 
     @State private var enabled: Bool?
     @State private var sessions: [SharedSession] = []
+    /// Whether `sessions` is what the server last reported; never claim nothing is shared
+    /// before it is.
+    @State private var loaded = false
     @State private var loading = false
     @State private var busy: Set<String> = []
     @State private var changingSwitch = false
@@ -26,8 +29,13 @@ struct SharingSettingsView: View {
             }
 
             Section {
-                if loading && sessions.isEmpty {
-                    ProgressView()
+                if !loaded {
+                    if loading {
+                        ProgressView()
+                    } else {
+                        Button("Try Again") { Task { await load() } }
+                            .accessibilityIdentifier("sharing.retry")
+                    }
                 } else if sessions.isEmpty {
                     Text("Nothing is shared. Every session is private.")
                         .foregroundStyle(.secondary)
@@ -137,6 +145,7 @@ struct SharingSettingsView: View {
             }
             enabled = state
             sessions = shared
+            loaded = true
             message = nil
         } catch {
             message = failure(error, doing: "load your sharing settings")
@@ -152,7 +161,6 @@ struct SharingSettingsView: View {
                 enabled = try await sync.withAccount { api, token in
                     try await api.setSharingEnabled(value, bearer: token)
                 }
-                if value == false { sessions = [] }
                 await load()
             } catch {
                 message = failure(error, doing: value ? "turn sharing on" : "turn sharing off")

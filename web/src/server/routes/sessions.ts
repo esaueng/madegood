@@ -1001,9 +1001,17 @@ sessionRoutes.openapi(getTrackRoute, async (c) => {
     const gzipped = await new Response(
       new Blob([JSON.stringify(shared)]).stream().pipeThrough(new CompressionStream("gzip")),
     ).arrayBuffer();
-    // Deletion can remove the zones after this request obtained the R2 object. Recheck
-    // the owner before sending a projection that may have used the emptied zone list.
-    if (!(await accountActive(db, session.userId))) return notFound(c);
+    // Deletion can remove the zones, and the owner can make the session private or turn
+    // sharing off, after this request obtained the R2 object. Recheck before sending.
+    const current = await findReadableSession(db, id);
+    if (
+      !current ||
+      !canView(current, viewerId) ||
+      current.session.userId !== session.userId ||
+      current.session.trackKey !== session.trackKey
+    ) {
+      return notFound(c);
+    }
     return new Response(gzipped, {
       headers: {
         "content-type": TRACK_CONTENT_TYPE,

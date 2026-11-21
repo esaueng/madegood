@@ -1,5 +1,7 @@
+import { createExecutionContext } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
+import { createApp } from "../src/server/app";
 import { locateShare } from "../src/server/live/registry";
 import { profilePreview, sessionPreview } from "../src/server/routes/session-preview";
 import { api, bearer, type SignIn, signIn } from "./apple";
@@ -173,6 +175,45 @@ describe("turning sharing off", () => {
     expect((await api(`/sessions/${id}/track`)).status).toBe(404);
     expect((await api(`/users/${owner.handle}`)).status).toBe(404);
     expect((await sessionPreview(env.DB, id)).indexable).toBe(false);
+  });
+
+  it("does not send a track when sharing goes off while the request reads it", async () => {
+    const owner = await signIn();
+    const id = await addSession(owner, "public");
+    const track = JSON.stringify({
+      analyzerVersion: "1.0.0",
+      events: [],
+      gps: { t: [0, 1], lat: [0.0001, 0.00011], lon: [0.0002, 0.0002], spd: [1, 1], crs: [0, 0] },
+      hr: { t: [], bpm: [] },
+      sessionId: id,
+      sport: "kayak",
+      startedAt: "2000-01-01T10:00:00.000Z",
+      summary: {},
+      v: 1,
+    });
+    const body = new Blob([track]).stream().pipeThrough(new CompressionStream("gzip"));
+    const put = await api(`/sessions/${id}/track`, {
+      method: "PUT",
+      headers: { ...bearer(owner.accessToken), "content-type": "application/gzip" },
+      body: new Uint8Array(await new Response(body).arrayBuffer()),
+    });
+    expect(put.status).toBe(204);
+    expect((await api(`/sessions/${id}/track`)).status).toBe(200);
+
+    // The owner turns sharing off after the request found the session, while it reads R2.
+    const tracks = {
+      get: async (key: string) => {
+        expect((await patchMe(owner, { sharingEnabled: false })).status).toBe(200);
+        return env.TRACKS.get(key);
+      },
+    } as unknown as R2Bucket;
+    const response = await createApp().request(
+      new URL(`/api/sessions/${id}/track`, "https://madegood.test"),
+      {},
+      { ...env, TRACKS: tracks },
+      createExecutionContext(),
+    );
+    expect(response.status).toBe(404);
   });
 
   it("stops live voyage links from resolving", async () => {
