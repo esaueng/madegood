@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import { decodeJwt, SignJWT } from "jose";
 import { describe, expect, it } from "vitest";
 import { hashRefreshToken } from "../src/server/auth/tokens";
+import { signInUrl } from "../src/shared/sign-in";
 import { api, bearer, deleteMe, identityToken, signIn } from "./apple";
 
 const ORIGIN = "https://madegood.test";
@@ -106,6 +107,7 @@ describe("web sign-in with Apple", () => {
   it("returns to a same-site path, never another site", async () => {
     for (const [next, expected] of [
       ["/s/abc?x=1", "/s/abc?x=1"],
+      ["/u/test_skipper", "/sessions"],
       ["//evil.example", "/sessions"],
       ["https://evil.example/", "/sessions"],
       ["/\\evil.example", "/sessions"],
@@ -122,6 +124,12 @@ describe("web sign-in with Apple", () => {
       );
       expect(done.headers.get("location")).toBe(`${ORIGIN}${expected}`);
     }
+  });
+
+  it("does not repeat profile paths in generated sign-in links", () => {
+    expect(signInUrl("/u/test_skipper")).toBe("/api/auth/web/apple?next=%2Fsessions");
+    expect(signInUrl("/U/test_skipper?view=public")).toBe("/api/auth/web/apple?next=%2Fsessions");
+    expect(signInUrl("/settings")).toBe("/api/auth/web/apple?next=%2Fsettings");
   });
 
   it("rejects a mismatched state, nonce or audience without signing in", async () => {

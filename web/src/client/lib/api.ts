@@ -270,7 +270,7 @@ export async function startExport(): Promise<AccountExport> {
 }
 
 /** Full-page navigation to Apple's sign-in, returning to `next` afterwards. */
-export const signInUrl = (next: string) => `/api/auth/web/apple?next=${encodeURIComponent(next)}`;
+export { signInUrl } from "../../shared/sign-in";
 
 export type PrivacyZone = { id: string; lat: number; lon: number; radiusM: number };
 
