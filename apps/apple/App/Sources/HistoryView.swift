@@ -191,7 +191,8 @@ private struct HistoryTotals: View {
             parts += [display.distance(totals.distance), Formatting.duration(totals.movingTime)]
         }
         if pending > 0 { parts.append("\(pending) awaiting metrics") }
-        return Text(parts.joined(separator: " · "))
+        // Wraps between metrics at large text sizes, never between a value and its unit.
+        return Text(Formatting.metricLine(parts))
             .font(.footnote.weight(.medium).monospacedDigit())
             .foregroundStyle(Color.secondary)
     }

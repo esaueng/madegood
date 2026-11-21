@@ -1125,10 +1125,15 @@ private struct LiveControls: View {
 
             if showManOverboardButton {
                 // Pause and MOB side by side, or stacked when large text doesn't fit.
+                // MOB takes its own ideal width (at least 132 pt) rather than a fixed 132:
+                // a fixed frame reported 132 to ViewThatFits while the fixed-size label
+                // drew wider, so at the largest sizes it overlapped Pause and ran off screen.
                 ViewThatFits(in: .horizontal) {
                     HStack(spacing: 10) {
                         pauseButton
-                        manOverboardButton.frame(width: 132)
+                        manOverboardButton
+                            .frame(minWidth: 132)
+                            .fixedSize(horizontal: true, vertical: false)
                     }
                     VStack(spacing: 10) {
                         pauseButton

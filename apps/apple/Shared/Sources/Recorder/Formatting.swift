@@ -17,6 +17,25 @@ enum Formatting {
         return m > 0 ? "\(m) min" : "\(total) s"
     }
 
+    /// Metrics on one line, "3 sessions · 24.2 km · 1 h 46 min", that wrap only between
+    /// metrics: a space next to a number is non-breaking, so a value never leaves its unit,
+    /// and each "·" stays at the end of a line rather than starting the next. A space between
+    /// two words ("awaiting metrics") stays breakable, so a phrase longer than a line still
+    /// wraps at a word instead of mid-word.
+    static func metricLine(_ metrics: [String]) -> String {
+        metrics.map(bindValuesToUnits).joined(separator: "\u{00A0}· ")
+    }
+
+    private static func bindValuesToUnits(_ metric: String) -> String {
+        let chars = Array(metric)
+        var out = ""
+        for (i, c) in chars.enumerated() {
+            let betweenWords = i > 0 && i + 1 < chars.count && chars[i - 1].isLetter && chars[i + 1].isLetter
+            out.append(c == " " && !betweenWords ? "\u{00A0}" : c)
+        }
+        return out
+    }
+
     static func bytes(_ count: Int64) -> String {
         ByteCountFormatter.string(fromByteCount: count, countStyle: .file)
     }

@@ -107,6 +107,14 @@ final class PhoneManOverboardUITests: XCTestCase {
         let pause = app.buttons["control.pause"]
         XCTAssertTrue(mob.isHittable)
         XCTAssertTrue(pause.isHittable)
+        // Whole controls on screen and apart, not just a hittable sliver: on 440-pt phones
+        // the side-by-side layout once let MOB overflow its slot, over Pause and off the edge.
+        let window = app.windows.firstMatch.frame
+        let mobFrame = mob.frame
+        let pauseFrame = pause.frame
+        XCTAssertTrue(window.contains(mobFrame), "MOB \(mobFrame) leaves the window \(window)")
+        XCTAssertTrue(window.contains(pauseFrame), "Pause \(pauseFrame) leaves the window \(window)")
+        XCTAssertFalse(mobFrame.intersects(pauseFrame), "MOB \(mobFrame) overlaps Pause \(pauseFrame)")
         attachScreenshot("5 controls largest text dark")
 
         mob.press(forDuration: 1.2)
@@ -254,11 +262,11 @@ final class PhoneManOverboardUITests: XCTestCase {
     }
 
     private func startKayak(_ app: XCUIApplication, waitForSpeed: Bool = true) {
-        // At the largest text sizes Kayak (in the default sport order) starts below the fold,
-        // where the lazy grid has not made it yet: scroll to it instead of waiting for it.
+        // At the largest text sizes Kayak is a lazy row far below the fold, so wait for the
+        // start list itself and let scrollTo bring Kayak into being.
+        let anySport = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'sport.'")).firstMatch
+        XCTAssertTrue(anySport.waitForExistence(timeout: 15))
         let kayak = app.buttons["sport.kayak"]
-        XCTAssertTrue(app.tabBars.buttons["Record"].waitForExistence(timeout: 15))
-        _ = kayak.waitForExistence(timeout: 5)
         scrollTo(kayak, in: app)
         kayak.tap()
         XCTAssertTrue(app.buttons["control.pause"].waitForExistence(timeout: 15))
