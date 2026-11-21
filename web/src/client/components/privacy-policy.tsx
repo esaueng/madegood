@@ -254,12 +254,13 @@ export function PrivacyPolicy() {
         <ul>
           <li>
             <strong>Public profile.</strong> Profiles start off. Enable yours in Settings to show
-            your display name, totals and public sessions once you have at least one public session.
-            The link uses a random ID by default. If you choose a custom URL username, that username
-            appears in the link. Anyone can also get the enabled profile's display name and public
-            session data from the public profile API (<code>/api/users/</code> and the profile's URL
-            identifier). Turning off your profile hides its page, public API data and personalized
-            link preview. Each session keeps its own visibility.
+            the display name you enter for the profile, your totals and your public sessions once
+            you have at least one public session. The link uses a random ID by default. If you
+            choose a custom URL username, that username appears in the link. Anyone can also get the
+            enabled profile's display name and public session data from the public profile API (
+            <code>/api/users/</code> and the profile's URL identifier). Turning off your profile
+            hides its page, public API data and personalized link preview. Each session keeps its
+            own visibility.
           </li>
           <li>
             <strong>Link previews.</strong> When an unlisted or public session's link is posted in a

@@ -97,6 +97,13 @@
             ],
             "description": "The optional username chosen for the public URL."
           },
+          "publicProfileDisplayName": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The name chosen for the public profile."
+          },
           "units": {
             "type": "string",
             "enum": [
@@ -124,6 +131,7 @@
           "displayName",
           "publicProfileKey",
           "publicProfileUsername",
+          "publicProfileDisplayName",
           "units",
           "defaultVisibility",
           "createdAt"
@@ -263,6 +271,14 @@
           "publicProfileEnabled": {
             "type": "boolean",
             "description": "Enable or disable the public profile. Re-enabling creates a new link."
+          },
+          "publicProfileDisplayName": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 50,
+            "description": "The user-entered name for the public profile. Blank or null clears it."
           },
           "publicProfileUsername": {
             "type": [

@@ -57,6 +57,9 @@ const UpdateMeRequest = z
     publicProfileEnabled: z.boolean().optional().openapi({
       description: "Enable or disable the public profile. Re-enabling creates a new link.",
     }),
+    publicProfileDisplayName: z.string().max(50).nullable().optional().openapi({
+      description: "The user-entered name for the public profile. Blank or null clears it.",
+    }),
     publicProfileUsername: z
       .string()
       .transform((s) => s.trim().toLowerCase())
@@ -178,8 +181,13 @@ me.openapi(patchRoute, async (c) => {
   }
   const db = drizzle(c.env.DB);
   const changes: Partial<typeof users.$inferInsert> = {};
-  if (body.displayName !== undefined) changes.displayName = cleanDisplayName(body.displayName);
-  if (body.displayName !== undefined || body.publicProfileEnabled) changes.displayNameEdited = true;
+  if (body.displayName !== undefined) {
+    changes.displayName = cleanDisplayName(body.displayName);
+    changes.displayNameEdited = true;
+  }
+  if (body.publicProfileDisplayName !== undefined) {
+    changes.publicProfileDisplayName = cleanDisplayName(body.publicProfileDisplayName);
+  }
   if (body.units !== undefined) changes.units = body.units;
   if (body.defaultVisibility !== undefined) changes.defaultVisibility = body.defaultVisibility;
   if (body.handle !== undefined) {

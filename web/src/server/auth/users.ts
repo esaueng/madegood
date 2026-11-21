@@ -63,6 +63,9 @@ export const UserBody = z
     publicProfileUsername: z.string().nullable().openapi({
       description: "The optional username chosen for the public URL.",
     }),
+    publicProfileDisplayName: z.string().nullable().openapi({
+      description: "The name chosen for the public profile.",
+    }),
     units: z.enum(["metric", "imperial", "nautical"]),
     defaultVisibility: z.enum(["private", "unlisted", "public"]),
     createdAt: z.string().datetime().openapi({ format: "date-time" }),
@@ -79,6 +82,7 @@ export const toUserBody = (user: User): z.infer<typeof UserBody> => ({
       ? `@${user.publicProfileUsername}~${user.publicProfileId}`
       : user.publicProfileId),
   publicProfileUsername: user.publicProfileUsername,
+  publicProfileDisplayName: user.publicProfileDisplayName,
   units: user.units,
   defaultVisibility: user.defaultVisibility,
   createdAt: new Date(user.createdAt).toISOString(),

@@ -99,7 +99,7 @@ export async function profilePreview(db: D1Database, profileKey: string): Promis
   if (!account) return GENERIC_PROFILE;
   const [row] = await drizzle(db)
     .select({
-      displayName: users.displayName,
+      displayName: users.publicProfileDisplayName,
       units: users.units,
       count: sql<number>`count(${sessions.id})`,
       distanceM: sql<number>`coalesce(sum(${sessions.distanceM}), 0)`,

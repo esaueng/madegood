@@ -68,7 +68,7 @@ describe("D1 migrations: sessions, tokens, privacy zones", () => {
     }
   });
 
-  it("clears stored wind and keeps existing accounts opted out during rollout", async () => {
+  it("clears stored wind, preserves blank names, and keeps existing accounts opted out", async () => {
     const db = env.TEST_MIGRATION_DB;
     const name = "0013_clear_stored_wind.sql";
     await applyD1Migrations(
@@ -95,9 +95,15 @@ describe("D1 migrations: sessions, tokens, privacy zones", () => {
     ]);
     expect(
       await db
-        .prepare("SELECT public_profile_id, public_profile_username FROM users WHERE id = 'u50'")
+        .prepare(`SELECT display_name_edited, public_profile_id, public_profile_username,
+          public_profile_display_name FROM users WHERE id = 'u50'`)
         .first(),
-    ).toEqual({ public_profile_id: null, public_profile_username: null });
+    ).toEqual({
+      display_name_edited: 1,
+      public_profile_id: null,
+      public_profile_username: null,
+      public_profile_display_name: null,
+    });
   });
 
   it("reject a session for an unknown user and a reused token hash", async () => {

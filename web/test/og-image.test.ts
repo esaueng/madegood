@@ -191,7 +191,7 @@ describe("public reads while account deletion is blocked", () => {
         "/me",
         json(
           "PATCH",
-          { publicProfileEnabled: true, displayName: "Test Skipper" },
+          { publicProfileEnabled: true, publicProfileDisplayName: "Test Skipper" },
           owner.accessToken,
         ),
       );

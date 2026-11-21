@@ -29,6 +29,8 @@ export const users = sqliteTable(
     publicProfileId: text("public_profile_id"),
     /** An optional username chosen explicitly for the public link. */
     publicProfileUsername: text("public_profile_username"),
+    /** User-entered name for the public page, independent of the Apple account name. */
+    publicProfileDisplayName: text("public_profile_display_name"),
     units: text("units", { enum: ["metric", "imperial", "nautical"] })
       .notNull()
       .default("nautical"),

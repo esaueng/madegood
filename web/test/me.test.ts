@@ -41,6 +41,7 @@ describe("GET /api/me", () => {
       defaultVisibility: "private",
       publicProfileKey: null,
       publicProfileUsername: null,
+      publicProfileDisplayName: null,
       createdAt: expect.stringMatching(/^\d{4}-\d\d-\d\dT/),
     });
   });

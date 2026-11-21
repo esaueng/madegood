@@ -139,7 +139,7 @@ userRoutes.openapi(profileRoute, async (c) => {
       )
     : undefined;
   const userQuery = db
-    .select({ id: users.id, displayName: users.displayName })
+    .select({ id: users.id, displayName: users.publicProfileDisplayName })
     .from(users)
     .where(account);
   const totalsQuery = db

@@ -336,7 +336,8 @@ waypoints). Voyages reuse the Sessions engine, track format, sync, and backend.
 ```
 users          id, apple_sub (unique), handle (unique), display_name, units,
                default_visibility, public_profile_id (unique, null while off),
-               public_profile_username (unique, optional), created_at, deleted_at
+               public_profile_username (unique, optional), public_profile_display_name,
+               created_at, deleted_at
 refresh_tokens id, user_id, token_hash, expires_at, created_at, revoked_at
 sessions       id (device UUID), user_id, sport, title, notes, visibility
                (private|unlisted|public), started_at, ended_at, duration_s, moving_s,

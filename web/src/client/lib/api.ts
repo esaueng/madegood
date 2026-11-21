@@ -20,6 +20,7 @@ export type Me = {
   displayName: string | null;
   publicProfileKey: string | null;
   publicProfileUsername: string | null;
+  publicProfileDisplayName: string | null;
   units: Units;
   defaultVisibility: Visibility;
   createdAt: string;
@@ -288,7 +289,7 @@ export async function deleteZone(id: string): Promise<void> {
 export const updateMe = (
   userId: string,
   changes: Partial<
-    Pick<Me, "units" | "defaultVisibility" | "displayName" | "publicProfileUsername">
+    Pick<Me, "units" | "defaultVisibility" | "publicProfileDisplayName" | "publicProfileUsername">
   > & {
     publicProfileEnabled?: boolean;
   },

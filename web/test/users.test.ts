@@ -1,6 +1,7 @@
 import { createExecutionContext } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
+import { profileSettingsChanges } from "../src/client/lib/profile-settings";
 import { createApp } from "../src/server/app";
 import { profilePreviewPage } from "../src/server/routes/session-preview";
 import { api, bearer, deleteMe, identityToken, type SignIn, signIn } from "./apple";
@@ -25,7 +26,9 @@ async function profileKeyOf(response: Response): Promise<string> {
 
 async function profileUser(displayName: string | null = "Test Skipper") {
   const user = await signIn({ displayName: displayName ?? undefined });
-  const profileKey = await profileKeyOf(await setProfile(user, { publicProfileEnabled: true }));
+  const profileKey = await profileKeyOf(
+    await setProfile(user, { publicProfileEnabled: true, publicProfileDisplayName: displayName }),
+  );
   return { ...user, profileKey };
 }
 
@@ -111,7 +114,7 @@ describe("GET /api/users/:profileKey", () => {
     const custom = await profileKeyOf(
       await setProfile(owner, {
         publicProfileUsername: username.toUpperCase(),
-        displayName: "Chosen Name",
+        publicProfileDisplayName: "Chosen Name",
       }),
     );
     expect(custom).toBe(`@${username}~${owner.profileKey}`);
@@ -145,7 +148,7 @@ describe("GET /api/users/:profileKey", () => {
     expect((await profileOf(opaque)).displayName).toBe("Chosen Name");
   });
 
-  it("keeps a cleared profile display name blank when Apple supplies a name again", async () => {
+  it("keeps an explicitly cleared account name blank when Apple supplies a name again", async () => {
     const sub = crypto.randomUUID();
     const owner = await signIn({
       identityToken: await identityToken({ sub }),
@@ -163,14 +166,39 @@ describe("GET /api/users/:profileKey", () => {
     expect((await profileOf(key)).displayName).toBeNull();
   });
 
-  it("preserves the other profile field during a partial edit", async () => {
+  it("can fill an account name from Apple without publishing it on an enabled profile", async () => {
+    const sub = crypto.randomUUID();
+    const owner = await signIn({ identityToken: await identityToken({ sub }) });
+    await addSession(owner, "public");
+    const key = await profileKeyOf(await setProfile(owner, { publicProfileEnabled: true }));
+    const signedInAgain = await signIn({
+      identityToken: await identityToken({ sub }),
+      displayName: "Test Skipper",
+    });
+    expect(signedInAgain.user.displayName).toBe("Test Skipper");
+    expect((await profileOf(key)).displayName).toBeNull();
+  });
+
+  it("a stale username-only edit cannot restore a cleared profile name", async () => {
     const owner = await profileUser();
     await addSession(owner, "public");
+    const nameWithTrailingSpace = `${"A".repeat(49)} `;
+    await env.DB.prepare("UPDATE users SET public_profile_display_name = ? WHERE id = ?")
+      .bind(nameWithTrailingSpace, owner.user.id)
+      .run();
+    const stale = {
+      publicProfileDisplayName: nameWithTrailingSpace,
+      publicProfileUsername: null,
+    };
+    expect((await setProfile(owner, { publicProfileDisplayName: null })).status).toBe(200);
+
+    const fields = new FormData();
+    fields.set("displayName", stale.publicProfileDisplayName);
+    fields.set("username", owner.user.handle);
     const key = await profileKeyOf(
-      await setProfile(owner, { publicProfileUsername: owner.user.handle }),
+      await setProfile(owner, profileSettingsChanges(stale, fields, false)),
     );
-    expect(await profileKeyOf(await setProfile(owner, { displayName: "Updated Name" }))).toBe(key);
-    expect((await profileOf(key)).displayName).toBe("Updated Name");
+    expect((await profileOf(key)).displayName).toBeNull();
   });
 
   it("shows the display name, public totals and public sessions", async () => {

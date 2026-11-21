@@ -19,6 +19,7 @@ import {
   type Visibility,
 } from "@/lib/api";
 import { meQueryKey, useDeleteAccount, useMe } from "@/lib/auth";
+import { profileSettingsChanges } from "@/lib/profile-settings";
 
 const ZoneMap = lazy(() => import("@/components/zone-map"));
 
@@ -101,7 +102,7 @@ function PublicProfile({ me, save, showLink }: { me: Me; save: SettingsSave; sho
   const profileError =
     save.isError &&
     (save.variables?.publicProfileEnabled !== undefined ||
-      save.variables?.displayName !== undefined ||
+      save.variables?.publicProfileDisplayName !== undefined ||
       save.variables?.publicProfileUsername !== undefined);
   return (
     <section className="grid gap-3">
@@ -118,26 +119,17 @@ function PublicProfile({ me, save, showLink }: { me: Me; save: SettingsSave; sho
           event.preventDefault();
           const fields = new FormData(event.currentTarget);
           const enable = event.nativeEvent.submitter?.getAttribute("value") === "enable";
-          const displayName = String(fields.get("displayName") ?? "").trim() || null;
-          const username =
-            String(fields.get("username") ?? "")
-              .trim()
-              .toLowerCase() || null;
-          save.mutate({
-            displayName: displayName !== me.displayName ? displayName : undefined,
-            publicProfileUsername: username !== me.publicProfileUsername ? username : undefined,
-            publicProfileEnabled: enable ? true : undefined,
-          });
+          save.mutate(profileSettingsChanges(me, fields, enable));
         }}
       >
         <label className="grid gap-1 text-sm">
-          <span className="font-medium">Display name</span>
+          <span className="font-medium">Public display name (optional)</span>
           <input
-            key={me.displayName}
+            key={me.publicProfileDisplayName}
             name="displayName"
             className="h-9 rounded-md border bg-background px-2"
             maxLength={50}
-            defaultValue={me.displayName ?? ""}
+            defaultValue={me.publicProfileDisplayName ?? ""}
             disabled={save.isPending}
           />
         </label>
