@@ -155,9 +155,10 @@ export function PrivacyPolicy() {
           <li>
             <strong>Identifiers:</strong> Apple's identifier for your sign-in, an account ID and a
             handle, and your name if you shared it. While you have a public session, anyone can see
-            your handle and name: on your profile page, in its link preview, and directly from the
-            public profile API (<code>/api/users/</code> and your handle), which returns both. With
-            no public session, none of these show them (see Sharing).
+            your handle and any name you shared on your profile page, in its link preview, on your
+            public session pages, and directly from the public profile API (<code>/api/users/</code>{" "}
+            and your handle) and public session API (<code>/api/sessions/</code> and the session
+            ID).
           </li>
           <li>
             <strong>Sessions:</strong> sport, times, distance, speeds, laps and other statistics,
@@ -258,7 +259,9 @@ export function PrivacyPolicy() {
             your totals, and your public sessions with their sport, title, start time, duration,
             distance and speeds. It never lists private or unlisted sessions. With no public
             sessions, the page, its data and its link preview look to others exactly like a profile
-            that does not exist. Session pages and their previews do not show your handle or name.
+            that does not exist. Public session pages link to your profile and show your handle and,
+            if you shared it, your name. Unlisted and private session pages and all session link
+            previews do not show your handle or name.
           </li>
           <li>
             <strong>Link previews.</strong> When an unlisted or public session's link is posted in a
