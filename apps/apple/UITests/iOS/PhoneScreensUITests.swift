@@ -88,6 +88,8 @@ final class HistoryFiltersUITests: XCTestCase {
         XCTAssertEqual(XCTWaiter().wait(for: [ready], timeout: 15), .completed)
         let allTotals = totals.label
         XCTAssertTrue(allTotals.hasPrefix("3\u{00A0}sessions\u{00A0}· "), allTotals)
+        // VoiceOver hears what the card adds to the totals line: the days and the best 10 s.
+        XCTAssertTrue((totals.value as? String)?.hasPrefix("on 3 days, fastest 10 seconds ") == true)
 
         let rows = app.buttons.matching(identifier: "session.row")
         app.buttons["history.sportFilter"].tap()
@@ -97,6 +99,7 @@ final class HistoryFiltersUITests: XCTestCase {
         XCTAssertTrue(totals.label.hasPrefix("1\u{00A0}session\u{00A0}· "))
         XCTAssertTrue(totals.label.contains("\u{00A0}nm"))
         XCTAssertTrue(totals.label.hasSuffix("25\u{00A0}min"))
+        XCTAssertTrue((totals.value as? String)?.hasPrefix("on 1 day, ") == true)
         XCTAssertEqual(app.staticTexts["month.totals"].firstMatch.label, totals.label)
         attachScreenshot("Windsurfing history with route preview")
 

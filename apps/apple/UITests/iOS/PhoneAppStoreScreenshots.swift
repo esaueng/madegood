@@ -122,7 +122,8 @@ final class PhoneAppStoreScreenshots: XCTestCase {
         var row = app.buttons.matching(identifier: "session.row").containing(.staticText, identifier: sport)
         if let duration { row = row.containing(.staticText, identifier: duration) }
         let match = row.firstMatch
-        XCTAssertTrue(match.waitForExistence(timeout: 15))
+        // Rows load as they scroll in: wait for the list, then scroll to the session.
+        XCTAssertTrue(app.buttons["session.row"].firstMatch.waitForExistence(timeout: 15))
         scrollTo(match, in: app)
         match.tap()
         XCTAssertTrue(element("replay.map", in: app).waitForExistence(timeout: 20))

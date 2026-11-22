@@ -219,13 +219,18 @@ private struct HistorySummaryCard: View {
         let summaries = items.compactMap(\.summary)
         let totals = SessionLibrary.totals(items)
         let fastest = summaries.compactMap(\.metrics.maxSpeed10s).max()
-        let days = Set(summaries.map { calendar.startOfDay(for: $0.startedAt) }).count
+        // Recording start, as the date filters and rows use (a trim can move the track's start).
+        let days = Set(items.compactMap { $0.entry.startedAt.map(calendar.startOfDay) }).count
         let pending = items.count - totals.count
+        // No totals until at least one session is analyzed, as in the month lines.
+        let analyzed = totals.count > 0
         VStack(alignment: .leading, spacing: 0) {
             let distance = MetricValue(
-                title: "Distance", value: display.distance(totals.distance), color: Theme.Metric.distance)
+                title: "Distance", value: analyzed ? display.distance(totals.distance) : "–",
+                color: Theme.Metric.distance)
             let moving = MetricValue(
-                title: "Moving time", value: Formatting.duration(totals.movingTime), color: Theme.Metric.time)
+                title: "Moving time", value: analyzed ? Formatting.duration(totals.movingTime) : "–",
+                color: Theme.Metric.time)
             let speed = MetricValue(
                 title: "Fastest 10 s", value: display.speed(fastest), color: Theme.Metric.speed, size: .medium)
             let sessions = MetricValue(title: "Sessions", value: "\(items.count)", size: .medium)
@@ -264,8 +269,15 @@ private struct HistorySummaryCard: View {
         .clipShape(.rect(cornerRadius: 20, style: .continuous))
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(HistoryTotals.line(items: items, display: display))
-        .accessibilityValue(fastest.map { "fastest 10 seconds \(display.speed($0))" } ?? "")
+        .accessibilityValue(accessibilityValue(days: days, fastest: fastest))
         .accessibilityIdentifier("history.totals")
+    }
+
+    /// What the card shows beyond the shared totals line: the days and the fastest 10 s.
+    private func accessibilityValue(days: Int, fastest: Double?) -> String {
+        var parts = ["on \(days) \(days == 1 ? "day" : "days")"]
+        if let fastest { parts.append("fastest 10 seconds \(display.speed(fastest))") }
+        return parts.joined(separator: ", ")
     }
 
     private func footer(days: Int, pending: Int) -> String {

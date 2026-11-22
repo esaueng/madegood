@@ -56,11 +56,19 @@ final class PhoneSessionSyncUITests: XCTestCase {
 
         // History: two synced, the windsurf session refused as too large.
         app.tabBars.buttons["History"].tap()
-        let badges = app.descendants(matching: .any).matching(identifier: "session.sync")
-        XCTAssertTrue(badges.firstMatch.waitForExistence(timeout: 10))
-        let labels = (0..<badges.count).map { badges.element(boundBy: $0).label }
-        XCTAssertEqual(labels.filter { $0 == "Synced" }.count, 2, "\(labels)")
-        XCTAssertEqual(labels.filter { $0 == "Too large to upload" }.count, 1, "\(labels)")
+        let rows = app.buttons.matching(identifier: "session.row")
+        XCTAssertTrue(rows.firstMatch.waitForExistence(timeout: 10))
+        // The list loads rows as they scroll in, so check each session's badge in turn.
+        func badge(_ sport: String) -> String {
+            let row = rows.containing(.staticText, identifier: sport).firstMatch
+            scrollTo(row, in: app)
+            let badge = row.descendants(matching: .any).matching(identifier: "session.sync").firstMatch
+            XCTAssertTrue(badge.waitForExistence(timeout: 10), sport)
+            return badge.label
+        }
+        XCTAssertEqual(badge("Sailing"), "Synced")
+        XCTAssertEqual(badge("Kayak"), "Synced")
+        XCTAssertEqual(badge("Windsurfing"), "Too large to upload")
         attachScreenshot("History sync status")
 
         let failedRow = app.buttons.matching(identifier: "session.row")

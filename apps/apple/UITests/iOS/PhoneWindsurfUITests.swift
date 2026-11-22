@@ -33,9 +33,10 @@ final class PhoneWindsurfUITests: XCTestCase {
     func testSessionDetailSpeedBests() {
         let app = launchDemoHistory()
         app.tabBars.buttons["History"].tap()
-        let windsurfing = app.buttons.matching(identifier: "session.row")
-            .containing(.staticText, identifier: "Windsurfing").firstMatch
-        XCTAssertTrue(windsurfing.waitForExistence(timeout: 15))
+        let rows = app.buttons.matching(identifier: "session.row")
+        let windsurfing = rows.containing(.staticText, identifier: "Windsurfing").firstMatch
+        // The History list loads rows as they scroll in; the windsurf session is the third.
+        XCTAssertTrue(rows.firstMatch.waitForExistence(timeout: 15))
         scrollTo(windsurfing, in: app)
         windsurfing.tap()
 
