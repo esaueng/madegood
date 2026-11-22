@@ -27,7 +27,8 @@ Run the checks for every area you touch before you push.
 |---|---|
 | WaterKit tests | `swift test --package-path packages/WaterKit` |
 | Replay a session | `swift run --package-path packages/WaterKit waterkit-replay <path>` |
-| Anonymize a track | `scripts/anonymize-track <in> <out>` |
+| Anonymize a track | `scripts/anonymize-track <in> <out>` (`--labels <labels.json>` for reviewed stroke labels) |
+| Label strokes | `scripts/label-strokes draft <recording> <out>`, then `score <recording> <labels.json>` (see fixtures/README.md) |
 | Apple project | `mise install` (pins Tuist), then `cd apps/apple && tuist install && tuist generate --no-open` |
 | Apple build | see the `apple` job in `.github/workflows/ci.yml` for the exact `xcodebuild` lines |
 | Apple UI tests | in `apps/apple`: `xcodebuild test -workspace MadeGood.xcworkspace -scheme MadeGoodWatch -destination 'platform=watchOS Simulator,name=<watch>'`, and `-scheme MadeGood -only-testing:MadeGoodUITests` with an iPhone simulator. They launch the apps with `-demoSession` (a synthetic route, no permissions); export screenshots with `xcrun xcresulttool export attachments` |

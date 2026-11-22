@@ -4,14 +4,16 @@ import WaterKit
 // waterkit-anonymize: hide where and when a recording was made (see Anonymizer), or
 // check that recordings are anonymized.
 //
-//   waterkit-anonymize <input> <output>
+//   waterkit-anonymize <input> <output> [--labels <labels.json>]
 //   waterkit-anonymize --check <path>...
 
 let usage = """
     Usage:
-      waterkit-anonymize <input> <output>
+      waterkit-anonymize <input> <output> [--labels <labels.json>]
           Anonymize a raw recording folder (output: a new folder, streams gzipped)
-          or a track file (output: track.json.gz).
+          or a track file (output: track.json.gz). With --labels (recording folders
+          only), check reviewed labels against the recording and write them into the
+          output as labels.json; drafts are rejected.
       waterkit-anonymize --check <path>...
           Check recordings are anonymized. A path may be a recording folder, a track
           file, or a folder searched recursively (e.g. fixtures/). Exits 1 on problems.
@@ -88,21 +90,34 @@ if arguments[0] == "--check" {
     guard arguments.count > 1 else { fail(usage, 2) }
     check(Array(arguments.dropFirst()))
 }
-guard arguments.count == 2, !arguments.contains(where: { $0.hasPrefix("-") }) else { fail(usage, 2) }
+var positional: [String] = []
+var labelsPath: String?
+var index = 0
+while index < arguments.count {
+    if arguments[index] == "--labels" {
+        guard index + 1 < arguments.count, labelsPath == nil else { fail(usage, 2) }
+        labelsPath = arguments[index + 1]
+        index += 2
+        continue
+    }
+    guard !arguments[index].hasPrefix("-") else { fail(usage, 2) }
+    positional.append(arguments[index])
+    index += 1
+}
+guard positional.count == 2 else { fail(usage, 2) }
 
-let input = URL(fileURLWithPath: arguments[0])
-var output = URL(fileURLWithPath: arguments[1])
+let input = URL(fileURLWithPath: positional[0])
+var output = URL(fileURLWithPath: positional[1])
 guard FileManager.default.fileExists(atPath: input.path) else { fail("No such file or folder: \(input.path)", 1) }
 guard !FileManager.default.fileExists(atPath: output.path) else { fail("Output already exists: \(output.path)", 1) }
 
 do {
     let anonymizer = Anonymizer()
     if isDirectory(input) {
-        let session = anonymizer.anonymize(try RawSessionReader.read(folder: input))
-        try RawSessionWriter.write(session, to: output)
-        let problems = FixtureCheck.problems(inFolder: output)
-        guard problems.isEmpty else { fail("Anonymized output failed its check: \(problems)", 1) }
+        let labels = try labelsPath.map { try Data(contentsOf: URL(fileURLWithPath: $0)) }
+        try anonymizer.exportFixture(from: input, to: output, labels: labels)
     } else {
+        guard labelsPath == nil else { fail("--labels needs a raw recording folder (stroke labels need motion)", 2) }
         if output.pathExtension != "gz" { output.appendPathExtension("gz") }
         let track = anonymizer.anonymize(try TrackCodec.decode(Data(contentsOf: input)))
         try TrackCodec.encode(track).write(to: output)

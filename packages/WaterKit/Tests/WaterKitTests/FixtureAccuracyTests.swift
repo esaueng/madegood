@@ -4,56 +4,107 @@ import Testing
 @testable import WaterKit
 
 @Suite struct FixtureAccuracyTests {
-    struct Labels: Decodable {
-        struct Truth: Decodable {
-            var strokes: Int?
-            var strokeRateSPM: Double?
-            var maneuvers: [SessionEvent]?
-            var windDirectionDeg: Double?
-        }
+    typealias Labels = FixtureLabelsFile
 
-        var v: Int
+    /// A labelled fixture folder in `fixtures/` or the fetched corpus (`fixtures/.corpus/`).
+    struct Fixture: Sendable, CustomTestStringConvertible {
+        var folder: URL
         var sport: Sport
-        var truth: Truth
+        /// The folder relative to the repository.
+        var context: String
+        var testDescription: String { context }
     }
 
-    @Test func labeledRecordingsMeetPlanThresholds() throws {
-        let repository = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-            .deletingLastPathComponent()
+    static let repository = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        .deletingLastPathComponent()
+
+    /// Folders with a labels.json whose truth has stroke labels (`strokes`, `strokeRateSPM`
+    /// or `strokeTimes`), or the others. Unreadable labels count as others, whose test
+    /// reports them.
+    static func fixtures(strokes: Bool) -> [Fixture] {
         let fixtures = repository.appendingPathComponent("fixtures")
         let fm = FileManager.default
+        var found: [Fixture] = []
         for root in [fixtures, fixtures.appendingPathComponent(".corpus")] {
             for sport in Sport.allCases {
                 let sportFolder = root.appendingPathComponent(sport.rawValue)
-                guard fm.fileExists(atPath: sportFolder.path) else { continue }
-                let folders = try fm.contentsOfDirectory(at: sportFolder, includingPropertiesForKeys: nil)
+                let folders = (try? fm.contentsOfDirectory(at: sportFolder, includingPropertiesForKeys: nil)) ?? []
                 for folder in folders.sorted(by: { $0.path < $1.path }) {
                     let file = folder.appendingPathComponent("labels.json")
                     guard fm.fileExists(atPath: file.path) else { continue }
-                    let context = folder.path.replacingOccurrences(of: repository.path + "/", with: "")
-                    do {
-                        let problems = FixtureCheck.labelsProblems(file)
-                        try #require(problems.isEmpty, "\(context): \(problems)")
-                        let labels = try JSONDecoder().decode(Labels.self, from: Data(contentsOf: file))
-                        try #require(labels.v == 1, "\(context): unsupported labels version")
-                        let session = try Self.loadRecording(folder, truth: labels.truth)
-                        try #require(
-                            labels.sport == sport && labels.sport == session.meta.sport, "\(context): sport mismatch")
-                        try #require(session.issues.isEmpty, "\(context): \(session.issues)")
-                        try Self.check(labels.truth, session: session, context: context)
-                        // The thresholds must also hold after writing the recording with the
-                        // current writer (rounded values) and reading it back.
-                        if let rewritten = try Self.rewritten(folder, session, truth: labels.truth) {
-                            try Self.check(labels.truth, session: rewritten, context: context + " (rewritten)")
-                        }
-                    } catch is CancellationError {
-                        throw CancellationError()
-                    } catch {
-                        Issue.record("\(context): \(error)")
+                    var hasStrokes = false
+                    if let data = try? Data(contentsOf: file),
+                        case .object(let labels)? = try? JSONDecoder().decode(JSONValue.self, from: data),
+                        case .object(let truth)? = labels["truth"]
+                    {
+                        hasStrokes = !Set(truth.keys).isDisjoint(with: [
+                            "strokes", "strokeRateSPM", "strokeTimes", "excluded",
+                        ])
                     }
+                    guard hasStrokes == strokes else { continue }
+                    let context = folder.path.replacingOccurrences(of: repository.path + "/", with: "")
+                    found.append(Fixture(folder: folder, sport: sport, context: context))
                 }
             }
+        }
+        return found
+    }
+
+    /// Every recording with stroke labels. None exists yet; see fixtures/README.md, "How to
+    /// label a session".
+    static let paddlingFixtures = fixtures(strokes: true)
+
+    @Test func labeledRecordingsMeetPlanThresholds() throws {
+        for fixture in Self.fixtures(strokes: false) {
+            do {
+                try Self.score(fixture)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                Issue.record("\(fixture.context): \(error)")
+            }
+        }
+    }
+
+    /// PLAN §5 stroke count (±3 %) and rate (±2 SPM) on each labelled paddling recording,
+    /// scored on session detail's path. Skipped until the first one is added.
+    @Test(
+        .enabled(
+            if: !FixtureAccuracyTests.paddlingFixtures.isEmpty,
+            "No labelled paddling fixture yet (fixtures/README.md, \"How to label a session\")"),
+        arguments: FixtureAccuracyTests.paddlingFixtures)
+    func labeledPaddlingRecordingsMeetStrokeThresholds(_ fixture: Fixture) throws {
+        try Self.score(fixture)
+    }
+
+    static func score(_ fixture: Fixture) throws {
+        let context = fixture.context
+        let file = fixture.folder.appendingPathComponent("labels.json")
+        let problems = FixtureCheck.labelsProblems(file)
+        try #require(problems.isEmpty, "\(context): \(problems)")
+        let labels = try JSONDecoder().decode(Labels.self, from: Data(contentsOf: file))
+        try #require(labels.v == 1, "\(context): unsupported labels version")
+        // Stroke-by-stroke labels give the count and rate (fixtures/README.md).
+        var truth = labels.truth
+        let strokes = try labels.strokeTruth()
+        truth.strokes = strokes.strokes
+        truth.strokeRateSPM = strokes.strokeRateSPM
+        let session = try loadRecording(fixture.folder, truth: truth)
+        try #require(labels.sport == fixture.sport && labels.sport == session.meta.sport, "\(context): sport mismatch")
+        try #require(session.issues.isEmpty, "\(context): \(session.issues)")
+        if let strokeLabels = labels.strokeLabels {
+            let problems = strokeLabels.problems(duration: max(session.duration, session.motion.last?.t ?? 0))
+            try #require(problems.isEmpty, "\(context): \(problems)")
+            // Stroke-by-stroke labels always score both: a rate they cannot give would
+            // otherwise drop the ±2 SPM check without a word.
+            try #require(strokes.strokeRateSPM != nil, "\(context): the stroke labels give no rate")
+        }
+        try check(truth, session: session, context: context)
+        // The thresholds must also hold after writing the recording with the
+        // current writer (rounded values) and reading it back.
+        if let rewritten = try rewritten(fixture.folder, session, truth: truth) {
+            try check(truth, session: rewritten, context: context + " (rewritten)")
         }
     }
 
@@ -114,7 +165,7 @@ import Testing
                 let error = abs(GPSFilter.signedDifference(from: wind, to: estimate.fromDegrees))
                 #expect(error <= 10, "\(context): estimated \(estimate.fromDegrees)°, expected \(wind)° ±10°")
             }
-            if let maneuvers = truth.maneuvers {
+            if let maneuvers = truth.maneuvers.map({ $0.map { SessionEvent(t: $0.t, type: $0.type) } }) {
                 try #require(
                     maneuvers.allSatisfy {
                         ($0.type == .tack || $0.type == .gybe) && (0...selection.duration).contains($0.t)

@@ -15,8 +15,9 @@ import Foundation
 ///   (altitude can identify a lake), and so is the magnetic heading: its difference from
 ///   the true heading is the local magnetic declination, which narrows down the region.
 /// - **Events:** only `allowedEventTypes` are kept, and their data only keeps
-///   `allowedEventDataKeys` with small finite numbers. Everything else (free text, names,
-///   coordinates, timestamps, unknown types) is removed. The track summary is dropped and
+///   `allowedEventDataKeys` with small finite numbers, or the auto-pause flag (a pause
+///   or resume without it is the user's own, which stops stroke counting). Everything
+///   else (free text, names, coordinates, timestamps, unknown types) is removed. The track summary is dropped and
 ///   can be recomputed.
 /// - **Kept:** sport, device kind/model/OS, app version, requested sampling rates, true
 ///   heading, and all motion data (CoreMotion's default attitude frame has an arbitrary
@@ -115,8 +116,9 @@ public struct Anonymizer: Sendable {
     public static let allowedEventTypes: Set<EventType> = [
         .start, .stop, .pause, .resume, .mark, .lap, .mob, .tack, .gybe,
     ]
-    /// Event data fields that may appear in a published recording (analysis outputs).
-    public static let allowedEventDataKeys: Set<String> = ["durationS", "speedLossPct", "angleDeg"]
+    /// Event data fields that may appear in a published recording (analysis outputs, and
+    /// `auto` on auto-pause events).
+    public static let allowedEventDataKeys: Set<String> = ["durationS", "speedLossPct", "angleDeg", "auto"]
     /// Larger values are rejected so a timestamp or coordinate can't hide in an allowed field.
     public static let maxEventDataMagnitude = 10_000.0
 
@@ -125,14 +127,16 @@ public struct Anonymizer: Sendable {
             guard allowedEventTypes.contains(event.type) else { return nil }
             var clean = event
             let kept = (event.data ?? [:]).filter { key, value in
-                allowedEventDataKeys.contains(key) && isAllowedEventValue(value)
+                allowedEventDataKeys.contains(key) && isAllowedEventValue(value, key: key)
             }
             clean.data = kept.isEmpty ? nil : kept
             return clean
         }
     }
 
-    static func isAllowedEventValue(_ value: JSONValue) -> Bool {
+    /// `auto` is a boolean; every other allowed field a small finite number.
+    static func isAllowedEventValue(_ value: JSONValue, key: String) -> Bool {
+        if key == "auto" { return value == .bool(true) || value == .bool(false) }
         guard case .number(let number) = value else { return false }
         return number.isFinite && abs(number) <= maxEventDataMagnitude
     }
