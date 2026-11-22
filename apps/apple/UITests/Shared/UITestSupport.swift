@@ -350,6 +350,18 @@ extension XCTestCase {
             menu.tap()
         }
 
+        /// Scrolls a list back up until `element`, above the loaded rows, is in view. Drags run
+        /// over the lower half of the window, clear of a map at the top.
+        func scrollUpTo(_ element: XCUIElement, in app: XCUIApplication, column: CGFloat = 0.5) {
+            let window = app.windows.firstMatch
+            for _ in 0..<10 where !(element.exists && element.isHittable) {
+                let from = window.coordinate(withNormalizedOffset: CGVector(dx: column, dy: 0.5))
+                let to = window.coordinate(withNormalizedOffset: CGVector(dx: column, dy: 0.85))
+                from.press(forDuration: 0.05, thenDragTo: to, withVelocity: .slow, thenHoldForDuration: 0.1)
+            }
+            XCTAssertTrue(element.exists && element.isHittable, "\(element) never came into view above")
+        }
+
         /// Dismisses an open menu with a tap outside it, on the window's top-left margin.
         func closeMenu(in app: XCUIApplication) {
             app.windows.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.03, dy: 0.2)).tap()
