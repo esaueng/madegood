@@ -139,6 +139,21 @@ final class TransferPolicyTests: XCTestCase {
         XCTAssertEqual(TransferPolicy.scheduledAfterFailure(current: newer, failed: failed), newer)
     }
 
+    /// Re-check of #170, finding 3: the only retry after a failed request was a 60 s timer,
+    /// which never fires if watchOS suspends the process first. It is asked again right away.
+    func testAFailedRefreshRequestIsMadeAgainRightAwayAFewTimes() {
+        let failed = now.addingTimeInterval(15 * 60)
+        let attempts = (1...5).filter {
+            TransferPolicy.retriesRefreshRequest(afterAttempt: $0, failed: failed, current: failed)
+        }
+        XCTAssertEqual(attempts, Array(1..<TransferPolicy.refreshRequestAttempts))
+        // Not an older request that a newer one has replaced.
+        XCTAssertFalse(
+            TransferPolicy.retriesRefreshRequest(
+                afterAttempt: 1, failed: failed, current: now.addingTimeInterval(60)))
+        XCTAssertFalse(TransferPolicy.retriesRefreshRequest(afterAttempt: 1, failed: failed, current: nil))
+    }
+
     // MARK: WatchConnectivity background task
 
     /// The task must stay open until the session has delivered everything and the app has

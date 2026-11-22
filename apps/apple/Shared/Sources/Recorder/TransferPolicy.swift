@@ -58,6 +58,17 @@ enum TransferPolicy {
     /// How long after a refresh request fails it is asked for again.
     static let refreshRequestRetry: TimeInterval = 60
 
+    /// How many times in a row a refresh request is made when it fails, right away from its
+    /// failure callback while the process still runs (a timer may never fire in a
+    /// suspended process).
+    static let refreshRequestAttempts = 3
+
+    /// Whether to ask again right away after attempt `attempt` (1-based) at a refresh for
+    /// `failed` failed: only while attempts remain and it is still the latest request.
+    static func retriesRefreshRequest(afterAttempt attempt: Int, failed: Date, current: Date?) -> Bool {
+        attempt < refreshRequestAttempts && current == failed
+    }
+
     /// The refresh asked for after a request for `failed` failed: none if that request is
     /// still the latest (so the next send, wake or retry asks again), otherwise the newer
     /// one, which a late failure of an older request must not erase.

@@ -16,8 +16,9 @@ struct MadeGoodWatchApp: App {
         WindowGroup {
             WatchContentView()
                 .onChange(of: scenePhase) { _, phase in
-                    // Leaving with recordings still to send: make sure a wake is asked for.
-                    if phase == .background { RecordingTransfer.shared.scheduleRefreshIfPending() }
+                    // Leaving with recordings still to send, or back after a request failed:
+                    // make sure a wake is asked for.
+                    if phase != .inactive { RecordingTransfer.shared.scheduleRefreshIfPending() }
                 }
         }
         // The phone's acknowledgements wake a suspended app; each one queues the next parts

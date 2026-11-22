@@ -884,6 +884,15 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
                 return true
             }
             guard asks else { return }
+            requestRefresh(at: wanted, attempt: 1)
+            log.add("Asked to wake in the background in \(Self.describe(wanted.timeIntervalSince(now)))")
+        }
+
+        /// Asks watchOS for the refresh at `wanted`. A failed request is made again right away,
+        /// up to `TransferPolicy.refreshRequestAttempts` times, while the process still runs;
+        /// after that, the next send, WatchConnectivity wake, or the app moving to the
+        /// background or foreground asks again (and a timer, if the process keeps running).
+        private func requestRefresh(at wanted: Date, attempt: Int) {
             busy.withLock { $0 += 1 }
             DispatchQueue.main.async {
                 defer { self.busy.withLock { $0 -= 1 } }
@@ -891,15 +900,21 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
                     WKApplication.shared().scheduleBackgroundRefresh(
                         withPreferredDate: wanted, userInfo: TransferPolicy.refreshIdentifier as NSString
                     ) { error in
-                        if let error {
-                            self.scheduledRefresh.withLock {
-                                $0 = TransferPolicy.scheduledAfterFailure(current: $0, failed: wanted)
+                        guard let error else { return }
+                        let again = self.scheduledRefresh.withLock { current -> Bool in
+                            let again = TransferPolicy.retriesRefreshRequest(
+                                afterAttempt: attempt, failed: wanted, current: current)
+                            if !again {
+                                current = TransferPolicy.scheduledAfterFailure(current: current, failed: wanted)
                             }
-                            self.log.add(
-                                "Could not ask to wake in the background: \(error.localizedDescription); "
-                                    + "asking again in \(Self.describe(TransferPolicy.refreshRequestRetry))")
-                            // Without a request, an outstanding transfer that stalls without
-                            // callbacks would leave nothing to wake the app.
+                            return again
+                        }
+                        self.log.add(
+                            "Could not ask to wake in the background (attempt \(attempt)): "
+                                + "\(error.localizedDescription)" + (again ? "; asking again" : ""))
+                        if again {
+                            self.requestRefresh(at: wanted, attempt: attempt + 1)
+                        } else {
                             DispatchQueue.global(qos: .utility).asyncAfter(
                                 wallDeadline: .now() + TransferPolicy.refreshRequestRetry
                             ) { self.scheduleRefreshIfPending() }
@@ -907,7 +922,6 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
                     }
                 }
             }
-            log.add("Asked to wake in the background in \(Self.describe(wanted.timeIntervalSince(now)))")
         }
 
         /// Asks for a background refresh if a finished recording waits that can go (one the
