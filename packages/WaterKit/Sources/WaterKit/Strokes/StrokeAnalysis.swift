@@ -70,10 +70,7 @@ public struct StrokeAnalysis: Sendable, Hashable {
             detector.ingest(sample)
         }
         // Close the last bin, so a cycle that ended in it is not lost.
-        if var closing = motion.last {
-            closing.t += config.binInterval
-            detector.ingest(closing)
-        }
+        if let last = motion.last { detector.ingest(closingSample(after: last, binInterval: config.binInterval)) }
         for event in pauses[next...] { detector.ingest(event) }
         let cycles = detector.cycles
         let strokes = expand(cycles, strokesPerCycle: detector.strokesPerCycle) { detector.isPaused(at: $0) }
@@ -108,6 +105,32 @@ public struct StrokeAnalysis: Sendable, Hashable {
         return detect(motion: motion, sport: sport, events: pauseEvents, config: config) {
             clock.fromMono($0 + origin)
         }
+    }
+
+    /// A copy of the last motion sample in the middle of the next 40 ms bin: fed to the
+    /// detector at the end, it closes the last bin. Adding one bin width to the time could
+    /// land in the same bin by rounding (8.0 s + 0.04 s gives bin 200, not 201).
+    public static func closingSample(after last: MotionSample, binInterval: Double) -> MotionSample {
+        var closing = last
+        closing.t = ((last.t / binInterval).rounded(.down) + 1.5) * binInterval
+        return closing
+    }
+
+    /// Strokes in `cycles` outside every `excluded` interval, counted the way session detail
+    /// counts them (`init(session:selection:)`): kayak cycles expanded into their two strokes
+    /// first, then a stroke left out when it falls in a manual pause (`isPaused`, on the
+    /// cycles' clock) or in an excluded interval (on session time, which `toSessionTime` maps
+    /// the cycles' clock to), its start included and its end not. For the live count, with
+    /// the engine's `autoPausedIntervals`.
+    public static func strokeCount(
+        cycles: [StrokeDetector.Cycle], strokesPerCycle: Int, excluding excluded: [ClosedRange<Double>],
+        isPaused: (Double) -> Bool = { _ in false }, toSessionTime: (Double) -> Double = { $0 }
+    ) -> Int {
+        func isExcluded(_ t: Double) -> Bool {
+            let session = toSessionTime(t)
+            return excluded.contains { $0.lowerBound <= session && session < $0.upperBound }
+        }
+        return expand(cycles, strokesPerCycle: strokesPerCycle) { isPaused($0) || isExcluded($0) }.count
     }
 
     /// Strokes from cycles: the cycle's own, plus for kayak the other blade's stroke half a

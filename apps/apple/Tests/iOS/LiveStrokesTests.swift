@@ -63,4 +63,41 @@ final class LiveStrokesTests: XCTestCase {
         XCTAssertEqual(Double(paused), 30, accuracy: 2)
         XCTAssertEqual(Double(strokes.snapshot().strokeCount - paused), 50, accuracy: 2)
     }
+
+    /// The live count kept strokes in auto-pauses and vehicle legs, which session detail
+    /// leaves out. Those intervals are on the engine's wall-time clock; strokes are placed on
+    /// it with the clock anchors, so a wall clock set 100 s ahead at 60 s leaves the earlier
+    /// pause where it was and moves only later strokes (review of PR #173).
+    func testCountLeavesOutAutoPausedIntervalsAcrossAClockChange() {
+        let clock = Uptime()
+        let strokes = LiveStrokes(sport: .sup, startMono: startUptime, now: clock.read)
+        let samples = motion(seconds: 90)
+        feed(samples.filter { $0.t < 60 }, to: strokes, clock: clock)
+        // The wall clock jumps 100 s forward at 60 s; the recorder writes an anchor.
+        strokes.anchor(mono: startUptime + 60, wall: startUptime + 160)
+        feed(samples.filter { $0.t >= 60 }, to: strokes, clock: clock)
+        let all = strokes.snapshot().strokeCount
+        XCTAssertEqual(Double(all - strokes.snapshot(excluding: [20...40]).strokeCount), 20, accuracy: 2)
+        // 70–80 s on the motion clock is 170–180 s on the wall clock.
+        XCTAssertEqual(Double(all - strokes.snapshot(excluding: [170...180]).strokeCount), 10, accuracy: 2)
+        XCTAssertEqual(strokes.snapshot(excluding: [70...80]).strokeCount, all)
+        // An auto-pause still open leaves out everything after its start.
+        XCTAssertEqual(Double(strokes.snapshot(excluding: [30...Double.infinity]).strokeCount), 30, accuracy: 2)
+    }
+
+    /// The final motion bin was never closed live, so a stroke confirmed in it was missing
+    /// from the watch's summary; session detail closes it (review of PR #173).
+    func testFinishCountsWhatSessionDetailCounts() {
+        let samples = motion(seconds: 60)
+        for end in stride(from: 30.0, through: 31.0, by: 0.04) {
+            let clock = Uptime()
+            let strokes = LiveStrokes(sport: .sup, startMono: startUptime, now: clock.read)
+            let cut = samples.filter { $0.t < end }
+            feed(cut, to: strokes, clock: clock)
+            strokes.finish()
+            XCTAssertEqual(
+                strokes.snapshot().strokeCount, StrokeAnalysis.detect(motion: cut, sport: .sup).strokes.count,
+                "ending at \(end) s")
+        }
+    }
 }

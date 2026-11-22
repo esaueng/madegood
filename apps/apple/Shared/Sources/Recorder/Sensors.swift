@@ -120,6 +120,14 @@ final class MotionSource {
         manager.stopDeviceMotionUpdates()
     }
 
+    /// Returns once every update queued before it has been handled, so a sample already in
+    /// flight at `stop()` has reached `onSample`.
+    func drain() async {
+        await withCheckedContinuation { continuation in
+            queue.addBarrierBlock { continuation.resume() }
+        }
+    }
+
     /// Built outside the main actor so the closure is not main-actor isolated: CoreMotion
     /// calls it on `queue`.
     nonisolated private static func handler(

@@ -215,6 +215,20 @@ public struct SessionEngine: LiveAnalyzer {
         return closedTransportIntervals + [transportSince...max(transportSince, latestTime)]
     }
 
+    /// The user's pause, resume and stop events so far, for `autoPausedIntervals`.
+    private var userPauseEvents: [SessionEvent] = []
+
+    /// Auto-pauses and vehicle legs so far, merged and in time order, found the way
+    /// `SessionReplay.autoPausedIntervals` finds them after the session: what live stroke
+    /// counting leaves out, so the live count matches session detail (docs/metrics.md
+    /// "Strokes"). One still open has no upper bound (+infinity). Intervals can appear or
+    /// grow back in time, because auto-pauses and vehicle legs are dated back.
+    public var autoPausedIntervals: [ClosedRange<Double>] {
+        let events = (userPauseEvents + generatedEvents).sorted { $0.t < $1.t }
+        return SessionReplay.autoPausedIntervals(
+            events: events, transport: transportIntervals, removed: [], end: .infinity)
+    }
+
     public init(profile: SportProfile, filter: GPSFilter.Config = GPSFilter.Config()) {
         self.profile = profile
         self.filter = GPSFilter(config: filter)
@@ -637,6 +651,7 @@ public struct SessionEngine: LiveAnalyzer {
     // MARK: - Events
 
     private mutating func ingestEvent(_ event: SessionEvent) {
+        if event.type == .pause || event.type == .resume || event.type == .stop { userPauseEvents.append(event) }
         switch event.type {
         case .pause:
             sailingTracker?.breakRun()
