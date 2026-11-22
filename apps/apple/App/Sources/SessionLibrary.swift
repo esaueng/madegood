@@ -175,14 +175,20 @@ final class SessionLibrary {
         return updated
     }
 
-    /// Saves a session's name and notes (empty details remove them) and returns the
-    /// updated item. Refuses while a newer app's file is there, so it isn't overwritten.
-    func updateDetails(_ details: SessionDetails, for item: Item) throws -> Item {
-        guard let sessionId = item.entry.meta?.sessionId else { throw EditError.recordingChanged }
-        if case .failure = Self.loadDetails(sessionId: sessionId) { throw EditError.detailsUnreadable }
-        try Self.detailsStore.save(details, sessionId: sessionId)
-        reload()
-        return items.first { $0.id == item.id } ?? Item(entry: item.entry, summary: item.summary, details: details)
+    /// Saves a session's name and notes (empty details remove them). Refuses when the
+    /// recording is gone (deleted from another screen), so no file outlives it, and while a
+    /// newer app's file is there, so it isn't overwritten.
+    func updateDetails(_ details: SessionDetails, sessionId: UUID, folder: URL) throws {
+        defer { reload() }
+        // Under the transfer's lock, as `delete` removes the folder under it: either the
+        // recording is still there when this saves, or the delete removes the file after.
+        try RecordingTransfer.storageLock.withLock {
+            guard (try? RawSessionReader.readMeta(folder: folder))?.sessionId == sessionId else {
+                throw EditError.recordingChanged
+            }
+            if case .failure = Self.loadDetails(sessionId: sessionId) { throw EditError.detailsUnreadable }
+            try Self.detailsStore.save(details, sessionId: sessionId)
+        }
     }
 
     /// Deletes a recording, unless its files changed since `item` was read (a file arrived

@@ -58,6 +58,47 @@ final class PhoneSessionDetailsUITests: XCTestCase {
         XCTAssertFalse(element("session.notes", in: app).exists)
     }
 
+    /// The same session open from Recent and from History: a name saved in one detail shows
+    /// in the other, and once one deletes the session the other can't edit it.
+    @MainActor
+    func testTwoOpenDetailsOfOneSession() {
+        let app = launchDemoHistory(extraArguments: ["-demoOmitMapKit"])
+        XCTAssertTrue(app.buttons["sport.sailing"].waitForExistence(timeout: 15))
+        let recent = app.buttons.matching(identifier: "recent.session")
+            .containing(.staticText, identifier: "Sailing").firstMatch
+        scrollTo(recent, in: app)
+        recent.tap()
+        XCTAssertTrue(app.buttons["session.panel.handle"].waitForExistence(timeout: 20))
+
+        openSailing(in: app, title: "Sailing")
+        openSessionMenu("session.more", in: app)
+        app.buttons["session.editDetails"].tap()
+        let name = element("details.name", in: app)
+        XCTAssertTrue(name.waitForExistence(timeout: 5))
+        name.typeText("Evening race")
+        app.buttons["details.save"].tap()
+        XCTAssertTrue(app.navigationBars["Evening race"].waitForExistence(timeout: 5))
+
+        app.tabBars.buttons["Record"].tap()
+        XCTAssertTrue(
+            app.navigationBars["Evening race"].waitForExistence(timeout: 5), "Recent's detail kept the old title")
+
+        // Delete it from History, with its detail still open in Recent.
+        app.tabBars.buttons["History"].tap()
+        openSessionMenu("session.more", in: app)
+        app.buttons["session.delete"].tap()
+        let confirm = app.buttons["Delete"]
+        XCTAssertTrue(confirm.waitForExistence(timeout: 5))
+        confirm.tap()
+        XCTAssertTrue(app.buttons["history.statistics"].waitForExistence(timeout: 10))
+
+        // Recent's detail reloads on return and no longer offers edits for the deleted
+        // recording (the library refuses a save for it in any case).
+        app.tabBars.buttons["Record"].tap()
+        XCTAssertTrue(app.staticTexts["Can't read this recording"].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["session.more"].exists)
+    }
+
     /// Opens History's sailing session, found by the title its card shows.
     @MainActor
     private func openSailing(in app: XCUIApplication, title: String) {

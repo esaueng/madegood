@@ -23,8 +23,6 @@ struct SessionDetailView: View {
     @State private var rawExportError: String?
     @State private var confirmDelete = false
     @State private var panelDetent = PanelDetent.middle
-    /// The item as last saved here, once its name or notes change.
-    @State private var saved: SessionLibrary.Item?
     @State private var editingDetails = false
     /// Bumped when a file arrives from the watch, to reload a recording still arriving.
     @State private var reloads = 0
@@ -75,7 +73,9 @@ struct SessionDetailView: View {
         let url: URL
     }
 
-    private var current: SessionLibrary.Item { saved ?? item }
+    /// The library's copy of this session, not the one it was opened with: its name and
+    /// notes can change here or in another tab's detail of the same session.
+    private var current: SessionLibrary.Item { library.items.first { $0.id == item.id } ?? item }
 
     var body: some View {
         Group {
@@ -119,9 +119,10 @@ struct SessionDetailView: View {
             }
         }
         .sheet(isPresented: $editingDetails) {
-            if let sport = item.entry.meta?.sport {
-                SessionDetailsEditor(details: current.details, sport: sport) { details in
-                    saved = try library.updateDetails(details, for: current)
+            // From the loaded recording: the item may predate its metadata arriving.
+            if let meta = analysis?.session.meta {
+                SessionDetailsEditor(details: current.details, sport: meta.sport) { details in
+                    try library.updateDetails(details, sessionId: meta.sessionId, folder: item.entry.folder)
                 }
             }
         }
