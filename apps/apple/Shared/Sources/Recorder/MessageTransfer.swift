@@ -225,7 +225,10 @@ enum MessageTransfer {
         let payload = bytes.subdata(in: (8 + headerLength)..<bytes.count)
         guard length >= 0, length <= maximumUnitLength else { throw FrameError.invalid("length \(length)") }
         guard crc >= 0, crc <= Int64(UInt32.max) else { throw FrameError.invalid("checksum") }
-        guard offset >= 0, offset + Int64(payload.count) <= length else { throw FrameError.invalid("offset \(offset)") }
+        // Compared without adding, so a huge offset cannot overflow.
+        guard offset >= 0, Int64(payload.count) <= length, offset <= length - Int64(payload.count) else {
+            throw FrameError.invalid("offset \(offset)")
+        }
         let part: TransferParts.Part?
         do {
             part = try TransferParts.part(file: file, metadata: header)
@@ -285,8 +288,9 @@ enum MessageTransfer {
 
     /// Adds a chunk to its unit's staging file. Chunks are expected in order: one that starts
     /// past what is held is not written (the reply's `have` brings the watch back), and bytes
-    /// already held are not written again. Once the unit is complete it is synced to disk and
-    /// checked against its CRC; a mismatch removes it and throws. The caller holds
+    /// already held are not written again. Once the unit is complete it is synced to disk,
+    /// every time (a sync that failed earlier must not pass on a retry), and checked against
+    /// its CRC; a failed sync or a mismatch removes it and throws. The caller holds
     /// `RecordingTransfer.storageLock`.
     static func write(_ chunk: Chunk, in recording: URL) throws -> Assembled {
         let fm = FileManager.default
@@ -306,13 +310,20 @@ enum MessageTransfer {
             defer { try? handle.close() }
             try handle.seek(toOffset: UInt64(have))
             try handle.write(contentsOf: chunk.data.subdata(in: Int(have - chunk.offset)..<chunk.data.count))
-            if end == chunk.length { try handle.synchronize() }
             have = end
         } else if chunk.length == 0, !fm.fileExists(atPath: url.path) {
             try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             guard fm.createFile(atPath: url.path, contents: nil) else { throw CocoaError(.fileWriteUnknown) }
         }
         guard have == chunk.length else { return .partial(have: have) }
+        do {
+            let handle = try FileHandle(forWritingTo: url)
+            defer { try? handle.close() }
+            try handle.synchronize()
+        } catch {
+            try? fm.removeItem(at: url)
+            throw error
+        }
         let data = try Data(contentsOf: url)
         guard Int64(data.count) == chunk.length, crc32(data) == chunk.crc else {
             try? fm.removeItem(at: url)

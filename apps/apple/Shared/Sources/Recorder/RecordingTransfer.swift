@@ -1725,9 +1725,12 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
             let label = chunk.part.map { "\(chunk.file) part \($0.index + 1)/\($0.count)" } ?? chunk.file
             Self.storageLock.lock()
             defer { Self.storageLock.unlock() }
-            // Stored already (by a file, or a reply that was lost): nothing more to take.
+            // Stored already (by a file, or a reply that was lost): nothing more to take. The
+            // acknowledgement goes again: the watch asks again when the earlier one was lost
+            // (the app quit before sending it), and only an acknowledgement lets it finish.
             if Self.holds(chunk, in: folder) {
                 MessageTransfer.removeStaging(of: chunk, in: folder)
+                acknowledge(folder: folder, sessionId: sessionId, file: chunk.file, session: session, via: "again")
                 reply(.init(have: chunk.length, done: true))
                 return
             }

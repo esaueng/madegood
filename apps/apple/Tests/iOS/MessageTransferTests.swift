@@ -158,6 +158,13 @@ final class MessageTransferTests: XCTestCase {
         var past = chunk(data, part: nil, from: 0, size: 100)
         past.offset = 50
         XCTAssertThrowsError(try MessageTransfer.decode(MessageTransfer.encode(past)))
+        // Review of #176: an offset this large overflowed when added to the payload's length
+        // and crashed the phone app; it is refused like any other.
+        var huge = chunk(data, part: nil, from: 0, size: 100)
+        huge.offset = Int64.max
+        XCTAssertThrowsError(try MessageTransfer.decode(MessageTransfer.encode(huge)))
+        huge.offset = Int64.max - 50
+        XCTAssertThrowsError(try MessageTransfer.decode(MessageTransfer.encode(huge)))
         // A part whose length disagrees with its layout.
         let part = TransferParts.plan(file: "motion.ndjson.gz", size: 3 << 20)[0]
         var wrong = chunk(data, part: part, from: 0, size: 100)
