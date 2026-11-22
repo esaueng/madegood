@@ -526,10 +526,18 @@ final class SessionRecorder {
             engine.advance(to: now)
             return engine.snapshot
         }
-        if let liveStrokes { strokes = liveStrokes.snapshot() }
+        updateStrokes(sessionNow: now)
         #if os(iOS)
             if let liveSport { liveActivity.update(metrics, sport: liveSport) }
         #endif
+    }
+
+    /// Live strokes in moving time: not in the engine's auto-pauses or vehicle legs, as
+    /// session detail counts them (docs/metrics.md "Strokes"). `sessionNow` is the engine's
+    /// clock now.
+    private func updateStrokes(sessionNow: Double) {
+        guard let liveStrokes else { return }
+        strokes = liveStrokes.snapshot(excluding: engine?.autoPausedIntervals ?? [], sessionNow: sessionNow)
     }
 
     static func location(_ line: RawFormat.GPSLine) -> CLLocation {
@@ -653,7 +661,7 @@ final class SessionRecorder {
         serviceSession = nil
 
         ingest(.event(SessionEvent(t: endedAt.timeIntervalSince1970 - startUnix, type: .stop)))
-        if let liveStrokes { strokes = liveStrokes.snapshot() }
+        updateStrokes(sessionNow: endedAt.timeIntervalSince1970 - startUnix)
         writers[.events]?.append(RawFormat.EventLine(ts: endedAt.timeIntervalSince1970, type: .stop))
         #if os(iOS)
             if let liveSport { liveActivity.end(metrics, sport: liveSport) }

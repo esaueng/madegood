@@ -217,12 +217,18 @@ balance is the share of strokes on side 0.
 
 **Pauses.** A manual pause stops stroke counting, like all other accounting: a stroke
 whose time (a cycle's peak, or kayak's inferred second stroke) falls in [pause, resume)
-does not count, whenever its cycle is confirmed, and no period spans a pause. Live on the
-watch and iPhone, auto-pause (events with `{"auto": true}`) does not stop counting,
-because the pause is only confirmed 10 s after the boat slowed down and is then dated
-back. After the session (session detail and `waterkit-replay`), strokes and rates count
-only in moving time, like distance: a stroke in an auto-pause or a vehicle leg (see
-"Transport") does not count, and no period spans one. In a real kayak session the cycles
+does not count, whenever its cycle is confirmed, and no period spans a pause. Strokes
+count only in moving time, like distance: a stroke in an auto-pause (events with
+`{"auto": true}`) or a vehicle leg (see "Transport") does not count. After the session
+(session detail and `waterkit-replay`) no period spans one either. Live on the watch and
+iPhone, the count leaves out strokes in the engine's auto-pauses and vehicle legs so far
+(`SessionEngine.autoPausedIntervals`, found as replay finds them), counted as session
+detail counts them (`StrokeAnalysis.strokeCount`). Both are dated back when confirmed: an
+auto-pause 10 s after the boat slowed down, a vehicle leg up to 60 s before its hold. So
+the live count can step down when one is confirmed, and back up when an auto-resume is
+dated back, as live distance does. Live, the intervals are moved from wall time onto the
+motion clock with the clock difference at that moment. The live stroke rate is not gated:
+it reads the latest cycles and blanks on its own when paddling stops. In a real kayak session the cycles
 found while auto-paused were getting in, a stop at the turn, carrying the boat and hand
 movements in a car: irregular, with a median period of 1.1 s against 2.3 s while
 paddling. They were 20 % of the count, and distance per stroke divided moving distance by

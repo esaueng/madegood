@@ -58,6 +58,62 @@ import Testing
         #expect(analysis.distancePerStroke.map { abs($0 - 2) < 0.1 } == true)
     }
 
+    /// The watch's live count read the detector's total, so it kept the strokes in
+    /// auto-pauses and the car leg that session detail leaves out. Live counting now uses
+    /// the engine's auto-paused intervals and ends equal to session detail.
+    @Test func liveCountMatchesSessionDetail() throws {
+        let (session, _) = Self.session()
+        let detail = StrokeAnalysis(session: session, selection: try SessionSelection(session: session))
+
+        var engine = SessionEngine(sport: .kayak)
+        var detector = StrokeDetector(sport: .kayak, recordsCycles: true)
+        func liveCount() -> Int {
+            StrokeAnalysis.strokeCount(
+                cycles: detector.cycles, strokesPerCycle: detector.strokesPerCycle,
+                excluding: engine.autoPausedIntervals)
+        }
+        var motion = session.motion[...]
+        var counts: [Int: (live: Int, all: Int)] = [:]
+        for fix in session.gps {
+            while let sample = motion.first, sample.t <= fix.t {
+                detector.ingest(sample)
+                motion = motion.dropFirst()
+            }
+            engine.ingest(.gps(fix))
+            counts[Int(fix.t)] = (liveCount(), detector.snapshot.strokeCount)
+        }
+        for sample in motion { detector.ingest(sample) }
+        if var closing = session.motion.last {
+            closing.t += detector.config.binInterval
+            detector.ingest(closing)
+        }
+
+        #expect(engine.autoPausedIntervals == [60...99, 142...Double.infinity])
+        #expect(liveCount() == detail.strokeCount)
+        #expect(detector.snapshot.strokeCount > detail.strokeCount + 80)
+        let stopped = try #require(counts[90])
+        let driving = try #require(counts[155])
+        let parked = try #require(counts[199])
+        // In the stop, once its auto-pause is confirmed: the strokes before 60 s only.
+        #expect(abs(stopped.live - (counts[59]?.live ?? 0)) <= 2)
+        // 30 s at 60 spm went uncounted.
+        #expect(abs(stopped.all - stopped.live - 30) <= 3)
+        // Before the car leg is confirmed its strokes count; once it is, they are taken back.
+        #expect(driving.live > parked.live)
+        #expect(abs(parked.live - liveCount()) <= 2)
+    }
+
+    @Test func liveCountLeavesOutManualPausesAndIntervalEnds() {
+        let cycles = [0.0, 10, 20, 30].map { StrokeDetector.Cycle(t: $0, period: 10, side: nil) }
+        // A stroke at an interval's start is out, at its end in, as for session detail.
+        #expect(StrokeAnalysis.strokeCount(cycles: cycles, strokesPerCycle: 1, excluding: [10...20]) == 3)
+        #expect(StrokeAnalysis.strokeCount(cycles: cycles, strokesPerCycle: 1, excluding: [5...Double.infinity]) == 1)
+        // Kayak: each cycle's second stroke half a period later is checked on its own time.
+        #expect(StrokeAnalysis.strokeCount(cycles: cycles, strokesPerCycle: 2, excluding: [12...28]) == 5)
+        #expect(
+            StrokeAnalysis.strokeCount(cycles: cycles, strokesPerCycle: 1, excluding: [], isPaused: { $0 >= 25 }) == 3)
+    }
+
     @Test func replayStatsMatchSessionDetail() throws {
         let (session, _) = Self.session()
         let selection = try SessionSelection(session: session)

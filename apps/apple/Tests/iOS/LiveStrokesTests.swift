@@ -63,4 +63,21 @@ final class LiveStrokesTests: XCTestCase {
         XCTAssertEqual(Double(paused), 30, accuracy: 2)
         XCTAssertEqual(Double(strokes.snapshot().strokeCount - paused), 50, accuracy: 2)
     }
+
+    /// The live count kept strokes in auto-pauses and vehicle legs, which session detail
+    /// leaves out. Those intervals come on the engine's wall-time clock and are moved onto
+    /// the motion clock, so a wall clock set 100 s ahead leaves out the same strokes.
+    func testCountLeavesOutAutoPausedIntervals() {
+        let clock = Uptime()
+        let strokes = LiveStrokes(sport: .sup, startMono: startUptime, now: clock.read)
+        feed(motion(seconds: 60), to: strokes, clock: clock)
+        let all = strokes.snapshot().strokeCount
+        let now = clock.read() - startUptime
+        let gated = strokes.snapshot(excluding: [20...40], sessionNow: now).strokeCount
+        XCTAssertEqual(Double(all - gated), 20, accuracy: 2)
+        XCTAssertEqual(strokes.snapshot(excluding: [120...140], sessionNow: now + 100).strokeCount, gated)
+        // An auto-pause still open leaves out everything after its start.
+        XCTAssertEqual(
+            Double(strokes.snapshot(excluding: [30...Double.infinity], sessionNow: now).strokeCount), 30, accuracy: 2)
+    }
 }
