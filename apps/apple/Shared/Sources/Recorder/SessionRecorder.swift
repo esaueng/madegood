@@ -4,7 +4,7 @@ import HealthKit
 import Observation
 import WaterKit
 
-/// Records a raw session (docs/formats.md) on whichever device runs it: GPS, 100 Hz
+/// Records a raw session (docs/formats.md) on whichever device runs it: GPS, 50 Hz
 /// device motion, heart rate, heading, clock anchors, and manual events. GPS and heart
 /// rate also feed WaterKit's `SessionEngine` for the live metrics on screen.
 @MainActor
@@ -26,7 +26,9 @@ final class SessionRecorder {
         var dropped = 0
     }
 
-    static let motionRate = 100.0
+    /// Device motion, Hz. Stroke detection averages motion into 40 ms bins and finds the
+    /// same cycles at 50 Hz as at 100 Hz (docs/metrics.md "Strokes"), at half the samples.
+    static let motionRate = 50.0
     static let flushInterval: Duration = .seconds(5)
     static let clockAnchorInterval: Duration = .seconds(60)
 

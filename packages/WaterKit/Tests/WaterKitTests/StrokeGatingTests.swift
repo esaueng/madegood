@@ -11,9 +11,10 @@ import Testing
     /// Wrist motion at 60 spm for 200 s throughout, while GPS shows paddling (0–60 s), a
     /// stop with the wrist still moving (60–100 s, auto-paused 60–99 s), paddling again,
     /// then a car leg from the last slow fix at 142 s.
-    static func session() -> (RawSession, PaddleMotionSimulator.Output) {
+    static func session(sampleRate: Double = 100) -> (RawSession, PaddleMotionSimulator.Output) {
         var simulator = PaddleMotionSimulator(sport: .kayak, segments: [.init(duration: 200, strokeRate: 60)])
         simulator.seed = 53
+        simulator.sampleRate = sampleRate
         let output = simulator.generate()
         let speed: @Sendable (Double) -> Double = { t in
             switch t {
@@ -40,8 +41,9 @@ import Testing
         return (RawSession(meta: meta, gps: fixes, motion: output.samples), output)
     }
 
-    @Test func strokesCountOnlyInMovingTime() throws {
-        let (session, output) = Self.session()
+    @Test(arguments: [100.0, 50.0])
+    func strokesCountOnlyInMovingTime(sampleRate: Double) throws {
+        let (session, output) = Self.session(sampleRate: sampleRate)
         let selection = try SessionSelection(session: session)
         #expect(selection.replay.autoPausedIntervals == [60...99, 142...Double.infinity])
 

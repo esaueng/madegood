@@ -7,9 +7,12 @@ import Testing
 /// its moving-time gating, not the raw detector output.
 @Suite struct FixtureAccuracyPathTests {
     /// 120 s of kayak wrist motion at 60 spm with GPS from `speed`, as a recording.
-    static func session(speed: @escaping @Sendable (Double) -> Double) -> (RawSession, Int) {
+    static func session(
+        speed: @escaping @Sendable (Double) -> Double, sampleRate: Double = 100
+    ) -> (RawSession, Int) {
         var simulator = PaddleMotionSimulator(sport: .kayak, segments: [.init(duration: 120, strokeRate: 60)])
         simulator.seed = 59
+        simulator.sampleRate = sampleRate
         let output = simulator.generate()
         var along = 0.0
         let fixes = (0...119).map { second -> GPSFix in
@@ -31,6 +34,19 @@ import Testing
         let (session, strokes) = Self.session { _ in 2 }
         try FixtureAccuracyTests.check(
             .init(strokes: strokes, strokeRateSPM: 60), session: session, context: "synthetic paddle")
+    }
+
+    @Test func aPaddledRecordingMeetsTheThresholdsAt50Hz() throws {
+        // Recorded at 50 Hz, and recorded at 100 Hz then decimated to 50 Hz.
+        let (native, strokes) = Self.session(speed: { _ in 2 }, sampleRate: 50)
+        try FixtureAccuracyTests.check(
+            .init(strokes: strokes, strokeRateSPM: 60), session: native, context: "synthetic paddle at 50 Hz")
+        let (full, fullStrokes) = Self.session { _ in 2 }
+        let decimated = try #require(FixtureAccuracyTests.decimatedTo50Hz(full))
+        #expect(decimated.motion.count == (full.motion.count + 1) / 2)
+        #expect(FixtureAccuracyTests.decimatedTo50Hz(decimated) == nil)
+        try FixtureAccuracyTests.check(
+            .init(strokes: fullStrokes, strokeRateSPM: 60), session: decimated, context: "synthetic paddle decimated")
     }
 
     @Test func strokesSessionDetailLeavesOutFailTheThresholds() throws {
