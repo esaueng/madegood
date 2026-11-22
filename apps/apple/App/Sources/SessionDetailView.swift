@@ -333,6 +333,63 @@ struct SessionDetailView: View {
             }
         }
         .toolbarBackground(.hidden, for: .navigationBar)
+        .toolbar {
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                shareMenu(analysis)
+                moreMenu(analysis)
+            }
+        }
+    }
+
+    /// Exports. The header says what a file holds before anything leaves the phone.
+    private func shareMenu(_ analysis: Analysis) -> some View {
+        Menu {
+            Section {
+                Button("Export GPX", systemImage: "point.topleft.down.to.point.bottomright.curvepath") {
+                    exportGPX(analysis)
+                }
+                Button("Share Raw Recording", systemImage: "doc.zipper") { exportZip() }
+                    .disabled(rawExportProgress != nil)
+            } header: {
+                Text(
+                    "Exports contain precise locations and times. Anonymize raw recordings before posting them publicly."
+                )
+            }
+        } label: {
+            Label("Share", systemImage: "square.and.arrow.up")
+        }
+        .accessibilityIdentifier("session.share")
+    }
+
+    /// Edits to this session, then deleting it.
+    private func moreMenu(_ analysis: Analysis) -> some View {
+        Menu {
+            if analysis.current.summary.trimUnavailable {
+                Button("Restore Original", systemImage: "arrow.uturn.backward") { restoreOriginal(analysis) }
+                    .accessibilityIdentifier("session.restoreOriginal")
+            } else if SessionTrim.availableEnd(in: analysis.session) > 0 {
+                Button(analysis.trim == nil ? "Trim Session" : "Edit Trim", systemImage: "scissors") {
+                    isPlaying = false
+                    editing = analysis
+                }
+                .accessibilityIdentifier("session.trim")
+            }
+            // A divider, not a section: items in a menu section lose their identifiers.
+            Divider()
+            Button("Delete Session", systemImage: "trash", role: .destructive) { confirmDelete = true }
+                .accessibilityIdentifier("session.delete")
+        } label: {
+            Label("More", systemImage: "ellipsis")
+        }
+        .accessibilityIdentifier("session.more")
+    }
+
+    private func restoreOriginal(_ analysis: Analysis) {
+        do {
+            try applyTrim(nil, preview: analysis.original, to: analysis)
+        } catch {
+            operationError = "Couldn't remove the local trim."
+        }
     }
 
     private func panelHeader(_ analysis: Analysis) -> some View {
@@ -540,60 +597,33 @@ struct SessionDetailView: View {
                 }
             }
 
-            Section {
-                if analysis.current.summary.trimUnavailable {
-                    Label(
-                        "Couldn't read the saved trim. Showing the original recording.",
-                        systemImage: "exclamationmark.triangle"
-                    )
-                    .font(.footnote)
-                    Button("Restore Original") {
-                        do {
-                            try applyTrim(nil, preview: analysis.original, to: analysis)
-                        } catch {
-                            operationError = "Couldn't remove the local trim."
-                        }
+            // Trim and export live in the toolbar's menus; what they report shows here.
+            if analysis.current.summary.trimUnavailable || rawExportProgress != nil || rawExportError != nil {
+                Section {
+                    if analysis.current.summary.trimUnavailable {
+                        Label(
+                            "Couldn't read the saved trim. Showing the original recording.",
+                            systemImage: "exclamationmark.triangle"
+                        )
+                        .font(.footnote)
+                        Button("Restore Original") { restoreOriginal(analysis) }
                     }
-                } else if SessionTrim.availableEnd(in: analysis.session) > 0 {
-                    Button {
-                        isPlaying = false
-                        editing = analysis
-                    } label: {
-                        Label(analysis.trim == nil ? "Trim Session" : "Edit Trim", systemImage: "scissors")
-                    }
-                    .accessibilityIdentifier("session.trim")
-                }
-                Button {
-                    exportGPX(analysis)
-                } label: {
-                    Label("Export GPX", systemImage: "square.and.arrow.up")
-                }
-                .accessibilityIdentifier("export.gpx")
-                Button {
-                    exportZip()
-                } label: {
                     if let rawExportProgress {
                         HStack {
                             Label("Preparing raw recording…", systemImage: "doc.zipper")
                             Spacer()
                             ProgressView(value: rawExportProgress).frame(width: 60)
                         }
-                    } else {
-                        Label("Share raw recording", systemImage: "doc.zipper")
+                        .accessibilityElement(children: .combine)
+                        .accessibilityIdentifier("export.raw.progress")
+                    }
+                    if let rawExportError {
+                        Text(rawExportError)
+                            .font(.footnote)
+                            .foregroundStyle(.red)
+                            .accessibilityIdentifier("export.raw.error")
                     }
                 }
-                .disabled(rawExportProgress != nil)
-                .accessibilityIdentifier("export.raw")
-                if let rawExportError {
-                    Text(rawExportError)
-                        .font(.footnote)
-                        .foregroundStyle(.red)
-                        .accessibilityIdentifier("export.raw.error")
-                }
-            } footer: {
-                Text(
-                    "Exports contain precise locations and times. Anonymize raw recordings before posting them publicly."
-                )
             }
 
             Section {
@@ -607,7 +637,6 @@ struct SessionDetailView: View {
                 LabeledContent("Device", value: analysis.session.meta.device.model)
                 LabeledContent("GPS fixes", value: "\(selectedTrack.gps.count) (\(metrics.rejectedFixes) rejected)")
                 SessionSyncDetailRow(sessionID: analysis.session.meta.sessionId)
-                Button("Delete session", role: .destructive) { confirmDelete = true }
             }
         }
         .scrollContentBackground(.hidden)

@@ -342,6 +342,18 @@ extension XCTestCase {
             for _ in 0..<3 where handle.value as? String != "Full" { handle.tap() }
             XCTAssertEqual(handle.value as? String, "Full")
         }
+
+        /// Opens one of the session detail's toolbar menus ("session.share", "session.more").
+        func openSessionMenu(_ identifier: String, in app: XCUIApplication) {
+            let menu = app.buttons[identifier]
+            XCTAssertTrue(menu.waitForExistence(timeout: 10))
+            menu.tap()
+        }
+
+        /// Dismisses an open menu with a tap outside it, on the window's top-left margin.
+        func closeMenu(in app: XCUIApplication) {
+            app.windows.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.03, dy: 0.2)).tap()
+        }
     #endif
 
     func waitForLabelPrefix(_ element: XCUIElement, _ prefix: String, timeout: TimeInterval = 15) {

@@ -206,7 +206,7 @@ final class PhoneReplayUITests: XCTestCase {
         XCTAssertEqual(elapsed.label, "0:00")
 
         let trim = app.buttons["session.trim"]
-        scrollTo(trim, in: app)
+        openSessionMenu("session.more", in: app)
         trim.tap()
         let start = app.sliders["trim.start"]
         let end = app.sliders["trim.end"]
@@ -238,15 +238,16 @@ final class PhoneReplayUITests: XCTestCase {
         scrollTo(duration, in: app)
         XCTAssertEqual(duration.label, trimmedDuration)
 
-        scrollTo(trim, in: app)
+        openSessionMenu("session.more", in: app)
         trim.tap()
         let restore = app.buttons["trim.restore"]
         scrollTo(restore, in: app)
         restore.tap()
-        // The sailing maneuver list is long, so the button can be below the visible rows.
+        // The ⋯ menu offers a fresh trim again.
         XCTAssertTrue(app.navigationBars["Sailing"].waitForExistence(timeout: 5))
-        scrollTo(trim, in: app)
+        openSessionMenu("session.more", in: app)
         waitForLabel(trim, "Trim Session")
+        closeMenu(in: app)
         app.navigationBars.buttons["History"].tap()
         waitForLabel(totals, originalTotals)
         XCTAssertFalse(trimmedSailing.exists)
@@ -272,7 +273,7 @@ final class PhoneReplayUITests: XCTestCase {
         sailing.tap()
 
         let trim = app.buttons["session.trim"]
-        scrollTo(trim, in: app)
+        openSessionMenu("session.more", in: app)
         trim.tap()
         let addCut = app.buttons["trim.addCut"]
         scrollTo(addCut, in: app, column: Self.trimMargin)
@@ -303,7 +304,7 @@ final class PhoneReplayUITests: XCTestCase {
         scrollTo(duration, in: app)
         XCTAssertEqual(duration.label, "32:00")
 
-        scrollTo(trim, in: app)
+        openSessionMenu("session.more", in: app)
         trim.tap()
         XCTAssertTrue(app.sliders["trim.cut.0.start"].waitForExistence(timeout: 5))
         let restore = app.buttons["trim.restore"]
