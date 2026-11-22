@@ -13,6 +13,8 @@ struct ManOverboardScreen: View {
     /// The session's track, when there is one, drawn under the mark.
     var points: [SessionRecorder.TrackPoint] = []
     @State private var confirmClear = false
+    /// The mark shown when Clear was tapped: the one the confirmation clears.
+    @State private var clearing: ManOverboard.ClearTarget?
     @ScaledMetric(relativeTo: .largeTitle) private var arrowSize = 120.0
 
     var body: some View {
@@ -57,6 +59,7 @@ struct ManOverboardScreen: View {
                     otherMarks(display: display)
                 }
                 Button(role: .destructive) {
+                    clearing = manOverboard.clearTarget
                     confirmClear = true
                 } label: {
                     // With only a press waiting, clearing cancels it.
@@ -69,7 +72,7 @@ struct ManOverboardScreen: View {
                 .confirmationDialog(
                     "Clear the man-overboard mark?", isPresented: $confirmClear, titleVisibility: .visible
                 ) {
-                    Button("Clear mark", role: .destructive) { manOverboard.clear() }
+                    Button("Clear mark", role: .destructive) { manOverboard.clear(confirmed: clearing) }
                         .accessibilityIdentifier("mob.confirmClear")
                 } message: {
                     Text(

@@ -12,6 +12,7 @@ final class WatchPageLayoutUITests: XCTestCase {
         let app = launchDemoApp()
         let kayak = app.buttons["sport.kayak"]
         XCTAssertTrue(kayak.waitForExistence(timeout: 15))
+        scrollTo(kayak, in: app)
         kayak.tap()
         XCTAssertTrue(app.staticTexts["metric.speed"].waitForExistence(timeout: 15))
 

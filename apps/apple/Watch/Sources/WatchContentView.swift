@@ -17,6 +17,8 @@ struct WatchContentView: View {
         let id = UUID()
         let sport: Sport
         let metrics: LiveMetrics
+        /// The recording, to tell whether the iPhone has it yet.
+        let folder: URL
         var strokes: StrokeDetector.Metrics?
         var windsurf: WindsurfAnalysis?
         var savedToHealth = false
@@ -67,8 +69,8 @@ struct WatchContentView: View {
             controller.onFinish = { sport, metrics, folder in
                 if let metrics {
                     summary = Summary(
-                        sport: sport, metrics: metrics, strokes: recorder.strokes, windsurf: recorder.windsurf,
-                        savedToHealth: recorder.savedToHealth)
+                        sport: sport, metrics: metrics, folder: folder, strokes: recorder.strokes,
+                        windsurf: recorder.windsurf, savedToHealth: recorder.savedToHealth)
                 }
                 RecordingTransfer.shared.send(folder: folder)
                 reload()
@@ -100,7 +102,7 @@ private struct StartScreen: View {
 
     var body: some View {
         ScrollView {
-            VStack(spacing: 6) {
+            VStack(spacing: 5) {
                 ForEach(store.startList(), id: \.self) { sport in
                     SportCard(
                         sport: sport, detail: detail(for: sport), countdownMinutes: store[sport].countdownMinutes,
@@ -178,9 +180,9 @@ private struct SportCard: View {
         HStack(spacing: 0) {
             Button(action: start) {
                 HStack(spacing: 8) {
-                    SportIcon(sport: sport, size: 24)
+                    SportIcon(sport: sport, size: 22)
                         .foregroundStyle(Theme.pearl)
-                        .frame(width: 32, height: 32)
+                        .frame(width: 30, height: 30)
                         .background(Theme.brightPetrol.opacity(isLuminanceReduced ? 0.4 : 1), in: .circle)
                     VStack(alignment: .leading, spacing: 1) {
                         title
@@ -189,7 +191,7 @@ private struct SportCard: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.leading, 8)
-                .padding(.vertical, 8)
+                .padding(.vertical, 6)
                 .contentShape(.rect)
             }
             .buttonStyle(.plain)
@@ -322,11 +324,11 @@ private struct CountdownTimerPage: View {
             let isFinal = seconds <= 10
             VStack(spacing: 6) {
                 ZStack {
-                    Circle().stroke(Theme.brightPetrol.opacity(0.25), lineWidth: 8)
+                    Circle().stroke(Theme.Metric.time.opacity(0.25), lineWidth: 8)
                     Circle()
                         .trim(from: 0, to: min(1, max(0, fraction)))
                         .stroke(
-                            isFinal ? Theme.coral : Theme.brightPetrol, style: StrokeStyle(lineWidth: 8, lineCap: .round)
+                            isFinal ? Theme.coral : Theme.Metric.time, style: StrokeStyle(lineWidth: 8, lineCap: .round)
                         )
                         .rotationEffect(.degrees(-90))
                     VStack(spacing: 0) {
@@ -531,6 +533,7 @@ private struct MetricsPage: View {
     let hero: LiveScreen
     @State private var store = SettingsStore.shared
     @Environment(\.isLuminanceReduced) private var isLuminanceReduced
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
         let display = UserSettings.display(for: sport)
@@ -540,22 +543,27 @@ private struct MetricsPage: View {
             let elapsed = context.date.timeIntervalSince(startedAt)
             let zone = currentZone(metrics: metrics, elapsed: elapsed)
             let time = isLuminanceReduced ? Formatting.duration(elapsed) : Formatting.elapsed(elapsed)
-            VStack(alignment: .leading, spacing: 2) {
+            let content = VStack(alignment: .leading, spacing: 2) {
                 HStack {
                     SportIcon(sport: sport, size: 18, labeled: true)
+                    // The big number's name, unless a pause or lap needs the space.
                     if let state = metrics?.pauseState, let label = LiveDisplay.pauseLabel(state) {
                         Text(label).foregroundStyle(.yellow)
                             .accessibilityIdentifier("pauseBadge")
                     } else if let lap = LiveDisplay.lapLabel(metrics) {
                         Text(lap).foregroundStyle(Theme.brightPetrol)
                             .accessibilityIdentifier("metric.lap")
+                    } else if !dynamicTypeSize.isAccessibilitySize {
+                        // Left out at the largest sizes, where the time needs the line.
+                        Text(hero.title).foregroundStyle(heroColor).accessibilityHidden(true)
                     }
-                    Spacer()
+                    Spacer(minLength: 4)
                     if hero != .time {
-                        Text(time).monospacedDigit()
+                        Text(time).monospacedDigit().foregroundStyle(Theme.Metric.time).layoutPriority(1)
                     }
                 }
-                .font(.footnote)
+                .font(.footnote.weight(.medium))
+                .lineLimit(1)
                 HStack(alignment: .firstTextBaseline, spacing: 4) {
                     Text(heroValue(display: display, metrics: metrics, time: time))
                         .font(.system(size: 40, weight: .semibold, design: .rounded).monospacedDigit())
@@ -566,25 +574,45 @@ private struct MetricsPage: View {
                     if hero == .heartRate, let zone { zoneLabel(zone) }
                 }
                 if hero != .speed {
-                    Field(label: "Speed", value: display.speed(metrics?.speed))
+                    Field(label: "Speed", value: display.speed(metrics?.speed), color: Theme.Metric.speed)
                 }
                 if hero != .distance {
-                    Field(label: "Distance", value: display.distance(metrics?.distance ?? 0))
+                    Field(
+                        label: "Distance", value: display.distance(metrics?.distance ?? 0),
+                        color: Theme.Metric.distance)
                 }
                 if !isLuminanceReduced {
-                    Field(label: "Avg", value: display.speed(metrics?.averageSpeed))
+                    Field(label: "Avg", value: display.speed(metrics?.averageSpeed), color: Theme.Metric.speed)
                     if hero == .speed || hero == .heartRate {
-                        Field(label: "Max 10 s", value: display.speed(metrics?.maxSpeed10s))
+                        Field(label: "Max 10 s", value: display.speed(metrics?.maxSpeed10s), color: Theme.Metric.speed)
                     }
                     if hero != .heartRate {
                         HStack(spacing: 4) {
-                            Field(label: "HR", value: LiveDisplay.heartRate(metrics?.heartRate))
+                            Field(
+                                label: "HR", value: LiveDisplay.heartRate(metrics?.heartRate),
+                                color: Theme.Metric.heartRate)
                             if let zone { zoneLabel(zone) }
                         }
                     }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            // The elapsed time sits top right, where the page dots are.
+            .clearOfPageIndicator()
+            // Larger values where the watch has the room, as it has below these rows.
+            ViewThatFits(in: .vertical) {
+                content.environment(\.largeFieldValues, true)
+                content
+            }
+        }
+    }
+
+    private var heroColor: Color {
+        switch hero {
+        case .speed, .map: Theme.Metric.speed
+        case .distance: Theme.Metric.distance
+        case .time: Theme.Metric.time
+        case .heartRate: Theme.Metric.heartRate
         }
     }
 
@@ -599,7 +627,7 @@ private struct MetricsPage: View {
     private func zoneLabel(_ zone: HeartRateZones.Zone) -> some View {
         Text("Z\(zone.rawValue)")
             .font(.caption)
-            .foregroundStyle(Theme.brightPetrol)
+            .foregroundStyle(Theme.Metric.heartRate)
             .fixedSize()
             .accessibilityLabel("Heart rate zone \(zone.rawValue)")
     }
@@ -620,6 +648,7 @@ private struct StrokesPage: View {
     let startedAt: Date
     let sport: Sport
     @Environment(\.isLuminanceReduced) private var isLuminanceReduced
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
         let display = UserSettings.display(for: sport)
@@ -627,14 +656,20 @@ private struct StrokesPage: View {
         let strokes = recorder.strokes
         TimelineView(.periodic(from: startedAt, by: isLuminanceReduced ? 60 : 1)) { context in
             let elapsed = context.date.timeIntervalSince(startedAt)
-            VStack(alignment: .leading, spacing: 2) {
+            let content = VStack(alignment: .leading, spacing: 2) {
                 HStack {
                     SportIcon(sport: sport, size: 18, labeled: true)
-                    Spacer()
+                    if !dynamicTypeSize.isAccessibilitySize {
+                        Text("Stroke rate").foregroundStyle(Theme.brightPetrol).accessibilityHidden(true)
+                    }
+                    Spacer(minLength: 4)
                     Text(isLuminanceReduced ? Formatting.duration(elapsed) : Formatting.elapsed(elapsed))
                         .monospacedDigit()
+                        .foregroundStyle(Theme.Metric.time)
+                        .layoutPriority(1)
                 }
-                .font(.footnote)
+                .font(.footnote.weight(.medium))
+                .lineLimit(1)
                 HStack(alignment: .firstTextBaseline, spacing: 4) {
                     Text(strokes?.strokeRate.map { "\(Int($0.rounded()))" } ?? "–")
                         .font(.system(size: 40, weight: .semibold, design: .rounded).monospacedDigit())
@@ -644,20 +679,28 @@ private struct StrokesPage: View {
                 }
                 .accessibilityElement(children: .combine)
                 .accessibilityLabel("Stroke rate")
-                .accessibilityValue(strokes?.strokeRate.map { "\(Int($0.rounded())) strokes per minute" } ?? "Unavailable")
+                .accessibilityValue(
+                    strokes?.strokeRate.map { "\(Int($0.rounded())) strokes per minute" } ?? "Unavailable"
+                )
                 .accessibilityIdentifier("metric.strokeRate")
                 Field(label: "Strokes", value: LiveDisplay.strokeCount(strokes?.strokeCount))
                 Field(
                     label: "Per stroke",
-                    value: display.distancePerStroke(distance: metrics?.distance ?? 0, strokes: strokes?.strokeCount))
+                    value: display.distancePerStroke(distance: metrics?.distance ?? 0, strokes: strokes?.strokeCount),
+                    color: Theme.Metric.distance)
                 if !isLuminanceReduced {
-                    Field(label: "Speed", value: display.speed(metrics?.speed))
+                    Field(label: "Speed", value: display.speed(metrics?.speed), color: Theme.Metric.speed)
                     if let switches = strokes?.sideSwitches, sport != .kayak {
                         Field(label: "Switches", value: "\(switches)")
                     }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            .clearOfPageIndicator()
+            ViewThatFits(in: .vertical) {
+                content.environment(\.largeFieldValues, true)
+                content
+            }
         }
     }
 }
@@ -676,7 +719,7 @@ private struct SpeedPage: View {
         VStack(alignment: .leading, spacing: 4) {
             Text("Speed bests")
                 .font(.footnote.weight(.semibold))
-                .foregroundStyle(Theme.brightPetrol)
+                .foregroundStyle(Theme.Metric.speed)
                 .accessibilityIdentifier("page.speed")
             ForEach(0..<(rows.count + 1) / 2, id: \.self) { line in
                 HStack(alignment: .top, spacing: 8) {
@@ -723,8 +766,8 @@ private struct SailingPage: View {
                         .foregroundStyle(Theme.brightPetrol)
                         .accessibilityIdentifier("page.sailing")
                     Text(sailing?.vmgTitle ?? "VMG")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .font(.footnote.weight(.medium))
+                        .foregroundStyle(Theme.Metric.speed)
                 }
                 Spacer()
                 if let wind = sailing?.windFrom {
@@ -756,19 +799,34 @@ private struct SailingPage: View {
     }
 }
 
+/// A label and its value on one line. A metric's label takes its color (Theme.Metric);
+/// others stay grey.
 private struct Field: View {
     let label: String
     let value: String
+    var color: Color?
+    @Environment(\.largeFieldValues) private var large
 
     var body: some View {
-        HStack {
-            Text(label).foregroundStyle(.secondary)
+        HStack(alignment: .firstTextBaseline) {
+            Text(label).foregroundStyle(color ?? .secondary)
             Spacer()
-            Text(value).monospacedDigit()
+            Text(value)
+                .font(large ? .title3 : .body)
+                .fontDesign(.rounded)
+                .fontWeight(large ? .semibold : .medium)
+                .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
                 .accessibilityIdentifier("field.\(label)")
         }
         .font(.body)
     }
+}
+
+extension EnvironmentValues {
+    /// Session pages with room to spare show their rows' values larger.
+    @Entry fileprivate var largeFieldValues = false
 }
 
 private struct MapPage: View {
@@ -824,22 +882,22 @@ private struct ControlsPage: View {
                     if recorder.isPaused { recorder.resume() } else { recorder.pause() }
                     WKInterfaceDevice.current().play(recorder.isPaused ? .stop : .start)
                 }
-                ControlButton(title: "Lap", symbol: "stopwatch", tint: .blue) {
+                ControlButton(title: "Lap", symbol: "stopwatch", tint: .blue, style: .quiet) {
                     SessionController.shared.lap()
                 }
             }
             GridRow {
-                ControlButton(title: "MOB", symbol: "figure.wave", tint: .red) {
+                ControlButton(title: "MOB", symbol: "figure.wave", tint: .red, style: .prominent) {
                     SessionController.shared.markManOverboard()
                     showManOverboard()
                 }
-                ControlButton(title: "Lock", symbol: "drop.fill", tint: .cyan) {
+                ControlButton(title: "Lock", symbol: "drop.fill", tint: .cyan, style: .quiet) {
                     // Water lock ignores taps until the user turns the Digital Crown.
                     WKInterfaceDevice.current().enableWaterLock()
                 }
             }
             GridRow {
-                ControlButton(title: "Mark", symbol: "flag.fill", tint: .teal) {
+                ControlButton(title: "Mark", symbol: "flag.fill", tint: .teal, style: .quiet) {
                     recorder.mark()
                     WKInterfaceDevice.current().play(.click)
                 }
@@ -864,6 +922,9 @@ struct ManOverboardPage: View {
     let sport: Sport
     /// Shown outside a session: lets the user record again without clearing the mark.
     var newSession: (() -> AnyView)?
+    @State private var confirmClear = false
+    /// The mark (or waiting press) shown when Clear was tapped: what the confirmation clears.
+    @State private var clearing: ManOverboard.ClearTarget?
 
     var body: some View {
         let display = UserSettings.display(for: sport)
@@ -890,9 +951,10 @@ struct ManOverboardPage: View {
                         Text("Man overboard").font(.headline).foregroundStyle(.red)
                         Text(
                             ManOverboardNotes.waiting(
-                                positionAge: manOverboard.positionAge(), hasMark: manOverboard.mark != nil))
-                            .font(.footnote).foregroundStyle(.secondary)
-                            .accessibilityIdentifier("mob.waiting")
+                                positionAge: manOverboard.positionAge(), hasMark: manOverboard.mark != nil)
+                        )
+                        .font(.footnote).foregroundStyle(.secondary)
+                        .accessibilityIdentifier("mob.waiting")
                     }
                     if let issue = manOverboard.locationIssue {
                         Text(ManOverboardNotes.locationIssue(issue))
@@ -921,10 +983,20 @@ struct ManOverboardPage: View {
                         NavigationLink("New session") { newSession() }
                             .accessibilityIdentifier("mob.newSession")
                     }
-                    Button("Clear", role: .destructive) { manOverboard.clear() }
-                        .accessibilityIdentifier("mob.clear")
+                    // A wet sleeve or a wave can press it: the mark is the way back, so ask.
+                    Button("Clear", role: .destructive) {
+                        clearing = manOverboard.clearTarget
+                        confirmClear = true
+                    }
+                    .accessibilityIdentifier("mob.clear")
                 }
             }
+        }
+        .confirmationDialog("Clear the man-overboard mark?", isPresented: $confirmClear) {
+            Button("Clear Mark", role: .destructive) { manOverboard.clear(confirmed: clearing) }
+                .accessibilityIdentifier("mob.clearConfirm")
+        } message: {
+            Text("The way back to it is gone once it's cleared.")
         }
     }
 }
@@ -939,90 +1011,178 @@ extension View {
 }
 
 private struct ControlButton: View {
+    enum Style {
+        /// Grey, with the symbol in its color: the everyday controls.
+        case quiet
+        /// Tinted in its color: Pause and End, which change the session.
+        case tinted
+        /// Filled in its color, for the one button that must be found at a glance (MOB).
+        case prominent
+    }
+
     let title: String
     let symbol: String
     let tint: Color
+    var style = Style.tinted
     let action: () -> Void
 
     var body: some View {
-        Button(action: action) {
+        let button = Button(action: action) {
             VStack(spacing: 2) {
-                Image(systemName: symbol).font(.title3)
-                Text(title).font(.footnote)
+                Image(systemName: symbol)
+                    .font(.title3)
+                    .foregroundStyle(symbolStyle)
+                Text(title).font(.footnote.weight(style == .prominent ? .bold : .regular))
             }
             .frame(maxWidth: .infinity, minHeight: 56)
         }
-        .tint(tint)
         .accessibilityIdentifier("control.\(title.lowercased())")
+        switch style {
+        case .quiet: button
+        case .tinted: button.tint(tint)
+        case .prominent: button.tint(tint).buttonStyle(.borderedProminent)
+        }
+    }
+
+    /// The symbol keeps its color on a grey button; tinted and filled buttons color it.
+    private var symbolStyle: AnyShapeStyle {
+        style == .quiet ? AnyShapeStyle(tint) : AnyShapeStyle(.foreground)
     }
 }
 
 // MARK: - Summary
 
+/// The finished session: distance large, time, speed and heart rate as colored tiles,
+/// then the sport's own numbers, and whether the iPhone has the recording yet.
 private struct SummaryView: View {
     let summary: WatchContentView.Summary
+    @State private var onPhone = false
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
         let display = UserSettings.display(for: summary.sport)
         let metrics = summary.metrics
         ScrollView {
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 8) {
                 Label {
                     Text(summary.sport.displayName)
                 } icon: {
                     SportIcon(sport: summary.sport, size: 20)
                 }
-                    .font(.headline)
-                Field(label: "Time", value: Formatting.elapsed(metrics.elapsed))
-                Field(label: "Moving", value: Formatting.elapsed(metrics.movingTime))
-                Field(label: "Distance", value: display.distance(metrics.distance))
-                Field(label: "Avg", value: display.speed(metrics.averageSpeed))
-                Field(label: "Max 10 s", value: display.speed(metrics.maxSpeed10s))
-                Field(label: "Max 2 s", value: display.speed(metrics.maxSpeed2s))
-                Field(label: "Avg HR", value: LiveDisplay.heartRate(metrics.heartRateAverage))
-                if let strokes = summary.strokes {
-                    Field(label: "Strokes", value: LiveDisplay.strokeCount(strokes.strokeCount))
-                    Field(
-                        label: "Per stroke",
-                        value: display.distancePerStroke(distance: metrics.distance, strokes: strokes.strokeCount))
+                .font(.headline)
+
+                VStack(alignment: .leading, spacing: -2) {
+                    Text("Distance")
+                        .font(.footnote.weight(.medium))
+                        .foregroundStyle(Theme.Metric.distance)
+                    Text(display.distance(metrics.distance))
+                        .font(.system(size: 34, weight: .semibold, design: .rounded).monospacedDigit())
+                        .minimumScaleFactor(0.6)
+                        .lineLimit(1)
+                        .accessibilityIdentifier("field.Distance")
                 }
-                if let categories = metrics.speedCategories {
-                    Text("Speed bests")
-                        .font(.footnote.weight(.semibold))
-                        .foregroundStyle(Theme.brightPetrol)
-                        .padding(.top, 4)
-                    // The 2 s and 10 s bests are the max speeds above.
-                    ForEach(SpeedCategoryReadings(categories).rows.dropFirst(2)) { row in
-                        Field(label: row.title, value: display.speed(row.value))
+
+                tiles([
+                    ("Time", Formatting.elapsed(metrics.elapsed), Theme.Metric.time),
+                    ("Moving", Formatting.elapsed(metrics.movingTime), Theme.Metric.time),
+                    ("Avg", display.speed(metrics.averageSpeed), Theme.Metric.speed),
+                    ("Max 10 s", display.speed(metrics.maxSpeed10s), Theme.Metric.speed),
+                    ("Max 2 s", display.speed(metrics.maxSpeed2s), Theme.Metric.speed),
+                    ("Avg HR", LiveDisplay.heartRate(metrics.heartRateAverage), Theme.Metric.heartRate),
+                ])
+
+                VStack(alignment: .leading, spacing: 2) {
+                    if let strokes = summary.strokes {
+                        Field(label: "Strokes", value: LiveDisplay.strokeCount(strokes.strokeCount))
+                        Field(
+                            label: "Per stroke",
+                            value: display.distancePerStroke(distance: metrics.distance, strokes: strokes.strokeCount),
+                            color: Theme.Metric.distance)
+                    }
+                    if let categories = metrics.speedCategories {
+                        Text("Speed bests")
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(Theme.Metric.speed)
+                            .padding(.top, 4)
+                        // The 2 s and 10 s bests are the max speeds above.
+                        ForEach(SpeedCategoryReadings(categories).rows.dropFirst(2)) { row in
+                            Field(label: row.title, value: display.speed(row.value))
+                        }
+                    }
+                    if let windsurf = summary.windsurf {
+                        Field(label: "Planing", value: LiveDisplay.planing(windsurf.planing))
+                        Field(label: "Est. gybes", value: windsurf.estimatedGybeCount.map(String.init) ?? "–")
+                    }
+                    if let live = metrics.sailing {
+                        let sailing = SailingReadings(live)
+                        ForEach(sailing.maneuverRows, id: \.id) { row in
+                            Field(label: row.title, value: "\(row.count)")
+                        }
+                        if sailing.windFrom != nil {
+                            Field(label: sailing.windTitle, value: sailing.windText)
+                        }
+                    }
+                    if !metrics.laps.isEmpty {
+                        Field(label: "Laps", value: "\(metrics.laps.count + 1)")
                     }
                 }
-                if let windsurf = summary.windsurf {
-                    Field(label: "Planing", value: LiveDisplay.planing(windsurf.planing))
-                    Field(label: "Est. gybes", value: windsurf.estimatedGybeCount.map(String.init) ?? "–")
-                }
-                if let live = metrics.sailing {
-                    let sailing = SailingReadings(live)
-                    ForEach(sailing.maneuverRows, id: \.id) { row in
-                        Field(label: row.title, value: "\(row.count)")
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Label(
+                        onPhone ? "On your iPhone" : "Sending to iPhone…",
+                        systemImage: onPhone ? "checkmark.circle.fill" : "iphone.and.arrow.forward"
+                    )
+                    .foregroundStyle(onPhone ? Theme.brightPetrol : .secondary)
+                    .accessibilityIdentifier("summary.delivery")
+                    if summary.savedToHealth {
+                        Label("Saved to Health", systemImage: "heart.fill")
+                            .foregroundStyle(.pink)
                     }
-                    if sailing.windFrom != nil {
-                        Field(label: sailing.windTitle, value: sailing.windText)
-                    }
                 }
-                if !metrics.laps.isEmpty {
-                    Field(label: "Laps", value: "\(metrics.laps.count + 1)")
-                }
-                if summary.savedToHealth {
-                    Label("Saved to Health", systemImage: "heart.fill")
-                        .font(.footnote)
-                        .foregroundStyle(.pink)
-                }
+                .font(.footnote)
+                .padding(.top, 2)
+
                 Button("Done") { dismiss() }
-                    .padding(.top, 6)
+                    .padding(.top, 4)
                     .accessibilityIdentifier("summary.done")
             }
         }
+        .onAppear(perform: refreshDelivery)
+        .onReceive(NotificationCenter.default.publisher(for: RecordingTransfer.didDeliverRecording)) { _ in
+            refreshDelivery()
+        }
+    }
+
+    /// Two tiles a row; one a row at accessibility text sizes, so numbers keep their size.
+    @ViewBuilder
+    private func tiles(_ items: [(title: String, value: String, color: Color)]) -> some View {
+        let columns = dynamicTypeSize.isAccessibilitySize ? 1 : 2
+        Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 6) {
+            ForEach(Array(stride(from: 0, to: items.count, by: columns)), id: \.self) { start in
+                GridRow {
+                    ForEach(items[start..<min(items.count, start + columns)], id: \.title) { item in
+                        VStack(alignment: .leading, spacing: -2) {
+                            Text(item.title)
+                                .font(.caption2.weight(.medium))
+                                .foregroundStyle(item.color)
+                            Text(item.value)
+                                .font(.system(.title3, design: .rounded).weight(.semibold).monospacedDigit())
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.6)
+                                .accessibilityIdentifier("field.\(item.title)")
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+            }
+        }
+    }
+
+    /// The watch removes a recording once the iPhone holds all of it.
+    private func refreshDelivery() {
+        let name = summary.folder.lastPathComponent
+        onPhone = !RecordingStore.list().contains { $0.folder.lastPathComponent == name }
     }
 }
 

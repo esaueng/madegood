@@ -14,6 +14,7 @@ final class WatchSessionUITests: XCTestCase {
         XCTAssertTrue(kayak.waitForExistence(timeout: 15))
         attachScreenshot("1 sport cards")
         let started = Date()
+        scrollTo(kayak, in: app)
         kayak.tap()
 
         // Metrics page: speed from the engine, and distance accumulating.
@@ -92,6 +93,7 @@ final class WatchSessionUITests: XCTestCase {
         XCTAssertEqual(time.count, 2)
         let seconds = (time.first ?? 0) * 60 + (time.last ?? 0)
         XCTAssertLessThanOrEqual(seconds, ended.timeIntervalSince(started) + 2)
+        XCTAssertTrue(app.staticTexts["summary.delivery"].exists || app.otherElements["summary.delivery"].exists)
         attachScreenshot("7 summary")
         done.tap()
 
@@ -104,7 +106,12 @@ final class WatchSessionUITests: XCTestCase {
         XCTAssertTrue(kayak.waitForExistence(timeout: 10))
         app.navigationBars.buttons.firstMatch.tap()
         XCTAssertTrue(clear.waitForExistence(timeout: 10))
+        // One tap only asks: a stray press must not lose the way back.
         clear.tap()
+        let clearMark = app.buttons["Clear Mark"]
+        XCTAssertTrue(clearMark.waitForExistence(timeout: 10))
+        attachScreenshot("9 clear mark confirmation")
+        clearMark.tap()
         XCTAssertTrue(kayak.waitForExistence(timeout: 10))
     }
 
@@ -118,6 +125,7 @@ final class WatchSessionUITests: XCTestCase {
         let app = launchDemoApp()
         let kayak = app.buttons["sport.kayak"]
         XCTAssertTrue(kayak.waitForExistence(timeout: 15))
+        scrollTo(kayak, in: app)
         kayak.tap()
         XCTAssertTrue(app.staticTexts["metric.speed"].waitForExistence(timeout: 15))
         waitForLabel(app.staticTexts["metric.speed"], "9.0 km/h")
@@ -130,7 +138,7 @@ final class WatchSessionUITests: XCTestCase {
         sleep(3)
         let relaunched = launchDemoApp(resetSettings: false)
         XCTAssertTrue(relaunched.buttons["mob.clear"].waitForExistence(timeout: 15))
-        relaunched.buttons["mob.clear"].tap()
+        clearManOverboardMark(relaunched)
         XCTAssertTrue(relaunched.buttons["sport.kayak"].waitForExistence(timeout: 10))
     }
 }

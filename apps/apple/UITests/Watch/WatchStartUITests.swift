@@ -45,6 +45,7 @@ final class WatchStartUITests: XCTestCase {
         ])
         let kayak = app.buttons["sport.kayak"]
         XCTAssertTrue(kayak.waitForExistence(timeout: 15))
+        scrollTo(kayak, in: app)
         kayak.tap()
         XCTAssertTrue(element("countdown.time", in: app).waitForExistence(timeout: 10))
         // Kayak has no Sync: that is for race starts.
@@ -88,6 +89,7 @@ final class WatchStartUITests: XCTestCase {
         app.navigationBars.buttons.firstMatch.tap()
 
         scrollTo(canoe, in: app)
+        scrollTo(canoe, in: app)
         canoe.tap()
         XCTAssertTrue(app.staticTexts["metric.heartRate"].waitForExistence(timeout: 15))
         XCTAssertTrue(app.staticTexts["field.Speed"].exists)
@@ -121,6 +123,7 @@ final class WatchStartUITests: XCTestCase {
         let app = launchDemoApp(extraArguments: ["-settings.distanceAlert.kayak", "0.05"])
         let kayak = app.buttons["sport.kayak"]
         XCTAssertTrue(kayak.waitForExistence(timeout: 15))
+        scrollTo(kayak, in: app)
         kayak.tap()
         XCTAssertTrue(app.staticTexts["metric.speed"].waitForExistence(timeout: 15))
         let banner = element("distanceAlert.banner", in: app)
@@ -142,6 +145,7 @@ final class WatchStartUITests: XCTestCase {
         ])
         let kayak = app.buttons["sport.kayak"]
         XCTAssertTrue(kayak.waitForExistence(timeout: 15))
+        scrollTo(kayak, in: app)
         kayak.tap()
         let action = app.buttons["debug.actionButton"]
         XCTAssertTrue(action.waitForExistence(timeout: 10))
@@ -162,11 +166,9 @@ final class WatchStartUITests: XCTestCase {
         endWatchSession(app, controlsPage: 2)
         // The marks outlive the session; clear both (the target, then the earlier one) so
         // later tests start on the sport cards.
-        let clear = app.buttons["mob.clear"]
-        XCTAssertTrue(clear.waitForExistence(timeout: 10))
-        clear.tap()
-        XCTAssertTrue(clear.waitForExistence(timeout: 10), "the first mark is still there")
-        clear.tap()
+        clearManOverboardMark(app)
+        XCTAssertTrue(app.buttons["mob.clear"].waitForExistence(timeout: 10), "the first mark is still there")
+        clearManOverboardMark(app)
         XCTAssertTrue(app.buttons["sport.kayak"].waitForExistence(timeout: 10))
     }
 }

@@ -222,6 +222,71 @@ final class ManOverboardTests: XCTestCase {
         XCTAssertNil(manOverboard.mark)
     }
 
+    /// Watch polish review: a press while the Clear confirmation is open adds a new
+    /// target; confirming clears the mark that was shown, never the new one.
+    func testConfirmingAClearRemovesTheMarkShownNotANewerOne() throws {
+        let manOverboard = makeManOverboard()
+        manOverboard.update(freshFix())
+        guard case .marked(let first) = manOverboard.press() else { return XCTFail("did not mark") }
+        let shown = try XCTUnwrap(manOverboard.clearTarget)
+        XCTAssertEqual(shown, .mark(first.identity))
+        // The Action button marks again while the confirmation is up.
+        manOverboard.update(freshFix())
+        guard case .marked(let second) = manOverboard.press(at: Date().addingTimeInterval(5)) else {
+            return XCTFail("did not mark again")
+        }
+        XCTAssertEqual(manOverboard.mark?.identity, second.identity, "the newest press is the target")
+
+        manOverboard.clear(confirmed: shown)
+        XCTAssertEqual(manOverboard.marks.map(\.identity), [second.identity])
+        XCTAssertEqual(manOverboard.mark?.identity, second.identity)
+        // Confirming again, for a mark already gone, changes nothing.
+        manOverboard.clear(confirmed: shown)
+        XCTAssertEqual(manOverboard.mark?.identity, second.identity)
+        manOverboard.stopOwnUpdates()
+    }
+
+    /// Cancelling a waiting press keeps a mark that arrived while the confirmation was open.
+    func testCancellingAWaitingPressKeepsAMarkThatArrivedSince() throws {
+        let manOverboard = makeManOverboard()
+        XCTAssertEqual(manOverboard.press(), .awaitingFix)
+        let shown = try XCTUnwrap(manOverboard.clearTarget)
+        manOverboard.update(freshFix())
+        XCTAssertNotNil(manOverboard.mark, "the first fix marks the waiting press")
+        manOverboard.clear(confirmed: shown)
+        XCTAssertNotNil(manOverboard.mark)
+        manOverboard.stopOwnUpdates()
+    }
+
+    /// Re-check finding: a second press, still without a fix, while the confirmation to
+    /// cancel the first is open, keeps waiting when the user confirms.
+    func testCancellingAWaitingPressKeepsANewerWaitingPress() throws {
+        let manOverboard = makeManOverboard()
+        let first = Date().addingTimeInterval(-10)
+        XCTAssertEqual(manOverboard.press(at: first), .awaitingFix)
+        let shown = try XCTUnwrap(manOverboard.clearTarget)
+        XCTAssertEqual(shown, .waitingPress(first))
+        let second = Date()
+        XCTAssertEqual(manOverboard.press(at: second), .awaitingFix)
+
+        manOverboard.clear(confirmed: shown)
+        XCTAssertTrue(manOverboard.isActive, "the newer press still waits")
+        XCTAssertEqual(manOverboard.awaitingFixSince, second)
+        manOverboard.update(freshFix())
+        XCTAssertNotNil(manOverboard.mark, "the newer press marks the next fix")
+        manOverboard.stopOwnUpdates()
+    }
+
+    /// With nothing newer, confirming cancels the waiting press it was asked about.
+    func testConfirmingCancelsTheWaitingPressItWasAskedAbout() throws {
+        let manOverboard = makeManOverboard()
+        XCTAssertEqual(manOverboard.press(), .awaitingFix)
+        manOverboard.clear(confirmed: try XCTUnwrap(manOverboard.clearTarget))
+        XCTAssertFalse(manOverboard.isActive)
+        manOverboard.update(freshFix())
+        XCTAssertNil(manOverboard.mark)
+    }
+
     // MARK: Several marks (re-check finding 3)
 
     func testAWatchMarkNeverDiscardsAWaitingPhonePress() throws {
