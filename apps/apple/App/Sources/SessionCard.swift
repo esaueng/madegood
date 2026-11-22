@@ -73,7 +73,7 @@ private struct SessionCardMetrics: View {
     }
 }
 
-/// The sport badge, its name, any trim, and the start time.
+/// The sport badge, the session's name (or its sport's), any trim, and the start time.
 private struct SessionTitle: View {
     let item: SessionLibrary.Item
 
@@ -94,11 +94,18 @@ private struct SessionTitle: View {
                 SessionSyncBadge(sessionID: item.entry.meta?.sessionId).offset(x: 6, y: 4)
             }
             VStack(alignment: .leading, spacing: 2) {
-                Text(sport?.displayName ?? "Receiving…").font(.body.weight(.semibold)).fontDesign(.rounded)
-                if item.summary?.isTrimmed == true {
-                    Text("Trimmed").font(.caption).foregroundStyle(.secondary)
-                } else if item.summary?.trimUnavailable == true {
-                    Text("Trim unavailable").font(.caption).foregroundStyle(.secondary)
+                Text(item.title)
+                    .font(.body.weight(.semibold))
+                    .fontDesign(.rounded)
+                    .lineLimit(2)
+                // A named session still says its sport, beside any trim.
+                let notes = [
+                    item.details.name.isEmpty ? nil : sport?.displayName,
+                    item.summary?.isTrimmed == true
+                        ? "Trimmed" : item.summary?.trimUnavailable == true ? "Trim unavailable" : nil,
+                ].compactMap(\.self)
+                if !notes.isEmpty {
+                    Text(notes.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary)
                 }
                 if let startedAt = item.entry.startedAt {
                     Text(startedAt, format: .dateTime.weekday(.abbreviated).day().month().hour().minute())
@@ -119,7 +126,6 @@ struct RecentSessionCard: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
-        let sport = item.summary?.sport ?? item.entry.meta?.sport
         VStack(alignment: .leading, spacing: 0) {
             if let route = item.summary?.historyRoute {
                 HistoryRouteBanner(route: route, height: 72)
@@ -128,7 +134,7 @@ struct RecentSessionCard: View {
             }
             VStack(alignment: .leading, spacing: 8) {
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(sport?.displayName ?? "Receiving…")
+                    Text(item.title)
                         .font(.subheadline.weight(.semibold))
                         .fontDesign(.rounded)
                         .lineLimit(1)

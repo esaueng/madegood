@@ -426,6 +426,26 @@ begins a new track segment after a cut regardless of GPS gap length. The track's
 numeric seconds from the GPX metadata start time. Readers that ignore the
 extension still see separate track segments.
 
+## Local session details
+
+A name and notes the user gives a session live in one JSON file per session, named
+`<lowercase-session-id>.json` in an app-owned `SessionDetails` directory beside the
+trims, outside the recording folders:
+`{"name":"Evening race","notes":"Gusty at the mark.","version":1}`.
+
+- `version` is required; a reader rejects a version it does not know and leaves the
+  file untouched, and the app doesn't let the user edit until it can read it.
+- `name` and `notes` are optional strings; an absent or empty one means none. The
+  writer omits empty ones and removes the file when both are empty.
+- A name is one line without surrounding white space, at most 100 characters; notes
+  have no leading or trailing white space and hold at most 10,000 characters. Readers
+  apply the same rules to what they read.
+
+The file stays on the device. It is not part of the raw recording, track v1, uploads,
+shared copies or raw-recording shares. A GPX export uses the name, when there is one,
+for its `<metadata>` and `<trk>` names in place of the sport's. Deleting a session
+removes its file.
+
 ---
 
 ## Boundary pack v1
