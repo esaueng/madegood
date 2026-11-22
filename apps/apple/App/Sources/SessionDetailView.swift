@@ -78,9 +78,12 @@ struct SessionDetailView: View {
                     content(analysis, scroll: scroll)
                 }
             } else if failed {
-                ContentUnavailableView(
-                    "Can't read this recording", systemImage: "exclamationmark.triangle",
-                    description: Text("It may still be arriving from the watch."))
+                List {
+                    ContentUnavailableView(
+                        "Can't read this recording", systemImage: "exclamationmark.triangle",
+                        description: Text("It may still be arriving from the watch."))
+                    ReceivingDiagnostics(folder: item.entry.folder)
+                }
             } else {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             }
