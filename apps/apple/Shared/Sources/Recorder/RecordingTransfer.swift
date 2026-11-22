@@ -149,6 +149,12 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
         var parts: [String: [Int]] = [:]
     }
 
+    /// The raw versions the phone build that sent an acknowledgement reads. Builds that
+    /// leave them out predate version 3 and read at most 1 and 2.
+    static func phoneRawVersions(fromAcknowledgement userInfo: [String: Any]) -> Set<Int> {
+        (userInfo[Key.rawVersions] as? [Int]).map(Set.init) ?? [1, 2]
+    }
+
     /// The phone's parts of files still arriving, from an acknowledgement; empty when it has
     /// none (or is from a build before parts).
     static func phoneParts(fromAcknowledgement userInfo: [String: Any]) -> [String: [Int]] {
@@ -1119,7 +1125,9 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
             updateRetries { $0[sessionId]?.succeeded(now: Date()) }
             let isMeta = userInfo[Key.file] as? String == RawFormat.metaFileName
             // Why the watch keeps it, only once meta.json (sent last) is in, not for every part.
-            let delivered = deleteIfDelivered(sessionId: sessionId, phone: phone, logsWhyKept: isMeta)
+            let delivered = deleteIfDelivered(
+                sessionId: sessionId, phone: phone, phoneReads: Self.phoneRawVersions(fromAcknowledgement: userInfo),
+                logsWhyKept: isMeta)
             // Sends what the phone lacks and is not in flight: the next parts of the window
             // (this is what keeps a suspended watch app sending, since acknowledgements wake
             // it and finished transfers do not), or, once meta.json is in, what the phone lost
@@ -1130,10 +1138,15 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
             }
         }
 
-        /// Deletes the recording if `phone`, the phone's latest list for it, holds all of it.
+        /// Deletes the recording if `phone`, the phone's latest list for it, holds all of it
+        /// and the phone build that sent that list (`phoneReads`) reads its version. The build
+        /// is the one that confirmed, not the cached application context: a phone rolled back
+        /// to an older build can finish joining a newer recording and list it whole.
         /// Returns whether it is gone.
         @discardableResult
-        private func deleteIfDelivered(sessionId: String, phone: [String: Int64], logsWhyKept: Bool = true) -> Bool {
+        private func deleteIfDelivered(
+            sessionId: String, phone: [String: Int64], phoneReads: Set<Int>, logsWhyKept: Bool = true
+        ) -> Bool {
             guard !isActive(sessionId) else { return false }
             let folder = RecordingStore.root.appendingPathComponent(sessionId, isDirectory: true)
             guard FileManager.default.fileExists(atPath: folder.path) else { return true }
@@ -1144,6 +1157,12 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
             let gaps = Self.deliveryGaps(local: local, phone: phone)
             guard gaps.isEmpty else {
                 if logsWhyKept { log.add("Kept on watch: \(gaps.joined(separator: "; "))", sessionId: sessionId) }
+                return false
+            }
+            guard Self.mayDeliver(folder: folder, toPhoneReading: phoneReads) else {
+                log.add(
+                    "Kept on watch: the iPhone build that confirmed it reads raw \(phoneReads.sorted()) only",
+                    sessionId: sessionId)
                 return false
             }
             do {
@@ -1313,6 +1332,8 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
             let parts = TransferParts.held(in: folder)
             session.transferUserInfo([
                 Key.stored: true, Key.sessionId: sessionId, Key.file: file, Key.files: stored, Key.parts: parts,
+                // The watch deletes a recording only if this build reads its version.
+                Key.rawVersions: Self.readableRawVersions,
             ])
             log.add(
                 "Confirmed to watch: \(TransferLog.describe(stored))\(TransferLog.describe(parts: parts))",

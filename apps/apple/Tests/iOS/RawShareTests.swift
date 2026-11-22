@@ -186,6 +186,20 @@ final class RawShareTests: XCTestCase {
         }
     }
 
+    /// Review of #175: a phone rolled back to a build before version 3 could finish joining
+    /// a version 3 recording and confirm it whole; the watch deleted it on the cached
+    /// context. Deleting now asks the build that confirmed: one that leaves its versions out
+    /// predates version 3.
+    func testDeletionAsksTheBuildThatConfirmed() {
+        let older = RecordingTransfer.phoneRawVersions(fromAcknowledgement: ["stored": true])
+        XCTAssertEqual(older, [1, 2])
+        XCTAssertFalse(RecordingTransfer.mayDeliver(version: 3, toPhoneReading: older))
+        XCTAssertTrue(RecordingTransfer.mayDeliver(version: 2, toPhoneReading: older))
+        let current = RecordingTransfer.phoneRawVersions(fromAcknowledgement: ["rawVersions": [1, 2, 3]])
+        XCTAssertEqual(current, [1, 2, 3])
+        XCTAssertTrue(RecordingTransfer.mayDeliver(version: 3, toPhoneReading: current))
+    }
+
     /// Scoped re-check of #87, finding 1: a recording whose version cannot be read, or is one
     /// the phone does not advertise, stays on the watch.
     func testTheWatchKeepsARecordingWhoseVersionItCannotRead() throws {

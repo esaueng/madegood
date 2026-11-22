@@ -250,7 +250,9 @@ import Testing
                     attitude: Quaternion(x: x / 10, y: 0.707_106_781_186_547_5, z: small, w: -0.707_106_781_186_547_5)))
         }
         var motion = Data()
-        for line in original { motion.append(try RawFormat.line(line, exactValues: true)) }
+        // Keyed lines, as a v1 recording holds them (version 2 writes objects).
+        for line in original { motion.append(try RawFormat.line(line, exactValues: true, version: 2)) }
+        #expect(motion.first == UInt8(ascii: "{"))
         try motion.write(to: v1Folder.appendingPathComponent(RawFormat.Stream.motion.fileName))
 
         #expect(try RawFormatConversion.convertToCurrent(folder: v1Folder, into: v2Folder))
