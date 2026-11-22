@@ -162,11 +162,9 @@ final class WatchStartUITests: XCTestCase {
         endWatchSession(app, controlsPage: 2)
         // The marks outlive the session; clear both (the target, then the earlier one) so
         // later tests start on the sport cards.
-        let clear = app.buttons["mob.clear"]
-        XCTAssertTrue(clear.waitForExistence(timeout: 10))
-        clear.tap()
-        XCTAssertTrue(clear.waitForExistence(timeout: 10), "the first mark is still there")
-        clear.tap()
+        clearManOverboardMark(app)
+        XCTAssertTrue(app.buttons["mob.clear"].waitForExistence(timeout: 10), "the first mark is still there")
+        clearManOverboardMark(app)
         XCTAssertTrue(app.buttons["sport.kayak"].waitForExistence(timeout: 10))
     }
 }

@@ -39,4 +39,14 @@ extension XCTestCase {
         XCTAssertTrue(done.waitForExistence(timeout: 20))
         done.tap()
     }
+
+    /// Clears the man-overboard mark shown on screen, through its confirmation.
+    func clearManOverboardMark(_ app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
+        let clear = app.buttons["mob.clear"]
+        XCTAssertTrue(clear.waitForExistence(timeout: 10), file: file, line: line)
+        clear.tap()
+        let confirm = app.buttons["Clear Mark"]
+        XCTAssertTrue(confirm.waitForExistence(timeout: 10), file: file, line: line)
+        confirm.tap()
+    }
 }
