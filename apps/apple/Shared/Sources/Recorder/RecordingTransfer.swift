@@ -161,11 +161,12 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
     /// `meta.json` last, so the phone sees a recording complete only when all of it is
     /// there, and a large file never holds up the small ones. Files over a part's size go in
     /// parts. Leaves out what is in flight (a whole file in flight covers its parts) and what
-    /// `holds` says the phone has, except `meta.json`: it always goes, and its
-    /// acknowledgement corrects a stale `holds`.
+    /// `holds` says the phone has (parts only of the same layout), except `meta.json`: it
+    /// always goes, and its acknowledgement corrects a stale `holds`. At most `window` parts
+    /// are queued at once; `meta.json` waits until everything else is queued.
     static func units(
         local: [String: Int64], holds: PhoneHolds?, inFlight: Set<UnitKey>,
-        partSize: Int64 = TransferParts.partSize
+        partSize: Int64 = TransferParts.partSize, window: Int = TransferParts.window
     ) -> [Unit] {
         var units: [Unit] = []
         for (name, size) in local {
@@ -177,13 +178,13 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
                 units.append(Unit(file: name, part: nil, length: size))
                 continue
             }
-            let held = Set(holds?.parts[name] ?? [])
+            let held = Set(holds?.parts[TransferParts.layoutKey(parts[0])] ?? [])
             for part in parts where !held.contains(part.index) {
                 guard !inFlight.contains(UnitKey(file: name, part: part.index)) else { continue }
                 units.append(Unit(file: name, part: part, length: part.length))
             }
         }
-        return units.sorted { a, b in
+        let sorted = units.sorted { a, b in
             let aMeta = a.file == RawFormat.metaFileName
             let bMeta = b.file == RawFormat.metaFileName
             if aMeta != bMeta { return bMeta }
@@ -191,7 +192,52 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
             if a.file != b.file { return a.file < b.file }
             return (a.part?.index ?? 0) < (b.part?.index ?? 0)
         }
+        var budget = max(0, window - inFlight.filter { $0.part != nil }.count)
+        var leftOut = false
+        return sorted.filter { unit in
+            if unit.file == RawFormat.metaFileName { return !leftOut }
+            guard unit.part != nil else { return true }
+            guard budget > 0 else {
+                leftOut = true
+                return false
+            }
+            budget -= 1
+            return true
+        }
     }
+
+    /// How a recording's outstanding transfers have moved this launch (watch side).
+    struct ProgressTracker: Sendable {
+        private var fractions: [String: Double] = [:]
+        /// The last time a transfer was seen moving: progress that grew, a transfer first seen
+        /// with progress, or a transfer that finished.
+        private(set) var lastChange: Date?
+
+        /// Notes each transfer's progress (by a key naming the transfer); returns whether any
+        /// has progress, and the last time one was seen moving.
+        mutating func observe(_ samples: [(key: String, fraction: Double)], now: Date) -> (
+            anyProgress: Bool, since: Date?
+        ) {
+            var anyProgress = false
+            for (key, fraction) in samples {
+                if fraction > 0 {
+                    anyProgress = true
+                    if fraction > (fractions[key] ?? 0) { lastChange = now }
+                }
+                fractions[key] = fraction
+            }
+            return (anyProgress, lastChange)
+        }
+
+        mutating func finished(at date: Date) {
+            lastChange = date
+        }
+    }
+
+    /// Serializes storing received files with deleting recordings on the phone, so a
+    /// recording deleted as its last file is stored can't be acknowledged as complete (and
+    /// then deleted on the watch too).
+    static let storageLock = NSLock()
 
     /// How long a recording's transfers may stay outstanding without moving before a launch
     /// treats them as stuck and queues them again.
@@ -291,13 +337,7 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
     private let phoneHolds = Mutex<[String: PhoneHolds]>(RecordingTransfer.loadPhoneHolds())
     private static let phoneHoldsKey = "transferPhoneHolds"
     /// How each recording's outstanding transfers have moved this launch (watch side).
-    private let progress = Mutex<[String: TransferProgress]>([:])
-
-    private struct TransferProgress {
-        var fractions: [String: Double] = [:]
-        var firstSeen: Date?
-        var lastChange: Date?
-    }
+    private let progress = Mutex<[String: ProgressTracker]>([:])
 
     private static func loadPhoneHolds() -> [String: PhoneHolds] {
         UserDefaults.standard.data(forKey: phoneHoldsKey)
@@ -428,25 +468,12 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
             }
         }
 
-        /// Notes how a recording's outstanding transfers have moved, and returns whether any
-        /// has progress and since when they have (or were first seen) moving.
+        /// Notes how a recording's outstanding transfers have moved (`ProgressTracker`).
         private func observe(
             sessionId: String, transfers: [WCSessionFileTransfer], now: Date
         ) -> (anyProgress: Bool, since: Date?) {
-            progress.withLock { all in
-                var entry = all[sessionId] ?? TransferProgress()
-                if entry.firstSeen == nil { entry.firstSeen = now }
-                var anyProgress = false
-                for transfer in transfers {
-                    let fraction = transfer.progress.fractionCompleted
-                    if fraction > 0 { anyProgress = true }
-                    let key = Self.progressKey(transfer)
-                    if let previous = entry.fractions[key], fraction > previous { entry.lastChange = now }
-                    entry.fractions[key] = fraction
-                }
-                all[sessionId] = entry
-                return (anyProgress, entry.lastChange ?? entry.firstSeen)
-            }
+            let samples = transfers.map { (key: Self.progressKey($0), fraction: $0.progress.fractionCompleted) }
+            return progress.withLock { $0[sessionId, default: ProgressTracker()].observe(samples, now: now) }
         }
 
         private static func progressKey(_ transfer: WCSessionFileTransfer) -> String {
@@ -513,15 +540,22 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
             // Delivery is not storage: only the phone's acknowledgement allows deleting.
             let sessionId = fileTransfer.file.metadata?[Key.sessionId] as? String
             let name = Self.describe(fileTransfer)
+            let isPart = (try? TransferParts.part(file: name, metadata: fileTransfer.file.metadata)) != nil
+            // Done either way: a part's slice is written again if it has to go again.
+            if isPart { TransferParts.removeSlice(at: fileTransfer.file.fileURL) }
             if error == nil, let sessionId {
-                progress.withLock { $0[sessionId, default: TransferProgress()].lastChange = Date() }
+                progress.withLock { $0[sessionId, default: ProgressTracker()].finished(at: Date()) }
+                // Keeps the next parts coming (`TransferParts.window`). Not after a failure,
+                // which could fail again at once; launch and "Send again" retry those.
+                let folder = RecordingStore.root.appendingPathComponent(sessionId, isDirectory: true)
+                if isPart, FileManager.default.fileExists(atPath: folder.path) { send(folder: folder) }
             }
             if let error {
                 let nsError = error as NSError
                 log.add(
                     "Sending \(name) failed: \(error.localizedDescription) (\(nsError.domain) \(nsError.code))",
                     sessionId: sessionId)
-            } else if (try? TransferParts.part(file: name, metadata: fileTransfer.file.metadata)) == nil {
+            } else if !isPart {
                 // Not for every part: the phone's acknowledgements show those.
                 log.add("Handed \(name) to iPhone; waiting for it to confirm", sessionId: sessionId)
             }
@@ -635,6 +669,8 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
             let fm = FileManager.default
             let folder = RecordingStore.recordingsRoot.appendingPathComponent(sessionId, isDirectory: true)
             let destination = folder.appendingPathComponent(name)
+            Self.storageLock.lock()
+            defer { Self.storageLock.unlock() }
             // Stage next to the destination (same volume) so replacing is atomic and an old
             // copy survives if anything fails.
             var staged: URL?
@@ -647,20 +683,6 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
                     case .stored: break
                     case .alreadyHad: log.add("Already had \(label); kept it", sessionId: sessionId)
                     case .replaced: log.add("Replaced \(label)", sessionId: sessionId)
-                    }
-                    do {
-                        staged = try TransferParts.join(part, in: folder, stagingPrefix: RecordingStore.stagingPrefix)
-                    } catch {
-                        // Parts that don't add up are dropped, so the watch sends them again.
-                        TransferParts.removeParts(file: name, in: folder)
-                        throw error
-                    }
-                    if let staged {
-                        // Whether or not it can be put in place, the parts go: kept, they would
-                        // tell the watch not to send them again.
-                        defer { TransferParts.removeParts(file: name, in: folder) }
-                        try place(staged, at: destination, name: name, sessionId: sessionId)
-                        log.add("Joined \(name) from \(part.count) parts", sessionId: sessionId)
                     }
                 } else {
                     let whole = folder.appendingPathComponent(
@@ -676,6 +698,23 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
                 log.add(
                     "Could not store \(name): \(error) (\(nsError.domain) \(nsError.code))", sessionId: sessionId)
                 return
+            }
+            // Joins every file whose parts are all here: the one just completed, or one whose
+            // join was cut short (the app stopped) and that no further part would trigger.
+            for ready in TransferParts.complete(in: folder) {
+                var joined: URL?
+                do {
+                    joined = try TransferParts.join(ready, in: folder, stagingPrefix: RecordingStore.stagingPrefix)
+                    if let joined {
+                        try place(joined, at: folder.appendingPathComponent(ready.file), name: ready.file, sessionId: sessionId)
+                        log.add("Joined \(ready.file) from \(ready.count) parts", sessionId: sessionId)
+                    }
+                } catch {
+                    if let joined { try? fm.removeItem(at: joined) }
+                    log.add("Could not join \(ready.file); its parts go again: \(error)", sessionId: sessionId)
+                }
+                // Either way the parts go: kept, they would tell the watch not to send them.
+                TransferParts.removeParts(file: ready.file, in: folder)
             }
             // What the phone holds now, so a file it lost since an earlier acknowledgement
             // keeps the watch's copy, and the parts it has of files still arriving.

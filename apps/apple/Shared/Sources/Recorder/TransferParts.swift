@@ -7,11 +7,15 @@ import Foundation
 /// already received stay on the phone, and the phone says which it holds, so the watch
 /// sends only the rest.
 ///
-/// - Watch: each part is a slice of the recording's file, written to `.parts/<file>.<index>`
-///   in the recording folder just before it is queued.
-/// - Phone: received parts wait in `.parts/<file>/<index>`. When all are there, they are
-///   joined into a staged file, checked against the total size, and put in place like a
-///   file sent whole; then the parts are removed.
+/// - Watch: each part is a slice of the recording's file, written to
+///   `.parts/<file>.<total>-<partSize>.<index>` in the recording folder just before it is
+///   queued, and removed once its transfer finishes.
+/// - Phone: received parts wait in `.parts/<file>/<total>-<partSize>/<index>`. When all are
+///   there (checked after every file that arrives, so a join cut short by the app stopping
+///   is done later), they are joined into a staged file, checked against the total size,
+///   and put in place like a file sent whole; then the parts are removed.
+/// - The watch keeps at most `window` parts queued per recording and removes each slice once
+///   its transfer finishes, so a large file needs little extra space on the watch.
 ///
 /// `.parts` is never a recording file (`RecordingStore.isRecordingFileName`), so listing,
 /// exporting, the phone's acknowledgements and the watch's delete decision ignore it. The
@@ -24,6 +28,8 @@ enum TransferParts {
     /// The largest part size the phone accepts, so a malformed transfer can't ask it to
     /// hold or join something absurd.
     static let maximumPartSize: Int64 = 16 << 20
+    /// The most parts of a recording queued at once on the watch.
+    static let window = 10
 
     struct Part: Hashable, Sendable {
         var file: String
@@ -89,10 +95,11 @@ enum TransferParts {
 
     // MARK: Watch
 
-    /// Where the watch writes a part before sending it.
+    /// Where the watch writes a part before sending it. The name carries the layout, so a
+    /// slice cut another way is never reused for this part.
     static func sliceURL(_ part: Part, in recording: URL) -> URL {
         recording.appendingPathComponent(folderName, isDirectory: true)
-            .appendingPathComponent("\(part.file).\(part.index)")
+            .appendingPathComponent("\(part.file).\(part.total)-\(part.partSize).\(part.index)")
     }
 
     /// Writes the part's slice of the recording's file (or reuses one already written at
@@ -115,9 +122,28 @@ enum TransferParts {
 
     // MARK: Phone
 
-    /// Where the phone keeps the parts of `file` received so far.
-    static func receivedFolder(file: String, in recording: URL) -> URL {
-        recording.appendingPathComponent(folderName, isDirectory: true).appendingPathComponent(file, isDirectory: true)
+    /// A file's parts are kept per layout (its total size and part size), so parts cut
+    /// differently (a file that changed, or a build with another part size) never join with
+    /// each other; acknowledgements name the layout, so the watch skips only parts it cut the
+    /// same way.
+    static func layoutKey(_ part: Part) -> String {
+        "\(part.file)|\(part.total)|\(part.partSize)"
+    }
+
+    /// A part of the layout `key` names (its first), or nil if the key is not one.
+    static func layout(_ key: String) -> Part? {
+        let fields = key.split(separator: "|", omittingEmptySubsequences: false)
+        guard fields.count == 3, let total = Int64(fields[1]), let partSize = Int64(fields[2]),
+            partSize > 0, partSize <= maximumPartSize, total > partSize
+        else { return nil }
+        return plan(file: String(fields[0]), size: total, partSize: partSize).first
+    }
+
+    /// Where the phone keeps the parts received so far of `part`'s file in its layout.
+    static func receivedFolder(_ part: Part, in recording: URL) -> URL {
+        recording.appendingPathComponent(folderName, isDirectory: true)
+            .appendingPathComponent(part.file, isDirectory: true)
+            .appendingPathComponent("\(part.total)-\(part.partSize)", isDirectory: true)
     }
 
     enum Stored: Equatable {
@@ -125,13 +151,18 @@ enum TransferParts {
     }
 
     /// Keeps a received part (moving `incoming` away; WatchConnectivity deletes it after the
-    /// callback). One already held at the right size stays; a wrong size is refused.
+    /// callback). One already held at the right size stays; a wrong size is refused. Parts
+    /// of the same file in another layout are dropped.
     static func store(_ incoming: URL, as part: Part, in recording: URL) throws -> Stored {
         guard size(of: incoming) == part.length else {
             throw PartError.wrongSize(expected: part.length, actual: size(of: incoming))
         }
         let fm = FileManager.default
-        let folder = receivedFolder(file: part.file, in: recording)
+        let folder = receivedFolder(part, in: recording)
+        let fileFolder = folder.deletingLastPathComponent()
+        for other in (try? fm.contentsOfDirectory(atPath: fileFolder.path)) ?? [] where other != folder.lastPathComponent {
+            try? fm.removeItem(at: fileFolder.appendingPathComponent(other))
+        }
         try fm.createDirectory(at: folder, withIntermediateDirectories: true)
         let destination = folder.appendingPathComponent(String(part.index))
         if fm.fileExists(atPath: destination.path) {
@@ -143,31 +174,43 @@ enum TransferParts {
         return .stored
     }
 
-    /// The parts held for each file still arriving, by index.
+    /// The parts held of files still arriving, by layout (`layoutKey`), by index.
     static func held(in recording: URL) -> [String: [Int]] {
         let fm = FileManager.default
         let root = recording.appendingPathComponent(folderName, isDirectory: true)
         var held: [String: [Int]] = [:]
         for file in (try? fm.contentsOfDirectory(atPath: root.path)) ?? [] {
-            let indices = ((try? fm.contentsOfDirectory(atPath: root.appendingPathComponent(file).path)) ?? [])
-                .compactMap(Int.init).sorted()
-            if !indices.isEmpty { held[file] = indices }
+            let fileFolder = root.appendingPathComponent(file, isDirectory: true)
+            for layout in (try? fm.contentsOfDirectory(atPath: fileFolder.path)) ?? [] {
+                let fields = layout.split(separator: "-")
+                guard fields.count == 2, let total = Int64(fields[0]), let partSize = Int64(fields[1]) else { continue }
+                let indices = ((try? fm.contentsOfDirectory(atPath: fileFolder.appendingPathComponent(layout).path)) ?? [])
+                    .compactMap(Int.init).sorted()
+                if !indices.isEmpty { held["\(file)|\(total)|\(partSize)"] = indices }
+            }
         }
         return held
     }
 
-    /// Joins the parts of `part.file` into a staged file in the recording folder once all of
-    /// them are held, checking every part's size and the total; nil while any is missing.
-    /// The caller puts the staged file in place and removes the parts.
+    /// A part of every layout whose parts are all held at the right sizes, ready to join.
+    static func complete(in recording: URL) -> [Part] {
+        held(in: recording).keys.sorted().compactMap(layout).filter { isComplete($0, in: recording) }
+    }
+
+    private static func isComplete(_ part: Part, in recording: URL) -> Bool {
+        let folder = receivedFolder(part, in: recording)
+        return plan(file: part.file, size: part.total, partSize: part.partSize).allSatisfy {
+            size(of: folder.appendingPathComponent(String($0.index))) == $0.length
+        }
+    }
+
+    /// Joins the parts of `part`'s file and layout into a staged file in the recording folder
+    /// once all of them are held, checking every part's size and the total; nil while any is
+    /// missing. The caller puts the staged file in place and removes the parts.
     static func join(_ part: Part, in recording: URL, stagingPrefix: String) throws -> URL? {
+        guard isComplete(part, in: recording) else { return nil }
         let fm = FileManager.default
-        let folder = receivedFolder(file: part.file, in: recording)
-        let parts = (0..<part.count).map {
-            Part(file: part.file, index: $0, count: part.count, total: part.total, partSize: part.partSize)
-        }
-        for each in parts where size(of: folder.appendingPathComponent(String(each.index))) != each.length {
-            return nil
-        }
+        let folder = receivedFolder(part, in: recording)
         let staged = recording.appendingPathComponent("\(stagingPrefix)\(UUID().uuidString)-\(part.file)")
         guard fm.createFile(atPath: staged.path, contents: nil) else {
             throw CocoaError(.fileWriteUnknown)
@@ -175,8 +218,12 @@ enum TransferParts {
         do {
             let output = try FileHandle(forWritingTo: staged)
             defer { try? output.close() }
-            for each in parts {
-                try output.write(contentsOf: try Data(contentsOf: folder.appendingPathComponent(String(each.index))))
+            for each in plan(file: part.file, size: part.total, partSize: part.partSize) {
+                let data = try Data(contentsOf: folder.appendingPathComponent(String(each.index)))
+                guard Int64(data.count) == each.length else {
+                    throw PartError.wrongSize(expected: each.length, actual: Int64(data.count))
+                }
+                try output.write(contentsOf: data)
             }
             try output.synchronize()
             let joined = size(of: staged) ?? -1
@@ -188,14 +235,21 @@ enum TransferParts {
         return staged
     }
 
-    /// Removes the parts of `file`, once it is in place.
+    /// Removes every part of `file`, once it is in place (or its parts are unusable).
     static func removeParts(file: String, in recording: URL) {
         let fm = FileManager.default
-        try? fm.removeItem(at: receivedFolder(file: file, in: recording))
         let root = recording.appendingPathComponent(folderName, isDirectory: true)
+        try? fm.removeItem(at: root.appendingPathComponent(file, isDirectory: true))
         if (try? fm.contentsOfDirectory(atPath: root.path))?.isEmpty == true {
             try? fm.removeItem(at: root)
         }
+    }
+
+    /// The watch's slice of a part, once its transfer has finished either way: recreated if
+    /// the part has to go again. Only removes a file inside a recording's `.parts`.
+    static func removeSlice(at url: URL) {
+        guard url.deletingLastPathComponent().lastPathComponent == folderName else { return }
+        try? FileManager.default.removeItem(at: url)
     }
 
     static func size(of url: URL) -> Int64? {

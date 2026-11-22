@@ -160,8 +160,10 @@ private struct RecordingSection: View {
         if let held = phone.files[name] {
             return held == size ? "on iPhone" : "iPhone has \(held) bytes"
         }
-        let parts = TransferParts.plan(file: name, size: size).count
-        if let held = phone.parts[name], parts > 0 { return "\(held.count) of \(parts) parts on iPhone" }
+        let parts = TransferParts.plan(file: name, size: size)
+        if let first = parts.first, let held = phone.parts[TransferParts.layoutKey(first)] {
+            return "\(held.count) of \(parts.count) parts on iPhone"
+        }
         return "missing on iPhone"
     }
 

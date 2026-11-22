@@ -73,6 +73,35 @@ final class RecordingTransferTests: XCTestCase {
         XCTAssertTrue(requeue(queuedMinutesAgo: 0, progress: false, movedMinutesAgo: 0, .all))
     }
 
+    /// Review of #167, finding 4: a look before anything was queued must not start the
+    /// stall clock for a transfer first seen moving minutes later.
+    func testATransferFirstSeenMovingCountsAsMoving() {
+        var tracker = RecordingTransfer.ProgressTracker()
+        XCTAssertFalse(tracker.observe([], now: now).anyProgress)
+        let later = now.addingTimeInterval(3 * 60)
+        let seen = tracker.observe([(key: "motion#0", fraction: 0.2)], now: later)
+        XCTAssertTrue(seen.anyProgress)
+        XCTAssertEqual(seen.since, later)
+        XCTAssertFalse(
+            RecordingTransfer.shouldRequeue(
+                oldestQueuedAt: now, anyProgress: true, progressSince: seen.since, now: later, requeue: .all))
+    }
+
+    func testATransferThatStopsGrowingCountsAsStalled() {
+        var tracker = RecordingTransfer.ProgressTracker()
+        _ = tracker.observe([(key: "motion#0", fraction: 0.2)], now: now)
+        let later = now.addingTimeInterval(RecordingTransfer.stalledAfter)
+        let seen = tracker.observe([(key: "motion#0", fraction: 0.2)], now: later)
+        XCTAssertEqual(seen.since, now)
+        XCTAssertTrue(
+            RecordingTransfer.shouldRequeue(
+                oldestQueuedAt: now, anyProgress: true, progressSince: seen.since, now: later, requeue: .all))
+        // Growth, or a finished part, counts as moving again.
+        XCTAssertEqual(tracker.observe([(key: "motion#0", fraction: 0.3)], now: later).since, later)
+        tracker.finished(at: later.addingTimeInterval(1))
+        XCTAssertEqual(tracker.lastChange, later.addingTimeInterval(1))
+    }
+
     func testTheQueuedTimeRoundTripsThroughMetadata() {
         let metadata: [String: Any] = ["queuedAt": now.timeIntervalSince1970]
         XCTAssertEqual(RecordingTransfer.queuedAt(metadata: metadata), now)

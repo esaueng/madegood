@@ -79,7 +79,7 @@ final class TransferPartsTests: XCTestCase {
         XCTAssertNil(try TransferParts.join(parts[2], in: phone, stagingPrefix: ".incoming-"))
         XCTAssertEqual(try deliver(parts[0]), .stored)
         XCTAssertEqual(try deliver(parts[0]), .alreadyHad)
-        XCTAssertEqual(TransferParts.held(in: phone), ["motion.ndjson.gz": [0, 2]])
+        XCTAssertEqual(TransferParts.held(in: phone), ["motion.ndjson.gz|25|10": [0, 2]])
         XCTAssertNil(try TransferParts.join(parts[0], in: phone, stagingPrefix: ".incoming-"))
 
         XCTAssertEqual(try deliver(parts[1]), .stored)
@@ -128,11 +128,90 @@ final class TransferPartsTests: XCTestCase {
 
     func testTheWatchSendsOnlyWhatThePhoneLacksAndIsNotInFlight() {
         let holds = RecordingTransfer.PhoneHolds(
-            files: ["events.ndjson.gz": 3, "gps.ndjson.gz": 7, "meta.json": 4], parts: ["motion.ndjson.gz": [0]])
+            files: ["events.ndjson.gz": 3, "gps.ndjson.gz": 7, "meta.json": 4],
+            parts: ["motion.ndjson.gz|25|10": [0]])
         let units = RecordingTransfer.units(
             local: local, holds: holds, inFlight: [.init(file: "motion.ndjson.gz", part: 2)], partSize: partSize)
         // gps differs in size on the phone, so it goes; meta.json always goes, last.
         XCTAssertEqual(names(units), ["gps.ndjson.gz", "motion.ndjson.gz#1", "meta.json"])
+    }
+
+    /// Review of #167, finding 1: parts cut another way (a different total or part size)
+    /// must never be skipped as held or joined with this layout's parts, or the phone would
+    /// build a file of the right size from the wrong bytes.
+    func testPartsOfAnotherLayoutAreNeverSkippedOrJoined() throws {
+        let otherLayout = RecordingTransfer.PhoneHolds(parts: ["motion.ndjson.gz|25|5": [0, 1, 2, 3, 4]])
+        let units = RecordingTransfer.units(local: local, holds: otherLayout, inFlight: [], partSize: partSize)
+        XCTAssertEqual(units.filter { $0.file == "motion.ndjson.gz" }.count, 3)
+
+        let watch = try folder("watch")
+        let phone = try folder("phone")
+        try bytes(25).write(to: watch.appendingPathComponent("motion.ndjson.gz"))
+        func deliver(_ part: TransferParts.Part) throws {
+            let inbox = root.appendingPathComponent("inbox-\(UUID().uuidString)")
+            try FileManager.default.copyItem(at: try TransferParts.slice(part, in: watch), to: inbox)
+            _ = try TransferParts.store(inbox, as: part, in: phone)
+        }
+        let fives = TransferParts.plan(file: "motion.ndjson.gz", size: 25, partSize: 5)
+        try deliver(fives[2])
+        // The file is now cut in tens: the old layout's parts are dropped.
+        let tens = TransferParts.plan(file: "motion.ndjson.gz", size: 25, partSize: 10)
+        for part in tens { try deliver(part) }
+        XCTAssertEqual(TransferParts.held(in: phone), ["motion.ndjson.gz|25|10": [0, 1, 2]])
+        let staged = try XCTUnwrap(try TransferParts.join(tens[0], in: phone, stagingPrefix: ".incoming-"))
+        XCTAssertEqual(try Data(contentsOf: staged), bytes(25))
+    }
+
+    /// Finding 3: the app stopped after storing the last part but before joining. The parts
+    /// are all held, so no further part arrives to trigger the join; the phone finds the
+    /// complete layout when the next file (meta.json) arrives.
+    func testACompleteSetOfPartsIsFoundWithoutANewPart() throws {
+        let watch = try folder("watch")
+        let phone = try folder("phone")
+        try bytes(25).write(to: watch.appendingPathComponent("motion.ndjson.gz"))
+        let parts = TransferParts.plan(file: "motion.ndjson.gz", size: 25, partSize: 10)
+        for part in parts.dropLast() {
+            let inbox = root.appendingPathComponent("inbox-\(UUID().uuidString)")
+            try FileManager.default.copyItem(at: try TransferParts.slice(part, in: watch), to: inbox)
+            _ = try TransferParts.store(inbox, as: part, in: phone)
+        }
+        XCTAssertEqual(TransferParts.complete(in: phone), [])
+        let inbox = root.appendingPathComponent("inbox-last")
+        try FileManager.default.copyItem(at: try TransferParts.slice(parts[2], in: watch), to: inbox)
+        _ = try TransferParts.store(inbox, as: parts[2], in: phone)
+        let ready = TransferParts.complete(in: phone)
+        XCTAssertEqual(ready.map(\.file), ["motion.ndjson.gz"])
+        let staged = try XCTUnwrap(try TransferParts.join(ready[0], in: phone, stagingPrefix: ".incoming-"))
+        XCTAssertEqual(try Data(contentsOf: staged), bytes(25))
+    }
+
+    /// Finding 5: only a window of parts is queued at once (each slice is a copy on the
+    /// watch), and meta.json waits until everything else is queued.
+    func testOnlyAWindowOfPartsIsQueuedAndMetaWaits() {
+        let first = RecordingTransfer.units(local: local, holds: nil, inFlight: [], partSize: partSize, window: 2)
+        XCTAssertEqual(names(first), ["events.ndjson.gz", "motion.ndjson.gz#2", "gps.ndjson.gz", "motion.ndjson.gz#0"])
+        // Two parts in flight fill the window.
+        let full = RecordingTransfer.units(
+            local: local, holds: nil,
+            inFlight: [.init(file: "motion.ndjson.gz", part: 2), .init(file: "motion.ndjson.gz", part: 0)],
+            partSize: partSize, window: 2)
+        XCTAssertEqual(names(full), ["events.ndjson.gz", "gps.ndjson.gz"])
+        // The last part fits: meta.json follows it.
+        let last = RecordingTransfer.units(
+            local: local, holds: nil,
+            inFlight: [.init(file: "motion.ndjson.gz", part: 2), .init(file: "motion.ndjson.gz", part: 0)],
+            partSize: partSize, window: 3)
+        XCTAssertEqual(names(last), ["events.ndjson.gz", "gps.ndjson.gz", "motion.ndjson.gz#1", "meta.json"])
+    }
+
+    func testOnlyAPartsSliceIsEverRemoved() throws {
+        let watch = try folder("watch")
+        try bytes(25).write(to: watch.appendingPathComponent("motion.ndjson.gz"))
+        let slice = try TransferParts.slice(TransferParts.plan(file: "motion.ndjson.gz", size: 25, partSize: 10)[0], in: watch)
+        TransferParts.removeSlice(at: watch.appendingPathComponent("motion.ndjson.gz"))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: watch.appendingPathComponent("motion.ndjson.gz").path))
+        TransferParts.removeSlice(at: slice)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: slice.path))
     }
 
     func testAWholeFileInFlightCoversItsParts() {

@@ -66,7 +66,7 @@ final class TransferLog: Sendable {
     static func describe(parts: [String: [Int]]) -> String {
         guard !parts.isEmpty else { return "" }
         return "; parts of "
-            + parts.sorted { $0.key < $1.key }.map { "\($0.key): \($0.value.count)" }
+            + parts.sorted { $0.key < $1.key }.map { "\($0.key.split(separator: "|").first.map(String.init) ?? $0.key): \($0.value.count)" }
             .joined(separator: ", ")
     }
 
