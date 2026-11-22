@@ -91,6 +91,37 @@ final class TransferPolicyTests: XCTestCase {
         XCTAssertFalse(TransferPolicy.backgroundWorkDone(activated: true, hasContentPending: false, busy: 1))
     }
 
+    // MARK: Activation
+
+    /// Review of #170, finding 2: an activation that failed left the session not activated
+    /// with the delegate installed; background wakes in the same process only activated when
+    /// the delegate was missing, so they waited in vain until the next launch.
+    func testAFailedActivationIsTriedAgainByTheNextWake() {
+        // Failed: completed with an error, so none is under way.
+        XCTAssertTrue(
+            TransferPolicy.shouldActivate(
+                delegateInstalled: true, notActivated: true, activationStartedAt: nil, now: now))
+        // Never activated in this process.
+        XCTAssertTrue(
+            TransferPolicy.shouldActivate(
+                delegateInstalled: false, notActivated: true, activationStartedAt: nil, now: now))
+    }
+
+    func testAnActivationUnderWayOrDoneIsLeftAlone() {
+        XCTAssertFalse(
+            TransferPolicy.shouldActivate(
+                delegateInstalled: true, notActivated: true, activationStartedAt: now.addingTimeInterval(-5),
+                now: now))
+        XCTAssertFalse(
+            TransferPolicy.shouldActivate(
+                delegateInstalled: true, notActivated: false, activationStartedAt: nil, now: now))
+        // One that never completed is lost after the timeout.
+        XCTAssertTrue(
+            TransferPolicy.shouldActivate(
+                delegateInstalled: true, notActivated: true,
+                activationStartedAt: now.addingTimeInterval(-TransferPolicy.activationTimeout), now: now))
+    }
+
     // MARK: Window
 
     func testTheWindowCoversARefreshIntervalOfSendingWhenThereIsRoom() {

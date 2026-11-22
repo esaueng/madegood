@@ -67,6 +67,25 @@ enum TransferPolicy {
         activated && !hasContentPending && busy == 0
     }
 
+    // MARK: Activation
+
+    /// How long an activation may go without completing before it is tried again.
+    static let activationTimeout: TimeInterval = 30
+
+    /// Whether to activate the WatchConnectivity session (again): when this object is not
+    /// its delegate yet, or when it is not activated and no activation is under way (one that
+    /// failed has completed with an error; one started `activationTimeout` ago without
+    /// completing counts as lost). Without this, a failed activation lasted until the next
+    /// launch, and every background wake in the process waited for it in vain.
+    static func shouldActivate(
+        delegateInstalled: Bool, notActivated: Bool, activationStartedAt: Date?, now: Date
+    ) -> Bool {
+        guard delegateInstalled else { return true }
+        guard notActivated else { return false }
+        guard let activationStartedAt else { return true }
+        return abs(now.timeIntervalSince(activationStartedAt)) >= activationTimeout
+    }
+
     // MARK: Window
 
     /// The most parts of a recording queued at once when the watch has room: about 16

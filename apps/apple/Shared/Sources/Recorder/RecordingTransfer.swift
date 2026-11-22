@@ -417,6 +417,8 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
     private let scheduledRefresh = Mutex<Date?>(nil)
     /// Delivered content and sends still being handled; a background task waits for 0.
     private let busy = Mutex(0)
+    /// When the activation under way started; nil once it completed, either way.
+    private let activationStartedAt = Mutex<Date?>(nil)
     /// Runs sends one at a time (watch side).
     private let sendQueue = DispatchQueue(label: "RecordingTransfer.send", qos: .utility)
 
@@ -468,8 +470,24 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
 
     func activate() {
         guard WCSession.isSupported() else { return }
+        activationStartedAt.withLock { $0 = Date() }
         WCSession.default.delegate = self
         WCSession.default.activate()
+    }
+
+    /// Activates the session if it is not activated and no activation is under way
+    /// (`TransferPolicy.shouldActivate`), for instance after an activation failed.
+    func ensureActivated() {
+        guard WCSession.isSupported() else { return }
+        let session = WCSession.default
+        let delegateInstalled = session.delegate === self
+        guard
+            TransferPolicy.shouldActivate(
+                delegateInstalled: delegateInstalled, notActivated: session.activationState == .notActivated,
+                activationStartedAt: activationStartedAt.withLock { $0 }, now: Date())
+        else { return }
+        if delegateInstalled { log.add("Connecting to the other device again") }
+        activate()
     }
 
     /// Marks a recording as in progress (or not). Called by SessionRecorder on both devices.
@@ -511,6 +529,7 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
             guard FileManager.default.fileExists(atPath: folder.path) else { return }
             guard session.activationState == .activated else {
                 log.add("Not sent: the connection to iPhone is not active yet", sessionId: sessionId)
+                ensureActivated()
                 scheduleRefresh(hasPending: true)
                 return
             }
@@ -766,7 +785,7 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
         /// has been handled, including the sends that topped up the window
         /// (`TransferPolicy.backgroundWorkDone`), or when the task's time runs out.
         func finishBackgroundDelivery() async {
-            if WCSession.default.delegate !== self { activate() }
+            ensureActivated()
             let done = await waitUntil(limit: TransferPolicy.backgroundTaskLimit) { [self] in
                 let session = WCSession.default
                 return TransferPolicy.backgroundWorkDone(
@@ -781,7 +800,7 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
         /// so a recording the phone cannot read does not keep waking the app.
         func resumeFromRefresh() async {
             scheduledRefresh.withLock { $0 = nil }
-            if WCSession.default.delegate !== self { activate() }
+            ensureActivated()
             _ = await waitUntil(limit: 10) { WCSession.default.activationState == .activated }
             let waiting = RecordingStore.list().filter { !isActive($0.folder.lastPathComponent) }.count
             if waiting > 0 {
@@ -1250,6 +1269,7 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
         _ session: WCSession, activationDidCompleteWith activationState: WCSessionActivationState,
         error: (any Error)?
     ) {
+        activationStartedAt.withLock { $0 = nil }
         if let error {
             log.add("Connection to the other device failed: \(error.localizedDescription)")
         }
