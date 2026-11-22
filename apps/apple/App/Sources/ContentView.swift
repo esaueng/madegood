@@ -327,15 +327,26 @@ private struct StartView: View {
                     .listRowBackground(Color.clear)
             }
 
-            let recent = Array(library.items.prefix(3))
+            let recent = Array(library.items.prefix(6))
             if !recent.isEmpty {
                 Section {
-                    ForEach(recent) { item in
-                        NavigationLink(value: item) {
-                            SessionRow(item: item).padding(.vertical, 4)
+                    // A row of compact cards, as in History, that scrolls sideways.
+                    ScrollView(.horizontal) {
+                        LazyHStack(spacing: 12) {
+                            ForEach(recent) { item in
+                                NavigationLink(value: item) { RecentSessionCard(item: item) }
+                                    .buttonStyle(.plain)
+                                    .accessibilityIdentifier("recent.session")
+                            }
                         }
-                        .listRowBackground(Color(.secondarySystemBackground))
+                        .scrollTargetLayout()
                     }
+                    .scrollTargetBehavior(.viewAligned)
+                    .scrollIndicators(.hidden)
+                    .scrollClipDisabled()
+                    .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
                 } header: {
                     HStack(alignment: .firstTextBaseline) {
                         Text("Recent")

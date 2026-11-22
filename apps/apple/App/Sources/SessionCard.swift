@@ -73,8 +73,7 @@ private struct SessionCardMetrics: View {
     }
 }
 
-/// The sport badge, its name, any trim, and the start time. Shared by the History cards
-/// and the start screen's recent sessions.
+/// The sport badge, its name, any trim, and the start time.
 private struct SessionTitle: View {
     let item: SessionLibrary.Item
 
@@ -111,38 +110,69 @@ private struct SessionTitle: View {
     }
 }
 
-/// One session in a compact list (the start screen's Recent): sport, when, distance and
-/// moving time.
-struct SessionRow: View {
+/// One session in the start screen's Recent row: the route, the sport and day, then
+/// distance and moving time.
+struct RecentSessionCard: View {
     let item: SessionLibrary.Item
+    // Narrow enough that the next card peeks in, so the row reads as scrollable.
+    @ScaledMetric private var width: CGFloat = 160
 
     var body: some View {
-        HStack(spacing: 12) {
-            SessionTitle(item: item)
-            Spacer()
-            if let summary = item.summary {
-                let display = UserSettings.display(for: summary.sport)
-                VStack(alignment: .trailing, spacing: 2) {
-                    Text(display.distance(summary.metrics.distance))
-                        .font(.body.weight(.semibold).monospacedDigit())
-                        .fontDesign(.rounded)
-                    Text(Formatting.elapsed(summary.metrics.movingTime))
-                        .font(.footnote.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                }
-            } else if item.entry.meta != nil {
-                ProgressView()
+        let sport = item.summary?.sport ?? item.entry.meta?.sport
+        VStack(alignment: .leading, spacing: 0) {
+            if let route = item.summary?.historyRoute {
+                HistoryRouteBanner(route: route, height: 72)
+            } else {
+                Color.accentColor.opacity(0.1).frame(height: 72)
             }
+            VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(sport?.displayName ?? "Receiving…")
+                        .font(.subheadline.weight(.semibold))
+                        .fontDesign(.rounded)
+                        .lineLimit(1)
+                    if let startedAt = item.entry.startedAt {
+                        Text(startedAt, format: .dateTime.weekday(.abbreviated).day().month())
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                if let summary = item.summary {
+                    let display = UserSettings.display(for: summary.sport)
+                    HStack(alignment: .top, spacing: 8) {
+                        MetricValue(
+                            title: "Distance", value: display.distance(summary.metrics.distance),
+                            color: Theme.Metric.distance, size: .medium)
+                        MetricValue(
+                            title: "Moving", value: Formatting.elapsed(summary.metrics.movingTime),
+                            color: Theme.Metric.time, size: .medium)
+                    }
+                } else if item.entry.meta != nil {
+                    ProgressView()
+                }
+            }
+            .padding(12)
         }
-        .contentShape(.rect)
+        .frame(width: width, alignment: .leading)
+        .background(Color(.secondarySystemGroupedBackground))
+        .clipShape(.rect(cornerRadius: 18, style: .continuous))
+        .contentShape(.rect(cornerRadius: 18, style: .continuous))
+        .overlay(alignment: .topTrailing) {
+            SessionSyncBadge(sessionID: item.entry.meta?.sessionId).padding(8)
+        }
     }
 }
 
 /// The route drawn from the recording itself over a soft water tint: no map tiles, no
 /// network, no place names.
-private struct HistoryRouteBanner: View {
+struct HistoryRouteBanner: View {
     let route: HistoryRoute
-    @ScaledMetric private var height: CGFloat = 96
+    @ScaledMetric private var height: CGFloat
+
+    init(route: HistoryRoute, height: CGFloat = 96) {
+        self.route = route
+        _height = ScaledMetric(wrappedValue: height)
+    }
 
     var body: some View {
         Canvas { context, size in
