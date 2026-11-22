@@ -136,14 +136,16 @@ events with `{"auto": true, "transport": true}`. An auto-resume at or after the
 dated-back start is removed instead of adding a pause. A manual resume ends the leg, like
 any pause, so the events always say what is counted (heart-rate zones and strokes read
 them); a vehicle still going is confirmed again from the first fix after the resume, and
-an auto pause is recorded there. A manual pause does not stop the check: a leg confirmed
-while paused still leaves the max speeds and heart rate, and any distance and moving time
-counted since the dated-back start (a pause tapped in the vehicle before the leg was
-confirmed). Sailing, windsurfing and motorboating have no limit. A paddler who really
-holds 8 m/s for 10 s (a downwind foil, or a fast current over ground) loses at most the
-60 s before the run, the run itself and everything until they next drop below 0.8 m/s. A
-slow drive that stays below 8 m/s for more than 60 s after its last stop keeps that slow
-part, with a max speed under 8 m/s.
+an auto pause is recorded there. A manual resume inside a leg that is then rolled back
+(paused and resumed before it was confirmed) gets an auto pause at the fix after it,
+where accounting restarted, so it does not reopen the leg. A manual pause does not stop
+the check: a leg confirmed while paused still leaves the max speeds and heart rate, and
+any distance and moving time counted since the dated-back start (a pause tapped in the
+vehicle before the leg was confirmed). Sailing, windsurfing and motorboating have no
+limit. A paddler who really holds 8 m/s for 10 s (a downwind foil, or a fast current over
+ground) loses at most the 60 s before the run, the run itself and everything until they
+next drop below 0.8 m/s. A slow drive that stays below 8 m/s for more than 60 s after its
+last stop keeps that slow part, with a max speed under 8 m/s.
 
 Hold timers only run on observed fixes. After a re-anchor (a long GPS gap or recovery
 from rejected fixes) they start again, so an unobserved gap can neither pause nor

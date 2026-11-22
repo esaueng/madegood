@@ -200,6 +200,10 @@ public struct SessionEngine: LiveAnalyzer {
     private var transportRunLast: Double?
     /// Transport: a checkpoint at every fix for the last `lookback` + hold, to bound the rollback.
     private var transportHistory: [Checkpoint] = []
+    /// Transport: the first fix after each of the user's resumes in that window, where a
+    /// rolled-back leg records an auto pause so the resume does not reopen it.
+    private var transportResumeFixes: [Double] = []
+    private var awaitingResumeFix = false
     /// Set while in a vehicle: where the leg was dated back to.
     private var transportSince: Double?
     private var closedTransportIntervals: [ClosedRange<Double>] = []
@@ -245,6 +249,8 @@ public struct SessionEngine: LiveAnalyzer {
         transportRunStart = nil
         transportCheckpoint = nil
         transportHistory.removeAll(keepingCapacity: true)
+        transportResumeFixes.removeAll(keepingCapacity: true)
+        awaitingResumeFix = false
         filter = GPSFilter(config: filter.config)
         lastAccepted = nil
         course = nil
@@ -333,6 +339,10 @@ public struct SessionEngine: LiveAnalyzer {
         course = accepted.course
         let previous = lastAccepted
         lastAccepted = fix
+        if awaitingResumeFix {
+            awaitingResumeFix = false
+            transportResumeFixes.append(fix.t)
+        }
         if transportSince != nil {
             continueTransport(fix)
             return
@@ -505,6 +515,7 @@ public struct SessionEngine: LiveAnalyzer {
         if let firstKept = transportHistory.firstIndex(where: { $0.since >= keep }), firstKept > 0 {
             transportHistory.removeFirst(firstKept)
         }
+        transportResumeFixes.removeAll { $0 < keep }
         guard let speed, speed > config.above else {
             transportRunStart = nil
             return false
@@ -561,6 +572,13 @@ public struct SessionEngine: LiveAnalyzer {
                     SessionEvent(t: since, type: .pause, data: ["auto": true, "transport": true]))
             }
         }
+        // A manual resume inside the rolled-back leg would reopen it for everything that
+        // reads pause and resume events (heart-rate zones, strokes): pause again at the
+        // fix after it, where the engine's own accounting restarted.
+        for resumed in transportResumeFixes where resumed > since {
+            generatedEvents.append(SessionEvent(t: resumed, type: .pause, data: ["auto": true, "transport": true]))
+        }
+        transportResumeFixes.removeAll(keepingCapacity: true)
         if mode == .moving { mode = .autoPaused }
         slow = nil
         fast = nil
@@ -641,6 +659,7 @@ public struct SessionEngine: LiveAnalyzer {
                 if event.t != retainedSpanStart { intervalBroken = true }
             }
             if mode != .moving { mode = .moving }
+            if profile.transport != nil { awaitingResumeFix = true }
             slow = nil
             fast = nil
         case .lap:

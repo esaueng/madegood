@@ -291,4 +291,26 @@ private func approx(_ a: Double?, _ b: Double, tolerance: Double = 1e-6) -> Bool
         #expect(approx(m.distance, paddled))
         #expect(approx(m.maxSpeed2s, 2))
     }
+
+    /// Re-check finding: a manual pause and resume during the unconfirmed hold. The raw
+    /// resume must not reopen the rolled-back leg for heart-rate zones or the stroke gate.
+    @Test func aPauseAndResumeBeforeConfirmationStayRolledBack() {
+        let leg = TransportLeg { t in t < 60 ? 2 : (t < 65 ? 0.2 : min(12, 1 + (t - 65))) }
+        // Last slow fix 64; above 8 m/s from 73; pause 78.5, resume 80; confirmed at 83.
+        let hr = (0...120).map { HRSample(t: Double($0), bpm: 150) }
+        let track = Track(
+            sessionId: UUID(), sport: .kayak, startedAt: Date(timeIntervalSince1970: 0), gps: leg.fixes(0...120),
+            hr: hr, events: [SessionEvent(t: 78.5, type: .pause), SessionEvent(t: 80, type: .resume)])
+        let replay = SessionReplay(track: track)
+        let m = replay.metrics
+        #expect(m.movingTime == 64)
+        #expect(replay.transportIntervals == [64...120])
+        #expect(replay.events.map(\.type) == [.pause, .pause, .resume, .pause])
+        #expect(replay.events.map(\.t) == [64, 78.5, 80, 81])
+        let zones = HeartRateZones().durations(samples: hr, events: replay.events, spans: [0...120])
+        let zoneTime = zones.values.reduce(0, +)
+        // Zones count 0–64 s and the 1 s from the resume to the next fix, nothing after.
+        #expect(abs(zoneTime - m.movingTime) <= 1.5)
+        #expect(replay.autoPausedIntervals == [64...Double.infinity])
+    }
 }
