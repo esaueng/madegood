@@ -55,6 +55,16 @@ enum TransferPolicy {
         return wanted.addingTimeInterval(soonestRefresh) < scheduled
     }
 
+    /// How long after a refresh request fails it is asked for again.
+    static let refreshRequestRetry: TimeInterval = 60
+
+    /// The refresh asked for after a request for `failed` failed: none if that request is
+    /// still the latest (so the next send, wake or retry asks again), otherwise the newer
+    /// one, which a late failure of an older request must not erase.
+    static func scheduledAfterFailure(current: Date?, failed: Date) -> Date? {
+        current == failed ? nil : current
+    }
+
     // MARK: WatchConnectivity background task
 
     /// The longest a WatchConnectivity background task waits for content before it ends

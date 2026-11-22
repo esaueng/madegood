@@ -42,7 +42,9 @@ alone cannot top up the window. Three things keep the queue going:
    background refresh scheduled with `WKApplication.scheduleBackgroundRefresh`, whose
    `userInfo` is the `.appRefresh(_:)` identifier. It asks for 15 minutes ahead, or sooner if
    a retry is due (`TransferPolicy.nextRefresh`). The refresh sends what waits, restarts
-   transfers that have been stuck for 15 minutes, and asks for the next refresh.
+   transfers that have been stuck for 15 minutes, and asks for the next refresh. A request
+   that fails is asked for again after 60 s, at every WatchConnectivity wake, and when the
+   app moves to the background.
    `BGTaskScheduler` is unavailable on watchOS (checked in the watchOS 27.2 SDK headers).
 3. **A larger window.** The window grows from 10 to 32 parts when the watch has room (see
    below). At about 2 MB/min that is about 16 minutes of sending, longer than the refresh

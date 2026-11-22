@@ -2,6 +2,8 @@ import SwiftUI
 
 @main
 struct MadeGoodWatchApp: App {
+    @Environment(\.scenePhase) private var scenePhase
+
     init() {
         UserSettings.resetIfRequested()
         UserSettings.migrate()
@@ -13,6 +15,10 @@ struct MadeGoodWatchApp: App {
     var body: some Scene {
         WindowGroup {
             WatchContentView()
+                .onChange(of: scenePhase) { _, phase in
+                    // Leaving with recordings still to send: make sure a wake is asked for.
+                    if phase == .background { RecordingTransfer.shared.scheduleRefreshIfPending() }
+                }
         }
         // The phone's acknowledgements wake a suspended app; each one queues the next parts
         // of the recording. The task ends once everything delivered has been handled.

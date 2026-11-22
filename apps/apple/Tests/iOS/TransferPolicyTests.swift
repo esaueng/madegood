@@ -124,6 +124,21 @@ final class TransferPolicyTests: XCTestCase {
                 wanted: now.addingTimeInterval(15 * 60), scheduled: now.addingTimeInterval(-1), now: now))
     }
 
+    /// Review of #170, finding 5: a refresh request that failed left nothing to wake the app
+    /// if a transfer then stalled without callbacks. The failed request is forgotten, so the
+    /// next attempt (60 s later, a wake, or moving to the background) asks again.
+    func testAFailedRefreshRequestIsAskedForAgain() {
+        let failed = now.addingTimeInterval(15 * 60)
+        let after = TransferPolicy.scheduledAfterFailure(current: failed, failed: failed)
+        XCTAssertNil(after)
+        let retryAt = now.addingTimeInterval(TransferPolicy.refreshRequestRetry)
+        XCTAssertTrue(TransferPolicy.shouldSchedule(wanted: failed, scheduled: after, now: retryAt))
+        // A newer request made meanwhile is kept: a late failure of an older one does not
+        // erase it.
+        let newer = now.addingTimeInterval(2 * 60)
+        XCTAssertEqual(TransferPolicy.scheduledAfterFailure(current: newer, failed: failed), newer)
+    }
+
     // MARK: WatchConnectivity background task
 
     /// The task must stay open until the session has delivered everything and the app has

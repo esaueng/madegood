@@ -818,13 +818,31 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
                         withPreferredDate: wanted, userInfo: TransferPolicy.refreshIdentifier as NSString
                     ) { error in
                         if let error {
-                            self.scheduledRefresh.withLock { $0 = nil }
-                            self.log.add("Could not ask to wake in the background: \(error.localizedDescription)")
+                            self.scheduledRefresh.withLock {
+                                $0 = TransferPolicy.scheduledAfterFailure(current: $0, failed: wanted)
+                            }
+                            self.log.add(
+                                "Could not ask to wake in the background: \(error.localizedDescription); "
+                                    + "asking again in \(Self.describe(TransferPolicy.refreshRequestRetry))")
+                            // Without a request, an outstanding transfer that stalls without
+                            // callbacks would leave nothing to wake the app.
+                            DispatchQueue.global(qos: .utility).asyncAfter(
+                                wallDeadline: .now() + TransferPolicy.refreshRequestRetry
+                            ) { self.scheduleRefreshIfPending() }
                         }
                     }
                 }
             }
             log.add("Asked to wake in the background in \(Self.describe(wanted.timeIntervalSince(now)))")
+        }
+
+        /// Asks for a background refresh if a finished recording waits that can go (one the
+        /// phone cannot read asks for none). Also called when the app moves to the background.
+        func scheduleRefreshIfPending() {
+            let pending = RecordingStore.list().contains {
+                !isActive($0.folder.lastPathComponent) && phoneReads(folder: $0.folder)
+            }
+            scheduleRefresh(hasPending: pending)
         }
 
         /// A WatchConnectivity background task: the phone's acknowledgements woke the app.
@@ -833,6 +851,8 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
         /// (`TransferPolicy.backgroundWorkDone`), or when the task's time runs out.
         func finishBackgroundDelivery() async {
             ensureActivated()
+            // Each wake makes sure a refresh is asked for (one that failed, or was lost).
+            scheduleRefreshIfPending()
             let done = await waitUntil(limit: TransferPolicy.backgroundTaskLimit) { [self] in
                 let session = WCSession.default
                 return TransferPolicy.backgroundWorkDone(
