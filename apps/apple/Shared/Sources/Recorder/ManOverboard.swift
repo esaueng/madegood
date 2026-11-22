@@ -381,9 +381,19 @@ final class ManOverboard {
     /// Clears the guidance target, or with no mark, cancels a waiting press. The next
     /// newest mark becomes the target.
     func clear() {
-        if let target = mark {
-            remove(target.identity)
+        clear(confirmed: mark?.identity)
+    }
+
+    /// Clears the mark the user confirmed clearing (`markID`, the target when they asked),
+    /// not whichever is the target by the time they confirm: a press while the
+    /// confirmation is open adds a mark that must survive it. Nil, asked with no mark,
+    /// cancels a waiting press, unless a mark has arrived since.
+    func clear(confirmed markID: UUID?) {
+        if let markID {
+            guard marks.contains(where: { $0.identity == markID }) else { return }
+            remove(markID)
         } else {
+            guard mark == nil else { return }
             setAwaiting(nil)
             fallback?.cancel()
             fallback = nil

@@ -222,6 +222,42 @@ final class ManOverboardTests: XCTestCase {
         XCTAssertNil(manOverboard.mark)
     }
 
+    /// Watch polish review: a press while the Clear confirmation is open adds a new
+    /// target; confirming clears the mark that was shown, never the new one.
+    func testConfirmingAClearRemovesTheMarkShownNotANewerOne() throws {
+        let manOverboard = makeManOverboard()
+        manOverboard.update(freshFix())
+        guard case .marked(let first) = manOverboard.press() else { return XCTFail("did not mark") }
+        let shown = try XCTUnwrap(manOverboard.mark?.identity)
+        XCTAssertEqual(shown, first.identity)
+        // The Action button marks again while the confirmation is up.
+        manOverboard.update(freshFix())
+        guard case .marked(let second) = manOverboard.press(at: Date().addingTimeInterval(5)) else {
+            return XCTFail("did not mark again")
+        }
+        XCTAssertEqual(manOverboard.mark?.identity, second.identity, "the newest press is the target")
+
+        manOverboard.clear(confirmed: shown)
+        XCTAssertEqual(manOverboard.marks.map(\.identity), [second.identity])
+        XCTAssertEqual(manOverboard.mark?.identity, second.identity)
+        // Confirming again, for a mark already gone, changes nothing.
+        manOverboard.clear(confirmed: shown)
+        XCTAssertEqual(manOverboard.mark?.identity, second.identity)
+        manOverboard.stopOwnUpdates()
+    }
+
+    /// Cancelling a waiting press keeps a mark that arrived while the confirmation was open.
+    func testCancellingAWaitingPressKeepsAMarkThatArrivedSince() {
+        let manOverboard = makeManOverboard()
+        XCTAssertEqual(manOverboard.press(), .awaitingFix)
+        XCTAssertNil(manOverboard.mark)
+        manOverboard.update(freshFix())
+        XCTAssertNotNil(manOverboard.mark, "the first fix marks the waiting press")
+        manOverboard.clear(confirmed: nil)
+        XCTAssertNotNil(manOverboard.mark)
+        manOverboard.stopOwnUpdates()
+    }
+
     // MARK: Several marks (re-check finding 3)
 
     func testAWatchMarkNeverDiscardsAWaitingPhonePress() throws {

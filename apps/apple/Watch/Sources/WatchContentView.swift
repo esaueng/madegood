@@ -102,7 +102,7 @@ private struct StartScreen: View {
 
     var body: some View {
         ScrollView {
-            VStack(spacing: 6) {
+            VStack(spacing: 5) {
                 ForEach(store.startList(), id: \.self) { sport in
                     SportCard(
                         sport: sport, detail: detail(for: sport), countdownMinutes: store[sport].countdownMinutes,
@@ -180,9 +180,9 @@ private struct SportCard: View {
         HStack(spacing: 0) {
             Button(action: start) {
                 HStack(spacing: 8) {
-                    SportIcon(sport: sport, size: 24)
+                    SportIcon(sport: sport, size: 22)
                         .foregroundStyle(Theme.pearl)
-                        .frame(width: 32, height: 32)
+                        .frame(width: 30, height: 30)
                         .background(Theme.brightPetrol.opacity(isLuminanceReduced ? 0.4 : 1), in: .circle)
                     VStack(alignment: .leading, spacing: 1) {
                         title
@@ -191,7 +191,7 @@ private struct SportCard: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.leading, 8)
-                .padding(.vertical, 8)
+                .padding(.vertical, 6)
                 .contentShape(.rect)
             }
             .buttonStyle(.plain)
@@ -533,6 +533,7 @@ private struct MetricsPage: View {
     let hero: LiveScreen
     @State private var store = SettingsStore.shared
     @Environment(\.isLuminanceReduced) private var isLuminanceReduced
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
         let display = UserSettings.display(for: sport)
@@ -542,7 +543,7 @@ private struct MetricsPage: View {
             let elapsed = context.date.timeIntervalSince(startedAt)
             let zone = currentZone(metrics: metrics, elapsed: elapsed)
             let time = isLuminanceReduced ? Formatting.duration(elapsed) : Formatting.elapsed(elapsed)
-            VStack(alignment: .leading, spacing: 2) {
+            let content = VStack(alignment: .leading, spacing: 2) {
                 HStack {
                     SportIcon(sport: sport, size: 18, labeled: true)
                     // The big number's name, unless a pause or lap needs the space.
@@ -552,12 +553,13 @@ private struct MetricsPage: View {
                     } else if let lap = LiveDisplay.lapLabel(metrics) {
                         Text(lap).foregroundStyle(Theme.brightPetrol)
                             .accessibilityIdentifier("metric.lap")
-                    } else {
+                    } else if !dynamicTypeSize.isAccessibilitySize {
+                        // Left out at the largest sizes, where the time needs the line.
                         Text(hero.title).foregroundStyle(heroColor).accessibilityHidden(true)
                     }
-                    Spacer()
+                    Spacer(minLength: 4)
                     if hero != .time {
-                        Text(time).monospacedDigit().foregroundStyle(Theme.Metric.time)
+                        Text(time).monospacedDigit().foregroundStyle(Theme.Metric.time).layoutPriority(1)
                     }
                 }
                 .font(.footnote.weight(.medium))
@@ -597,6 +599,11 @@ private struct MetricsPage: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             // The elapsed time sits top right, where the page dots are.
             .clearOfPageIndicator()
+            // Larger values where the watch has the room, as it has below these rows.
+            ViewThatFits(in: .vertical) {
+                content.environment(\.largeFieldValues, true)
+                content
+            }
         }
     }
 
@@ -641,6 +648,7 @@ private struct StrokesPage: View {
     let startedAt: Date
     let sport: Sport
     @Environment(\.isLuminanceReduced) private var isLuminanceReduced
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
         let display = UserSettings.display(for: sport)
@@ -648,14 +656,17 @@ private struct StrokesPage: View {
         let strokes = recorder.strokes
         TimelineView(.periodic(from: startedAt, by: isLuminanceReduced ? 60 : 1)) { context in
             let elapsed = context.date.timeIntervalSince(startedAt)
-            VStack(alignment: .leading, spacing: 2) {
+            let content = VStack(alignment: .leading, spacing: 2) {
                 HStack {
                     SportIcon(sport: sport, size: 18, labeled: true)
-                    Text("Stroke rate").foregroundStyle(Theme.brightPetrol).accessibilityHidden(true)
-                    Spacer()
+                    if !dynamicTypeSize.isAccessibilitySize {
+                        Text("Stroke rate").foregroundStyle(Theme.brightPetrol).accessibilityHidden(true)
+                    }
+                    Spacer(minLength: 4)
                     Text(isLuminanceReduced ? Formatting.duration(elapsed) : Formatting.elapsed(elapsed))
                         .monospacedDigit()
                         .foregroundStyle(Theme.Metric.time)
+                        .layoutPriority(1)
                 }
                 .font(.footnote.weight(.medium))
                 .lineLimit(1)
@@ -686,6 +697,10 @@ private struct StrokesPage: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .clearOfPageIndicator()
+            ViewThatFits(in: .vertical) {
+                content.environment(\.largeFieldValues, true)
+                content
+            }
         }
     }
 }
@@ -790,19 +805,28 @@ private struct Field: View {
     let label: String
     let value: String
     var color: Color?
+    @Environment(\.largeFieldValues) private var large
 
     var body: some View {
-        HStack {
+        HStack(alignment: .firstTextBaseline) {
             Text(label).foregroundStyle(color ?? .secondary)
             Spacer()
             Text(value)
+                .font(large ? .title3 : .body)
                 .fontDesign(.rounded)
-                .fontWeight(.medium)
+                .fontWeight(large ? .semibold : .medium)
                 .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
                 .accessibilityIdentifier("field.\(label)")
         }
         .font(.body)
     }
+}
+
+extension EnvironmentValues {
+    /// Session pages with room to spare show their rows' values larger.
+    @Entry fileprivate var largeFieldValues = false
 }
 
 private struct MapPage: View {
@@ -858,22 +882,22 @@ private struct ControlsPage: View {
                     if recorder.isPaused { recorder.resume() } else { recorder.pause() }
                     WKInterfaceDevice.current().play(recorder.isPaused ? .stop : .start)
                 }
-                ControlButton(title: "Lap", symbol: "stopwatch", tint: .blue) {
+                ControlButton(title: "Lap", symbol: "stopwatch", tint: .blue, style: .quiet) {
                     SessionController.shared.lap()
                 }
             }
             GridRow {
-                ControlButton(title: "MOB", symbol: "figure.wave", tint: .red, prominent: true) {
+                ControlButton(title: "MOB", symbol: "figure.wave", tint: .red, style: .prominent) {
                     SessionController.shared.markManOverboard()
                     showManOverboard()
                 }
-                ControlButton(title: "Lock", symbol: "drop.fill", tint: .cyan) {
+                ControlButton(title: "Lock", symbol: "drop.fill", tint: .cyan, style: .quiet) {
                     // Water lock ignores taps until the user turns the Digital Crown.
                     WKInterfaceDevice.current().enableWaterLock()
                 }
             }
             GridRow {
-                ControlButton(title: "Mark", symbol: "flag.fill", tint: .teal) {
+                ControlButton(title: "Mark", symbol: "flag.fill", tint: .teal, style: .quiet) {
                     recorder.mark()
                     WKInterfaceDevice.current().play(.click)
                 }
@@ -899,6 +923,8 @@ struct ManOverboardPage: View {
     /// Shown outside a session: lets the user record again without clearing the mark.
     var newSession: (() -> AnyView)?
     @State private var confirmClear = false
+    /// The mark shown when Clear was tapped: the one the confirmation clears.
+    @State private var clearing: UUID?
 
     var body: some View {
         let display = UserSettings.display(for: sport)
@@ -958,13 +984,16 @@ struct ManOverboardPage: View {
                             .accessibilityIdentifier("mob.newSession")
                     }
                     // A wet sleeve or a wave can press it: the mark is the way back, so ask.
-                    Button("Clear", role: .destructive) { confirmClear = true }
-                        .accessibilityIdentifier("mob.clear")
+                    Button("Clear", role: .destructive) {
+                        clearing = manOverboard.mark?.identity
+                        confirmClear = true
+                    }
+                    .accessibilityIdentifier("mob.clear")
                 }
             }
         }
-        .confirmationDialog("Clear the man overboard mark?", isPresented: $confirmClear) {
-            Button("Clear Mark", role: .destructive) { manOverboard.clear() }
+        .confirmationDialog("Clear the man-overboard mark?", isPresented: $confirmClear) {
+            Button("Clear Mark", role: .destructive) { manOverboard.clear(confirmed: clearing) }
                 .accessibilityIdentifier("mob.clearConfirm")
         } message: {
             Text("The way back to it is gone once it's cleared.")
@@ -982,28 +1011,42 @@ extension View {
 }
 
 private struct ControlButton: View {
+    enum Style {
+        /// Grey, with the symbol in its color: the everyday controls.
+        case quiet
+        /// Tinted in its color: Pause and End, which change the session.
+        case tinted
+        /// Filled in its color, for the one button that must be found at a glance (MOB).
+        case prominent
+    }
+
     let title: String
     let symbol: String
     let tint: Color
-    /// Filled in its color, for the one button that must be found at a glance (MOB).
-    var prominent = false
+    var style = Style.tinted
     let action: () -> Void
 
     var body: some View {
         let button = Button(action: action) {
             VStack(spacing: 2) {
-                Image(systemName: symbol).font(.title3)
-                Text(title).font(.footnote.weight(prominent ? .bold : .regular))
+                Image(systemName: symbol)
+                    .font(.title3)
+                    .foregroundStyle(symbolStyle)
+                Text(title).font(.footnote.weight(style == .prominent ? .bold : .regular))
             }
             .frame(maxWidth: .infinity, minHeight: 56)
         }
-        .tint(tint)
         .accessibilityIdentifier("control.\(title.lowercased())")
-        if prominent {
-            button.buttonStyle(.borderedProminent)
-        } else {
-            button
+        switch style {
+        case .quiet: button
+        case .tinted: button.tint(tint)
+        case .prominent: button.tint(tint).buttonStyle(.borderedProminent)
         }
+    }
+
+    /// The symbol keeps its color on a grey button; tinted and filled buttons color it.
+    private var symbolStyle: AnyShapeStyle {
+        style == .quiet ? AnyShapeStyle(tint) : AnyShapeStyle(.foreground)
     }
 }
 
