@@ -278,6 +278,24 @@ final class TransferPartsTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: slice.path))
     }
 
+    /// A transfer lost when the watch restarted, or cancelled, left its slice behind: one
+    /// slice per part, for as long as the recording stayed on the watch.
+    func testSlicesNoTransferUsesAreFoundForRemoval() throws {
+        let watch = try folder("watch")
+        try bytes(25).write(to: watch.appendingPathComponent("motion.ndjson.gz"))
+        let slices = try TransferParts.plan(file: "motion.ndjson.gz", size: 25, partSize: 10)
+            .map { try TransferParts.slice($0, in: watch) }
+        // Something else in .parts that is not a file is left alone.
+        try FileManager.default.createDirectory(
+            at: watch.appendingPathComponent(".parts/motion.ndjson.gz", isDirectory: true),
+            withIntermediateDirectories: true)
+        let stale = TransferParts.staleSlices(in: watch, inUse: [slices[1].lastPathComponent])
+        XCTAssertEqual(stale.map(\.lastPathComponent), [slices[0], slices[2]].map(\.lastPathComponent))
+        XCTAssertEqual(TransferParts.staleSlices(in: try folder("empty"), inUse: []), [])
+        // The recording's own files are never among them.
+        XCTAssertFalse(stale.contains { $0.lastPathComponent == "motion.ndjson.gz" })
+    }
+
     func testAWholeFileInFlightCoversItsParts() {
         // A transfer queued whole by an earlier build keeps going; no parts are added.
         let units = RecordingTransfer.units(
