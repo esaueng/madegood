@@ -80,9 +80,21 @@ extension XCTestCase {
         app.descendants(matching: .any)[identifier].firstMatch
     }
 
-    /// Swipes up until the element can be tapped. `column` is where across the window the
-    /// drags run (0...1): pass a side margin when an interactive map can sit mid-screen, or
-    /// the drags pan the map instead of scrolling.
+    /// Saves a screenshot and the app's element tree in the test results, kept even when
+    /// the test passes, so a timeout that does not reproduce can still be diagnosed.
+    func attachDiagnostics(_ name: String, app: XCUIApplication) {
+        attachScreenshot("\(name) screenshot")
+        let tree = XCTAttachment(string: app.debugDescription)
+        tree.name = "\(name) element tree"
+        tree.lifetime = .keepAlways
+        add(tree)
+    }
+
+    /// Scrolls until the element is vertically inside the window and can be tapped, dragging
+    /// up or down depending on where its frame is (a drag can overshoot on a small screen,
+    /// like the 40 mm watch). `column` is where across the window the drags run (0...1):
+    /// pass a side margin when an interactive map can sit mid-screen, or the drags pan the
+    /// map instead of scrolling.
     func scrollTo(
         _ element: XCUIElement, in app: XCUIApplication, column: CGFloat = 0.5,
         file: StaticString = #filePath, line: UInt = #line
@@ -90,20 +102,60 @@ extension XCTestCase {
         let window = app.windows.firstMatch
         // An element can exist before it has a usable frame (a lazy row still off screen, or
         // a slow simulator mid-layout); asking for hittability then fails the test, so
-        // scroll until its frame is inside the window first.
-        func reachable() -> Bool {
-            guard element.exists else { return false }
+        // check the frame first. An element taller than the window only has to overlap it.
+        func frame() -> CGRect? {
+            guard element.exists else { return nil }
             let frame = element.frame
-            return !frame.isEmpty && window.frame.intersects(frame) && element.isHittable
+            return frame.isEmpty ? nil : frame
         }
-        for _ in 0..<8 {
+        func reachable() -> Bool {
+            guard let frame = frame() else { return false }
+            let bounds = window.frame
+            let vertical =
+                frame.height > bounds.height
+                ? frame.minY < bounds.maxY && frame.maxY > bounds.minY
+                : frame.minY >= bounds.minY && frame.maxY <= bounds.maxY
+            return vertical && bounds.intersects(frame) && element.isHittable
+        }
+        var dragColumn = column
+        var lastFrame: CGRect?
+        for _ in 0..<12 {
             if reachable() { return }
+            let bounds = window.frame
+            let current = frame()
+            // How far the content has to move up (positive) or down (negative), in points.
+            // With no frame yet, the element is further down a lazy list.
+            var shift = bounds.height * 0.45
+            if let current {
+                if current.minY < bounds.minY {
+                    shift = current.minY - bounds.minY - bounds.height * 0.1
+                } else if current.maxY > bounds.maxY {
+                    shift = current.maxY - bounds.maxY + bounds.height * 0.1
+                } else {
+                    // Inside the window but covered (a toolbar, the watch's clock): move it
+                    // toward the middle.
+                    shift = current.midY - bounds.midY
+                }
+                // A drag that moved nothing may have landed on a control: try a side margin.
+                if let lastFrame, lastFrame == current { dragColumn = dragColumn == column ? 0.15 : column }
+            }
+            lastFrame = current
+            // Short drags near the target so it does not overshoot; at most 45% of the screen.
+            let distance = min(max(abs(shift) / bounds.height, 0.15), 0.45)
+            // Content moves up with an upward drag in the lower part of the screen, and down
+            // with a downward drag in the upper part.
+            let (fromY, toY) =
+                shift > 0 ? (0.6 + distance / 2, 0.6 - distance / 2) : (0.4 - distance / 2, 0.4 + distance / 2)
             // A slow drag, like a finger: the watch ignores XCUITest's quick swipes.
-            let low = window.coordinate(withNormalizedOffset: CGVector(dx: column, dy: 0.8))
-            let high = window.coordinate(withNormalizedOffset: CGVector(dx: column, dy: 0.35))
-            low.press(forDuration: 0.05, thenDragTo: high, withVelocity: .slow, thenHoldForDuration: 0.1)
+            let from = window.coordinate(withNormalizedOffset: CGVector(dx: dragColumn, dy: fromY))
+            let to = window.coordinate(withNormalizedOffset: CGVector(dx: dragColumn, dy: toY))
+            from.press(forDuration: 0.05, thenDragTo: to, withVelocity: .slow, thenHoldForDuration: 0.1)
         }
-        XCTAssertTrue(reachable(), "\(element) never became hittable", file: file, line: line)
+        if reachable() { return }
+        attachDiagnostics("scrollTo \(element.identifier)", app: app)
+        XCTFail(
+            "\(element) never became fully visible and hittable; frame \(frame().map { "\($0)" } ?? "none") in window \(window.frame)",
+            file: file, line: line)
     }
 
     #if os(iOS)
