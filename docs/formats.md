@@ -188,18 +188,18 @@ so a value prints as its short decimal (`0.079`, not `0.07900000000000001`).
 
 | Stream | Fields | Step | Sensor, for comparison |
 |---|---|---|---|
-| motion | `ts` | 1 µs (1e-6 s) | samples every 10 ms, jitter under 10 µs |
 | motion | `ax ay az`, `gx gy gz` | 0.001 m/s² | noise 0.04–0.19 m/s² (acceleration), 0.002–0.004 m/s² (gravity) |
 | motion | `rx ry rz` | 0.0001 rad/s | noise 0.01–0.04 rad/s |
 | motion | `qx qy qz qw` | 0.00001 | noise 1–2e-4 |
-| gps | `ts` | 0.001 s | |
 | gps | `lat`, `lon` | 1e-7° (about 1 cm) | accuracy several metres |
 | gps | `spd` | 0.01 m/s | |
 | gps | `alt`, `crs` | 0.1 (m or degrees) | |
-| heading | `ts` | 0.001 s | |
 | heading | `mag`, `true` | 0.1° | accuracy typically about 10° |
 
-Accuracy fields (`hacc`, `vacc`, `spdacc`, `crsacc`, heading `acc`) are written as
+Timestamps (`ts`, and `unix`/`mono` in `clock`) are written exactly: readers place motion
+samples relative to clock anchors and fixes relative to pause events, and a rounded time
+could move a reading across either. Accuracy fields (`hacc`, `vacc`, `spdacc`, `crsacc`,
+heading `acc`) are written as
 reported, never rounded: analysis accepts or rejects readings by comparing them with
 thresholds (for example `hacc` at most 25 m), and rounding must not change that decision.
 `hr`, `events` and `clock` values are written as reported. Converted (version 1) and

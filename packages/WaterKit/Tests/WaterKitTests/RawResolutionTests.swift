@@ -36,13 +36,26 @@ import Testing
         #expect(RawFormat.round(12.5, to: 1) == 13)
     }
 
-    @Test func roundingKeepsMicrosecondsOfUnixTime() {
-        let ts: Double = Self.start + 0.012_345_678_9
-        let rounded: Double = RawFormat.round(ts, to: RawFormat.Resolution.motionTime)
-        let error: Double = abs(rounded - ts)
-        let limit: Double = 0.6e-6
-        #expect(error <= limit)
-        #expect("\(rounded)" == "1809165600.012346")
+    /// The scaling product can be off by one ulp, so a value a hair from a half step may
+    /// round the other way; the result is still within half a step plus 1e-14 relative.
+    @Test func roundingErrorStaysWithinHalfAStepAtRealMagnitudes() {
+        var random = SplitMix64(seed: 3)
+        let cases: [(step: Double, magnitude: Double)] = [
+            (RawFormat.Resolution.position, 180), (RawFormat.Resolution.acceleration, 160),
+            (RawFormat.Resolution.rotationRate, 35), (RawFormat.Resolution.attitude, 1),
+            (RawFormat.Resolution.speed, 100), (RawFormat.Resolution.gpsTenth, 9_000),
+        ]
+        for (step, magnitude) in cases {
+            var worst: Double = 0
+            for _ in 0..<20_000 {
+                let unit: Double = random.unit() * 2 - 1
+                let value: Double = unit * magnitude
+                let error: Double = abs(RawFormat.round(value, to: step) - value)
+                let allowed: Double = step / 2 + 1e-14 * magnitude
+                worst = max(worst, error / allowed)
+            }
+            #expect(worst <= 1, "step \(step)")
+        }
     }
 
     @Test func roundingEdgeCases() {
@@ -65,7 +78,7 @@ import Testing
         let text = try Self.text(line)
         Self.expectShortNumbers(text)
         for part in [
-            #""ts":1809165612.345679"#, #""ax":0.079"#, #""ay":-36.123"#, #""az":0"#, #""gx":0.009"#,
+            #""ax":0.079"#, #""ay":-36.123"#, #""az":0"#, #""gx":0.009"#,
             #""gy":-9.807"#, #""gz":0.123"#, #""rx":1.2346"#, #""ry":0"#, #""rz":17"#, #""qx":0.70711"#,
             #""qy":0"#, #""qz":0.1"#, #""qw":-0.70711"#,
         ] {
@@ -76,7 +89,7 @@ import Testing
         }
         let decoded = try JSONDecoder().decode(RawFormat.MotionLine.self, from: Data(text.utf8))
         typealias R = RawFormat.Resolution
-        #expect(decoded.ts == RawFormat.round(line.ts, to: R.motionTime))
+        #expect(decoded.ts == line.ts)
         #expect(decoded.ax == 0.079 && decoded.gy == -9.807 && decoded.rx == 1.2346 && decoded.qw == -0.70711)
         #expect(decoded.az == 0 && decoded.az.sign == .plus)
     }
@@ -101,7 +114,7 @@ import Testing
         let text = try Self.text(line)
         Self.expectShortNumbers(text)
         let decoded = try JSONDecoder().decode(RawFormat.GPSLine.self, from: Data(text.utf8))
-        #expect(decoded.ts == Self.start + 1)
+        #expect(decoded.ts == Self.start + 1.000_123_4)
         #expect(decoded.lat == 47.123_456_8 && decoded.lon == -122.987_654_3)
         #expect(decoded.alt == 12.3 && decoded.spd == 1.23 && decoded.crs == 90)
         // Accuracies are written as reported.
@@ -119,7 +132,7 @@ import Testing
                 ts: Self.start + 0.019_951_2, mag: 230.787_109_375, trueHeading: 244.212_890_625, acc: 11.637_5))
         Self.expectShortNumbers(text)
         let decoded = try JSONDecoder().decode(RawFormat.HeadingLine.self, from: Data(text.utf8))
-        #expect(decoded.ts == Self.start + 0.02)
+        #expect(decoded.ts == Self.start + 0.019_951_2)
         #expect(decoded.mag == 230.8 && decoded.trueHeading == 244.2 && decoded.acc == 11.637_5)
         #expect(text.contains(#""true":244.2"#))
         let noTrue = try Self.text(RawFormat.HeadingLine(ts: Self.start, mag: 1, acc: 2))
@@ -131,6 +144,57 @@ import Testing
         #expect(a == #"{"acc":3,"mag":1,"true":2,"ts":1809165600}"# + "\n")
         let b = try Self.text(RawFormat.GPSLine(ts: Self.start, lat: 1, lon: 2, hacc: 3, spd: 4))
         #expect(b == #"{"hacc":3,"lat":1,"lon":2,"spd":4,"ts":1809165600}"# + "\n")
+    }
+
+    // MARK: Timestamps
+
+    /// Regression: motion `ts` rounded to 1 µs put a sample written just after a clock
+    /// anchor onto the anchor itself, and the reader (ties go to the earlier segment)
+    /// placed it before a +100 s wall-clock correction.
+    @Test func motionJustAfterAClockAnchorStaysAfterIt() throws {
+        let temp = try TempFolder()
+        let anchorMono: Double = Self.start + 100
+        let meta = RawFormat.Meta(
+            sessionId: UUID(), sport: .kayak, startedAt: Self.start, endedAt: Self.start + 300,
+            device: .init(kind: "watch", model: "Watch0,0", os: "watchOS 26.0"), app: .init(version: "0", build: "0"))
+        try temp.write(RawFormat.metaFileName, RawFormat.encodeMeta(meta))
+        // The wall clock was corrected 100 s forward at mono `anchorMono`.
+        try temp.write("clock.ndjson", RawFormat.line(RawFormat.ClockAnchor(unix: anchorMono + 100, mono: anchorMono)))
+        let monos: [Double] = [
+            anchorMono - 0.01, anchorMono, anchorMono.nextUp, anchorMono + 0.4e-6, anchorMono + 0.01,
+        ]
+        var motion = Data()
+        for mono in monos {
+            motion.append(
+                try RawFormat.line(
+                    RawFormat.MotionLine(
+                        ts: mono, userAcceleration: .zero, gravity: Vector3(x: 0, y: 0, z: -9.80665),
+                        rotationRate: .zero, attitude: .identity)))
+        }
+        try temp.write("motion.ndjson", motion)
+        let session = try RawSessionReader.read(folder: temp.url)
+        let times: [Double] = session.motion.map(\.t)
+        #expect(session.motion.map(\.monotonic) == monos)
+        #expect(times.count == 5)
+        // Up to and including the anchor: before the correction; after it: 100 s later.
+        let expected: [Double] = [99.99, 100, 200, 200, 200.01]
+        for (time, want) in zip(times, expected) {
+            let difference: Double = abs(time - want)
+            #expect(difference < 1e-5, "\(time) vs \(want)")
+        }
+    }
+
+    @Test func timestampsAreWrittenExactly() throws {
+        let ts: Double = Self.start + 0.000_000_3
+        let motion = RawFormat.MotionLine(
+            ts: ts, userAcceleration: .zero, gravity: .zero, rotationRate: .zero, attitude: .identity)
+        let motionText = try Self.text(motion)
+        let gpsText = try Self.text(RawFormat.GPSLine(ts: ts, lat: 0, lon: 0))
+        let headingText = try Self.text(RawFormat.HeadingLine(ts: ts, mag: 1))
+        let decoder = JSONDecoder()
+        #expect(try decoder.decode(RawFormat.MotionLine.self, from: Data(motionText.utf8)).ts == ts)
+        #expect(try decoder.decode(RawFormat.GPSLine.self, from: Data(gpsText.utf8)).ts == ts)
+        #expect(try decoder.decode(RawFormat.HeadingLine.self, from: Data(headingText.utf8)).ts == ts)
     }
 
     // MARK: Accuracy thresholds

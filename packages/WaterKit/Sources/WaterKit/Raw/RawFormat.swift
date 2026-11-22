@@ -208,7 +208,7 @@ public enum RawFormat {
         public func encode(to encoder: any Encoder) throws {
             var c = encoder.container(keyedBy: CodingKeys.self)
             typealias R = Resolution
-            try c.encode(round(ts, to: R.time), forKey: .ts)
+            try c.encode(ts, forKey: .ts)
             try c.encode(round(lat, to: R.position), forKey: .lat)
             try c.encode(round(lon, to: R.position), forKey: .lon)
             try c.encodeIfPresent(alt.map { round($0, to: R.gpsTenth) }, forKey: .alt)
@@ -255,11 +255,12 @@ public enum RawFormat {
             case ts, ax, ay, az, gx, gy, gz, rx, ry, rz, qx, qy, qz, qw
         }
 
-        /// Writes every value rounded to `Resolution` (docs/formats.md, "Resolution").
+        /// Writes the values rounded to `Resolution` (docs/formats.md, "Resolution"), and
+        /// `ts` exactly: readers place it relative to clock anchors.
         public func encode(to encoder: any Encoder) throws {
             var c = encoder.container(keyedBy: CodingKeys.self)
             typealias R = Resolution
-            try c.encode(round(ts, to: R.motionTime), forKey: .ts)
+            try c.encode(ts, forKey: .ts)
             for (key, value) in [(CodingKeys.ax, ax), (.ay, ay), (.az, az), (.gx, gx), (.gy, gy), (.gz, gz)] {
                 try c.encode(round(value, to: R.acceleration), forKey: key)
             }
@@ -307,7 +308,7 @@ public enum RawFormat {
         public func encode(to encoder: any Encoder) throws {
             var c = encoder.container(keyedBy: CodingKeys.self)
             typealias R = Resolution
-            try c.encode(round(ts, to: R.time), forKey: .ts)
+            try c.encode(ts, forKey: .ts)
             try c.encodeIfPresent(mag.map { round($0, to: R.heading) }, forKey: .mag)
             try c.encodeIfPresent(trueHeading.map { round($0, to: R.heading) }, forKey: .trueHeading)
             try c.encodeIfPresent(acc, forKey: .acc)
@@ -353,18 +354,16 @@ public enum RawFormat {
     /// the sensor's noise or accuracy, so analysis gives the same results, and short numbers
     /// keep the files small. Readers must not assume finer values. Accuracy fields (`hacc`,
     /// `vacc`, `spdacc`, `crsacc`, heading `acc`) are never rounded: analysis compares them
-    /// with thresholds, and rounding must not change which readings pass.
+    /// with thresholds, and rounding must not change which readings pass. Timestamps are
+    /// never rounded either: readers place motion samples relative to clock anchors and
+    /// fixes relative to pause events, and a rounded time could cross either.
     public enum Resolution {
-        /// `motion` `ts`, s: 1/10,000 of the 100 Hz sample interval.
-        public static let motionTime = 1e-6
         /// `motion` user acceleration and gravity, m/s².
         public static let acceleration = 1e-3
         /// `motion` rotation rate, rad/s.
         public static let rotationRate = 1e-4
         /// `motion` attitude quaternion components.
         public static let attitude = 1e-5
-        /// `gps` and `heading` `ts`, s.
-        public static let time = 1e-3
         /// `gps` `lat`, `lon`, degrees (about 1 cm).
         public static let position = 1e-7
         /// `gps` `spd`, m/s.
@@ -380,8 +379,10 @@ public enum RawFormat {
     /// `value` rounded to the nearest multiple of `step`, a negative power of ten (or 1).
     /// Divides by the exact power of ten rather than multiplying by `step`, so the result
     /// is the double nearest the decimal and JSON prints it short (`0.079`, never
-    /// `0.07900000000000001`). Values too large to scale exactly, and NaN, are returned
-    /// unchanged; -0 becomes 0.
+    /// `0.07900000000000001`). The result is within half a step of `value`, plus the error
+    /// of the scaling product (under 1e-14 of the value), so a value within that distance
+    /// of a half step may round either way. Values too large to scale exactly, and NaN, are
+    /// returned unchanged; -0 becomes 0.
     public static func round(_ value: Double, to step: Double) -> Double {
         let scale = (1 / step).rounded()
         let scaled = (value * scale).rounded()
