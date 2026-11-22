@@ -38,7 +38,9 @@ final class PhoneScreensUITests: XCTestCase {
         seeAll.tap()
         let rows = app.buttons.matching(identifier: "session.row")
         XCTAssertTrue(rows.firstMatch.waitForExistence(timeout: 15))
-        XCTAssertGreaterThanOrEqual(rows.count, 3)
+        // The cards are tall, so the list loads only the first rows; the totals card
+        // counts every demo session.
+        waitForLabelPrefix(element("history.totals", in: app), "3\u{00A0}sessions\u{00A0}· ")
         sleep(2)  // let the summaries finish computing
         attachScreenshot("\(appearance) history")
 
@@ -79,12 +81,15 @@ final class HistoryFiltersUITests: XCTestCase {
         let app = launchDemoHistory()
         app.tabBars.buttons["History"].tap()
         XCTAssertTrue(app.navigationBars["History"].waitForExistence(timeout: 10))
-        let totals = app.staticTexts["history.totals"]
+        let totals = element("history.totals", in: app)
         XCTAssertTrue(totals.waitForExistence(timeout: 15))
         let ready = XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "label CONTAINS %@", "\u{00A0}km"), object: totals)
         XCTAssertEqual(XCTWaiter().wait(for: [ready], timeout: 15), .completed)
         let allTotals = totals.label
+        XCTAssertTrue(allTotals.hasPrefix("3\u{00A0}sessions\u{00A0}· "), allTotals)
+        // VoiceOver hears what the card adds to the totals line: the days and the best 10 s.
+        XCTAssertTrue((totals.value as? String)?.hasPrefix("on 3 days, fastest 10 seconds ") == true)
 
         let rows = app.buttons.matching(identifier: "session.row")
         app.buttons["history.sportFilter"].tap()
@@ -94,6 +99,7 @@ final class HistoryFiltersUITests: XCTestCase {
         XCTAssertTrue(totals.label.hasPrefix("1\u{00A0}session\u{00A0}· "))
         XCTAssertTrue(totals.label.contains("\u{00A0}nm"))
         XCTAssertTrue(totals.label.hasSuffix("25\u{00A0}min"))
+        XCTAssertTrue((totals.value as? String)?.hasPrefix("on 1 day, ") == true)
         XCTAssertEqual(app.staticTexts["month.totals"].firstMatch.label, totals.label)
         attachScreenshot("Windsurfing history with route preview")
 
@@ -112,7 +118,7 @@ final class HistoryFiltersUITests: XCTestCase {
 
         app.buttons["Clear Filters"].tap()
         waitForLabel(totals, allTotals)
-        XCTAssertGreaterThanOrEqual(rows.count, 3)
+        XCTAssertTrue(rows.firstMatch.exists)
     }
 
     /// Regression (QA-02): at the largest text size the totals wrapped "24.2" / "km" onto
@@ -124,14 +130,16 @@ final class HistoryFiltersUITests: XCTestCase {
         ])
         app.tabBars.buttons["History"].tap()
         XCTAssertTrue(app.navigationBars["History"].waitForExistence(timeout: 10))
-        let totals = app.staticTexts["history.totals"]
+        let totals = element("history.totals", in: app)
         XCTAssertTrue(totals.waitForExistence(timeout: 15))
         let ready = XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "label CONTAINS %@", "\u{00A0}km"), object: totals)
         XCTAssertEqual(XCTWaiter().wait(for: [ready], timeout: 15), .completed, totals.label)
-        let monthTotals = app.staticTexts["month.totals"].firstMatch
-        XCTAssertTrue(monthTotals.waitForExistence(timeout: 5))
         attachScreenshot("History totals at the largest text size")
+        // At this size the totals card fills the screen, so the month header is below it.
+        let monthTotals = app.staticTexts["month.totals"].firstMatch
+        scrollTo(monthTotals, in: app)
+        XCTAssertTrue(monthTotals.exists)
 
         for label in [totals.label, monthTotals.label] {
             // Text breaks only at ordinary spaces; each must follow a metric separator.

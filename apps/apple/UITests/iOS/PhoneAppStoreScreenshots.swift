@@ -46,7 +46,9 @@ final class PhoneAppStoreScreenshots: XCTestCase {
         app.tabBars.buttons["History"].tap()
         let rows = app.buttons.matching(identifier: "session.row")
         XCTAssertTrue(rows.firstMatch.waitForExistence(timeout: 15))
-        XCTAssertGreaterThanOrEqual(rows.count, 3)
+        // The cards are tall, so the list loads only the first few rows; the totals card
+        // counts every demo session once all three are analyzed.
+        waitForLabelPrefix(element("history.totals", in: app), "3\u{00A0}sessions\u{00A0}· ")
         sleep(3)  // summaries and route previews
         attachAppStoreScreenshot("03-history")
     }
@@ -120,7 +122,8 @@ final class PhoneAppStoreScreenshots: XCTestCase {
         var row = app.buttons.matching(identifier: "session.row").containing(.staticText, identifier: sport)
         if let duration { row = row.containing(.staticText, identifier: duration) }
         let match = row.firstMatch
-        XCTAssertTrue(match.waitForExistence(timeout: 15))
+        // Rows load as they scroll in: wait for the list, then scroll to the session.
+        XCTAssertTrue(app.buttons["session.row"].firstMatch.waitForExistence(timeout: 15))
         scrollTo(match, in: app)
         match.tap()
         XCTAssertTrue(element("replay.map", in: app).waitForExistence(timeout: 20))
