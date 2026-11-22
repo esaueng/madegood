@@ -526,18 +526,17 @@ final class SessionRecorder {
             engine.advance(to: now)
             return engine.snapshot
         }
-        updateStrokes(sessionNow: now)
+        updateStrokes()
         #if os(iOS)
             if let liveSport { liveActivity.update(metrics, sport: liveSport) }
         #endif
     }
 
     /// Live strokes in moving time: not in the engine's auto-pauses or vehicle legs, as
-    /// session detail counts them (docs/metrics.md "Strokes"). `sessionNow` is the engine's
-    /// clock now.
-    private func updateStrokes(sessionNow: Double) {
+    /// session detail counts them (docs/metrics.md "Strokes").
+    private func updateStrokes() {
         guard let liveStrokes else { return }
-        strokes = liveStrokes.snapshot(excluding: engine?.autoPausedIntervals ?? [], sessionNow: sessionNow)
+        strokes = liveStrokes.snapshot(excluding: engine?.autoPausedIntervals ?? [])
     }
 
     static func location(_ line: RawFormat.GPSLine) -> CLLocation {
@@ -613,9 +612,11 @@ final class SessionRecorder {
 
     private func writeClockAnchor() {
         guard let monotonicClock else { return }
-        writers[.clock]?.append(
-            monotonicClock.anchor(
-                unix: Date().timeIntervalSince1970, uptime: ProcessInfo.processInfo.systemUptime))
+        let unix = Date().timeIntervalSince1970
+        let uptime = ProcessInfo.processInfo.systemUptime
+        writers[.clock]?.append(monotonicClock.anchor(unix: unix, uptime: uptime))
+        // The same anchor places live strokes on the engine's wall-time clock.
+        liveStrokes?.anchor(mono: monotonicClock.absolute(uptime: uptime), wall: unix)
     }
 
     private func flushAll() {
@@ -661,7 +662,8 @@ final class SessionRecorder {
         serviceSession = nil
 
         ingest(.event(SessionEvent(t: endedAt.timeIntervalSince1970 - startUnix, type: .stop)))
-        updateStrokes(sessionNow: endedAt.timeIntervalSince1970 - startUnix)
+        liveStrokes?.finish()
+        updateStrokes()
         writers[.events]?.append(RawFormat.EventLine(ts: endedAt.timeIntervalSince1970, type: .stop))
         #if os(iOS)
             if let liveSport { liveActivity.end(metrics, sport: liveSport) }

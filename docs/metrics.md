@@ -226,8 +226,9 @@ iPhone, the count leaves out strokes in the engine's auto-pauses and vehicle leg
 detail counts them (`StrokeAnalysis.strokeCount`). Both are dated back when confirmed: an
 auto-pause 10 s after the boat slowed down, a vehicle leg up to 60 s before its hold. So
 the live count can step down when one is confirmed, and back up when an auto-resume is
-dated back, as live distance does. Live, the intervals are moved from wall time onto the
-motion clock with the clock difference at that moment. The live stroke rate is not gated:
+dated back, as live distance does. Live, strokes are placed on wall time with the clock
+anchors the recording stores, as after the session (see "Clock"), and the last motion bin
+is closed at the stop. The live stroke rate is not gated:
 it reads the latest cycles and blanks on its own when paddling stops. In a real kayak session the cycles
 found while auto-paused were getting in, a stop at the turn, carrying the boat and hand
 movements in a car: irregular, with a median period of 1.1 s against 2.3 s while

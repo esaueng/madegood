@@ -112,15 +112,17 @@ public struct StrokeAnalysis: Sendable, Hashable {
 
     /// Strokes in `cycles` outside every `excluded` interval, counted the way session detail
     /// counts them (`init(session:selection:)`): kayak cycles expanded into their two strokes
-    /// first, then a stroke left out when it falls in a manual pause (`isPaused`) or in an
-    /// excluded interval, its start included and its end not. For the live count, with the
-    /// engine's `autoPausedIntervals` on the cycles' clock.
+    /// first, then a stroke left out when it falls in a manual pause (`isPaused`, on the
+    /// cycles' clock) or in an excluded interval (on session time, which `toSessionTime` maps
+    /// the cycles' clock to), its start included and its end not. For the live count, with
+    /// the engine's `autoPausedIntervals`.
     public static func strokeCount(
         cycles: [StrokeDetector.Cycle], strokesPerCycle: Int, excluding excluded: [ClosedRange<Double>],
-        isPaused: (Double) -> Bool = { _ in false }
+        isPaused: (Double) -> Bool = { _ in false }, toSessionTime: (Double) -> Double = { $0 }
     ) -> Int {
         func isExcluded(_ t: Double) -> Bool {
-            excluded.contains { $0.lowerBound <= t && t < $0.upperBound }
+            let session = toSessionTime(t)
+            return excluded.contains { $0.lowerBound <= session && session < $0.upperBound }
         }
         return expand(cycles, strokesPerCycle: strokesPerCycle) { isPaused($0) || isExcluded($0) }.count
     }
