@@ -188,9 +188,42 @@ final class TransferPolicyTests: XCTestCase {
 
     // MARK: Phone
 
-    func testWorkWithBackgroundTimeRunsBeforeReturning() {
-        var ran = false
-        RecordingTransfer.withBackgroundTime("test") { ran = true }
-        XCTAssertTrue(ran)
+    /// The system's block, kept so a test can end the activity while the work runs.
+    private final class Activity: @unchecked Sendable {
+        var block: (@Sendable (Bool) -> Void)?
+        let returned = XCTestExpectation(description: "the activity's block returned")
+    }
+
+    /// Review of #170, finding 4: the join started before the activity was held, and went on
+    /// after it was denied or expired. Work now sees whether time is held, before and during.
+    func testWorkKnowsWhetherBackgroundTimeIsHeld() {
+        let activity = Activity()
+        var seen: [BackgroundTime.State] = []
+        BackgroundTime.run(
+            "test",
+            request: { _, block in
+                activity.block = block
+                block(false)
+                activity.returned.fulfill()
+            }
+        ) { time in
+            seen.append(time.current)
+            // It runs out partway.
+            activity.block?(true)
+            seen.append(time.current)
+        }
+        XCTAssertEqual(seen, [.granted, .expired])
+        // The activity is let go once the work is done.
+        wait(for: [activity.returned], timeout: 2)
+    }
+
+    func testDeniedOrUnansweredTimeIsNotHeld() {
+        var denied: Bool?
+        BackgroundTime.run("test", request: { _, block in block(true) }) { denied = !$0.hasTime }
+        XCTAssertEqual(denied, true)
+        // No answer in time: the work runs (it must store the file) without time.
+        var unanswered: BackgroundTime.State?
+        BackgroundTime.run("test", request: { _, _ in }, answerTimeout: 0.05) { unanswered = $0.current }
+        XCTAssertEqual(unanswered, .pending)
     }
 }

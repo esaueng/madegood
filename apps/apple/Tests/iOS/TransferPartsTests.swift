@@ -268,6 +268,88 @@ final class TransferPartsTests: XCTestCase {
         XCTAssertTrue(names(units).contains("motion.ndjson.gz#0"))
     }
 
+    /// Review of #170, finding 4: a join on the phone without background time, or whose time
+    /// runs out partway, must leave no staged or half-placed file, keep its parts, and be
+    /// done in full later.
+    func testAJoinWithoutTimeOrCutShortKeepsItsPartsAndIsDoneLater() throws {
+        let watch = try folder("watch")
+        let phone = try folder("phone")
+        try bytes(25).write(to: watch.appendingPathComponent("motion.ndjson.gz"))
+        for part in motion {
+            let inbox = root.appendingPathComponent("inbox-\(UUID().uuidString)")
+            try FileManager.default.copyItem(at: try TransferParts.slice(part, in: watch), to: inbox)
+            _ = try TransferParts.store(inbox, as: part, in: phone)
+        }
+        let transfer = RecordingTransfer(syncsSettings: false)
+        let sessionId = UUID().uuidString.lowercased()
+        func contents() -> [String] {
+            ((try? FileManager.default.contentsOfDirectory(atPath: phone.path)) ?? []).sorted()
+        }
+
+        // No time: not started.
+        XCTAssertEqual(transfer.joinCompleteFiles(in: phone, sessionId: sessionId) { false }, [])
+        XCTAssertEqual(contents(), [".parts"])
+        XCTAssertEqual(TransferParts.held(in: phone), ["motion.ndjson.gz|25|10": [0, 1, 2]])
+
+        // Time runs out after the first part.
+        var asked = 0
+        XCTAssertEqual(
+            transfer.joinCompleteFiles(in: phone, sessionId: sessionId) {
+                asked += 1
+                return asked <= 2
+            }, [])
+        XCTAssertEqual(contents(), [".parts"])
+        XCTAssertEqual(TransferParts.held(in: phone), ["motion.ndjson.gz|25|10": [0, 1, 2]])
+
+        // With time, it is joined and the parts go.
+        XCTAssertEqual(transfer.joinCompleteFiles(in: phone, sessionId: sessionId) { true }, ["motion.ndjson.gz"])
+        XCTAssertEqual(contents(), ["motion.ndjson.gz"])
+        XCTAssertEqual(try Data(contentsOf: phone.appendingPathComponent("motion.ndjson.gz")), bytes(25))
+    }
+
+    func testAJoinStopsBetweenPartsWhenAsked() throws {
+        let watch = try folder("watch")
+        let phone = try folder("phone")
+        try bytes(25).write(to: watch.appendingPathComponent("motion.ndjson.gz"))
+        for part in motion {
+            let inbox = root.appendingPathComponent("inbox-\(UUID().uuidString)")
+            try FileManager.default.copyItem(at: try TransferParts.slice(part, in: watch), to: inbox)
+            _ = try TransferParts.store(inbox, as: part, in: phone)
+        }
+        var asked = 0
+        XCTAssertThrowsError(
+            try TransferParts.join(motion[0], in: phone, stagingPrefix: ".incoming-") {
+                asked += 1
+                return asked < 3
+            }
+        ) { XCTAssertEqual($0 as? TransferParts.PartError, .interrupted) }
+        let left = try FileManager.default.contentsOfDirectory(atPath: phone.path)
+        XCTAssertFalse(left.contains { $0.hasPrefix(".incoming-") })
+        XCTAssertEqual(TransferParts.complete(in: phone).count, 1)
+    }
+
+    /// The phone held every part but had no time to join them, so its acknowledgement
+    /// listed the parts, not the file. Those parts, handed over minutes earlier, must not hold
+    /// meta.json back: meta.json is what brings the phone back to the join.
+    func testPartsThePhoneListsDoNotHoldMetaBack() {
+        let handedOver = Set(motion.map(RecordingTransfer.UnitKey.init))
+        let allParts = RecordingTransfer.PhoneHolds(
+            files: ["events.ndjson.gz": 3, "gps.ndjson.gz": 8, "meta.json": 4],
+            parts: ["motion.ndjson.gz|25|10": [0, 1, 2]])
+        XCTAssertEqual(
+            names(
+                RecordingTransfer.units(
+                    local: local, holds: allParts, inFlight: [], handedOver: handedOver, partSize: partSize)),
+            ["meta.json"])
+        // While one of them is not listed yet, its acknowledgement is still on the way.
+        var twoParts = allParts
+        twoParts.parts["motion.ndjson.gz|25|10"] = [0, 1]
+        XCTAssertEqual(
+            RecordingTransfer.units(
+                local: local, holds: twoParts, inFlight: [], handedOver: handedOver, partSize: partSize),
+            [])
+    }
+
     func testOnlyAPartsSliceIsEverRemoved() throws {
         let watch = try folder("watch")
         try bytes(25).write(to: watch.appendingPathComponent("motion.ndjson.gz"))

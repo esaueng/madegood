@@ -77,10 +77,12 @@ enum TransferParts {
         return Part(file: file, index: index, count: count, total: total, partSize: partSize)
     }
 
-    enum PartError: Error, CustomStringConvertible {
+    enum PartError: Error, Equatable, CustomStringConvertible {
         case invalidMetadata
         case wrongSize(expected: Int64, actual: Int64?)
         case joinedWrongSize(expected: Int64, actual: Int64)
+        /// The join was stopped (background time ran out); the parts are fine.
+        case interrupted
 
         var description: String {
             switch self {
@@ -89,6 +91,7 @@ enum TransferParts {
                 "the part is \(actual.map(String.init) ?? "?") bytes, expected \(expected)"
             case .joinedWrongSize(let expected, let actual):
                 "the joined file is \(actual) bytes, expected \(expected)"
+            case .interrupted: "the join was stopped"
             }
         }
     }
@@ -217,7 +220,11 @@ enum TransferParts {
     /// Joins the parts of `part`'s file and layout into a staged file in the recording folder
     /// once all of them are held, checking every part's size and the total; nil while any is
     /// missing. The caller puts the staged file in place and removes the parts.
-    static func join(_ part: Part, in recording: URL, stagingPrefix: String) throws -> URL? {
+    /// `shouldContinue` is asked before each part; when it says no, the join stops with
+    /// `PartError.interrupted`, removing the staged file and leaving the parts as they are.
+    static func join(
+        _ part: Part, in recording: URL, stagingPrefix: String, shouldContinue: () -> Bool = { true }
+    ) throws -> URL? {
         guard isComplete(part, in: recording) else { return nil }
         let fm = FileManager.default
         let folder = receivedFolder(part, in: recording)
@@ -229,6 +236,7 @@ enum TransferParts {
             let output = try FileHandle(forWritingTo: staged)
             defer { try? output.close() }
             for each in plan(file: part.file, size: part.total, partSize: part.partSize) {
+                guard shouldContinue() else { throw PartError.interrupted }
                 let data = try Data(contentsOf: folder.appendingPathComponent(String(each.index)))
                 guard Int64(data.count) == each.length else {
                     throw PartError.wrongSize(expected: each.length, actual: Int64(data.count))

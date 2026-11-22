@@ -58,13 +58,19 @@ gives the app no background time. The watch app moves fastest while it is open.
   any scene exists. This also covers launches iOS makes in the background. Storing and
   acknowledging run entirely on the WatchConnectivity delegate queue, so nothing waits on the
   UI.
-- Storing a file and joining parts run inside `ProcessInfo.performExpiringActivity`
-  (`withBackgroundTime`), so iOS does not suspend the app partway through a 35 MB join.
-- If the app is stopped anyway, the staged copy is removed at the next launch
-  (`RecordingStore.removeStaleStagingFiles`). The parts stay. At the next activation the
-  phone finishes every join that has all its parts and acknowledges it
-  (`finishInterruptedJoins`). Before this change, the join waited for the next file to
-  arrive.
+- Each received file asks for background time with `ProcessInfo.performExpiringActivity`
+  (`BackgroundTime`) and waits up to 2 s for the answer. The incoming file is moved into
+  place whatever the answer, because WatchConnectivity deletes it when the callback
+  returns. A join starts only while the time is held, and it stops between parts if the
+  time runs out. Its staged copy is then removed and its parts stay. Placing a joined file
+  is one rename, and acknowledgements list only what is in place, so running out of time
+  never leaves a half-placed file and never acknowledges one.
+- Joins left over (out of time, or the app was stopped) are finished and acknowledged at
+  the next file, at the next activation, and when the app comes to the foreground
+  (`finishInterruptedJoins`). Until then, the acknowledgements list the parts, not the file.
+  So the watch sends `meta.json` on its own, and that `meta.json` brings the phone back to
+  the join. A staged copy left by a stopped app is removed at the next launch
+  (`RecordingStore.removeStaleStagingFiles`).
 - SwiftUI's `.backgroundTask(.watchConnectivity)` is not available on iOS, so the phone has
   no equivalent of the watch's task.
 

@@ -241,9 +241,16 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
         }
         let meta = RawFormat.metaFileName
         let metaHeld = local[meta].map { holds?.files[meta] == $0 } ?? false
+        // Handed-over parts the phone already lists are not waiting for an acknowledgement
+        // (for example all parts held while the join waits for background time on the phone:
+        // meta.json then goes, and brings the phone back to the join).
+        let awaitingAcknowledgement = handedOver.contains { key in
+            guard key.file != meta, holds?.files[key.file] != local[key.file] else { return false }
+            guard let layout = key.layout, let index = key.part else { return true }
+            return holds?.parts[layout]?.contains(index) != true
+        }
         let othersMoving =
-            queued.contains { $0.file != meta } || inFlight.contains { $0.file != meta }
-            || handedOver.contains { $0.file != meta }
+            queued.contains { $0.file != meta } || inFlight.contains { $0.file != meta } || awaitingAcknowledgement
         return metaHeld && othersMoving ? queued.filter { $0.file != meta } : queued
     }
 
@@ -984,13 +991,17 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
     #if os(iOS)
         /// Stores the file before returning (WatchConnectivity deletes it afterwards), then
         /// acknowledges it. Nothing is acknowledged unless it is safely on disk. Runs with
-        /// background time (`withBackgroundTime`): the phone may have been launched in the
-        /// background to receive it, and joining a large file takes a moment.
+        /// background time (`BackgroundTime`): the phone may have been launched in the
+        /// background to receive it. Storing the file is a move and always happens; joining a
+        /// large file starts only while the time is held and stops if it runs out
+        /// (`joinCompleteFiles`).
         nonisolated func session(_ session: WCSession, didReceive file: WCSessionFile) {
-            Self.withBackgroundTime("Storing a recording from Apple Watch") { receive(file, session: session) }
+            BackgroundTime.run("Storing a recording from Apple Watch") { time in
+                receive(file, session: session, time: time)
+            }
         }
 
-        private func receive(_ file: WCSessionFile, session: WCSession) {
+        private func receive(_ file: WCSessionFile, session: WCSession, time: BackgroundTime) {
             guard let sessionId = (file.metadata?[Key.sessionId] as? String)?.lowercased(),
                 let name = file.metadata?[Key.file] as? String,
                 UUID(uuidString: sessionId) != nil,
@@ -1061,29 +1072,46 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
             }
             // Joins every file whose parts are all here: the one just completed, or one whose
             // join was cut short (the app stopped) and that no further part would trigger.
-            joinCompleteFiles(in: folder, sessionId: sessionId)
+            joinCompleteFiles(in: folder, sessionId: sessionId) { time.hasTime }
             acknowledge(folder: folder, sessionId: sessionId, file: name, session: session)
         }
 
         /// Joins every file of the recording in `folder` whose parts are all held, and puts it
         /// in place. Returns the files joined. The caller holds `storageLock`.
+        ///
+        /// A join starts only while `hasTime` (background time is held) and stops between
+        /// parts when it no longer is: its staged copy is removed and its parts stay, to be
+        /// joined at the next file, the next activation, or when the app comes to the
+        /// foreground (`finishInterruptedJoins`). Placing a joined file is one rename, and
+        /// the acknowledgement lists only what is in place, so running out of time never
+        /// leaves a half-placed file or acknowledges one.
         @discardableResult
-        private func joinCompleteFiles(in folder: URL, sessionId: String) -> [String] {
+        func joinCompleteFiles(in folder: URL, sessionId: String, hasTime: () -> Bool) -> [String] {
             var done: [String] = []
             for ready in TransferParts.complete(in: folder) {
+                guard hasTime() else {
+                    log.add("Left \(ready.file) to join later: no background time", sessionId: sessionId)
+                    continue
+                }
                 var joined: URL?
                 do {
-                    joined = try TransferParts.join(ready, in: folder, stagingPrefix: RecordingStore.stagingPrefix)
+                    joined = try TransferParts.join(
+                        ready, in: folder, stagingPrefix: RecordingStore.stagingPrefix, shouldContinue: hasTime)
                     if let joined {
                         try place(joined, at: folder.appendingPathComponent(ready.file), name: ready.file, sessionId: sessionId)
                         log.add("Joined \(ready.file) from \(ready.count) parts", sessionId: sessionId)
                         done.append(ready.file)
                     }
+                } catch TransferParts.PartError.interrupted {
+                    // The parts are fine; joined again later.
+                    log.add("Stopped joining \(ready.file): background time ran out", sessionId: sessionId)
+                    continue
                 } catch {
                     if let joined { try? FileManager.default.removeItem(at: joined) }
                     log.add("Could not join \(ready.file); its parts go again: \(error)", sessionId: sessionId)
                 }
-                // Either way the parts go: kept, they would tell the watch not to send them.
+                // Joined, or unusable: the parts go. Kept, they would tell the watch not to
+                // send them.
                 TransferParts.removeParts(file: ready.file, in: folder)
             }
             return done
@@ -1110,41 +1138,29 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
             }
         }
 
-        /// Finishes joins cut short when the app stopped (in the background, iOS may suspend
-        /// or end it) and tells the watch, which otherwise waits for its next send. Runs at
-        /// activation, before WatchConnectivity delivers anything new.
-        private func finishInterruptedJoins(session: WCSession) {
+        /// Finishes joins cut short (the app stopped, or its background time ran out) and tells
+        /// the watch, which otherwise waits for its next send. Runs at activation, before
+        /// WatchConnectivity delivers anything new, and when the app comes to the foreground.
+        func finishInterruptedJoins() {
+            let session = WCSession.default
+            guard WCSession.isSupported(), session.activationState == .activated else { return }
             let fm = FileManager.default
             let root = RecordingStore.recordingsRoot
             let folders = (try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? []
             for folder in folders {
                 let parts = folder.appendingPathComponent(TransferParts.folderName)
-                guard fm.fileExists(atPath: parts.path) else { continue }
+                guard fm.fileExists(atPath: parts.path), !TransferParts.complete(in: folder).isEmpty else { continue }
                 let sessionId = folder.lastPathComponent
                 guard UUID(uuidString: sessionId) != nil, !isActive(sessionId) else { continue }
-                Self.withBackgroundTime("Joining a recording from Apple Watch") {
+                BackgroundTime.run("Joining a recording from Apple Watch") { time in
                     Self.storageLock.withLock {
-                        if let last = joinCompleteFiles(in: folder, sessionId: sessionId).last {
+                        let joined = joinCompleteFiles(in: folder, sessionId: sessionId) { time.hasTime }
+                        if let last = joined.last {
                             acknowledge(folder: folder, sessionId: sessionId, file: last, session: session)
                         }
                     }
                 }
             }
-        }
-
-        /// Runs `work` (synchronously, on this thread) while holding an expiring background
-        /// activity, so iOS does not suspend an app launched in the background to receive a
-        /// file halfway through storing or joining it. If time runs out anyway, the staged
-        /// copies are removed at the next launch and the parts stay to be joined then.
-        static func withBackgroundTime(_ reason: String, _ work: () -> Void) {
-            let done = DispatchSemaphore(value: 0)
-            ProcessInfo.processInfo.performExpiringActivity(withReason: reason) { expired in
-                // The activity lasts while this block runs; it is called again with
-                // `expired` when the time is up, and then must return.
-                if !expired { _ = done.wait(timeout: .now() + 120) }
-            }
-            defer { done.signal() }
-            work()
         }
 
         /// Puts a staged file at `destination`. A file already there at the same size stays
@@ -1323,7 +1339,7 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
             // Transfers left stuck since an earlier launch go again.
             sendAllPending(requeue: .stuck)
         #else
-            finishInterruptedJoins(session: session)
+            finishInterruptedJoins()
         #endif
     }
 }

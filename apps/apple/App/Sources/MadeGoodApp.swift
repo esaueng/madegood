@@ -71,6 +71,10 @@ struct MadeGoodApp: App {
                                     voyageSync?.kick()
                                 #endif
                                 sessionSync?.kick()
+                                // Joins of watch recordings that ran out of background time.
+                                Task.detached(priority: .utility) {
+                                    RecordingTransfer.shared.finishInterruptedJoins()
+                                }
                             } else {
                                 AnchorWatch.shared.becameInactive()
                             }
