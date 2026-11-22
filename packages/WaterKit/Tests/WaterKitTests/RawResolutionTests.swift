@@ -37,9 +37,11 @@ import Testing
     }
 
     @Test func roundingKeepsMicrosecondsOfUnixTime() {
-        let ts = Self.start + 0.012_345_678_9
-        let rounded = RawFormat.round(ts, to: RawFormat.Resolution.motionTime)
-        #expect(abs(rounded - ts) <= 0.5e-6 + 1e-7)
+        let ts: Double = Self.start + 0.012_345_678_9
+        let rounded: Double = RawFormat.round(ts, to: RawFormat.Resolution.motionTime)
+        let error: Double = abs(rounded - ts)
+        let limit: Double = 0.6e-6
+        #expect(error <= limit)
         #expect("\(rounded)" == "1809165600.012346")
     }
 
@@ -136,10 +138,16 @@ import Testing
         var throttle = RawFormat.HeadingThrottle()
         // CoreLocation with no heading filter: about 50 Hz with a little jitter.
         var random = SplitMix64(seed: 7)
-        let times = (0..<3_000).map { Self.start + Double($0) * 0.02 + random.unit() * 0.002 }
+        var times: [Double] = []
+        for index in 0..<3_000 {
+            let nominal: Double = Double(index) * 0.02
+            let jitter: Double = random.unit() * 0.002
+            times.append(Self.start + nominal + jitter)
+        }
         let kept = times.filter { throttle.admit($0) }
         #expect((59...61).contains(kept.count))
-        #expect(zip(kept, kept.dropFirst()).allSatisfy { $1 - $0 >= 1 && $1 - $0 < 1.05 })
+        let gaps: [Double] = zip(kept, kept.dropFirst()).map { (a: Double, b: Double) -> Double in b - a }
+        #expect(gaps.allSatisfy { (gap: Double) -> Bool in gap >= 1 && gap < 1.05 })
         #expect(kept.first == times.first)
     }
 
@@ -161,17 +169,31 @@ import Testing
             ])
         simulator.seed = seed
         let motion = simulator.generate().samples
-        let duration = (motion.last?.t ?? 0).rounded(.up)
-        let fixes = stride(from: 0.0, through: duration, by: 1).map { t in
-            GPSFix(
-                t: t + 0.000_123_456_7, latitude: 10 + t * 1.234_567_891e-5 + 3e-6 * sin(t / 7),
-                longitude: -30 + t * 9.876_543_219e-6 + 2e-6 * cos(t / 5), altitude: 1.234_567,
-                horizontalAccuracy: 3.141_592_6, verticalAccuracy: 5.432_1, speed: 1.6 + 0.3 * sin(t / 11),
-                speedAccuracy: 0.271_828, course: (37 + 20 * sin(t / 13)).truncatingRemainder(dividingBy: 360),
-                courseAccuracy: 4.444_44)
+        let lastT: Double = motion.last?.t ?? 0
+        let duration: Double = lastT.rounded(.up)
+        // Plain statements with explicit types: Linux's many `sin`/`cos` overloads make
+        // long literal expressions too slow to type-check.
+        var fixes: [GPSFix] = []
+        for second in 0...Int(duration) {
+            let t: Double = Double(second)
+            let latitudeWiggle: Double = 3e-6 * sin(t / 7)
+            let latitude: Double = 10 + t * 1.234_567_891e-5 + latitudeWiggle
+            let longitudeWiggle: Double = 2e-6 * cos(t / 5)
+            let longitude: Double = -30 + t * 9.876_543_219e-6 + longitudeWiggle
+            let speed: Double = 1.6 + 0.3 * sin(t / 11)
+            let course: Double = 37 + 20 * sin(t / 13)
+            fixes.append(
+                GPSFix(
+                    t: t + 0.000_123_456_7, latitude: latitude, longitude: longitude, altitude: 1.234_567,
+                    horizontalAccuracy: 3.141_592_6, verticalAccuracy: 5.432_1, speed: speed,
+                    speedAccuracy: 0.271_828, course: course, courseAccuracy: 4.444_44))
         }
-        let heading = stride(from: 0.0, through: duration, by: 0.02).map {
-            HeadingSample(t: $0, magnetic: 123.456_789 + sin($0), trueHeading: 135.678_9 + sin($0), accuracy: 11.637_5)
+        var heading: [HeadingSample] = []
+        for index in 0...Int(duration * 50) {
+            let t: Double = Double(index) * 0.02
+            let swing: Double = sin(t)
+            heading.append(
+                HeadingSample(t: t, magnetic: 123.456_789 + swing, trueHeading: 135.678_9 + swing, accuracy: 11.637_5))
         }
         let meta = RawFormat.Meta(
             sessionId: UUID(uuidString: "6F1C2A3E-8A5B-4C1D-9E2F-0A1B2C3D4E5F")!, sport: sport,
@@ -194,11 +216,20 @@ import Testing
     ) throws {
         // Every motion value moved by at most half a step (plus double rounding).
         #expect(reread.motion.count == original.motion.count, sourceLocation: sourceLocation)
+        let slack: Double = 1e-12
+        let timeLimit: Double = 1e-6
+        let accelerationLimit: Double = RawFormat.Resolution.acceleration / 2 + slack
+        let rotationLimit: Double = RawFormat.Resolution.rotationRate / 2 + slack
+        let attitudeLimit: Double = RawFormat.Resolution.attitude / 2 + slack
         for (a, b) in zip(original.motion, reread.motion) {
-            #expect(abs(a.t - b.t) <= 1e-6)
-            #expect(abs(a.userAcceleration.x - b.userAcceleration.x) <= 0.000_5 + 1e-12)
-            #expect(abs(a.rotationRate.z - b.rotationRate.z) <= 0.000_05 + 1e-12)
-            #expect(abs(a.attitude.w - b.attitude.w) <= 0.000_005 + 1e-12)
+            let dt: Double = abs(a.t - b.t)
+            let da: Double = abs(a.userAcceleration.x - b.userAcceleration.x)
+            let dr: Double = abs(a.rotationRate.z - b.rotationRate.z)
+            let dq: Double = abs(a.attitude.w - b.attitude.w)
+            #expect(dt <= timeLimit)
+            #expect(da <= accelerationLimit)
+            #expect(dr <= rotationLimit)
+            #expect(dq <= attitudeLimit)
         }
 
         let before = StrokeAnalysis.detect(session: original)
@@ -249,7 +280,11 @@ import Testing
         #expect(abs(a.distance - b.distance) <= 0.01)
         #expect(a.acceptedFixes == b.acceptedFixes)
         #expect(a.events == b.events)
-        #expect(a.averageSpeed.map { abs($0 - (b.averageSpeed ?? .nan)) <= 0.001 } ?? (b.averageSpeed == nil))
+        #expect((a.averageSpeed == nil) == (b.averageSpeed == nil))
+        if let speedA = a.averageSpeed, let speedB = b.averageSpeed {
+            let difference: Double = abs(speedA - speedB)
+            #expect(difference <= 0.001)
+        }
         #expect(StrokeAnalysis(motion: reread.motion, sport: .kayak, distance: 332).strokeCount == 0)
     }
 }
