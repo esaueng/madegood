@@ -16,6 +16,7 @@ struct TransferDiagnosticsView: View {
         var status = ""
         var reachable = false
         var phoneReads = ""
+        var nextWake = ""
 
         static func current() -> Connection {
             let session = WCSession.default
@@ -27,9 +28,11 @@ struct TransferDiagnosticsView: View {
                 @unknown default: "Unknown"
                 }
             let versions = RecordingTransfer.phoneRawVersions(fromContext: session.receivedApplicationContext)
+            let wake = RecordingTransfer.shared.nextBackgroundWake()
             return Connection(
                 status: status, reachable: session.isReachable,
-                phoneReads: versions.sorted().map(String.init).joined(separator: ", "))
+                phoneReads: versions.sorted().map(String.init).joined(separator: ", "),
+                nextWake: wake.map { $0.formatted(date: .omitted, time: .shortened) } ?? "None")
         }
     }
 
@@ -39,6 +42,7 @@ struct TransferDiagnosticsView: View {
                 LabeledContent("Status", value: connection.status)
                 LabeledContent("Reachable", value: connection.reachable ? "Yes" : "No")
                 LabeledContent("Reads raw", value: connection.phoneReads)
+                LabeledContent("Next wake", value: connection.nextWake)
             }
             if recordings.isEmpty {
                 Text("Every recording has reached the iPhone.")
@@ -84,6 +88,7 @@ private struct Pending: Identifiable, Equatable {
     var others: [String]
     var outstanding: [RecordingTransfer.Outstanding]
     var phone: RecordingTransfer.PhoneHolds?
+    var retry: RecordingTransfer.Retry?
     var metaReadable: Bool
     var phoneReads: Bool
     var log: [TransferLog.Entry]
@@ -96,6 +101,7 @@ private struct Pending: Identifiable, Equatable {
             .filter { !RecordingStore.isRecordingFileName($0) }.sorted()
         outstanding = RecordingTransfer.shared.outstanding(sessionId: sessionId)
         phone = RecordingTransfer.shared.phoneFiles(sessionId: sessionId)
+        retry = RecordingTransfer.shared.retry(sessionId: sessionId)
         let meta = try? Data(contentsOf: entry.folder.appendingPathComponent(RawFormat.metaFileName))
         metaReadable = meta.flatMap(RecordingTransfer.metaVersion) != nil
         phoneReads = RecordingTransfer.shared.phoneReads(folder: entry.folder)
@@ -135,6 +141,12 @@ private struct RecordingSection: View {
             }
             if pending.outstanding.count > 6 {
                 Text("and \(pending.outstanding.count - 6) more queued").font(.caption2).foregroundStyle(.secondary)
+            }
+            if let retry = pending.retry, retry.failures > 0 {
+                let when = retry.at.map { " at \($0.formatted(date: .omitted, time: .shortened))" } ?? ""
+                Text("Failed \(retry.failures)× in a row; sending again\(when)")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
             }
             if phone == nil {
                 Text("The iPhone hasn't reported on this recording yet.")

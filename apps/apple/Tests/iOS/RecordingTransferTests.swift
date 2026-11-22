@@ -63,8 +63,49 @@ final class RecordingTransferTests: XCTestCase {
         XCTAssertFalse(requeue(queuedMinutesAgo: nil, progress: true, movedMinutesAgo: 0, .stuck))
         // "Send again" while it moves.
         XCTAssertFalse(requeue(queuedMinutesAgo: 4, progress: true, movedMinutesAgo: 1, .all))
-        // A launch never cancels a started transfer, however long ago it last moved.
+        // A launch or refresh does not cancel a started transfer that moved recently.
         XCTAssertFalse(requeue(queuedMinutesAgo: 60, progress: true, movedMinutesAgo: 10, .stuck))
+    }
+
+    /// Review of #170, finding 1: a part that stopped at 40% and stayed outstanding without
+    /// a callback was never restarted by a launch or background refresh (only "Send again"
+    /// did), and with the window full nothing else was queued: the recording stalled.
+    func testAStartedTransferFlatForStuckAfterIsRestartedByARefresh() {
+        let stuck = RecordingTransfer.stuckAfter / 60
+        XCTAssertTrue(requeue(queuedMinutesAgo: 60, progress: true, movedMinutesAgo: stuck, .stuck))
+        XCTAssertFalse(requeue(queuedMinutesAgo: 60, progress: true, movedMinutesAgo: stuck - 1, .stuck))
+        // Started, but never seen moving: no clock to go by, so it is left alone.
+        XCTAssertFalse(requeue(queuedMinutesAgo: 60, progress: true, movedMinutesAgo: nil, .stuck))
+    }
+
+    /// Background wakes are separate short looks, often in new processes: the tracker is kept
+    /// across them, so a later look sees that the progress has not changed since an earlier one.
+    func testProgressFlatAcrossLaunchesCountsAsStuck() throws {
+        var first = RecordingTransfer.ProgressTracker()
+        let key = "motion.ndjson.gz#3#1000.0"
+        XCTAssertEqual(first.observe([(key: key, fraction: 0.4)], now: now).since, now)
+        // Saved, then read back by a later launch.
+        let saved = try JSONEncoder().encode(["s": first])
+        var later = try XCTUnwrap(
+            JSONDecoder().decode([String: RecordingTransfer.ProgressTracker].self, from: saved)["s"])
+        let afterStuck = now.addingTimeInterval(RecordingTransfer.stuckAfter)
+        let seen = later.observe([(key: key, fraction: 0.4)], now: afterStuck)
+        XCTAssertEqual(seen.since, now)
+        XCTAssertTrue(
+            RecordingTransfer.shouldRequeue(
+                oldestQueuedAt: now, anyProgress: seen.anyProgress, progressSince: seen.since, now: afterStuck,
+                requeue: .stuck))
+        // Had it grown in between, it would be moving.
+        var grown = try XCTUnwrap(
+            JSONDecoder().decode([String: RecordingTransfer.ProgressTracker].self, from: saved)["s"])
+        XCTAssertEqual(grown.observe([(key: key, fraction: 0.5)], now: afterStuck).since, afterStuck)
+        // A fresh tracker (nothing saved) treats a started transfer as moving: no cancel.
+        var fresh = RecordingTransfer.ProgressTracker()
+        let firstLook = fresh.observe([(key: key, fraction: 0.4)], now: afterStuck)
+        XCTAssertFalse(
+            RecordingTransfer.shouldRequeue(
+                oldestQueuedAt: now, anyProgress: true, progressSince: firstLook.since, now: afterStuck,
+                requeue: .stuck))
     }
 
     func testSendAgainRestartsATransferThatStalledOrNeverStarted() {

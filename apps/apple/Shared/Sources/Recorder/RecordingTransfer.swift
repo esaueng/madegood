@@ -3,6 +3,10 @@ import Synchronization
 import WatchConnectivity
 import WaterKit
 
+#if os(watchOS)
+    import WatchKit
+#endif
+
 /// Moves finished recordings from the watch to the phone.
 ///
 /// - The watch sends each file with `WCSession.transferFile` (each stream is already
@@ -29,6 +33,16 @@ import WaterKit
 /// - Each acknowledgement also lists the parts the phone holds of files still arriving. The
 ///   watch keeps the latest list (`PhoneHolds`) across launches and sends only what the
 ///   phone lacks; it never deletes on that list, only on a live acknowledgement.
+/// - Progress in the background (docs/watch-transfer.md): every acknowledgement that does
+///   not complete a recording sends the watch round again, which tops up its window of
+///   parts; acknowledgements wake a suspended watch app (`finishBackgroundDelivery`). While
+///   recordings wait the watch keeps a background app refresh scheduled
+///   (`TransferPolicy.nextRefresh`, `resumeFromRefresh`), and a failed transfer goes again
+///   after a backoff (`TransferPolicy.retryDelay`). Sends run one at a time on a serial
+///   queue, so a part is never queued twice by callers racing.
+/// - The phone may be launched in the background to receive: the app activates the session
+///   at launch, before any UI, and storing and joining run under an expiring background
+///   activity. Joins cut short are finished, and acknowledged, at the next activation.
 ///
 /// - Raw format versions (docs/formats.md): the phone advertises the versions it reads
 ///   (`rawVersions` in its application context; a phone build without it reads only 1).
@@ -175,14 +189,18 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
     /// `meta.json` last, so the phone sees a recording complete only when all of it is
     /// there, and a large file never holds up the small ones. Files over a part's size go in
     /// parts. Leaves out what is in flight (a whole file in flight covers its parts) and what
-    /// `holds` says the phone has (parts only of the same layout), except `meta.json`: it
-    /// always goes, and its acknowledgement corrects a stale `holds`. Parts in
-    /// `handedOver` (delivered, the phone's acknowledgement not in yet) are not sent again
-    /// either. At most `window` parts are in flight at once; `meta.json` waits until
+    /// `holds` says the phone has (parts only of the same layout), and parts in `handedOver`
+    /// (delivered, the phone's acknowledgement not in yet). `meta.json` goes unless it is in
+    /// flight or the phone holds it at this size while something else of the recording is
+    /// in flight, handed over or queued (their acknowledgements tell the watch what the phone
+    /// holds). So when `holds` claims everything, `meta.json` goes alone and its
+    /// acknowledgement corrects a stale `holds`; and an acknowledgement of `meta.json` that
+    /// arrives while the last parts are still on their way does not queue it again, and
+    /// again. At most `window` parts are in flight at once; `meta.json` waits until
     /// everything else is queued or handed over.
     static func units(
         local: [String: Int64], holds: PhoneHolds?, inFlight: Set<UnitKey>, handedOver: Set<UnitKey> = [],
-        partSize: Int64 = TransferParts.partSize, window: Int = TransferParts.window
+        partSize: Int64 = TransferParts.partSize, window: Int = TransferPolicy.largestWindow
     ) -> [Unit] {
         var units: [Unit] = []
         for (name, size) in local {
@@ -211,7 +229,7 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
         }
         var budget = max(0, window - inFlight.filter { $0.part != nil }.count)
         var leftOut = false
-        return sorted.filter { unit in
+        let queued = sorted.filter { unit in
             if unit.file == RawFormat.metaFileName { return !leftOut }
             guard unit.part != nil else { return true }
             guard budget > 0 else {
@@ -221,28 +239,48 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
             budget -= 1
             return true
         }
+        let meta = RawFormat.metaFileName
+        let metaHeld = local[meta].map { holds?.files[meta] == $0 } ?? false
+        // Handed-over parts the phone already lists are not waiting for an acknowledgement
+        // (for example all parts held while the join waits for background time on the phone:
+        // meta.json then goes, and brings the phone back to the join).
+        let awaitingAcknowledgement = handedOver.contains { key in
+            guard key.file != meta, holds?.files[key.file] != local[key.file] else { return false }
+            guard let layout = key.layout, let index = key.part else { return true }
+            return holds?.parts[layout]?.contains(index) != true
+        }
+        let othersMoving =
+            queued.contains { $0.file != meta } || inFlight.contains { $0.file != meta } || awaitingAcknowledgement
+        return metaHeld && othersMoving ? queued.filter { $0.file != meta } : queued
     }
 
-    /// How a recording's outstanding transfers have moved this launch (watch side).
-    struct ProgressTracker: Sendable {
+    /// How a recording's outstanding transfers have moved (watch side). Kept across launches
+    /// (each background wake is a short look, often in a new process), so a later look can
+    /// tell a transfer that has sat at the same progress since an earlier one from a transfer
+    /// it sees for the first time.
+    struct ProgressTracker: Codable, Equatable, Sendable {
+        /// The last progress seen of each outstanding transfer (by a key naming the transfer,
+        /// including when it was queued). Only the transfers of the latest look are kept.
         private var fractions: [String: Double] = [:]
         /// The last time a transfer was seen moving: progress that grew, a transfer first seen
         /// with progress, or a transfer that finished.
         private(set) var lastChange: Date?
 
-        /// Notes each transfer's progress (by a key naming the transfer); returns whether any
-        /// has progress, and the last time one was seen moving.
+        /// Notes each transfer's progress; returns whether any has progress, and the last time
+        /// one was seen moving.
         mutating func observe(_ samples: [(key: String, fraction: Double)], now: Date) -> (
             anyProgress: Bool, since: Date?
         ) {
             var anyProgress = false
+            var seen: [String: Double] = [:]
             for (key, fraction) in samples {
                 if fraction > 0 {
                     anyProgress = true
                     if fraction > (fractions[key] ?? 0) { lastChange = now }
                 }
-                fractions[key] = fraction
+                seen[key] = fraction
             }
+            fractions = seen
             return (anyProgress, lastChange)
         }
 
@@ -265,21 +303,38 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
 
     /// Whether to cancel a recording's outstanding transfers and queue them again.
     /// - Never while they move: some has progress (`anyProgress`) and `progressSince` (the
-    ///   last time this launch saw them move, or first saw them) is under `stalledAfter`
-    ///   ago. A launch sees them for the first time, so it never cancels a started transfer.
+    ///   last time they were seen moving, or first seen, kept across launches) is under
+    ///   `stalledAfter` ago.
     /// - "Send again" (`.all`): otherwise, yes.
-    /// - Launch (`.stuck`): only if none has started and the oldest has waited `stuckAfter`.
-    ///   A transfer without a time (queued by a build before times) counts as waited, as does
-    ///   one whose time is that far in the future (the clock was changed).
+    /// - Launch and background refresh (`.stuck`): if some has started, only once none has
+    ///   moved for `stuckAfter` (a transfer first seen with progress counts as moving then,
+    ///   so a first look never cancels a started transfer); if none has started, once the
+    ///   oldest has waited `stuckAfter`. A transfer without a time (queued by a build before
+    ///   times) counts as waited, as does one whose time is that far in the future (the clock
+    ///   was changed).
     static func shouldRequeue(
         oldestQueuedAt: Date?, anyProgress: Bool, progressSince: Date?, now: Date, requeue: Requeue
     ) -> Bool {
         if requeue == .none { return false }
         if anyProgress, let progressSince, abs(now.timeIntervalSince(progressSince)) < stalledAfter { return false }
         if requeue == .all { return true }
-        if anyProgress { return false }
+        if anyProgress {
+            guard let progressSince else { return false }
+            return abs(now.timeIntervalSince(progressSince)) >= stuckAfter
+        }
         guard let oldestQueuedAt else { return true }
         return abs(now.timeIntervalSince(oldestQueuedAt)) >= stuckAfter
+    }
+
+    /// Whether a transfer ended because it was cancelled (by `send` restarting it or by
+    /// the recording being delivered), which is no reason to retry.
+    static func isCancellation(_ error: NSError) -> Bool {
+        error.domain == NSCocoaErrorDomain && error.code == NSUserCancelledError
+    }
+
+    /// "45 s" or "15 min", for the log.
+    static func describe(_ interval: TimeInterval) -> String {
+        interval < 90 ? "\(Int(interval.rounded())) s" : "\(Int((interval / 60).rounded())) min"
     }
 
     /// The time a transfer was queued, from its metadata.
@@ -353,21 +408,179 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
     /// launches so a resend skips what already arrived.
     private let phoneHolds = Mutex<[String: PhoneHolds]>(RecordingTransfer.loadPhoneHolds())
     private static let phoneHoldsKey = "transferPhoneHolds"
-    /// How each recording's outstanding transfers have moved this launch (watch side).
-    private let progress = Mutex<[String: ProgressTracker]>([:])
+    /// How each recording's outstanding transfers have moved, kept across launches (watch
+    /// side).
+    private let progress = Mutex<[String: ProgressTracker]>(RecordingTransfer.loadProgress())
+    private static let progressDefaultsKey = "transferProgress"
     /// Parts each recording handed to the phone whose acknowledgement is not in yet, and when
     /// (watch side). Not sent again for `handoverGrace`: queuing a just-delivered part again
     /// would cycle the window through the same parts while the acknowledgements lag.
     private let handedOver = Mutex<[String: [UnitKey: Date]]>([:])
     /// How long a delivered part waits for the phone's acknowledgement before it may go again.
     static let handoverGrace: TimeInterval = 10 * 60
-    /// One send at a time ("Send again" on the main thread, finished transfers and
-    /// acknowledgements on WatchConnectivity's queue), so two never pick the same part.
-    private let sendLock = NSLock()
+    /// Failed rounds in a row per recording, and when the pending retry is due (watch side).
+    private let retries = Mutex<[String: Retry]>(RecordingTransfer.loadRetries())
+    private static let retriesDefaultsKey = "transferRetries"
+    /// Whether this launch has armed the retries kept from an earlier one.
+    private let retriesResumed = Mutex(false)
+    /// When the background app refresh asked for last is due (watch side).
+    private let scheduledRefresh = Mutex<Date?>(nil)
+    /// Delivered content and sends still being handled; a background task waits for 0.
+    private let busy = Mutex(0)
+    /// Per recording, transfers queued whose callback is not handled yet (`Submitted`).
+    private let submitted = Mutex<[String: Submitted]>([:])
+    /// When the activation under way started; nil once it completed, either way.
+    private let activationStartedAt = Mutex<Date?>(nil)
+    /// Runs sends one at a time (watch side).
+    private let sendQueue = DispatchQueue(label: "RecordingTransfer.send", qos: .utility)
+
+    /// A recording's failed rounds in a row and its pending retry (watch side). The retry's
+    /// time gates every send of the recording: until it is due, nothing of the recording is
+    /// queued (other transfers in flight carry on), so the backoff holds however often
+    /// finished parts, acknowledgements and refreshes ask to send.
+    struct Retry: Codable, Equatable, Sendable {
+        var failures = 0
+        var at: Date?
+
+        /// Whether a retry is pending at `now`.
+        func isPending(now: Date) -> Bool {
+            at.map { $0 > now } ?? false
+        }
+
+        /// A transfer failed. Starts a retry after `TransferPolicy.retryDelay` and returns
+        /// its time, or nil if one is already pending (parts failing together, or a part
+        /// queued before the failure failing during the backoff, count once).
+        mutating func failed(now: Date) -> Date? {
+            guard !isPending(now: now) else { return nil }
+            failures += 1
+            let due = now.addingTimeInterval(TransferPolicy.retryDelay(afterFailures: failures))
+            at = due
+            return due
+        }
+
+        /// A transfer finished or the phone acknowledged one. Clears the failures only once
+        /// no retry is pending: a transfer queued before the failure that lands during the
+        /// backoff says nothing about whether the link works again.
+        mutating func succeeded(now: Date) {
+            if !isPending(now: now) { failures = 0 }
+        }
+
+        /// Whether a send may queue the recording's transfers now: no retry is pending, or the
+        /// user asked ("Send again").
+        func allowsSend(now: Date, userAsked: Bool) -> Bool {
+            userAsked || !isPending(now: now)
+        }
+
+        /// The retry due at `due` ran (its timer fired). A later retry, started after it was
+        /// due, stays.
+        mutating func fired(_ due: Date) {
+            if at == due { at = nil }
+        }
+    }
+
+    /// Transfers of one recording this process queued whose `didFinish` it has not handled
+    /// yet (watch side). WatchConnectivity drops a finished transfer from
+    /// `outstandingFileTransfers` before the callback runs, so in that gap a part is neither
+    /// outstanding nor handed over nor failed; counting it in flight until its callback is
+    /// handled keeps a send from queuing it again before its failure sets the retry.
+    struct Submitted: Sendable {
+        /// How long a transfer may be missing from `outstandingFileTransfers` without a
+        /// callback before it is no longer counted (it was lost, for instance).
+        static let callbackGrace: TimeInterval = 60
+
+        private struct Entry: Sendable {
+            var key: UnitKey
+            var missingSince: Date?
+        }
+        private var entries: [String: Entry] = [:]
+
+        var isEmpty: Bool { entries.isEmpty }
+
+        /// Recorded before the transfer is handed to WatchConnectivity, so its callback can
+        /// never come first.
+        mutating func add(id: String, key: UnitKey) {
+            entries[id] = Entry(key: key)
+        }
+
+        /// Its callback was handled (after the retry or the handover it records), or it was
+        /// cancelled.
+        mutating func finished(id: String) {
+            entries[id] = nil
+        }
+
+        /// The units to count in flight, given the transfers WatchConnectivity still lists:
+        /// all submitted ones but those missing for `callbackGrace`, which are dropped.
+        mutating func inFlight(outstanding: Set<String>, now: Date) -> Set<UnitKey> {
+            for (id, entry) in entries where !outstanding.contains(id) {
+                let since = entry.missingSince ?? now
+                if abs(now.timeIntervalSince(since)) >= Self.callbackGrace {
+                    entries[id] = nil
+                } else {
+                    entries[id]?.missingSince = since
+                }
+            }
+            for id in outstanding where entries[id] != nil { entries[id]?.missingSince = nil }
+            return Set(entries.values.map(\.key))
+        }
+    }
+
+    /// Names one transfer (its file, part and layout, and when it was queued), from its
+    /// metadata.
+    static func transferID(metadata: [String: Any]?) -> String? {
+        guard let metadata, let file = metadata[Key.file] as? String else { return nil }
+        let part = try? TransferParts.part(file: file, metadata: metadata)
+        let layout = part.map(TransferParts.layoutKey) ?? "whole"
+        return "\(file)#\(part?.index ?? -1)#\(layout)#\(metadata[Key.queuedAt] as? Double ?? 0)"
+    }
+
+    /// Runs `work`, counted as busy for a background task waiting on it.
+    private func whileBusy<T>(_ work: () throws -> T) rethrows -> T {
+        busy.withLock { $0 += 1 }
+        defer { busy.withLock { $0 -= 1 } }
+        return try work()
+    }
 
     private static func loadPhoneHolds() -> [String: PhoneHolds] {
         UserDefaults.standard.data(forKey: phoneHoldsKey)
             .flatMap { try? JSONDecoder().decode([String: PhoneHolds].self, from: $0) } ?? [:]
+    }
+
+    private static func loadProgress() -> [String: ProgressTracker] {
+        UserDefaults.standard.data(forKey: progressDefaultsKey)
+            .flatMap { try? JSONDecoder().decode([String: ProgressTracker].self, from: $0) } ?? [:]
+    }
+
+    /// Retries kept across launches, so a relaunch during a backoff neither sends at once
+    /// nor starts the count over.
+    private static func loadRetries() -> [String: Retry] {
+        UserDefaults.standard.data(forKey: retriesDefaultsKey)
+            .flatMap { try? JSONDecoder().decode([String: Retry].self, from: $0) } ?? [:]
+    }
+
+    /// Changes the retries of recordings, saving them when they changed.
+    @discardableResult
+    private func updateRetries<T>(_ body: (inout [String: Retry]) -> T) -> T {
+        retries.withLock { all in
+            let before = all
+            let result = body(&all)
+            if all != before, let data = try? JSONEncoder().encode(all) {
+                UserDefaults.standard.set(data, forKey: Self.retriesDefaultsKey)
+            }
+            return result
+        }
+    }
+
+    /// Changes the progress kept of recordings, saving it when it changed.
+    @discardableResult
+    private func updateProgress<T>(_ body: (inout [String: ProgressTracker]) -> T) -> T {
+        progress.withLock { all in
+            let before = all
+            let result = body(&all)
+            if all != before, let data = try? JSONEncoder().encode(all) {
+                UserDefaults.standard.set(data, forKey: Self.progressDefaultsKey)
+            }
+            return result
+        }
     }
 
     private func setPhoneHolds(_ holds: PhoneHolds?, sessionId: String) {
@@ -383,8 +596,24 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
 
     func activate() {
         guard WCSession.isSupported() else { return }
+        activationStartedAt.withLock { $0 = Date() }
         WCSession.default.delegate = self
         WCSession.default.activate()
+    }
+
+    /// Activates the session if it is not activated and no activation is under way
+    /// (`TransferPolicy.shouldActivate`), for instance after an activation failed.
+    func ensureActivated() {
+        guard WCSession.isSupported() else { return }
+        let session = WCSession.default
+        let delegateInstalled = session.delegate === self
+        guard
+            TransferPolicy.shouldActivate(
+                delegateInstalled: delegateInstalled, notActivated: session.activationState == .notActivated,
+                activationStartedAt: activationStartedAt.withLock { $0 }, now: Date())
+        else { return }
+        if delegateInstalled { log.add("Connecting to the other device again") }
+        activate()
     }
 
     /// Marks a recording as in progress (or not). Called by SessionRecorder on both devices.
@@ -407,15 +636,35 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
 
     #if os(watchOS)
         /// Queues what the phone still lacks of `folder` and is not in flight, after cancelling
-        /// the recording's outstanding transfers if `requeue` and `shouldRequeue` say so.
+        /// the recording's outstanding transfers if `requeue` and `shouldRequeue` say so. Runs
+        /// on the send queue after any send asked for earlier, so two callers (the UI, an
+        /// acknowledgement, a finished part, a retry, a background wake) never queue the same
+        /// part twice.
         func send(folder: URL, requeue: Requeue = .none) {
-            sendLock.lock()
-            defer { sendLock.unlock() }
+            busy.withLock { $0 += 1 }
+            sendQueue.async {
+                defer { self.busy.withLock { $0 -= 1 } }
+                self.sendNow(folder: folder, requeue: requeue)
+            }
+        }
+
+        private func sendNow(folder: URL, requeue: Requeue) {
             let session = WCSession.default
             let sessionId = folder.lastPathComponent
             guard !isActive(sessionId) else { return }
+            guard FileManager.default.fileExists(atPath: folder.path) else { return }
+            // Nothing of a recording goes before its retry is due (`Retry`), unless the user
+            // asked; then the backoff ends here.
+            let mayGo = updateRetries { all in
+                guard all[sessionId]?.allowsSend(now: Date(), userAsked: requeue == .all) ?? true else { return false }
+                if requeue == .all { all[sessionId]?.at = nil }
+                return true
+            }
+            guard mayGo else { return }
             guard session.activationState == .activated else {
                 log.add("Not sent: the connection to iPhone is not active yet", sessionId: sessionId)
+                ensureActivated()
+                scheduleRefresh(hasPending: true)
                 return
             }
             guard let local = Self.recordingFiles(in: folder), !local.isEmpty else {
@@ -448,12 +697,15 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
                     requeue: requeue)
                 {
                     for transfer in outstanding { transfer.cancel() }
+                    // Cancelled: not waited for.
+                    let ids = outstanding.compactMap { Self.transferID(metadata: $0.file.metadata) }
+                    submitted.withLock { all in for id in ids { all[sessionId]?.finished(id: id) } }
                     let age = oldest.map { "\(Int(now.timeIntervalSince($0) / 60)) min" } ?? "since an earlier build"
                     log.add(
                         "Cancelled \(outstanding.count) transfers that had not moved (queued \(age)) to send again",
                         sessionId: sessionId)
                     outstanding = []
-                    progress.withLock { $0[sessionId] = nil }
+                    updateProgress { $0[sessionId] = nil }
                 } else if requeue != .none {
                     let lead = outstanding.max { $0.progress.fractionCompleted < $1.progress.fractionCompleted }
                     log.add(
@@ -464,14 +716,34 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
                 }
             }
 
-            let inFlight = Set(outstanding.compactMap(Self.unitKey))
+            // Slices no transfer uses (lost when the watch restarted, or cancelled above).
+            let inUse = Set(outstanding.map { $0.file.fileURL.lastPathComponent })
+            for stale in TransferParts.staleSlices(in: folder, inUse: inUse) {
+                try? FileManager.default.removeItem(at: stale)
+            }
+
+            let outstandingIDs = Set(outstanding.compactMap { Self.transferID(metadata: $0.file.metadata) })
+            let awaitingCallback = submitted.withLock {
+                $0[sessionId, default: Submitted()].inFlight(outstanding: outstandingIDs, now: now)
+            }
+            // Again, after the snapshots: a failure handled since the first check set its retry
+            // before leaving `submitted`, so either its part is counted in flight above or the
+            // retry is seen here.
+            let stillMayGo = retries.withLock {
+                $0[sessionId]?.allowsSend(now: Date(), userAsked: requeue == .all) ?? true
+            }
+            guard stillMayGo else { return }
+            let inFlight = Set(outstanding.compactMap(Self.unitKey)).union(awaitingCallback)
             let holds = phoneHolds.withLock { $0[sessionId] }
             let recent = handedOver.withLock { all -> Set<UnitKey> in
                 let kept = (all[sessionId] ?? [:]).filter { abs(now.timeIntervalSince($0.value)) < Self.handoverGrace }
                 all[sessionId] = kept.isEmpty ? nil : kept
                 return Set(kept.keys)
             }
-            let units = Self.units(local: local, holds: holds, inFlight: inFlight, handedOver: recent)
+            let window = TransferPolicy.window(freeSpace: Self.freeSpace(at: folder))
+            let units = Self.units(
+                local: local, holds: holds, inFlight: inFlight, handedOver: recent, window: window)
+            defer { scheduleRefresh(hasPending: true) }
             var queued: [String] = []
             for unit in units {
                 let url: URL
@@ -489,6 +761,9 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
                 } else {
                     url = folder.appendingPathComponent(unit.file)
                 }
+                if let id = Self.transferID(metadata: metadata) {
+                    submitted.withLock { $0[sessionId, default: Submitted()].add(id: id, key: unit.key) }
+                }
                 session.transferFile(url, metadata: metadata)
                 queued.append(unit.part.map { "\(unit.file) part \($0.index + 1)/\($0.count)" } ?? unit.file)
             }
@@ -501,12 +776,18 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
             }
         }
 
+        /// The free space on the volume holding `url`, for the window of parts.
+        private static func freeSpace(at url: URL) -> Int64? {
+            ((try? FileManager.default.attributesOfFileSystem(forPath: url.path))?[.systemFreeSize] as? NSNumber)?
+                .int64Value
+        }
+
         /// Notes how a recording's outstanding transfers have moved (`ProgressTracker`).
         private func observe(
             sessionId: String, transfers: [WCSessionFileTransfer], now: Date
         ) -> (anyProgress: Bool, since: Date?) {
             let samples = transfers.map { (key: Self.progressKey($0), fraction: $0.progress.fractionCompleted) }
-            return progress.withLock { $0[sessionId, default: ProgressTracker()].observe(samples, now: now) }
+            return updateProgress { $0[sessionId, default: ProgressTracker()].observe(samples, now: now) }
         }
 
         private static func progressKey(_ transfer: WCSessionFileTransfer) -> String {
@@ -551,6 +832,16 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
             phoneHolds.withLock { $0[sessionId] }
         }
 
+        /// The background refresh asked for this launch, if still to come, for the diagnostics.
+        func nextBackgroundWake() -> Date? {
+            scheduledRefresh.withLock { $0 }.flatMap { $0 > Date() ? $0 : nil }
+        }
+
+        /// A recording's failed rounds in a row and pending retry, for the diagnostics.
+        func retry(sessionId: String) -> Retry? {
+            retries.withLock { $0[sessionId] }
+        }
+
         /// Whether the paired phone's app reads this recording's raw format version. If not
         /// (or the version cannot be read), the recording stays on the watch, which asks for
         /// the phone app to be updated.
@@ -562,45 +853,229 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
         /// Sends every finished recording still on the watch, including ones interrupted
         /// in an earlier launch (they have no `endedAt`, which readers handle).
         func sendAllPending(requeue: Requeue = .none) {
+            // What the phone held of recordings no longer on the watch.
+            let gone = phoneHolds.withLock { Array($0.keys) }.filter {
+                !FileManager.default.fileExists(atPath: RecordingStore.root.appendingPathComponent($0).path)
+            }
+            for sessionId in gone { setPhoneHolds(nil, sessionId: sessionId) }
+            updateProgress { all in
+                all = all.filter {
+                    FileManager.default.fileExists(atPath: RecordingStore.root.appendingPathComponent($0.key).path)
+                }
+            }
             for entry in RecordingStore.list() {
                 send(folder: entry.folder, requeue: requeue)
             }
         }
 
+        // MARK: Watch: retries and background
+
+        /// After a failed transfer, sends the recording again once `TransferPolicy.retryDelay`
+        /// has passed. One retry is pending per recording, so parts failing together count
+        /// as one failure. Returns the wait, or nil if a retry was already pending.
+        private func scheduleRetry(sessionId: String, folder: URL) -> TimeInterval? {
+            let now = Date()
+            let due = updateRetries { $0[sessionId, default: Retry()].failed(now: now) }
+            guard let due else { return nil }
+            armRetry(sessionId: sessionId, due: due)
+            scheduleRefresh(hasPending: true)
+            return due.timeIntervalSince(now)
+        }
+
+        /// Sends the recording again when its retry is due. On the wall clock, so time asleep
+        /// counts. Fires late if the app is suspended; the background refresh asked for wakes
+        /// it, and its send (allowed once the retry is due) covers it.
+        private func armRetry(sessionId: String, due: Date) {
+            let folder = RecordingStore.root.appendingPathComponent(sessionId, isDirectory: true)
+            DispatchQueue.global(qos: .utility).asyncAfter(wallDeadline: .now() + max(0, due.timeIntervalSinceNow)) {
+                self.updateRetries { $0[sessionId]?.fired(due) }
+                guard FileManager.default.fileExists(atPath: folder.path) else { return }
+                self.log.add("Sending again after the failure", sessionId: sessionId)
+                self.send(folder: folder)
+            }
+        }
+
+        /// After a relaunch: arms the retries still to come (kept from the earlier launch) and
+        /// drops those of recordings no longer on the watch.
+        private func resumeRetries() {
+            let first = retriesResumed.withLock { resumed in
+                defer { resumed = true }
+                return !resumed
+            }
+            guard first else { return }
+            let now = Date()
+            let pending = updateRetries { all -> [(String, Date)] in
+                all = all.filter {
+                    FileManager.default.fileExists(atPath: RecordingStore.root.appendingPathComponent($0.key).path)
+                }
+                return all.compactMap { id, retry in retry.at.flatMap { $0 > now ? (id, $0) : nil } }
+            }
+            for (sessionId, due) in pending { armRetry(sessionId: sessionId, due: due) }
+        }
+
+        /// Keeps a background app refresh asked for while recordings wait
+        /// (`TransferPolicy.nextRefresh`), so a suspended app wakes to send even when no
+        /// acknowledgement wakes it.
+        private func scheduleRefresh(hasPending: Bool) {
+            let now = Date()
+            let retryAt = retries.withLock { $0.values.compactMap(\.at).filter { $0 > now }.min() }
+            guard let wanted = TransferPolicy.nextRefresh(now: now, hasPending: hasPending, retryAt: retryAt) else {
+                return
+            }
+            let asks = scheduledRefresh.withLock { scheduled in
+                guard TransferPolicy.shouldSchedule(wanted: wanted, scheduled: scheduled, now: now) else {
+                    return false
+                }
+                scheduled = wanted
+                return true
+            }
+            guard asks else { return }
+            requestRefresh(at: wanted, attempt: 1)
+            log.add("Asked to wake in the background in \(Self.describe(wanted.timeIntervalSince(now)))")
+        }
+
+        /// Asks watchOS for the refresh at `wanted`. A failed request is made again right away,
+        /// up to `TransferPolicy.refreshRequestAttempts` times, while the process still runs;
+        /// after that, the next send, WatchConnectivity wake, or the app moving to the
+        /// background or foreground asks again (and a timer, if the process keeps running).
+        private func requestRefresh(at wanted: Date, attempt: Int) {
+            busy.withLock { $0 += 1 }
+            DispatchQueue.main.async {
+                defer { self.busy.withLock { $0 -= 1 } }
+                MainActor.assumeIsolated {
+                    WKApplication.shared().scheduleBackgroundRefresh(
+                        withPreferredDate: wanted, userInfo: TransferPolicy.refreshIdentifier as NSString
+                    ) { error in
+                        guard let error else { return }
+                        let again = self.scheduledRefresh.withLock { current -> Bool in
+                            let again = TransferPolicy.retriesRefreshRequest(
+                                afterAttempt: attempt, failed: wanted, current: current)
+                            if !again {
+                                current = TransferPolicy.scheduledAfterFailure(current: current, failed: wanted)
+                            }
+                            return again
+                        }
+                        self.log.add(
+                            "Could not ask to wake in the background (attempt \(attempt)): "
+                                + "\(error.localizedDescription)" + (again ? "; asking again" : ""))
+                        if again {
+                            self.requestRefresh(at: wanted, attempt: attempt + 1)
+                        } else {
+                            DispatchQueue.global(qos: .utility).asyncAfter(
+                                wallDeadline: .now() + TransferPolicy.refreshRequestRetry
+                            ) { self.scheduleRefreshIfPending() }
+                        }
+                    }
+                }
+            }
+        }
+
+        /// Asks for a background refresh if a finished recording waits that can go (one the
+        /// phone cannot read asks for none). Also called when the app moves to the background.
+        func scheduleRefreshIfPending() {
+            let pending = RecordingStore.list().contains {
+                !isActive($0.folder.lastPathComponent) && phoneReads(folder: $0.folder)
+            }
+            scheduleRefresh(hasPending: pending)
+        }
+
+        /// A WatchConnectivity background task: the phone's acknowledgements woke the app.
+        /// Returns once the session is active, has delivered everything, and what it delivered
+        /// has been handled, including the sends that topped up the window
+        /// (`TransferPolicy.backgroundWorkDone`), or when the task's time runs out.
+        func finishBackgroundDelivery() async {
+            ensureActivated()
+            // Each wake makes sure a refresh is asked for (one that failed, or was lost).
+            scheduleRefreshIfPending()
+            let done = await waitUntil(limit: TransferPolicy.backgroundTaskLimit) { [self] in
+                let session = WCSession.default
+                return TransferPolicy.backgroundWorkDone(
+                    activated: session.activationState == .activated, hasContentPending: session.hasContentPending,
+                    busy: busy.withLock { $0 })
+            }
+            if !done { log.add("A background wake ended before everything it delivered was handled") }
+        }
+
+        /// A background app refresh: sends what waits (restarting transfers stuck for
+        /// `stuckAfter`). Each send asks for the next refresh while its recording can still go,
+        /// so a recording the phone cannot read does not keep waking the app.
+        func resumeFromRefresh() async {
+            scheduledRefresh.withLock { $0 = nil }
+            ensureActivated()
+            _ = await waitUntil(limit: 10) { WCSession.default.activationState == .activated }
+            let waiting = RecordingStore.list().filter { !isActive($0.folder.lastPathComponent) }.count
+            if waiting > 0 {
+                log.add("Woke in the background with \(waiting) recording\(waiting == 1 ? "" : "s") to send")
+            }
+            sendAllPending(requeue: .stuck)
+            await finishBackgroundDelivery()
+        }
+
+        /// Waits until `condition` holds, up to `limit` or the task's cancellation; returns
+        /// whether it held.
+        private func waitUntil(limit: TimeInterval, _ condition: () -> Bool) async -> Bool {
+            let deadline = Date().addingTimeInterval(limit)
+            while !condition() {
+                guard !Task.isCancelled, Date() < deadline else { return false }
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+            return true
+        }
+
         nonisolated func session(
             _ session: WCSession, didFinish fileTransfer: WCSessionFileTransfer, error: (any Error)?
         ) {
+            whileBusy { finished(fileTransfer, error: error) }
+        }
+
+        private func finished(_ fileTransfer: WCSessionFileTransfer, error: (any Error)?) {
             // Delivery is not storage: only the phone's acknowledgement allows deleting.
             let sessionId = fileTransfer.file.metadata?[Key.sessionId] as? String
+            // Last, once the retry or handover below is recorded (`Submitted`).
+            defer {
+                if let sessionId, let id = Self.transferID(metadata: fileTransfer.file.metadata) {
+                    submitted.withLock { $0[sessionId]?.finished(id: id) }
+                }
+            }
             let name = Self.describe(fileTransfer)
             let file = fileTransfer.file.metadata?[Key.file] as? String ?? fileTransfer.file.fileURL.lastPathComponent
             let part = try? TransferParts.part(file: file, metadata: fileTransfer.file.metadata)
             let isPart = part != nil
             // Done either way: a part's slice is written again if it has to go again.
             if isPart { TransferParts.removeSlice(at: fileTransfer.file.fileURL) }
-            if error == nil, let sessionId {
-                let now = Date()
-                progress.withLock { $0[sessionId, default: ProgressTracker()].finished(at: now) }
-                if let part {
-                    handedOver.withLock { $0[sessionId, default: [:]][UnitKey(part)] = now }
-                }
-                // Keeps the next parts coming (`TransferParts.window`). Not after a failure,
-                // which could fail again at once; launch and "Send again" retry those.
-                let folder = RecordingStore.root.appendingPathComponent(sessionId, isDirectory: true)
-                if isPart, FileManager.default.fileExists(atPath: folder.path) { send(folder: folder) }
-            }
+            let folder = sessionId.map { RecordingStore.root.appendingPathComponent($0, isDirectory: true) }
+            let exists = folder.map { FileManager.default.fileExists(atPath: $0.path) } ?? false
             if let error {
                 let nsError = error as NSError
-                log.add(
-                    "Sending \(name) failed: \(error.localizedDescription) (\(nsError.domain) \(nsError.code))",
-                    sessionId: sessionId)
-            } else if !isPart {
+                var line = "Sending \(name) failed: \(error.localizedDescription) (\(nsError.domain) \(nsError.code))"
+                // Not at once: it could fail again at once. Cancelled ones were sent again.
+                if !Self.isCancellation(nsError), let sessionId, let folder, exists,
+                    let delay = scheduleRetry(sessionId: sessionId, folder: folder)
+                {
+                    line += "; sending again in \(Self.describe(delay))"
+                }
+                log.add(line, sessionId: sessionId)
+                return
+            }
+            guard let sessionId else { return }
+            let now = Date()
+            updateProgress { $0[sessionId, default: ProgressTracker()].finished(at: now) }
+            updateRetries { $0[sessionId]?.succeeded(now: now) }
+            // Not sent again while its acknowledgement is on the way (`handoverGrace`).
+            if let part { handedOver.withLock { $0[sessionId, default: [:]][UnitKey(part)] = now } }
+            // Keeps the window of parts full (`TransferPolicy.window`).
+            if isPart, exists, let folder { send(folder: folder) }
+            if !isPart {
                 // Not for every part: the phone's acknowledgements show those.
                 log.add("Handed \(name) to iPhone; waiting for it to confirm", sessionId: sessionId)
             }
         }
 
         nonisolated func session(_ session: WCSession, didReceiveUserInfo userInfo: [String: Any]) {
+            whileBusy { receivedAcknowledgement(userInfo) }
+        }
+
+        private func receivedAcknowledgement(_ userInfo: [String: Any]) {
             guard userInfo[Key.stored] as? Bool == true,
                 let sessionId = userInfo[Key.sessionId] as? String,
                 UUID(uuidString: sessionId) != nil
@@ -616,12 +1091,17 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
             log.add(
                 "iPhone holds \(TransferLog.describe(phone))\(TransferLog.describe(parts: parts))", sessionId: sessionId
             )
+            // The link works (unless a retry is pending: this may be for a part queued before
+            // the failure); a retry after this starts from the shortest wait.
+            updateRetries { $0[sessionId]?.succeeded(now: Date()) }
             let isMeta = userInfo[Key.file] as? String == RawFormat.metaFileName
             // Why the watch keeps it, only once meta.json (sent last) is in, not for every part.
             let delivered = deleteIfDelivered(sessionId: sessionId, phone: phone, logsWhyKept: isMeta)
-            // meta.json goes last: if the recording is still incomplete once it is in, the
-            // phone lost or never got something; send what it lacks now.
-            if !delivered, isMeta {
+            // Sends what the phone lacks and is not in flight: the next parts of the window
+            // (this is what keeps a suspended watch app sending, since acknowledgements wake
+            // it and finished transfers do not), or, once meta.json is in, what the phone lost
+            // or never got.
+            if !delivered {
                 let folder = RecordingStore.root.appendingPathComponent(sessionId, isDirectory: true)
                 if FileManager.default.fileExists(atPath: folder.path) { send(folder: folder) }
             }
@@ -651,8 +1131,10 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
             }
             log.add("Removed from watch: iPhone holds all \(local.count) files", sessionId: sessionId)
             setPhoneHolds(nil, sessionId: sessionId)
-            progress.withLock { $0[sessionId] = nil }
+            updateProgress { $0[sessionId] = nil }
             handedOver.withLock { $0[sessionId] = nil }
+            updateRetries { $0[sessionId] = nil }
+            submitted.withLock { $0[sessionId] = nil }
             // Copies re-queued after a stall have nothing left to send.
             for transfer in WCSession.default.outstandingFileTransfers
             where transfer.file.metadata?[Key.sessionId] as? String == sessionId {
@@ -669,8 +1151,18 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
 
     #if os(iOS)
         /// Stores the file before returning (WatchConnectivity deletes it afterwards), then
-        /// acknowledges it. Nothing is acknowledged unless it is safely on disk.
+        /// acknowledges it. Nothing is acknowledged unless it is safely on disk. Runs with
+        /// background time (`BackgroundTime`): the phone may have been launched in the
+        /// background to receive it. Storing the file is a move and always happens; joining a
+        /// large file starts only while the time is held and stops if it runs out
+        /// (`joinCompleteFiles`).
         nonisolated func session(_ session: WCSession, didReceive file: WCSessionFile) {
+            BackgroundTime.run("Storing a recording from Apple Watch") { time in
+                receive(file, session: session, time: time)
+            }
+        }
+
+        private func receive(_ file: WCSessionFile, session: WCSession, time: BackgroundTime) {
             guard let sessionId = (file.metadata?[Key.sessionId] as? String)?.lowercased(),
                 let name = file.metadata?[Key.file] as? String,
                 UUID(uuidString: sessionId) != nil,
@@ -741,36 +1233,94 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
             }
             // Joins every file whose parts are all here: the one just completed, or one whose
             // join was cut short (the app stopped) and that no further part would trigger.
+            joinCompleteFiles(in: folder, sessionId: sessionId) { time.hasTime }
+            acknowledge(folder: folder, sessionId: sessionId, file: name, session: session)
+        }
+
+        /// Joins every file of the recording in `folder` whose parts are all held, and puts it
+        /// in place. Returns the files joined. The caller holds `storageLock`.
+        ///
+        /// A join starts only while `hasTime` (background time is held) and stops between
+        /// parts when it no longer is: its staged copy is removed and its parts stay, to be
+        /// joined at the next file, the next activation, or when the app comes to the
+        /// foreground (`finishInterruptedJoins`). Placing a joined file is one rename, and
+        /// the acknowledgement lists only what is in place, so running out of time never
+        /// leaves a half-placed file or acknowledges one.
+        @discardableResult
+        func joinCompleteFiles(in folder: URL, sessionId: String, hasTime: () -> Bool) -> [String] {
+            var done: [String] = []
             for ready in TransferParts.complete(in: folder) {
+                guard hasTime() else {
+                    log.add("Left \(ready.file) to join later: no background time", sessionId: sessionId)
+                    continue
+                }
                 var joined: URL?
                 do {
-                    joined = try TransferParts.join(ready, in: folder, stagingPrefix: RecordingStore.stagingPrefix)
+                    joined = try TransferParts.join(
+                        ready, in: folder, stagingPrefix: RecordingStore.stagingPrefix, shouldContinue: hasTime)
                     if let joined {
                         try place(joined, at: folder.appendingPathComponent(ready.file), name: ready.file, sessionId: sessionId)
                         log.add("Joined \(ready.file) from \(ready.count) parts", sessionId: sessionId)
+                        done.append(ready.file)
                     }
+                } catch TransferParts.PartError.interrupted {
+                    // The parts are fine; joined again later.
+                    log.add("Stopped joining \(ready.file): background time ran out", sessionId: sessionId)
+                    continue
                 } catch {
-                    if let joined { try? fm.removeItem(at: joined) }
+                    if let joined { try? FileManager.default.removeItem(at: joined) }
                     log.add("Could not join \(ready.file); its parts go again: \(error)", sessionId: sessionId)
                 }
-                // Either way the parts go: kept, they would tell the watch not to send them.
+                // Joined, or unusable: the parts go. Kept, they would tell the watch not to
+                // send them.
                 TransferParts.removeParts(file: ready.file, in: folder)
             }
-            // What the phone holds now, so a file it lost since an earlier acknowledgement
-            // keeps the watch's copy, and the parts it has of files still arriving.
+            return done
+        }
+
+        /// Tells the watch what the phone holds of the recording in `folder` now (after
+        /// storing `file`): every recording file with its size, so a file it lost since an
+        /// earlier acknowledgement keeps the watch's copy, and the parts of files still
+        /// arriving. The caller holds `storageLock`, so the list is what is stored.
+        private func acknowledge(folder: URL, sessionId: String, file: String, session: WCSession) {
             guard let stored = Self.recordingFiles(in: folder) else {
-                log.add("Could not list the recording after storing \(name); not confirmed", sessionId: sessionId)
+                log.add("Could not list the recording after storing \(file); not confirmed", sessionId: sessionId)
                 return
             }
             let parts = TransferParts.held(in: folder)
             session.transferUserInfo([
-                Key.stored: true, Key.sessionId: sessionId, Key.file: name, Key.files: stored, Key.parts: parts,
+                Key.stored: true, Key.sessionId: sessionId, Key.file: file, Key.files: stored, Key.parts: parts,
             ])
             log.add(
                 "Confirmed to watch: \(TransferLog.describe(stored))\(TransferLog.describe(parts: parts))",
                 sessionId: sessionId)
             DispatchQueue.main.async {
                 NotificationCenter.default.post(name: Self.didReceiveFile, object: nil)
+            }
+        }
+
+        /// Finishes joins cut short (the app stopped, or its background time ran out) and tells
+        /// the watch, which otherwise waits for its next send. Runs at activation, before
+        /// WatchConnectivity delivers anything new, and when the app comes to the foreground.
+        func finishInterruptedJoins() {
+            let session = WCSession.default
+            guard WCSession.isSupported(), session.activationState == .activated else { return }
+            let fm = FileManager.default
+            let root = RecordingStore.recordingsRoot
+            let folders = (try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? []
+            for folder in folders {
+                let parts = folder.appendingPathComponent(TransferParts.folderName)
+                guard fm.fileExists(atPath: parts.path), !TransferParts.complete(in: folder).isEmpty else { continue }
+                let sessionId = folder.lastPathComponent
+                guard UUID(uuidString: sessionId) != nil, !isActive(sessionId) else { continue }
+                BackgroundTime.run("Joining a recording from Apple Watch") { time in
+                    Self.storageLock.withLock {
+                        let joined = joinCompleteFiles(in: folder, sessionId: sessionId) { time.hasTime }
+                        if let last = joined.last {
+                            acknowledge(folder: folder, sessionId: sessionId, file: last, session: session)
+                        }
+                    }
+                }
             }
         }
 
@@ -937,6 +1487,7 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
         _ session: WCSession, activationDidCompleteWith activationState: WCSessionActivationState,
         error: (any Error)?
     ) {
+        activationStartedAt.withLock { $0 = nil }
         if let error {
             log.add("Connection to the other device failed: \(error.localizedDescription)")
         }
@@ -946,8 +1497,11 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
         // (whose push returned early) goes out now, and the receiver keeps the newer.
         receiveSettings(session.receivedApplicationContext, alwaysPush: true)
         #if os(watchOS)
+            resumeRetries()
             // Transfers left stuck since an earlier launch go again.
             sendAllPending(requeue: .stuck)
+        #else
+            finishInterruptedJoins()
         #endif
     }
 }

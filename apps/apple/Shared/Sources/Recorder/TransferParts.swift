@@ -14,8 +14,10 @@ import Foundation
 ///   there (checked after every file that arrives, so a join cut short by the app stopping
 ///   is done later), they are joined into a staged file, checked against the total size,
 ///   and put in place like a file sent whole; then the parts are removed.
-/// - The watch keeps at most `window` parts queued per recording and removes each slice once
-///   its transfer finishes, so a large file needs little extra space on the watch.
+/// - The watch keeps at most a window of parts queued per recording
+///   (`TransferPolicy.window`, bounded by its free space), removes each slice once its
+///   transfer finishes, and removes slices no transfer uses any more (`staleSlices`), so a
+///   large file needs little extra space on the watch.
 ///
 /// `.parts` is never a recording file (`RecordingStore.isRecordingFileName`), so listing,
 /// exporting, the phone's acknowledgements and the watch's delete decision ignore it. The
@@ -28,8 +30,6 @@ enum TransferParts {
     /// The largest part size the phone accepts, so a malformed transfer can't ask it to
     /// hold or join something absurd.
     static let maximumPartSize: Int64 = 16 << 20
-    /// The most parts of a recording queued at once on the watch.
-    static let window = 10
 
     struct Part: Hashable, Sendable {
         var file: String
@@ -77,10 +77,12 @@ enum TransferParts {
         return Part(file: file, index: index, count: count, total: total, partSize: partSize)
     }
 
-    enum PartError: Error, CustomStringConvertible {
+    enum PartError: Error, Equatable, CustomStringConvertible {
         case invalidMetadata
         case wrongSize(expected: Int64, actual: Int64?)
         case joinedWrongSize(expected: Int64, actual: Int64)
+        /// The join was stopped (background time ran out); the parts are fine.
+        case interrupted
 
         var description: String {
             switch self {
@@ -89,6 +91,7 @@ enum TransferParts {
                 "the part is \(actual.map(String.init) ?? "?") bytes, expected \(expected)"
             case .joinedWrongSize(let expected, let actual):
                 "the joined file is \(actual) bytes, expected \(expected)"
+            case .interrupted: "the join was stopped"
             }
         }
     }
@@ -118,6 +121,16 @@ enum TransferParts {
         }
         try data.write(to: url, options: .atomic)
         return url
+    }
+
+    /// The slices in `recording` that no outstanding transfer uses (`inUse`, their file
+    /// names): left by a transfer lost when the watch restarted, or cancelled before it
+    /// finished. Removed before queuing; a part that has to go again is sliced again.
+    static func staleSlices(in recording: URL, inUse: Set<String>) -> [URL] {
+        let folder = recording.appendingPathComponent(folderName, isDirectory: true)
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []
+        return names.filter { !inUse.contains($0) }.sorted().map { folder.appendingPathComponent($0) }
+            .filter { (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true }
     }
 
     // MARK: Phone
@@ -207,7 +220,12 @@ enum TransferParts {
     /// Joins the parts of `part`'s file and layout into a staged file in the recording folder
     /// once all of them are held, checking every part's size and the total; nil while any is
     /// missing. The caller puts the staged file in place and removes the parts.
-    static func join(_ part: Part, in recording: URL, stagingPrefix: String) throws -> URL? {
+    /// `shouldContinue` is asked before each part and once more after the last is written;
+    /// when it says no, the join stops with `PartError.interrupted`, removing the staged file
+    /// and leaving the parts as they are.
+    static func join(
+        _ part: Part, in recording: URL, stagingPrefix: String, shouldContinue: () -> Bool = { true }
+    ) throws -> URL? {
         guard isComplete(part, in: recording) else { return nil }
         let fm = FileManager.default
         let folder = receivedFolder(part, in: recording)
@@ -219,6 +237,7 @@ enum TransferParts {
             let output = try FileHandle(forWritingTo: staged)
             defer { try? output.close() }
             for each in plan(file: part.file, size: part.total, partSize: part.partSize) {
+                guard shouldContinue() else { throw PartError.interrupted }
                 let data = try Data(contentsOf: folder.appendingPathComponent(String(each.index)))
                 guard Int64(data.count) == each.length else {
                     throw PartError.wrongSize(expected: each.length, actual: Int64(data.count))
@@ -228,6 +247,9 @@ enum TransferParts {
             try output.synchronize()
             let joined = size(of: staged) ?? -1
             guard joined == part.total else { throw PartError.joinedWrongSize(expected: part.total, actual: joined) }
+            // Once more before the caller places it: time may have run out during the last
+            // part's write.
+            guard shouldContinue() else { throw PartError.interrupted }
         } catch {
             try? fm.removeItem(at: staged)
             throw error
