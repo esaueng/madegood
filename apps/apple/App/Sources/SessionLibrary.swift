@@ -150,7 +150,15 @@ final class SessionLibrary {
         return updated
     }
 
+    /// Deletes a recording, unless its files changed since `item` was read (a file arrived
+    /// from the watch): the user saw something else. The watch deletes its copy once the
+    /// phone holds all of it, so deleting a "Receiving…" row that just completed would lose
+    /// the recording on both devices.
     func delete(_ item: Item) throws {
+        guard RawSessionReader.revision(of: item.entry.folder) == item.entry.revision else {
+            reload()
+            throw EditError.recordingChanged
+        }
         let sessionId =
             (try? RawSessionReader.readMeta(folder: item.entry.folder))?.sessionId
             ?? UUID(uuidString: item.entry.folder.lastPathComponent)

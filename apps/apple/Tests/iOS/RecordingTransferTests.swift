@@ -1,3 +1,4 @@
+import WaterKit
 import XCTest
 
 @testable import MadeGood
@@ -94,6 +95,22 @@ final class RecordingTransferTests: XCTestCase {
         try Data(count: 9).write(to: folder.appendingPathComponent(RecordingStore.trackFileName))
         XCTAssertEqual(RecordingTransfer.recordingFiles(in: folder), ["meta.json": 3])
         XCTAssertNil(RecordingTransfer.recordingFiles(in: root.appendingPathComponent("missing")))
+    }
+
+    /// Re-check finding 2: the last file of a "Receiving…" recording arrives (and the phone
+    /// acknowledges a complete list) just before the user deletes the still-visible row.
+    /// The phone must not delete what the user did not see, or the watch deletes its copy too.
+    @MainActor
+    func testThePhoneDoesNotDeleteARecordingThatChangedSinceItWasShown() throws {
+        let folder = root.appendingPathComponent(UUID().uuidString.lowercased(), isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try Data(count: 10).write(to: folder.appendingPathComponent("gps.ndjson.gz"))
+        let shown = SessionLibrary.Item(
+            entry: RecordingStore.Entry(folder: folder, meta: nil, revision: RawSessionReader.revision(of: folder)))
+        try Data("{}".utf8).write(to: folder.appendingPathComponent("meta.json"))
+
+        XCTAssertThrowsError(try SessionLibrary().delete(shown))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: folder.appendingPathComponent("meta.json").path))
     }
 
     func testAnAcknowledgementWithoutAListNeverDeletes() {

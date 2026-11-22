@@ -304,8 +304,14 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
             do {
                 try fm.createDirectory(at: folder, withIntermediateDirectories: true)
                 try fm.moveItem(at: file.fileURL, to: staged)
-                if fm.fileExists(atPath: destination.path) {
-                    _ = try fm.replaceItemAt(destination, withItemAt: staged)
+                if let existing = Self.storedSize(at: destination) {
+                    // A re-send of a file already stored: a finished recording's files never
+                    // change, so the stored copy stays and is not put at risk by replacing.
+                    if existing == Self.storedSize(at: staged) {
+                        try? fm.removeItem(at: staged)
+                    } else {
+                        try Self.replace(destination, with: staged)
+                    }
                 } else {
                     try fm.moveItem(at: staged, to: destination)
                 }
@@ -325,6 +331,27 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
             ])
             DispatchQueue.main.async {
                 NotificationCenter.default.post(name: Self.didReceiveFile, object: nil)
+            }
+        }
+
+        private static func storedSize(at url: URL) -> Int64? {
+            ((try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? NSNumber)?.int64Value
+        }
+
+        /// Replaces `destination` with `staged`. If the replace fails after moving the stored
+        /// copy aside, it is moved back, so a file the phone acknowledged stays in place
+        /// (`NSFileManager.h` names the key only as a string).
+        static func replace(_ destination: URL, with staged: URL) throws {
+            let fm = FileManager.default
+            do {
+                _ = try fm.replaceItemAt(destination, withItemAt: staged)
+            } catch {
+                if !fm.fileExists(atPath: destination.path),
+                    let original = (error as NSError).userInfo["NSFileOriginalItemLocationKey"] as? URL
+                {
+                    try? fm.moveItem(at: original, to: destination)
+                }
+                throw error
             }
         }
 
