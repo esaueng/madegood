@@ -83,9 +83,8 @@ import Testing
             counts[Int(fix.t)] = (liveCount(), detector.snapshot.strokeCount)
         }
         for sample in motion { detector.ingest(sample) }
-        if var closing = session.motion.last {
-            closing.t += detector.config.binInterval
-            detector.ingest(closing)
+        if let last = session.motion.last {
+            detector.ingest(StrokeAnalysis.closingSample(after: last, binInterval: detector.config.binInterval))
         }
 
         #expect(engine.autoPausedIntervals == [60...99, 142...Double.infinity])
@@ -101,6 +100,19 @@ import Testing
         // Before the car leg is confirmed its strokes count; once it is, they are taken back.
         #expect(driving.live > parked.live)
         #expect(abs(parked.live - liveCount()) <= 2)
+    }
+
+    /// Review of #173: one bin width added to 8.0 s rounds into the same bin, so the last
+    /// bin was never closed. The closing sample now sits in the middle of the next bin.
+    @Test func closingSampleLandsInTheNextBin() {
+        let bin = StrokeDetector.Config().binInterval
+        for t in [8.0, 0.0, 0.04, 12.36, 3_600.0, 7_199.98] {
+            let last = MotionSample(
+                t: t, userAcceleration: .zero, gravity: .zero, rotationRate: .zero,
+                attitude: Quaternion(x: 0, y: 0, z: 0, w: 1))
+            let closing = StrokeAnalysis.closingSample(after: last, binInterval: bin)
+            #expect(Int((closing.t / bin).rounded(.down)) == Int((t / bin).rounded(.down)) + 1, "at \(t) s")
+        }
     }
 
     @Test func liveCountLeavesOutManualPausesAndIntervalEnds() {

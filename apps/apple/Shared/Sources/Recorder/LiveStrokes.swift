@@ -76,9 +76,9 @@ final class LiveStrokes: Sendable {
     /// stroke confirmed in it counts.
     func finish() {
         state.withLock { state in
-            guard var closing = state.lastSample else { return }
-            closing.t += state.detector.config.binInterval
-            state.detector.ingest(closing)
+            guard let last = state.lastSample else { return }
+            state.detector.ingest(
+                StrokeAnalysis.closingSample(after: last, binInterval: state.detector.config.binInterval))
             state.lastSample = nil
         }
     }

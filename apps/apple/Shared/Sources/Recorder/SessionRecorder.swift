@@ -662,6 +662,9 @@ final class SessionRecorder {
         serviceSession = nil
 
         ingest(.event(SessionEvent(t: endedAt.timeIntervalSince1970 - startUnix, type: .stop)))
+        // Samples already in flight at `motion.stop()` reach the detector before its last bin
+        // closes, as they reach the saved recording session detail reads.
+        await motion?.drain()
         liveStrokes?.finish()
         updateStrokes()
         writers[.events]?.append(RawFormat.EventLine(ts: endedAt.timeIntervalSince1970, type: .stop))
