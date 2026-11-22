@@ -605,11 +605,12 @@ private struct PhoneCountdownView: View {
                     .font(.headline)
                     .foregroundStyle(.secondary)
                     ZStack {
-                        Circle().stroke(Color.accentColor.opacity(0.18), lineWidth: 14)
+                        // In the time color, as on every screen; coral for the final ten seconds.
+                        Circle().stroke(Theme.Metric.time.opacity(0.18), lineWidth: 14)
                         Circle()
                             .trim(from: 0, to: min(1, max(0, fraction)))
                             .stroke(
-                                isFinal ? Theme.coral : Color.accentColor,
+                                isFinal ? Theme.coral : Theme.Metric.time,
                                 style: StrokeStyle(lineWidth: 14, lineCap: .round)
                             )
                             .rotationEffect(.degrees(-90))
@@ -676,6 +677,7 @@ private struct PhoneCountdownView: View {
             }
             .scrollBounceBehavior(.basedOnSize)
             .defaultScrollAnchor(.center)
+            .background(Color(.systemGroupedBackground))
         }
         .navigationTitle("Countdown")
         .navigationBarTitleDisplayMode(.inline)

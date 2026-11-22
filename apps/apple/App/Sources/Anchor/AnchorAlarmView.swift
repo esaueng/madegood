@@ -36,8 +36,10 @@ struct AnchorAlarmView: View {
                 if let watch = anchorWatch.watch {
                     let reading = position.map { watch.reading(at: $0.point) }
                     Section {
-                        LabeledContent("Distance to anchor", value: length(reading?.distance, unit: unit))
-                            .accessibilityIdentifier("anchor.distance")
+                        AnchorSwingGauge(
+                            distance: reading?.distance, radius: watch.radius,
+                            distanceText: length(reading?.distance, unit: unit),
+                            radiusText: length(watch.radius, unit: unit))
                         LabeledContent("Bearing to anchor", value: bearing(reading?.bearing))
                             .accessibilityIdentifier("anchor.bearing")
                         LabeledContent("Swing radius", value: length(watch.radius, unit: unit))
@@ -204,6 +206,46 @@ struct AnchorAlarmView: View {
     private func bearing(_ degrees: Double?) -> String {
         guard let degrees else { return "–" }
         return "\(LiveDisplay.course(degrees)) true"
+    }
+}
+
+/// The distance to the anchor, large, over how much of the swing circle it uses. The bar
+/// turns coral close to the edge and red outside it. It only shows the reading; the drift
+/// alarm decides on its own, with its GPS accuracy margin.
+private struct AnchorSwingGauge: View {
+    let distance: Double?
+    let radius: Double
+    let distanceText: String
+    let radiusText: String
+
+    var body: some View {
+        let share = distance.map { radius > 0 ? $0 / radius : 0 }
+        let tint: Color =
+            switch share {
+            case let share? where share > 1: .red
+            case let share? where share >= 0.8: Theme.coral
+            default: Theme.Metric.distance
+            }
+        VStack(alignment: .leading, spacing: 10) {
+            MetricValue(title: "Distance to anchor", value: distanceText, color: Theme.Metric.distance)
+            GeometryReader { geometry in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color.secondary.opacity(0.2))
+                    Capsule()
+                        .fill(tint)
+                        .frame(width: geometry.size.width * min(1, max(0, share ?? 0)))
+                }
+            }
+            .frame(height: 8)
+            .accessibilityHidden(true)
+            Text("of \(radiusText) swing radius")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 4)
+        .accessibilityElement(children: .combine)
+        .accessibilityValue(share.map { "\(Int(($0 * 100).rounded())) percent of the swing radius" } ?? "")
+        .accessibilityIdentifier("anchor.distance")
     }
 }
 
