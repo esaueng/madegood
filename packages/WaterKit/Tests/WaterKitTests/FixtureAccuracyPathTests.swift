@@ -38,6 +38,12 @@ import Testing
         // counts none of it, so the labeled count must not pass.
         let (session, strokes) = Self.session { t in t < 1 ? 0.2 : min(12, 1 + t) }
         #expect(StrokeAnalysis.detect(session: session).strokes.count >= strokes - 4)
+        // Selection succeeds and session detail counts no strokes, so the failures below
+        // come from scoring the gated strokes, not from the selection throwing.
+        let selection = try #require(try? SessionSelection(session: session))
+        let detail = StrokeAnalysis(session: session, selection: selection)
+        #expect(detail.strokeCount == 0)
+        #expect(detail.averageStrokeRate == nil)
         withKnownIssue("session detail leaves out strokes in a vehicle leg") {
             try FixtureAccuracyTests.check(
                 .init(strokes: strokes, strokeRateSPM: 60), session: session, context: "synthetic drive")
