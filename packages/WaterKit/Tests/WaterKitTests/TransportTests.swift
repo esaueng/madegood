@@ -175,3 +175,31 @@ private func approx(_ a: Double?, _ b: Double, tolerance: Double = 1e-6) -> Bool
         }
     }
 }
+
+/// Regression tests from the PR #168 review.
+@Suite struct TransportReviewTests {
+    /// Finding 1: the paddler lands, drives off, and taps Pause six seconds after the car
+    /// passed the limit, before the leg is confirmed. The driving before the tap must not
+    /// stay in distance, moving time or splits.
+    @Test func aManualPauseBeforeConfirmationStillRollsBackTheDrive() {
+        let leg = TransportLeg { t in t < 60 ? 2 : (t < 65 ? 0.2 : min(12, 1 + (t - 65))) }
+        // Above 8 m/s from t = 73; paused at 78.5; confirmed at 83.
+        let fixes = leg.fixes(0...120)
+        let track = Track(
+            sessionId: UUID(), sport: .kayak, startedAt: Date(timeIntervalSince1970: 0), gps: fixes,
+            events: [SessionEvent(t: 78.5, type: .pause)])
+        let replay = SessionReplay(track: track)
+        let m = replay.metrics
+        #expect(m.pauseState == .manuallyPaused)
+        #expect(m.movingTime == 64)
+        let paddled: Double = 2 * 60 + 0.2 * 4
+        #expect(abs(m.distance - paddled) < 1e-6)
+        #expect(abs((m.maxSpeed2s ?? 0) - 2) < 1e-9)
+        #expect(replay.events.map(\.type) == [.pause, .pause])
+        #expect(replay.events.first?.t == 64)
+        #expect(replay.events.first?.data == ["auto": true, "transport": true])
+        #expect(replay.transportIntervals == [64...120])
+        let splitDistance = replay.paddlingSplits.reduce(0.0) { $0 + $1.distance }
+        #expect(abs(splitDistance - paddled) < 1e-6)
+    }
+}

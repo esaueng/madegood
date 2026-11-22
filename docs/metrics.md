@@ -129,7 +129,9 @@ stays auto-paused until the normal resume rule applies; with it off, it resumes 
 The engine records the pause, and with auto-pause off the resume, as `pause` and `resume`
 events with `{"auto": true, "transport": true}`. An auto-resume at or after the dated-back
 start is removed instead of adding a pause. A manual resume in a vehicle does not end the
-leg. During a manual pause a vehicle leg still leaves the max speeds and heart rate. Sailing,
+leg. A manual pause does not stop the check: a leg confirmed while paused still leaves the
+max speeds and heart rate, and any distance and moving time counted since the dated-back
+start (a pause tapped in the vehicle before the leg was confirmed). Sailing,
 windsurfing and motorboating have no limit. A paddler who really holds 8 m/s for 10 s (a
 downwind foil, for example) loses the run back to their last stop.
 

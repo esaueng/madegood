@@ -514,23 +514,22 @@ public struct SessionEngine: LiveAnalyzer {
                 underWayTime: lapStart.underWayTime, best2s: nil, best10s: nil, heartRateSum: 0, heartRateCount: 0,
                 heartRateMax: nil)
         let since = max(checkpoint.since, lapStart.since)
-        switch mode {
-        case .moving:
-            if lapStart.since > checkpoint.since {
-                movingTime = lapStart.movingTime
-                distance = lapStart.distance
-                underWayTime = lapStart.underWayTime
-            } else {
-                movingTime = checkpoint.movingTime
-                distance = checkpoint.distance
-                underWayTime = checkpoint.underWayTime
-            }
-            while let last = movementIntervals?.last, last.elapsedRange.upperBound > since {
-                movementIntervals?.removeLast()
-            }
-            mode = .autoPaused
+        let target =
+            lapStart.since > checkpoint.since
+            ? (lapStart.movingTime, lapStart.distance, lapStart.underWayTime)
+            : (checkpoint.movingTime, checkpoint.distance, checkpoint.underWayTime)
+        // Whatever the mode now: a manual pause tapped in the vehicle before the leg was
+        // confirmed must not keep the driving counted before it.
+        let countedSince = movingTime > target.0 || distance > target.1
+        movingTime = target.0
+        distance = target.1
+        underWayTime = target.2
+        while let last = movementIntervals?.last, last.elapsedRange.upperBound > since {
+            movementIntervals?.removeLast()
+        }
+        if countedSince || mode == .moving {
             // An auto-resume at or after the checkpoint was the vehicle setting off: the
-            // earlier pause simply continues.
+            // earlier pause simply continues. Otherwise the session pauses there.
             if let last = generatedEvents.last, last.type == .resume, last.data?["auto"] == .bool(true),
                 last.t >= since
             {
@@ -539,9 +538,8 @@ public struct SessionEngine: LiveAnalyzer {
                 generatedEvents.append(
                     SessionEvent(t: since, type: .pause, data: ["auto": true, "transport": true]))
             }
-        case .autoPaused, .manuallyPaused:
-            break
         }
+        if mode == .moving { mode = .autoPaused }
         slow = nil
         fast = nil
         // Max speeds and heart rate leave out the whole leg, including the part before
