@@ -45,7 +45,7 @@ final class BackgroundTime: Sendable {
     /// returns (or `longestHold`); `work` reads `hasTime` to decide what it may start.
     static func run(
         _ reason: String, request: @escaping Request = system, answerTimeout: TimeInterval = answerTimeout,
-        _ work: (BackgroundTime) -> Void
+        longestHold: TimeInterval = longestHold, _ work: (BackgroundTime) -> Void
     ) {
         let time = BackgroundTime()
         let answered = DispatchSemaphore(value: 0)
@@ -61,8 +61,11 @@ final class BackgroundTime: Sendable {
                 }
                 time.state.withLock { if $0 == .pending { $0 = .granted } }
                 answered.signal()
-                // The activity lasts while this block runs.
-                _ = finished.wait(timeout: .now() + longestHold)
+                // The activity lasts while this block runs. Let go after `longestHold` even if
+                // the work goes on: from then on it has no time.
+                if finished.wait(timeout: .now() + longestHold) == .timedOut {
+                    time.state.withLock { $0 = .expired }
+                }
             }
         }
         _ = answered.wait(timeout: .now() + answerTimeout)

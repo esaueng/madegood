@@ -220,8 +220,9 @@ enum TransferParts {
     /// Joins the parts of `part`'s file and layout into a staged file in the recording folder
     /// once all of them are held, checking every part's size and the total; nil while any is
     /// missing. The caller puts the staged file in place and removes the parts.
-    /// `shouldContinue` is asked before each part; when it says no, the join stops with
-    /// `PartError.interrupted`, removing the staged file and leaving the parts as they are.
+    /// `shouldContinue` is asked before each part and once more after the last is written;
+    /// when it says no, the join stops with `PartError.interrupted`, removing the staged file
+    /// and leaving the parts as they are.
     static func join(
         _ part: Part, in recording: URL, stagingPrefix: String, shouldContinue: () -> Bool = { true }
     ) throws -> URL? {
@@ -246,6 +247,9 @@ enum TransferParts {
             try output.synchronize()
             let joined = size(of: staged) ?? -1
             guard joined == part.total else { throw PartError.joinedWrongSize(expected: part.total, actual: joined) }
+            // Once more before the caller places it: time may have run out during the last
+            // part's write.
+            guard shouldContinue() else { throw PartError.interrupted }
         } catch {
             try? fm.removeItem(at: staged)
             throw error

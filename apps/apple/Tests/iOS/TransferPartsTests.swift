@@ -326,6 +326,19 @@ final class TransferPartsTests: XCTestCase {
         let left = try FileManager.default.contentsOfDirectory(atPath: phone.path)
         XCTAssertFalse(left.contains { $0.hasPrefix(".incoming-") })
         XCTAssertEqual(TransferParts.complete(in: phone).count, 1)
+
+        // Re-check of #170, finding 2: time running out during the last part's write. Every
+        // part is written, but the joined file is not handed over for placing.
+        asked = 0
+        XCTAssertThrowsError(
+            try TransferParts.join(motion[0], in: phone, stagingPrefix: ".incoming-") {
+                asked += 1
+                return asked <= motion.count
+            }
+        ) { XCTAssertEqual($0 as? TransferParts.PartError, .interrupted) }
+        XCTAssertEqual(asked, motion.count + 1)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: phone.path), [".parts"])
+        XCTAssertEqual(TransferParts.complete(in: phone).count, 1)
     }
 
     /// The phone held every part but had no time to join them, so its acknowledgement

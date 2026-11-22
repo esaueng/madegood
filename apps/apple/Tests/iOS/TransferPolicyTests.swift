@@ -232,6 +232,19 @@ final class TransferPolicyTests: XCTestCase {
         wait(for: [activity.returned], timeout: 2)
     }
 
+    /// Re-check of #170, finding 2: when the activity let go after its longest hold, the work
+    /// still saw the time as held.
+    func testTheActivityLettingGoEndsTheTime() {
+        var states: [BackgroundTime.State] = []
+        BackgroundTime.run("test", request: { _, block in block(false) }, longestHold: 0.05) { time in
+            states.append(time.current)
+            let deadline = Date().addingTimeInterval(2)
+            while time.hasTime, Date() < deadline { usleep(10_000) }
+            states.append(time.current)
+        }
+        XCTAssertEqual(states, [.granted, .expired])
+    }
+
     func testDeniedOrUnansweredTimeIsNotHeld() {
         var denied: Bool?
         BackgroundTime.run("test", request: { _, block in block(true) }) { denied = !$0.hasTime }
