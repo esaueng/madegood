@@ -118,26 +118,32 @@ sports therefore have a speed limit:
 | A vehicle leg is confirmed when every fix stays above | 8 m/s (28.8 km/h, 15.6 kn) for 10 s |
 | The hold starts again after a GPS re-anchor or a gap between fixes longer than | 5 s |
 | It is dated back to, and ends at, a fix slower than | 0.8 m/s |
+| It is never dated back further before the hold started than | 60 s |
 
 No paddle craft holds 8 m/s for 10 s: the K1 200 m world record averages about 6 m/s and
-downwind surfski runs peak around 7–8 m/s for a few seconds on a wave. A vehicle leg starts
-from a standstill (the paddler has to get out of the boat), so a confirmed leg is dated back
-to the last fix below 0.8 m/s, not to where it crossed 8 m/s: the slow start of the drive is
-left out too. A GPS re-anchor (a tunnel) does not move that fix, so the driving before the gap is left
-out too. It is never dated back past the start of the current lap. Moving time,
-distance, the max speeds and heart-rate average and max return to their values at that fix,
-and nothing counts until a fix is below 0.8 m/s again. With auto-pause on, the session then
-stays auto-paused until the normal resume rule applies; with it off, it resumes at that fix.
+downwind surfski runs peak around 7–8 m/s for a few seconds on a wave. A vehicle leg
+starts from a standstill (the paddler has to get out of the boat), so a confirmed leg is
+dated back to the last fix below 0.8 m/s, not to where it crossed 8 m/s: the slow start
+of the drive is left out too, unless that fix is more than 60 s before the hold started
+(in the real session the car took 33 s); then the leg starts 60 s before the hold. A GPS
+re-anchor (a tunnel) does not move that fix, so the driving before the gap is left out
+too. It is never dated back past the start of the current lap. Moving time, distance, the
+max speeds and heart-rate average and max return to their values at that fix, and nothing
+counts until a fix is below 0.8 m/s again. With auto-pause on, the session then stays
+auto-paused until the normal resume rule applies; with it off, it resumes at that fix.
 The engine records the pause, and with auto-pause off the resume, as `pause` and `resume`
-events with `{"auto": true, "transport": true}`. An auto-resume at or after the dated-back
-start is removed instead of adding a pause. A manual resume ends the leg, like any pause, so
-the events always say what is counted (heart-rate zones and strokes read them); a vehicle
-still going is confirmed again from the first fix after the resume, and an auto pause is
-recorded there. A manual pause does not stop the check: a leg confirmed while paused still leaves the
-max speeds and heart rate, and any distance and moving time counted since the dated-back
-start (a pause tapped in the vehicle before the leg was confirmed). Sailing,
-windsurfing and motorboating have no limit. A paddler who really holds 8 m/s for 10 s (a
-downwind foil, for example) loses the run back to their last stop.
+events with `{"auto": true, "transport": true}`. An auto-resume at or after the
+dated-back start is removed instead of adding a pause. A manual resume ends the leg, like
+any pause, so the events always say what is counted (heart-rate zones and strokes read
+them); a vehicle still going is confirmed again from the first fix after the resume, and
+an auto pause is recorded there. A manual pause does not stop the check: a leg confirmed
+while paused still leaves the max speeds and heart rate, and any distance and moving time
+counted since the dated-back start (a pause tapped in the vehicle before the leg was
+confirmed). Sailing, windsurfing and motorboating have no limit. A paddler who really
+holds 8 m/s for 10 s (a downwind foil, or a fast current over ground) loses at most the
+60 s before the run, the run itself and everything until they next drop below 0.8 m/s. A
+slow drive that stays below 8 m/s for more than 60 s after its last stop keeps that slow
+part, with a max speed under 8 m/s.
 
 Hold timers only run on observed fixes. After a re-anchor (a long GPS gap or recovery
 from rejected fixes) they start again, so an unobserved gap can neither pause nor

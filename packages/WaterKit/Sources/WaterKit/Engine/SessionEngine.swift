@@ -198,6 +198,8 @@ public struct SessionEngine: LiveAnalyzer {
     /// Transport: the first and latest fix of the current run above the speed limit.
     private var transportRunStart: Double?
     private var transportRunLast: Double?
+    /// Transport: a checkpoint at every fix for the last `lookback` + hold, to bound the rollback.
+    private var transportHistory: [Checkpoint] = []
     /// Set while in a vehicle: where the leg was dated back to.
     private var transportSince: Double?
     private var closedTransportIntervals: [ClosedRange<Double>] = []
@@ -242,6 +244,7 @@ public struct SessionEngine: LiveAnalyzer {
         transportSince = nil
         transportRunStart = nil
         transportCheckpoint = nil
+        transportHistory.removeAll(keepingCapacity: true)
         filter = GPSFilter(config: filter.config)
         lastAccepted = nil
         course = nil
@@ -493,8 +496,14 @@ public struct SessionEngine: LiveAnalyzer {
         guard let config = profile.transport else { return false }
         // An anchor does not move the checkpoint: a vehicle leg can run through a GPS gap
         // (a tunnel), and the rollback must still reach the stop before it.
+        let now = checkpointNow
         if transportCheckpoint == nil || (speed.map { $0 < config.stoppedBelow } ?? false) {
-            transportCheckpoint = checkpointNow
+            transportCheckpoint = now
+        }
+        transportHistory.append(now)
+        let keep = fix.t - (config.lookback + config.after + config.maxGap)
+        if let firstKept = transportHistory.firstIndex(where: { $0.since >= keep }), firstKept > 0 {
+            transportHistory.removeFirst(firstKept)
         }
         guard let speed, speed > config.above else {
             transportRunStart = nil
@@ -506,19 +515,26 @@ public struct SessionEngine: LiveAnalyzer {
         transportRunStart = runStart
         transportRunLast = fix.t
         guard fix.t - runStart >= config.after else { return false }
-        startTransport()
+        startTransport(runStart: runStart, lookback: config.lookback)
         return true
     }
 
-    /// Rolls back to the last slow fix (not past the start of the current lap, so closed
-    /// laps keep their totals) and pauses until the vehicle stops.
-    private mutating func startTransport() {
-        let checkpoint =
+    /// Rolls back to the last slow fix, or to `lookback` before the hold when that fix is
+    /// older (and never past the start of the current lap, so closed laps keep their
+    /// totals), and pauses until the vehicle stops.
+    private mutating func startTransport(runStart: Double, lookback: Double) {
+        var checkpoint =
             transportCheckpoint
             ?? Checkpoint(
                 since: lapStart.since, movingTime: lapStart.movingTime, distance: lapStart.distance,
                 underWayTime: lapStart.underWayTime, best2s: nil, best10s: nil, heartRateSum: 0, heartRateCount: 0,
                 heartRateMax: nil)
+        if checkpoint.since < runStart - lookback,
+            let bounded = transportHistory.first(where: { $0.since >= runStart - lookback })
+        {
+            checkpoint = bounded
+        }
+        transportHistory.removeAll(keepingCapacity: true)
         let since = max(checkpoint.since, lapStart.since)
         let target =
             lapStart.since > checkpoint.since

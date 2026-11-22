@@ -4,7 +4,8 @@
 /// every fix stays above `above` for `after` seconds, the watch is in a vehicle (a car,
 /// a trailer, a motorboat tow): the session is paused, dated back to the last fix slower
 /// than `stoppedBelow`, because every vehicle leg starts from a standstill (the paddler
-/// had to get out of the boat). Transport ends at the next fix below `stoppedBelow`.
+/// had to get out of the boat), at most `lookback` before the hold. Transport ends at the
+/// next fix below `stoppedBelow`.
 public enum Transport {
     public struct Config: Sendable, Hashable {
         /// No paddle craft holds this Doppler speed, m/s (28.8 km/h, about 15.6 kn): the K1
@@ -18,6 +19,10 @@ public enum Transport {
         /// Below this speed the boat (or paddler) is stopped or walking, m/s: transport is
         /// dated back to the last such fix, and ends at the next one.
         public var stoppedBelow: Double = 0.8
+        /// …but never dated back more than this before the hold started, s, so a false
+        /// trigger (a paddler who really holds the speed) erases at most this much before
+        /// the run. A vehicle reaches the limit well within it after setting off.
+        public var lookback: Double = 60
 
         public init() {}
     }

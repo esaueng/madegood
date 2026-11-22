@@ -41,8 +41,9 @@ private func approx(_ a: Double?, _ b: Double, tolerance: Double = 1e-6) -> Bool
 /// added the drive to distance.
 @Suite struct TransportTests {
     /// The session's pattern: paddle, land (auto-pause), walk with the boat (one stretch
-    /// fast enough to auto-resume), get into the car, a slow road below the limit, a
-    /// stretch above it, a slower one, then a fast road at 18.5 m/s.
+    /// fast enough to auto-resume), get into the car, a slow road below the limit (30 s;
+    /// the real car took 33 s from its stop to the limit), a stretch above it, a slower
+    /// one, then a fast road at 18.5 m/s.
     static let landingAndDrive = TransportLeg { t in
         switch t {
         case ..<120: 1.9
@@ -52,11 +53,11 @@ private func approx(_ a: Double?, _ b: Double, tolerance: Double = 1e-6) -> Bool
         case ..<210: 0.6
         case ..<213: 0.2
         case ..<220: 1 + (t - 213)
-        case ..<280: 7
-        case ..<285: 7 + 0.4 * (t - 279)
-        case ..<300: 9
-        case ..<310: 6
-        default: min(18.5, 6 + (t - 309))
+        case ..<240: 7
+        case ..<245: 7 + 0.4 * (t - 239)
+        case ..<260: 9
+        case ..<270: 6
+        default: min(18.5, 6 + (t - 269))
         }
     }
 
@@ -266,5 +267,28 @@ private func approx(_ a: Double?, _ b: Double, tolerance: Double = 1e-6) -> Bool
         let zones = HeartRateZones().durations(samples: hr, events: replay.events, spans: [0...260])
         let zoneTime = zones.values.reduce(0, +)
         #expect(abs(zoneTime - m.movingTime) <= 2.5)
+    }
+
+    /// Finding 5: a paddler who really holds 8.5 m/s for 11 s (a downwind foil, a fast
+    /// current) after paddling without a stop since the start loses at most the 60 s
+    /// before the run, not the whole session.
+    @Test func aFalseTriggerErasesAtMostTheLookback() {
+        let leg = TransportLeg { t in
+            switch t {
+            case ..<300: 2
+            case ..<311: 8.5
+            case ..<312: 4
+            case ..<320: 0.5
+            default: 2
+            }
+        }
+        let engine = run(leg.fixes(0...400).map(Sample.gps), profile: .standard(for: .kayak))
+        let m = engine.snapshot
+        #expect(engine.transportIntervals == [240...312])
+        #expect(engine.generatedEvents.map(\.t) == [240, 319])
+        #expect(m.movingTime == 240 + (400 - 319))
+        let paddled: Double = 2 * 240 + 0.5 + 2 * 80
+        #expect(approx(m.distance, paddled))
+        #expect(approx(m.maxSpeed2s, 2))
     }
 }
