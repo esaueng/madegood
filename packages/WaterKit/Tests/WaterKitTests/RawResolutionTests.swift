@@ -41,9 +41,8 @@ import Testing
     @Test func roundingErrorStaysWithinHalfAStepAtRealMagnitudes() {
         var random = SplitMix64(seed: 3)
         let cases: [(step: Double, magnitude: Double)] = [
-            (RawFormat.Resolution.position, 180), (RawFormat.Resolution.acceleration, 160),
-            (RawFormat.Resolution.rotationRate, 35), (RawFormat.Resolution.attitude, 1),
-            (RawFormat.Resolution.speed, 100), (RawFormat.Resolution.gpsTenth, 9_000),
+            (RawFormat.Resolution.acceleration, 160), (RawFormat.Resolution.rotationRate, 35),
+            (RawFormat.Resolution.attitude, 1), (RawFormat.Resolution.heading, 360),
         ]
         for (step, magnitude) in cases {
             var worst: Double = 0
@@ -106,24 +105,30 @@ import Testing
         #expect(data.count <= 200, "\(data.count) bytes")
     }
 
-    @Test func gpsLinesUseTheTrackSteps() throws {
+    /// Review of #169: rounded GPS changed decisions on replay. A 50.004 m/s fix (over the
+    /// 50 m/s limit) read back as 50.00, 0.399 m/s (under auto-pause) as 0.40, and a
+    /// 22.001 m jump (over the jump limit) as 21.994 m. GPS is written as reported.
+    @Test func gpsLinesAreWrittenAsReported() throws {
         let line = RawFormat.GPSLine(
             ts: Self.start + 1.000_123_4, lat: 47.123_456_789_123, lon: -122.987_654_321_987, alt: 12.345_678,
             hacc: 3.888_888_8, vacc: 4.111_111_1, spd: 1.234_567_8, spdacc: 0.299_999_9, crs: 89.999_999,
             crsacc: 5.050_505)
         let text = try Self.text(line)
-        Self.expectShortNumbers(text)
         let decoded = try JSONDecoder().decode(RawFormat.GPSLine.self, from: Data(text.utf8))
-        #expect(decoded.ts == Self.start + 1.000_123_4)
-        #expect(decoded.lat == 47.123_456_8 && decoded.lon == -122.987_654_3)
-        #expect(decoded.alt == 12.3 && decoded.spd == 1.23 && decoded.crs == 90)
-        // Accuracies are written as reported.
-        #expect(decoded.hacc == 3.888_888_8 && decoded.vacc == 4.111_111_1)
-        #expect(decoded.spdacc == 0.299_999_9 && decoded.crsacc == 5.050_505)
+        #expect(decoded == line)
+        // The review's boundary cases come back exactly.
+        let speeds: [Double] = [50.004, 0.399]
+        for speed in speeds {
+            let fix = RawFormat.GPSLine(ts: Self.start, lat: 0, lon: 0.000_000_051, spd: speed, crs: 159.96)
+            let reread = try JSONDecoder().decode(RawFormat.GPSLine.self, from: Data(try Self.text(fix).utf8))
+            #expect(reread == fix)
+        }
+        let jump = RawFormat.GPSLine(ts: Self.start, lat: 0, lon: 0.000_197_911)
+        let rereadJump = try JSONDecoder().decode(RawFormat.GPSLine.self, from: Data(try Self.text(jump).utf8))
+        #expect(rereadJump.lon == 0.000_197_911)
         // Absent optional values stay absent.
         let bare = try Self.text(RawFormat.GPSLine(ts: Self.start, lat: 0.000_123_456_78, lon: 0))
         #expect(!bare.contains("alt") && !bare.contains("spd") && !bare.contains("crs"))
-        #expect(bare.contains(#""lat":0.0001235"#))
     }
 
     @Test func headingLinesAreRoundedToATenthOfADegree() throws {
@@ -418,17 +423,16 @@ import Testing
 
         let a = SessionStats(session: original)
         let b = SessionStats(session: reread)
-        #expect(abs(a.distance - b.distance) <= 0.01, "\(a.distance) vs \(b.distance)", sourceLocation: sourceLocation)
+        // GPS is written as reported, so everything derived from it comes back exactly.
+        #expect(a.distance == b.distance, "\(a.distance) vs \(b.distance)", sourceLocation: sourceLocation)
         #expect(a.acceptedFixes == b.acceptedFixes, sourceLocation: sourceLocation)
         #expect(b.strokes?.count == a.strokes?.count, sourceLocation: sourceLocation)
         #expect(b.strokes?.sideSwitches == a.strokes?.sideSwitches, sourceLocation: sourceLocation)
         let rateA = try #require(a.strokes?.averageRate)
         let rateB = try #require(b.strokes?.averageRate)
         #expect(abs(rateA - rateB) <= 0.01, sourceLocation: sourceLocation)
-        if let speedA = a.averageSpeed, let speedB = b.averageSpeed {
-            // Mean of Doppler speeds, each rounded to 0.01 m/s: within half a step.
-            #expect(abs(speedA - speedB) <= RawFormat.Resolution.speed / 2, sourceLocation: sourceLocation)
-        }
+        #expect(a.averageSpeed == b.averageSpeed, sourceLocation: sourceLocation)
+        #expect(a.maxSpeed2s == b.maxSpeed2s && a.maxSpeed10s == b.maxSpeed10s, sourceLocation: sourceLocation)
         if let maxA = a.maxSpeed2s, let maxB = b.maxSpeed2s {
             #expect(abs(maxA - maxB) <= 0.01, sourceLocation: sourceLocation)
         }

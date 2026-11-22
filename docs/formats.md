@@ -181,9 +181,10 @@ ahead of the monotonic clock 60 s in).
 
 ### Resolution
 
-Writers round values to these steps (`RawFormat.Resolution`). Each step is far below the
-sensor's noise or accuracy, so analysis gives the same results, and short numbers keep a
-recording about a third of its unrounded size. Rounding divides by an exact power of ten,
+Writers round motion and heading values to these steps (`RawFormat.Resolution`). Each step
+is far below the sensor's noise, so analysis of a written recording differs from the live
+readings by no more than noise would, and short numbers keep a recording about a third of
+its unrounded size. Rounding divides by an exact power of ten,
 so a value prints as its short decimal (`0.079`, not `0.07900000000000001`).
 
 | Stream | Fields | Step | Sensor, for comparison |
@@ -191,15 +192,12 @@ so a value prints as its short decimal (`0.079`, not `0.07900000000000001`).
 | motion | `ax ay az`, `gx gy gz` | 0.001 m/s² | noise 0.04–0.19 m/s² (acceleration), 0.002–0.004 m/s² (gravity) |
 | motion | `rx ry rz` | 0.0001 rad/s | noise 0.01–0.04 rad/s |
 | motion | `qx qy qz qw` | 0.00001 | noise 1–2e-4 |
-| gps | `lat`, `lon` | 1e-7° (about 1 cm) | accuracy several metres |
-| gps | `spd` | 0.01 m/s | |
-| gps | `alt`, `crs` | 0.1 (m or degrees) | |
 | heading | `mag`, `true` | 0.1° | accuracy typically about 10° |
 
 Timestamps (`ts`, and `unix`/`mono` in `clock`) are written exactly: readers place motion
 samples relative to clock anchors and fixes relative to pause events, and a rounded time
 could move a reading across either. Accuracy fields (`hacc`, `vacc`, `spdacc`, `crsacc`,
-heading `acc`) are written as
+heading `acc`) and every `gps` value are written as
 reported, never rounded: analysis accepts or rejects readings by comparing them with
 thresholds (for example `hacc` at most 25 m), and rounding must not change that decision.
 `hr`, `events` and `clock` values are written as reported. Anonymized copies are written
@@ -263,9 +261,8 @@ rewrites it when the analysis changes. Times are `t`, seconds since
 | `summary` | The sport's analysis summary (defined per sport in `docs/metrics.md`). Optional. |
 | `analyzerVersion` | Version of the analyzer that wrote `summary` and analysis events. Optional. |
 
-Writers round values to keep files small. Rounding never matters for analysis: the raw
-recording keeps its own, finer or equal, [resolution](#resolution), and the GPS steps
-below are the same as the raw ones.
+Writers round values to keep files small. Rounding never matters for analysis, because
+the raw recording keeps GPS exactly as reported (see [Resolution](#resolution)).
 
 | Column | Step |
 |---|---|
