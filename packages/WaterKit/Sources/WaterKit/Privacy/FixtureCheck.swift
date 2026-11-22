@@ -159,11 +159,11 @@ public enum FixtureCheck {
         }
         let badData = events.filter { event in
             (event.data ?? [:]).contains { key, value in
-                !Anonymizer.allowedEventDataKeys.contains(key) || !Anonymizer.isAllowedEventValue(value)
+                !Anonymizer.allowedEventDataKeys.contains(key) || !Anonymizer.isAllowedEventValue(value, key: key)
             }
         }
         if !badData.isEmpty {
-            problems.append("\(badData.count) events carry data outside the allowed numeric fields")
+            problems.append("\(badData.count) events carry data outside the allowed numeric fields and auto flag")
         }
         return problems
     }
@@ -231,22 +231,32 @@ public enum FixtureCheck {
         return problems
     }
 
-    static let labelsSources: Set<String> = ["video", "manual-count", "instruments", "synthetic"]
+    static let labelsSources: Set<String> = ["video", "manual-count", "motion-review", "instruments", "synthetic"]
     static let labelsLicenses: Set<String> = ["CC-BY-4.0", "CC0-1.0"]
     static let labelsTruthFields: Set<String> = [
-        "strokes", "strokeRateSPM", "maneuvers", "windDirectionDeg", "distanceM",
+        "strokes", "strokeRateSPM", "strokeTimes", "excluded", "maneuvers", "windDirectionDeg", "distanceM",
     ]
 
     /// labels.json must match the documented schema exactly (fixtures/README.md). Its
     /// `description` is the only free text, and people review it.
     static func labelsProblems(_ url: URL) -> [String] {
+        guard let data = try? Data(contentsOf: url) else { return ["\(labelsFileName): unreadable"] }
+        return labelsProblems(data)
+    }
+
+    /// As `labelsProblems(_:)` for a file's bytes. Times in the truth must be seconds on
+    /// the session's own timeline, so a real date cannot hide in one.
+    static func labelsProblems(_ data: Data) -> [String] {
         let context = labelsFileName
-        guard let data = try? Data(contentsOf: url),
-            case .object(let object)? = try? JSONDecoder().decode(JSONValue.self, from: data)
+        guard case .object(let object)? = try? JSONDecoder().decode(JSONValue.self, from: data)
         else { return ["\(context): not a JSON object"] }
         var problems = unknownKeys(Set(object.keys), allowed: labelsFields, context: context)
         func isNumber(_ value: JSONValue?) -> Bool {
             if case .number(let number)? = value { number.isFinite } else { false }
+        }
+        func isTime(_ value: JSONValue?) -> Bool {
+            guard case .number(let number)? = value else { return false }
+            return number.isFinite && number >= 0 && number <= maxDuration
         }
         if !isNumber(object["v"]) { problems.append("\(context): v must be a number") }
         if let sport = object["sport"], sport.stringValue.flatMap(Sport.init(rawValue:)) == nil {
@@ -268,18 +278,50 @@ public enum FixtureCheck {
         where truth[key] != nil && !isNumber(truth[key]) {
             problems.append("\(context): truth.\(key) must be a number")
         }
+        /// Every item is an object with `required` keys, optionally `optional` ones, whose
+        /// values pass `valid`.
+        func isList(
+            _ value: JSONValue, required: Set<String>, optional: Set<String> = [],
+            valid: ([String: JSONValue]) -> Bool
+        ) -> Bool {
+            guard case .array(let items) = value else { return false }
+            return items.allSatisfy { item in
+                guard case .object(let entry) = item else { return false }
+                let keys = Set(entry.keys)
+                return required.isSubset(of: keys) && keys.isSubset(of: required.union(optional)) && valid(entry)
+            }
+        }
         if let maneuvers = truth["maneuvers"] {
-            var valid = false
-            if case .array(let items) = maneuvers {
-                valid = items.allSatisfy { item in
-                    guard case .object(let entry) = item, Set(entry.keys).isSubset(of: ["t", "type"]),
-                        isNumber(entry["t"]), let type = entry["type"]?.stringValue
-                    else { return false }
-                    return Anonymizer.allowedEventTypes.contains(EventType(type))
-                }
+            let valid = isList(maneuvers, required: ["t", "type"]) { entry in
+                guard isTime(entry["t"]), let type = entry["type"]?.stringValue else { return false }
+                return Anonymizer.allowedEventTypes.contains(EventType(type))
             }
             if !valid {
-                problems.append("\(context): truth.maneuvers must be a list of {t, type} with allowed types")
+                problems.append(
+                    "\(context): truth.maneuvers must be a list of {t, type} with allowed types and session times")
+            }
+        }
+        if let strokeTimes = truth["strokeTimes"] {
+            let valid = isList(strokeTimes, required: ["t"], optional: ["side"]) { entry in
+                guard isTime(entry["t"]) else { return false }
+                guard let side = entry["side"] else { return true }
+                return side == .number(0) || side == .number(1)
+            }
+            if !valid {
+                problems.append(
+                    "\(context): truth.strokeTimes must be a list of {t, side?} with session times and side 0 or 1")
+            }
+        }
+        if let excluded = truth["excluded"] {
+            let valid = isList(excluded, required: ["start", "end"]) { entry in
+                guard isTime(entry["start"]), isTime(entry["end"]),
+                    let start = entry["start"]?.doubleValue, let end = entry["end"]?.doubleValue
+                else { return false }
+                return start < end
+            }
+            if !valid {
+                problems.append(
+                    "\(context): truth.excluded must be a list of {start, end} session times with start < end")
             }
         }
         return problems

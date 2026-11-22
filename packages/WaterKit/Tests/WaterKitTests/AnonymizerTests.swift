@@ -48,6 +48,24 @@ import Testing
             ], issues: [])
     }
 
+    /// Regression: the anonymizer dropped `{"auto": true}`, so auto-pauses became manual
+    /// pauses in fixtures and stopped stroke counting there.
+    @Test func keepsTheAutoPauseFlagOnly() {
+        var session = Self.session(origin: (47.6, -122.4))
+        session.events = [
+            SessionEvent(t: 10, type: .pause, data: ["auto": true]),
+            SessionEvent(t: 20, type: .resume, data: ["auto": true]),
+            SessionEvent(t: 30, type: .pause),
+            SessionEvent(t: 40, type: .resume, data: ["auto": "Alice", "note": "x"]),
+        ]
+        let anonymized = Anonymizer().anonymize(session)
+        #expect(anonymized.events.map(\.data) == [["auto": true], ["auto": true], nil, nil])
+        #expect(FixtureCheck.problems(in: anonymized) == [])
+        var leaky = anonymized
+        leaky.events[0].data = ["auto": "Lake Example"]
+        #expect(FixtureCheck.problems(in: leaky).contains { $0.contains("outside the allowed") })
+    }
+
     static let places: [(name: String, lat: Double, lon: Double)] = [
         ("mid-latitude", 47.6, -122.4),
         ("arctic", 69.6, 18.9),

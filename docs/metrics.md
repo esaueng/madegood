@@ -263,9 +263,13 @@ summary.
 within ±3 %, rate within ±2 SPM) are checked in `StrokeDetectorTests` against
 `PaddleMotionSimulator`: synthetic wrist motion with noise, harmonics, per-cycle
 amplitude and period jitter, pauses, rate changes, side switches, sensor gaps and 50 or
-100 Hz sampling. Labeled real sessions still have to confirm them: `FixtureAccuracyTests`
-scores any labeled paddling fixture on session detail's path (its selection, with strokes
-in moving time only), and none is in the fixture set yet.
+100 Hz sampling. Labeled real sessions still have to confirm them:
+`FixtureAccuracyTests.labeledPaddlingRecordingsMeetStrokeThresholds` scores every
+labeled paddling fixture on session detail's path (its selection, with strokes in moving
+time only), and is skipped while none is in the fixture set. Labels list every stroke a
+person confirmed and the stretches that are not paddling; the count and rate are derived
+from them (fixtures/README.md, "How to label a session"). `scripts/label-strokes` drafts
+them from the detector and writes a local page to review them.
 
 ## Sailing maneuvers
 

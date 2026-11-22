@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Anonymize a recording before sharing it or adding it to fixtures/.
 #
-#   scripts/anonymize-track <raw-folder | track.json[.gz]> <output>
+#   scripts/anonymize-track <raw-folder | track.json[.gz]> <output> [--labels <labels.json>]
 #   scripts/anonymize-track --check <path>...
 #
 # Moves positions to a fake origin (keeping distances and bearings), shifts times to

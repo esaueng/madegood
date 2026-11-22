@@ -29,7 +29,7 @@ matches() { printf '%s\n' "$files" | grep -Eq "$1" && echo true || echo false; }
 # Changing CI itself runs everything.
 if [ "$(matches '^(\.github/workflows/ci\.yml|scripts/ci-changes\.sh)$')" = true ]; then all; fi
 
-echo "waterkit=$(matches '^(packages/WaterKit/|fixtures/|scripts/(anonymize-track|fetch-fixtures|fixture-manifest\.json)$)')"
+echo "waterkit=$(matches '^(packages/WaterKit/|fixtures/|scripts/(anonymize-track|fetch-fixtures|fixture-manifest\.json|label-strokes)$)')"
 # WaterKit tests and fixtures don't affect the apps; its package and sources do.
 echo "apple=$(matches '^(apps/apple/|packages/WaterKit/(Package\.swift$|Sources/)|\.mise\.toml$|scripts/pick-simulator$)')"
 echo "web=$(matches '^(web/|openapi/|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|biome\.json$|\.nvmrc$)')"

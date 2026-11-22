@@ -50,13 +50,21 @@ local directory in `fixtures/.corpus/` if a fixture is retired from the manifest
 
    This moves the track to a fake origin in the Atlantic (10°N 30°W), keeping every
    distance and bearing. It shifts all times to 2000-01-01, replaces the session ID,
-   and drops altitude, magnetic heading, and event data outside a small allowlist.
+   and drops altitude, magnetic heading, and event data outside a small allowlist
+   (analysis numbers and the auto-pause flag).
+
+   For a paddling recording with reviewed stroke labels (see
+   [How to label a session](#how-to-label-a-session)), pass them along:
+   `scripts/anonymize-track <recording> "$stage/$session" --labels labels.json`.
+   It refuses drafts, labels for another sport, and times outside the recording,
+   and writes the labels with only the documented fields. Their times are seconds
+   since the session start, which anonymizing keeps.
 
 3. **Label and check.** Write `labels.json` in the staged fixture folder using
-   the schema below. Review the filenames and description for identifying
-   details, then check the anonymized bytes and inspect the replay. For track
-   v1 input, write `track.json.gz` inside the fixture folder and pass that file
-   to the replay CLI.
+   the schema below, unless `--labels` already put it there. Review the filenames
+   and description for identifying details, then check the anonymized bytes and
+   inspect the replay. For track v1 input, write `track.json.gz` inside the
+   fixture folder and pass that file to the replay CLI.
 
    ```sh
    scripts/anonymize-track --check "$stage/$session"
@@ -121,18 +129,93 @@ for generated data), as stated in `labels.json`.
 |---|---|
 | `v` | `1` |
 | `sport` | As in the recording. |
-| `source` | How the truth was measured: `video`, `manual-count`, `instruments`, `synthetic`. |
+| `source` | How the truth was measured: `video`, `manual-count`, `motion-review` (a person checked every stroke on the recorded signal), `instruments`, `synthetic`. `draft` (unreviewed detector output) is never accepted. |
 | `description` | Conditions and setup (wrist, boat or board type). No places, dates, or names. |
 | `license` | `CC-BY-4.0`, or `CC0-1.0` for generated data. |
-| `truth.strokes` | Ground-truth count for kayak, canoe, or SUP. Use a raw recording with motion. |
-| `truth.strokeRateSPM` | Ground-truth average strokes per minute during active paddling, excluding pauses and time between bouts. Measure from the reference data. |
+| `truth.strokes` | Ground-truth count for kayak, canoe, or SUP. Use a raw recording with motion. With `strokeTimes`, it is their count; leave it out or make it match. |
+| `truth.strokeRateSPM` | Ground-truth average strokes per minute during active paddling, excluding pauses and time between bouts. Measure from the reference data. With `strokeTimes`, it is derived (below); leave it out or make it match within 0.05. |
+| `truth.strokeTimes` | Every stroke, as `{ "t": 12.48 }` or `{ "t": 12.48, "side": 0 }`: seconds since session start, the clock of the motion stream. `side` is 0 or 1 when known (canoe, SUP), with the detector's meaning: 0 is the side paddled first. Leave it out for kayak. |
+| `truth.excluded` | Stretches that are not paddling, as `{ "start": 0, "end": 41.2 }` in the same seconds: getting in, drifting, resting, carrying. No stroke may lie in one. |
 | `truth.maneuvers` | Sailing tacks and gybes as `{ "t": 312.4, "type": "tack" }`. Label the crossing time in seconds since session start. Use `[]` for a session verified to contain neither. |
 | `truth.windDirectionDeg` | Sailing wind direction in degrees true, measured from where the wind blows. |
 | `truth.distanceM` | Optional reference distance in metres for inspection. |
 
-Include only measured values. Sailing maneuver matching uses the correct type
+Include only measured values. Stroke truth from `strokeTimes`: the count is every
+labelled stroke. For the rate, strokes form bouts that end at an excluded stretch or at a
+gap longer than 4 s per wrist cycle (2 s between kayak strokes, 4 s for canoe and SUP),
+and the rate is 60 × the intervals within bouts of at least three strokes over their total
+time. The accuracy test compares these with what session detail shows: its count and
+average rate, in moving time only. A stroke session detail counts in an excluded stretch
+is an error, and so is a labelled stroke it leaves out (for example, paddling below the
+auto-pause speed). Sailing maneuver matching uses the correct type
 and a crossing within 2 seconds of the label and inside the detected turn. An
 unmatched detection counts toward the false-positive fraction of all detections.
 When wind truth is available, it sets the wind for maneuver detection and
 selects the side of the axis for the independent wind estimate. See
 [PLAN.md §5](../docs/PLAN.md#5-sport-metrics-and-algorithms) for the thresholds.
+
+### Paddling labels example
+
+```json
+{
+  "v": 1,
+  "sport": "kayak",
+  "source": "motion-review",
+  "description": "Flat water, steady pace, watch on left wrist.",
+  "license": "CC-BY-4.0",
+  "truth": {
+    "strokeTimes": [{ "t": 41.92 }, { "t": 42.97 }, { "t": 44.05 }],
+    "excluded": [{ "start": 0, "end": 41.2 }]
+  }
+}
+```
+
+## How to label a session
+
+Stroke labels come from a person checking the recording; the detector only proposes
+candidates. Everything below stays on your computer until step 7.
+
+1. **Record.** Paddle with MadeGood on the Apple Watch. Note anything unusual (rafting
+   up, a portage, a capsize) and roughly when.
+2. **Export.** On the iPhone, open the session and choose **Share raw recording**. Save
+   the ZIP to your Mac, outside this repository, and unzip it: you get a folder named
+   after the session ID with `meta.json` and the stream files. It holds precise
+   locations and times, so keep it private.
+3. **Draft.** From the repository root:
+
+   ```sh
+   scripts/label-strokes draft ~/labelling/<session-folder> ~/labelling/review
+   ```
+
+   This writes `labels.draft.json` (the detector's candidate strokes, unreviewed) and
+   `review.html`, a self-contained page that loads nothing from the network.
+4. **Review.** Open `review.html` in a browser. The dark line is the wrist motion on its
+   main axis, with one positive peak per wrist cycle. Markers are strokes, GPS speed is
+   along the bottom, and grey shading marks where the app counts no strokes (auto-pause,
+   vehicle legs, manual pauses).
+   - Page through with <kbd>Space</kbd>; the green bar on the overview shows what you
+     have viewed, and <kbd>N</kbd> jumps to the next unviewed part.
+   - Click to add a stroke at the nearest peak or trough (<kbd>Alt</kbd>+click places
+     it exactly), drag a marker to move it, and right-click (or select and press
+     <kbd>Delete</kbd>) to remove it. Grey dashed lines are removed candidates; click one
+     to restore it.
+   - <kbd>Shift</kbd>+drag marks a stretch that is not paddling, and removes the strokes
+     inside. Right-click it to undo that.
+   - For kayak there are two markers per cycle. The detector puts the second one half a
+     cycle after the first, which can be a few tenths of a second from the other blade's
+     stroke; count and rate do not depend on the exact time, so only move a marker that
+     is on the wrong stroke.
+   - Work is saved in the browser as you go. **Save progress** downloads a file you can
+     reopen with **Load labels**, or with
+     `scripts/label-strokes draft <session-folder> <folder> --labels <file>`.
+5. **Export the labels.** Choose how the truth was measured (`motion-review` when you
+   checked the signal, `video` when you checked against video), write a short
+   description without places, dates or names, tick the confirmation, and click
+   **Export labels.json**.
+6. **Score (optional).** `scripts/label-strokes score <session-folder> labels.json`
+   prints the labelled and session-detail counts and rates against PLAN §5, with a
+   per-stroke breakdown of missed and extra strokes.
+7. **Make the fixture.** Follow [Publishing a recording](#publishing-a-recording) with
+   `--labels labels.json` in step 2. Only the anonymized folder leaves your computer. The
+   accuracy test `labeledPaddlingRecordingsMeetStrokeThresholds` picks up every
+   labelled kayak, canoe and SUP fixture; until the first one exists it is skipped.

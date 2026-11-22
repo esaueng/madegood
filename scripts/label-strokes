@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Draft, review and score stroke labels for a paddling recording.
+#
+#   scripts/label-strokes draft <recording-folder> <output-folder> [--labels <labels.json>]
+#   scripts/label-strokes score <recording-folder> <labels.json>
+#
+# `draft` writes labels.draft.json (unreviewed detector candidates) and review.html, a
+# self-contained page to correct them. See fixtures/README.md, "How to label a session".
+set -euo pipefail
+repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+exec swift run --quiet --package-path "$repo/packages/WaterKit" -c release waterkit-label "$@"
