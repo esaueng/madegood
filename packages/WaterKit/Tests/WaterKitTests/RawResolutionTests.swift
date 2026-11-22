@@ -197,6 +197,53 @@ import Testing
         #expect(try decoder.decode(RawFormat.HeadingLine.self, from: Data(headingText.utf8)).ts == ts)
     }
 
+    // MARK: Conversion
+
+    /// Review finding: converting a version 1 recording re-encoded its motion lines and
+    /// rounded them (0.00049 m/s² became 0), while GPS and heading were copied as they
+    /// were. Conversion changes clocks only; every value must come back exactly.
+    @Test func convertingVersion1KeepsEveryValueExactly() throws {
+        let temp = try TempFolder()
+        let v1Folder = temp.url.appendingPathComponent("v1")
+        let v2Folder = temp.url.appendingPathComponent("v2")
+        try FileManager.default.createDirectory(at: v1Folder, withIntermediateDirectories: true)
+        let uptime0: Double = 5_000
+        let meta = RawFormat.Meta(
+            sessionId: UUID(), sport: .kayak, startedAt: Self.start, endedAt: Self.start + 10,
+            device: .init(kind: "watch", model: "Watch0,0", os: "watchOS 26.0"), app: .init(version: "0", build: "0"))
+        try RawFormat.V1.encodeMeta(meta, clock: .init(unix: Self.start, uptime: uptime0))
+            .write(to: v1Folder.appendingPathComponent(RawFormat.metaFileName))
+        var original: [RawFormat.MotionLine] = []
+        var random = SplitMix64(seed: 5)
+        for index in 0..<200 {
+            let t: Double = uptime0 + Double(index) * 0.01 + random.unit() * 1e-4
+            let small: Double = 0.000_49 * random.unit()
+            let x: Double = random.unit() * 4 - 2
+            original.append(
+                RawFormat.MotionLine(
+                    ts: t, userAcceleration: Vector3(x: small, y: x, z: -x / 3),
+                    gravity: Vector3(x: x / 7, y: -9.806_649_9, z: small),
+                    rotationRate: Vector3(x: x * 1.000_000_1, y: small, z: 0.123_456_789_012),
+                    attitude: Quaternion(x: x / 10, y: 0.707_106_781_186_547_5, z: small, w: -0.707_106_781_186_547_5)))
+        }
+        var motion = Data()
+        for line in original { motion.append(try RawFormat.line(line, exactValues: true)) }
+        try motion.write(to: v1Folder.appendingPathComponent(RawFormat.Stream.motion.fileName))
+
+        #expect(try RawFormatConversion.convertToCurrent(folder: v1Folder, into: v2Folder))
+        let converted = try Data(contentsOf: v2Folder.appendingPathComponent(RawFormat.Stream.motion.fileName))
+        let decoder = JSONDecoder()
+        let lines: [RawFormat.MotionLine] = try converted.split(separator: 0x0A).map {
+            try decoder.decode(RawFormat.MotionLine.self, from: Data($0))
+        }
+        #expect(lines.count == original.count)
+        for (line, recorded) in zip(lines, original) {
+            var expected = recorded
+            expected.ts = Self.start + (recorded.ts - uptime0)
+            #expect(line == expected)
+        }
+    }
+
     // MARK: Accuracy thresholds
 
     /// Every accuracy limit analysis compares readings with.

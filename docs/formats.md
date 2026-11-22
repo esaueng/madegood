@@ -202,8 +202,9 @@ could move a reading across either. Accuracy fields (`hacc`, `vacc`, `spdacc`, `
 heading `acc`) are written as
 reported, never rounded: analysis accepts or rejects readings by comparing them with
 thresholds (for example `hacc` at most 25 m), and rounding must not change that decision.
-`hr`, `events` and `clock` values are written as reported. Converted (version 1) and
-anonymized copies are written with the same steps. Earlier recordings hold every
+`hr`, `events` and `clock` values are written as reported. Anonymized copies are written
+with the same steps. Converting a version 1 recording changes only its clocks: every value
+keeps the precision it was recorded with. Earlier recordings hold every
 value at full double precision. Both are valid version 2; readers must not assume either
 precision.
 

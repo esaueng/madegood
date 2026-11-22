@@ -203,7 +203,8 @@ public enum RawFormatConversion {
             guard !slice.allSatisfy({ $0 == 0x20 || $0 == 0x09 }),
                 let value = try? decoder.decode(In.self, from: Data(slice))
             else { return }
-            try put(try RawFormat.line(transform(value)))
+            // Conversion changes clocks only; every value is kept exactly as recorded.
+            try put(try RawFormat.line(transform(value), exactValues: true))
         }
 
         var read: Int64 = 0

@@ -208,15 +208,16 @@ public enum RawFormat {
         public func encode(to encoder: any Encoder) throws {
             var c = encoder.container(keyedBy: CodingKeys.self)
             typealias R = Resolution
+            let rounding = LineRounding(encoder)
             try c.encode(ts, forKey: .ts)
-            try c.encode(round(lat, to: R.position), forKey: .lat)
-            try c.encode(round(lon, to: R.position), forKey: .lon)
-            try c.encodeIfPresent(alt.map { round($0, to: R.gpsTenth) }, forKey: .alt)
+            try c.encode(rounding(lat, R.position), forKey: .lat)
+            try c.encode(rounding(lon, R.position), forKey: .lon)
+            try c.encodeIfPresent(alt.map { rounding($0, R.gpsTenth) }, forKey: .alt)
             try c.encodeIfPresent(hacc, forKey: .hacc)
             try c.encodeIfPresent(vacc, forKey: .vacc)
-            try c.encodeIfPresent(spd.map { round($0, to: R.speed) }, forKey: .spd)
+            try c.encodeIfPresent(spd.map { rounding($0, R.speed) }, forKey: .spd)
             try c.encodeIfPresent(spdacc, forKey: .spdacc)
-            try c.encodeIfPresent(crs.map { round($0, to: R.gpsTenth) }, forKey: .crs)
+            try c.encodeIfPresent(crs.map { rounding($0, R.gpsTenth) }, forKey: .crs)
             try c.encodeIfPresent(crsacc, forKey: .crsacc)
         }
     }
@@ -260,15 +261,16 @@ public enum RawFormat {
         public func encode(to encoder: any Encoder) throws {
             var c = encoder.container(keyedBy: CodingKeys.self)
             typealias R = Resolution
+            let rounding = LineRounding(encoder)
             try c.encode(ts, forKey: .ts)
             for (key, value) in [(CodingKeys.ax, ax), (.ay, ay), (.az, az), (.gx, gx), (.gy, gy), (.gz, gz)] {
-                try c.encode(round(value, to: R.acceleration), forKey: key)
+                try c.encode(rounding(value, R.acceleration), forKey: key)
             }
             for (key, value) in [(CodingKeys.rx, rx), (.ry, ry), (.rz, rz)] {
-                try c.encode(round(value, to: R.rotationRate), forKey: key)
+                try c.encode(rounding(value, R.rotationRate), forKey: key)
             }
             for (key, value) in [(CodingKeys.qx, qx), (.qy, qy), (.qz, qz), (.qw, qw)] {
-                try c.encode(round(value, to: R.attitude), forKey: key)
+                try c.encode(rounding(value, R.attitude), forKey: key)
             }
         }
     }
@@ -308,9 +310,10 @@ public enum RawFormat {
         public func encode(to encoder: any Encoder) throws {
             var c = encoder.container(keyedBy: CodingKeys.self)
             typealias R = Resolution
+            let rounding = LineRounding(encoder)
             try c.encode(ts, forKey: .ts)
-            try c.encodeIfPresent(mag.map { round($0, to: R.heading) }, forKey: .mag)
-            try c.encodeIfPresent(trueHeading.map { round($0, to: R.heading) }, forKey: .trueHeading)
+            try c.encodeIfPresent(mag.map { rounding($0, R.heading) }, forKey: .mag)
+            try c.encodeIfPresent(trueHeading.map { rounding($0, R.heading) }, forKey: .trueHeading)
             try c.encodeIfPresent(acc, forKey: .acc)
         }
     }
@@ -390,12 +393,30 @@ public enum RawFormat {
         return scaled / scale + 0
     }
 
+    /// Rounds a line's values to `Resolution` unless its encoder asks for exact values.
+    struct LineRounding {
+        static let exactValuesKey = CodingUserInfoKey(rawValue: "app.madegood.raw.exactValues")!
+        let isOn: Bool
+
+        init(_ encoder: any Encoder) {
+            isOn = encoder.userInfo[Self.exactValuesKey] as? Bool != true
+        }
+
+        func callAsFunction(_ value: Double, _ step: Double) -> Double {
+            isOn ? RawFormat.round(value, to: step) : value
+        }
+    }
+
     // MARK: Writing
 
     /// Encodes one NDJSON line, including the trailing newline. Throws on NaN or infinity,
     /// which JSON cannot represent; recorders must map invalid readings to nil first.
-    public static func line(_ value: some Encodable) throws -> Data {
-        var data = try lineEncoder.encode(value)
+    /// Values are rounded to `Resolution`; `exactValues` writes them unrounded, for
+    /// converting a recording without changing it.
+    public static func line(_ value: some Encodable, exactValues: Bool = false) throws -> Data {
+        let encoder = lineEncoder
+        if exactValues { encoder.userInfo[LineRounding.exactValuesKey] = true }
+        var data = try encoder.encode(value)
         data.append(0x0A)
         return data
     }
