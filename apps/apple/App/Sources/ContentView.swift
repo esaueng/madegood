@@ -861,11 +861,17 @@ private struct LiveView: View {
                 sailingCard(sailing, course: readings.course, display: display)
             }
             DisclosureGroup("More metrics") {
+                // On a card, as the other metrics are: the colored captions keep their
+                // contrast there (on the grouped page background they fall below 5:1).
                 VStack(spacing: 12) {
                     ForEach(supporting.dropFirst(3)) { metric in
                         metricRow(metric)
                     }
                 }
+                .padding(14)
+                .background(
+                    Color(.secondarySystemGroupedBackground), in: .rect(cornerRadius: 20, style: .continuous)
+                )
                 .padding(.top, 12)
             }
             .font(.subheadline)
