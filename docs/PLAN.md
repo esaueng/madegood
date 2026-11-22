@@ -123,7 +123,7 @@ iPhone (live view / standalone session)   │ on finish: post-analysis (WaterKit
 ```
 
 - The **watch never calls the API**. It hands finished sessions to the phone
-  (`WCSession.transferFile`). During a session, live data goes to the phone through
+  (`WCSession.transferFile`, large files in parts; see [watch-transfer.md](watch-transfer.md)). During a session, live data goes to the phone through
   HealthKit workout mirroring (`startMirroringToCompanionDevice`, `sendToRemoteWorkoutSession`).
 - The **iPhone can run sessions alone** (`HKWorkoutSession` on iOS 26), which matters
   for motorboating and phone-in-a-drybag use.
