@@ -134,8 +134,52 @@ final class TransferPartsTests: XCTestCase {
             parts: ["motion.ndjson.gz|25|10": [0]])
         let units = RecordingTransfer.units(
             local: local, holds: holds, inFlight: [.init(motion[2])], partSize: partSize)
-        // gps differs in size on the phone, so it goes; meta.json always goes, last.
-        XCTAssertEqual(names(units), ["gps.ndjson.gz", "motion.ndjson.gz#1", "meta.json"])
+        // gps differs in size on the phone, so it goes. The phone holds meta.json, and the
+        // acknowledgements of what goes now say what else it holds, so meta.json stays.
+        XCTAssertEqual(names(units), ["gps.ndjson.gz", "motion.ndjson.gz#1"])
+        // Without meta.json on the phone, it goes last.
+        var noMeta = holds
+        noMeta.files["meta.json"] = nil
+        XCTAssertEqual(
+            names(RecordingTransfer.units(local: local, holds: noMeta, inFlight: [], partSize: partSize)),
+            ["motion.ndjson.gz#2", "gps.ndjson.gz", "motion.ndjson.gz#1", "meta.json"])
+    }
+
+    /// meta.json went whenever it was not in flight, and each acknowledgement of it that did
+    /// not complete the recording sent the watch round again: while the last parts were still
+    /// in flight, meta.json went back and forth between the devices until they arrived.
+    func testMetaIsNotSentAgainWhileThePhoneHoldsItAndPartsAreInFlight() {
+        let holds = RecordingTransfer.PhoneHolds(
+            files: ["events.ndjson.gz": 3, "gps.ndjson.gz": 8, "meta.json": 4],
+            parts: ["motion.ndjson.gz|25|10": [0, 1]])
+        let inFlight: Set<RecordingTransfer.UnitKey> = [.init(motion[2])]
+        XCTAssertEqual(
+            RecordingTransfer.units(local: local, holds: holds, inFlight: inFlight, partSize: partSize), [])
+        // Its first time, meta.json goes even while parts are in flight.
+        var noMeta = holds
+        noMeta.files["meta.json"] = nil
+        XCTAssertEqual(
+            names(RecordingTransfer.units(local: local, holds: noMeta, inFlight: inFlight, partSize: partSize)),
+            ["meta.json"])
+        // A stale list that claims everything: meta.json goes alone, and its acknowledgement
+        // says what the phone really holds.
+        let everything = RecordingTransfer.PhoneHolds(files: local)
+        XCTAssertEqual(
+            names(RecordingTransfer.units(local: local, holds: everything, inFlight: [], partSize: partSize)),
+            ["meta.json"])
+        // Parts handed over and waiting for their acknowledgements also hold meta.json back
+        // once the phone has it: those acknowledgements say what else it holds.
+        let handedOver: Set<RecordingTransfer.UnitKey> = [.init(motion[2])]
+        XCTAssertEqual(
+            RecordingTransfer.units(
+                local: local, holds: holds, inFlight: [], handedOver: handedOver, partSize: partSize),
+            [])
+        // ...but not before the phone has it: meta.json follows them.
+        XCTAssertEqual(
+            names(
+                RecordingTransfer.units(
+                    local: local, holds: noMeta, inFlight: [], handedOver: handedOver, partSize: partSize)),
+            ["meta.json"])
     }
 
     /// Review of #167, finding 1: parts cut another way (a different total or part size)

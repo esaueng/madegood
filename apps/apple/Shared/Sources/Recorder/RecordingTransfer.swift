@@ -175,10 +175,14 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
     /// `meta.json` last, so the phone sees a recording complete only when all of it is
     /// there, and a large file never holds up the small ones. Files over a part's size go in
     /// parts. Leaves out what is in flight (a whole file in flight covers its parts) and what
-    /// `holds` says the phone has (parts only of the same layout), except `meta.json`: it
-    /// always goes, and its acknowledgement corrects a stale `holds`. Parts in
-    /// `handedOver` (delivered, the phone's acknowledgement not in yet) are not sent again
-    /// either. At most `window` parts are in flight at once; `meta.json` waits until
+    /// `holds` says the phone has (parts only of the same layout), and parts in `handedOver`
+    /// (delivered, the phone's acknowledgement not in yet). `meta.json` goes unless it is in
+    /// flight or the phone holds it at this size while something else of the recording is
+    /// in flight, handed over or queued (their acknowledgements tell the watch what the phone
+    /// holds). So when `holds` claims everything, `meta.json` goes alone and its
+    /// acknowledgement corrects a stale `holds`; and an acknowledgement of `meta.json` that
+    /// arrives while the last parts are still on their way does not queue it again, and
+    /// again. At most `window` parts are in flight at once; `meta.json` waits until
     /// everything else is queued or handed over.
     static func units(
         local: [String: Int64], holds: PhoneHolds?, inFlight: Set<UnitKey>, handedOver: Set<UnitKey> = [],
@@ -211,7 +215,7 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
         }
         var budget = max(0, window - inFlight.filter { $0.part != nil }.count)
         var leftOut = false
-        return sorted.filter { unit in
+        let queued = sorted.filter { unit in
             if unit.file == RawFormat.metaFileName { return !leftOut }
             guard unit.part != nil else { return true }
             guard budget > 0 else {
@@ -221,6 +225,12 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
             budget -= 1
             return true
         }
+        let meta = RawFormat.metaFileName
+        let metaHeld = local[meta].map { holds?.files[meta] == $0 } ?? false
+        let othersMoving =
+            queued.contains { $0.file != meta } || inFlight.contains { $0.file != meta }
+            || handedOver.contains { $0.file != meta }
+        return metaHeld && othersMoving ? queued.filter { $0.file != meta } : queued
     }
 
     /// How a recording's outstanding transfers have moved this launch (watch side).
