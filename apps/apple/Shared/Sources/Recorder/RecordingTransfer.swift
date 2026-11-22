@@ -247,26 +247,33 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
         return metaHeld && othersMoving ? queued.filter { $0.file != meta } : queued
     }
 
-    /// How a recording's outstanding transfers have moved this launch (watch side).
-    struct ProgressTracker: Sendable {
+    /// How a recording's outstanding transfers have moved (watch side). Kept across launches
+    /// (each background wake is a short look, often in a new process), so a later look can
+    /// tell a transfer that has sat at the same progress since an earlier one from a transfer
+    /// it sees for the first time.
+    struct ProgressTracker: Codable, Equatable, Sendable {
+        /// The last progress seen of each outstanding transfer (by a key naming the transfer,
+        /// including when it was queued). Only the transfers of the latest look are kept.
         private var fractions: [String: Double] = [:]
         /// The last time a transfer was seen moving: progress that grew, a transfer first seen
         /// with progress, or a transfer that finished.
         private(set) var lastChange: Date?
 
-        /// Notes each transfer's progress (by a key naming the transfer); returns whether any
-        /// has progress, and the last time one was seen moving.
+        /// Notes each transfer's progress; returns whether any has progress, and the last time
+        /// one was seen moving.
         mutating func observe(_ samples: [(key: String, fraction: Double)], now: Date) -> (
             anyProgress: Bool, since: Date?
         ) {
             var anyProgress = false
+            var seen: [String: Double] = [:]
             for (key, fraction) in samples {
                 if fraction > 0 {
                     anyProgress = true
                     if fraction > (fractions[key] ?? 0) { lastChange = now }
                 }
-                fractions[key] = fraction
+                seen[key] = fraction
             }
+            fractions = seen
             return (anyProgress, lastChange)
         }
 
@@ -289,19 +296,25 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
 
     /// Whether to cancel a recording's outstanding transfers and queue them again.
     /// - Never while they move: some has progress (`anyProgress`) and `progressSince` (the
-    ///   last time this launch saw them move, or first saw them) is under `stalledAfter`
-    ///   ago. A launch sees them for the first time, so it never cancels a started transfer.
+    ///   last time they were seen moving, or first seen, kept across launches) is under
+    ///   `stalledAfter` ago.
     /// - "Send again" (`.all`): otherwise, yes.
-    /// - Launch (`.stuck`): only if none has started and the oldest has waited `stuckAfter`.
-    ///   A transfer without a time (queued by a build before times) counts as waited, as does
-    ///   one whose time is that far in the future (the clock was changed).
+    /// - Launch and background refresh (`.stuck`): if some has started, only once none has
+    ///   moved for `stuckAfter` (a transfer first seen with progress counts as moving then,
+    ///   so a first look never cancels a started transfer); if none has started, once the
+    ///   oldest has waited `stuckAfter`. A transfer without a time (queued by a build before
+    ///   times) counts as waited, as does one whose time is that far in the future (the clock
+    ///   was changed).
     static func shouldRequeue(
         oldestQueuedAt: Date?, anyProgress: Bool, progressSince: Date?, now: Date, requeue: Requeue
     ) -> Bool {
         if requeue == .none { return false }
         if anyProgress, let progressSince, abs(now.timeIntervalSince(progressSince)) < stalledAfter { return false }
         if requeue == .all { return true }
-        if anyProgress { return false }
+        if anyProgress {
+            guard let progressSince else { return false }
+            return abs(now.timeIntervalSince(progressSince)) >= stuckAfter
+        }
         guard let oldestQueuedAt else { return true }
         return abs(now.timeIntervalSince(oldestQueuedAt)) >= stuckAfter
     }
@@ -388,8 +401,10 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
     /// launches so a resend skips what already arrived.
     private let phoneHolds = Mutex<[String: PhoneHolds]>(RecordingTransfer.loadPhoneHolds())
     private static let phoneHoldsKey = "transferPhoneHolds"
-    /// How each recording's outstanding transfers have moved this launch (watch side).
-    private let progress = Mutex<[String: ProgressTracker]>([:])
+    /// How each recording's outstanding transfers have moved, kept across launches (watch
+    /// side).
+    private let progress = Mutex<[String: ProgressTracker]>(RecordingTransfer.loadProgress())
+    private static let progressDefaultsKey = "transferProgress"
     /// Parts each recording handed to the phone whose acknowledgement is not in yet, and when
     /// (watch side). Not sent again for `handoverGrace`: queuing a just-delivered part again
     /// would cycle the window through the same parts while the acknowledgements lag.
@@ -420,6 +435,24 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
     private static func loadPhoneHolds() -> [String: PhoneHolds] {
         UserDefaults.standard.data(forKey: phoneHoldsKey)
             .flatMap { try? JSONDecoder().decode([String: PhoneHolds].self, from: $0) } ?? [:]
+    }
+
+    private static func loadProgress() -> [String: ProgressTracker] {
+        UserDefaults.standard.data(forKey: progressDefaultsKey)
+            .flatMap { try? JSONDecoder().decode([String: ProgressTracker].self, from: $0) } ?? [:]
+    }
+
+    /// Changes the progress kept of recordings, saving it when it changed.
+    @discardableResult
+    private func updateProgress<T>(_ body: (inout [String: ProgressTracker]) -> T) -> T {
+        progress.withLock { all in
+            let before = all
+            let result = body(&all)
+            if all != before, let data = try? JSONEncoder().encode(all) {
+                UserDefaults.standard.set(data, forKey: Self.progressDefaultsKey)
+            }
+            return result
+        }
     }
 
     private func setPhoneHolds(_ holds: PhoneHolds?, sessionId: String) {
@@ -516,7 +549,7 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
                         "Cancelled \(outstanding.count) transfers that had not moved (queued \(age)) to send again",
                         sessionId: sessionId)
                     outstanding = []
-                    progress.withLock { $0[sessionId] = nil }
+                    updateProgress { $0[sessionId] = nil }
                 } else if requeue != .none {
                     let lead = outstanding.max { $0.progress.fractionCompleted < $1.progress.fractionCompleted }
                     log.add(
@@ -584,7 +617,7 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
             sessionId: String, transfers: [WCSessionFileTransfer], now: Date
         ) -> (anyProgress: Bool, since: Date?) {
             let samples = transfers.map { (key: Self.progressKey($0), fraction: $0.progress.fractionCompleted) }
-            return progress.withLock { $0[sessionId, default: ProgressTracker()].observe(samples, now: now) }
+            return updateProgress { $0[sessionId, default: ProgressTracker()].observe(samples, now: now) }
         }
 
         private static func progressKey(_ transfer: WCSessionFileTransfer) -> String {
@@ -655,6 +688,11 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
                 !FileManager.default.fileExists(atPath: RecordingStore.root.appendingPathComponent($0).path)
             }
             for sessionId in gone { setPhoneHolds(nil, sessionId: sessionId) }
+            updateProgress { all in
+                all = all.filter {
+                    FileManager.default.fileExists(atPath: RecordingStore.root.appendingPathComponent($0.key).path)
+                }
+            }
             for entry in RecordingStore.list() {
                 send(folder: entry.folder, requeue: requeue)
             }
@@ -795,7 +833,7 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
             }
             guard let sessionId else { return }
             let now = Date()
-            progress.withLock { $0[sessionId, default: ProgressTracker()].finished(at: now) }
+            updateProgress { $0[sessionId, default: ProgressTracker()].finished(at: now) }
             retries.withLock { $0[sessionId]?.failures = 0 }
             // Not sent again while its acknowledgement is on the way (`handoverGrace`).
             if let part { handedOver.withLock { $0[sessionId, default: [:]][UnitKey(part)] = now } }
@@ -866,7 +904,7 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
             }
             log.add("Removed from watch: iPhone holds all \(local.count) files", sessionId: sessionId)
             setPhoneHolds(nil, sessionId: sessionId)
-            progress.withLock { $0[sessionId] = nil }
+            updateProgress { $0[sessionId] = nil }
             handedOver.withLock { $0[sessionId] = nil }
             retries.withLock { $0[sessionId] = nil }
             // Copies re-queued after a stall have nothing left to send.

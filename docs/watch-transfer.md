@@ -119,7 +119,7 @@ time between part acknowledgements in the transfer log with a test build that se
 |---|---|
 | A transfer fails (link drops, phone app not installed, timeout) | A retry after a backoff: 30 s, doubling to 30 min (`TransferPolicy.retryDelay`). One retry is pending per recording, so many parts failing together count once. The next refresh covers it if the app is suspended. |
 | A part is delivered but its acknowledgement is slow or lost | Not sent again for 10 min (`handoverGrace`), so the window does not cycle through the same parts. After that it goes again, and the phone keeps its copy. |
-| A transfer stays queued and never moves | Restarted after 15 min by the launch or the next background refresh (`shouldRequeue`). A transfer that is moving is never cancelled. |
+| A transfer stays queued and never moves, or stops partway | Restarted by the launch or the next background refresh once it has been queued for 15 min without starting, or has sat at the same progress for 15 min (`shouldRequeue`). Progress is kept across launches, so separate background wakes can tell flat from new. A transfer that is moving is never cancelled. |
 | The phone app is not running | Transfers wait in WatchConnectivity. The phone receives them at its next launch or background launch. |
 | The watch restarts | Transfer times are stored in the metadata, so stuck detection still works. Leftover slices are removed. The phone's holdings are kept on disk. |
 | The phone loses or deletes files it acknowledged, or the phone app is reinstalled | The watch's saved holdings are stale. When they claim everything, `meta.json` goes alone, and its live acknowledgement says what the phone really holds. The rest is then sent. Deletion needs a live list. |
