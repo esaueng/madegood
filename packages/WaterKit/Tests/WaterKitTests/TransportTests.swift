@@ -158,12 +158,15 @@ private func approx(_ a: Double?, _ b: Double, tolerance: Double = 1e-6) -> Bool
         #expect(engine.transportIntervals == [64...199])
         #expect(approx(m.maxSpeed2s, 2))
         #expect(approx(m.maxSpeed10s, 2))
-        // A manual resume in the car does not count the drive.
+        // A manual resume in the car ends the leg, but the drive is confirmed again from
+        // the next fix and does not count.
         var resumed = engine
         resumed.ingest(.event(SessionEvent(t: 200, type: .resume)))
-        for fix in leg.fixes(0...210).suffix(10) { resumed.ingest(.gps(fix)) }
+        for fix in leg.fixes(0...215).suffix(15) { resumed.ingest(.gps(fix)) }
         #expect(resumed.snapshot.pauseState == .autoPaused)
         #expect(resumed.snapshot.movingTime == m.movingTime)
+        #expect(resumed.transportIntervals == [64...200, 201...215])
+        #expect(approx(resumed.snapshot.maxSpeed2s, 2))
     }
 
     @Test func otherSportsHaveNoSpeedLimit() {
@@ -229,5 +232,39 @@ private func approx(_ a: Double?, _ b: Double, tolerance: Double = 1e-6) -> Bool
         #expect(approx(m.distance, paddled))
         #expect(approx(m.maxSpeed2s, 2))
         #expect(approx(m.maxSpeed10s, 2))
+    }
+
+    /// Finding 3: paused before driving, resumed in the car. The engine's events must say
+    /// what it counts, so heart-rate zones and strokes (which read the events) agree with
+    /// moving time, during the drive and while auto-paused after the car stops.
+    @Test func aManualResumeInTheCarKeepsDetailMetricsInStep() {
+        let leg = TransportLeg { t in
+            switch t {
+            case ..<60: 2
+            case ..<65: 0.2
+            case ..<150: min(19, 1 + (t - 65))
+            case ..<170: max(0.3, 19 - 2 * (t - 150))
+            default: 2
+            }
+        }
+        let fixes = leg.fixes(0...260)
+        let hr = (0...260).map { HRSample(t: Double($0), bpm: 150) }
+        let track = Track(
+            sessionId: UUID(), sport: .kayak, startedAt: Date(timeIntervalSince1970: 0), gps: fixes, hr: hr,
+            events: [SessionEvent(t: 62.5, type: .pause), SessionEvent(t: 100, type: .resume)])
+        let replay = SessionReplay(track: track)
+        let m = replay.metrics
+
+        #expect(replay.transportIntervals == [64...100, 101...160])
+        #expect(replay.events.map(\.type) == [.pause, .resume, .pause, .resume])
+        #expect(replay.events.map(\.t) == [62.5, 100, 101, 169])
+        #expect(m.movingTime == 62 + (260 - 169))
+        #expect(approx(m.maxSpeed2s, 2))
+        // Strokes are gated by these (manual pauses by the detector itself).
+        #expect(replay.autoPausedIntervals == [64...100, 101...169])
+        // Heart-rate zones read the same events: the drive and the stop after it are out.
+        let zones = HeartRateZones().durations(samples: hr, events: replay.events, spans: [0...260])
+        let zoneTime = zones.values.reduce(0, +)
+        #expect(abs(zoneTime - m.movingTime) <= 2.5)
     }
 }

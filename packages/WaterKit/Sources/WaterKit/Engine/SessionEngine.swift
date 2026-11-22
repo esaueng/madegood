@@ -613,8 +613,18 @@ public struct SessionEngine: LiveAnalyzer {
             sailingTracker?.breakRun()
             // At a cut boundary there is no pre-pause fix to disconnect in this span.
             if mode == .manuallyPaused, event.t != retainedSpanStart { intervalBroken = true }
-            // In a vehicle, the session stays paused until it stops.
-            if mode != .moving { mode = transportSince == nil ? .moving : .autoPaused }
+            if let since = transportSince {
+                // The user's resume ends a vehicle leg, as it ends any pause, so the events
+                // say what the engine counts. A vehicle still going is confirmed again from
+                // the next fix, which starts a new interval and a new checkpoint.
+                closedTransportIntervals.append(since...max(since, event.t))
+                transportSince = nil
+                transportRunStart = nil
+                transportCheckpoint = nil
+                recent.removeAll(keepingCapacity: true)
+                if event.t != retainedSpanStart { intervalBroken = true }
+            }
+            if mode != .moving { mode = .moving }
             slow = nil
             fast = nil
         case .lap:

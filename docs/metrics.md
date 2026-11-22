@@ -130,8 +130,10 @@ and nothing counts until a fix is below 0.8 m/s again. With auto-pause on, the s
 stays auto-paused until the normal resume rule applies; with it off, it resumes at that fix.
 The engine records the pause, and with auto-pause off the resume, as `pause` and `resume`
 events with `{"auto": true, "transport": true}`. An auto-resume at or after the dated-back
-start is removed instead of adding a pause. A manual resume in a vehicle does not end the
-leg. A manual pause does not stop the check: a leg confirmed while paused still leaves the
+start is removed instead of adding a pause. A manual resume ends the leg, like any pause, so
+the events always say what is counted (heart-rate zones and strokes read them); a vehicle
+still going is confirmed again from the first fix after the resume, and an auto pause is
+recorded there. A manual pause does not stop the check: a leg confirmed while paused still leaves the
 max speeds and heart rate, and any distance and moving time counted since the dated-back
 start (a pause tapped in the vehicle before the leg was confirmed). Sailing,
 windsurfing and motorboating have no limit. A paddler who really holds 8 m/s for 10 s (a
