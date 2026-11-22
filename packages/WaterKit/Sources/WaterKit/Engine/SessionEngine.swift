@@ -193,10 +193,11 @@ public struct SessionEngine: LiveAnalyzer {
     private var retainedSpanStart: Double?
     private var categoryTracker: SpeedCategoryTracker?
     private var sailingTracker: SailingTracker?
-    /// Transport: the last fix slower than the profile's `stoppedBelow` (or an anchor).
+    /// Transport: the last fix slower than the profile's `stoppedBelow` (or the first fix).
     private var transportCheckpoint: Checkpoint?
-    /// Transport: the first fix of the current run above the profile's speed limit.
+    /// Transport: the first and latest fix of the current run above the speed limit.
     private var transportRunStart: Double?
+    private var transportRunLast: Double?
     /// Set while in a vehicle: where the leg was dated back to.
     private var transportSince: Double?
     private var closedTransportIntervals: [ClosedRange<Double>] = []
@@ -490,15 +491,20 @@ public struct SessionEngine: LiveAnalyzer {
     /// confirmed one, which rolls the session back to the last slow fix.
     private mutating func checkTransport(_ fix: GPSFix, speed: Double?, isAnchor: Bool) -> Bool {
         guard let config = profile.transport else { return false }
-        if isAnchor || (speed.map { $0 < config.stoppedBelow } ?? false) {
+        // An anchor does not move the checkpoint: a vehicle leg can run through a GPS gap
+        // (a tunnel), and the rollback must still reach the stop before it.
+        if transportCheckpoint == nil || (speed.map { $0 < config.stoppedBelow } ?? false) {
             transportCheckpoint = checkpointNow
         }
         guard let speed, speed > config.above else {
             transportRunStart = nil
             return false
         }
+        // The hold only counts time it observed.
+        if isAnchor || transportRunLast.map({ fix.t - $0 > config.maxGap }) ?? true { transportRunStart = nil }
         let runStart = transportRunStart ?? fix.t
         transportRunStart = runStart
+        transportRunLast = fix.t
         guard fix.t - runStart >= config.after else { return false }
         startTransport()
         return true

@@ -202,4 +202,32 @@ private func approx(_ a: Double?, _ b: Double, tolerance: Double = 1e-6) -> Bool
         let splitDistance = replay.paddlingSplits.reduce(0.0) { $0 + $1.distance }
         #expect(abs(splitDistance - paddled) < 1e-6)
     }
+
+    /// Finding 2: two fast fixes either side of a GPS gap are not an observed 10 s hold.
+    @Test func aGapDoesNotConfirmTheHold() {
+        // 31 s re-anchors the GPS; 10 s does not, but is still unobserved.
+        for gap in [51...80, 51...59] {
+            let leg = TransportLeg { t in t == 50 || t == Double(gap.upperBound + 1) ? 9 : 2 }
+            let fixes = leg.fixes(0...120).filter { !gap.contains(Int($0.t)) }
+            let engine = run(fixes.map(Sample.gps), profile: .standard(for: .kayak))
+            #expect(engine.transportIntervals.isEmpty)
+            #expect(engine.generatedEvents.isEmpty)
+        }
+    }
+
+    /// Finding 2: a drive through a tunnel (a GPS re-anchor) still rolls back to the stop
+    /// before the drive, not to the anchor, so the driving before the gap is left out.
+    @Test func aDriveThroughAGPSGapRollsBackToTheStopBeforeIt() {
+        let leg = TransportLeg { t in t < 60 ? 2 : (t < 65 ? 0.2 : min(9, 1 + (t - 65))) }
+        let fixes = leg.fixes(0...140).filter { !(76...106).contains(Int($0.t)) }
+        let engine = run(fixes.map(Sample.gps), profile: .standard(for: .kayak))
+        let m = engine.snapshot
+        #expect(engine.transportIntervals == [64...140])
+        #expect(engine.generatedEvents.map(\.t) == [64])
+        #expect(m.movingTime == 64)
+        let paddled: Double = 2 * 60 + 0.2 * 4
+        #expect(approx(m.distance, paddled))
+        #expect(approx(m.maxSpeed2s, 2))
+        #expect(approx(m.maxSpeed10s, 2))
+    }
 }

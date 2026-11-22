@@ -116,13 +116,15 @@ sports therefore have a speed limit:
 | Setting | Default |
 |---|---|
 | A vehicle leg is confirmed when every fix stays above | 8 m/s (28.8 km/h, 15.6 kn) for 10 s |
+| The hold starts again after a GPS re-anchor or a gap between fixes longer than | 5 s |
 | It is dated back to, and ends at, a fix slower than | 0.8 m/s |
 
 No paddle craft holds 8 m/s for 10 s: the K1 200 m world record averages about 6 m/s and
 downwind surfski runs peak around 7–8 m/s for a few seconds on a wave. A vehicle leg starts
 from a standstill (the paddler has to get out of the boat), so a confirmed leg is dated back
 to the last fix below 0.8 m/s, not to where it crossed 8 m/s: the slow start of the drive is
-left out too. It is never dated back past the start of the current lap. Moving time,
+left out too. A GPS re-anchor (a tunnel) does not move that fix, so the driving before the gap is left
+out too. It is never dated back past the start of the current lap. Moving time,
 distance, the max speeds and heart-rate average and max return to their values at that fix,
 and nothing counts until a fix is below 0.8 m/s again. With auto-pause on, the session then
 stays auto-paused until the normal resume rule applies; with it off, it resumes at that fix.

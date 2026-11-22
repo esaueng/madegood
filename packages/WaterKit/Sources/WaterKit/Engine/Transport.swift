@@ -11,8 +11,10 @@ public enum Transport {
         /// 200 m world record averages about 6 m/s, and downwind surfski runs peak around
         /// 7–8 m/s for a few seconds on a wave…
         public var above: Double = 8
-        /// …on every fix for at least this long, s.
+        /// …on every fix for at least this long, s. The hold must be observed: a GPS
+        /// re-anchor or a longer gap than `maxGap` between fixes starts it again.
         public var after: Double = 10
+        public var maxGap: Double = 5
         /// Below this speed the boat (or paddler) is stopped or walking, m/s: transport is
         /// dated back to the last such fix, and ends at the next one.
         public var stoppedBelow: Double = 0.8
