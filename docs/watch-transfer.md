@@ -79,34 +79,123 @@ gives the app no background time. The watch app moves fastest while it is open.
 - SwiftUI's `.backgroundTask(.watchConnectivity)` is not available on iOS, so the phone has
   no equivalent of the watch's task.
 
-## A fast path over `sendMessageData`: not implemented
+## The fast path over `sendMessageData`
 
-Sending parts as messages while both apps are reachable, with the reply as the
-acknowledgement, looks attractive. It is not implemented, for these reasons:
+While the watch app is open and the phone is reachable, the watch sends what the phone lacks
+by message instead of queuing more file transfers. `transferFile` stays the fallback, and the
+only path in the background. The code is `MessageTransfer.swift` (pure, unit-tested on iOS)
+and the "fast path" section of `RecordingTransfer.swift`.
 
-- **It helps only when the watch app is already open.** On the watch, `isReachable` needs
-  the app in the foreground (or running a workout). A finished recording's workout has
-  ended, so the fast path would run only while the user looks at the watch app. That is
-  exactly when `transferFile` already moves at its best rate. It does nothing for the
-  background case, which is the real problem.
-- **The message size limit is undocumented.** `WCErrorCodePayloadTooLarge` (7009) exists, but
-  the SDK gives no limit. Reports put it near 64 KB, so a 1 MiB part would need 16 or more
-  messages and a second layer of chunking on the phone. Chunks would also have to be kept
-  apart from the part layouts: `TransferParts.store` drops another layout's parts, so
-  storing a message-sized layout would throw away progress made in files.
-- **The throughput is unknown.** Messages and files share the same link. No SDK document
-  says messages are faster, and the simulator cannot measure WatchConnectivity.
-- **It duplicates the pipeline.** A part could be in flight as a file and as messages at
-  once. That is safe (the phone keeps duplicates), but it wastes the slow link unless the
-  watch also cancels queued file transfers. Cancelling transfers that may be moving is what
-  #165 and #167 had to stop doing.
+An earlier study argued against it: `isReachable` on the watch needs the app on screen, so
+it does nothing for the background case, and no SDK document says messages are faster than
+files. Both still hold. It is built because opening the watch app is the one thing a user
+can do to hurry a recording along, and `transferFile` stays at about 2 MB/min even then.
+Whether messages beat that is measured on devices (step 7 below); the log gives the numbers.
 
-The invariants would hold: the phone would store a chunk durably before replying, and only
-the userInfo acknowledgement listing every file would allow deleting. The issue is the cost
-and the uncertain gain. Revisit with a measurement: with the watch app open, compare the
-time between part acknowledgements in the transfer log with a test build that sends one
-1 MiB part as 64 KB messages.
+### When it runs
 
+All of these, checked before every message (`MessageTransfer.mayUse`):
+
+- The watch app is the frontmost app: scene phase `.active` or `.inactive` (wrist lowered).
+  Any background phase means files only.
+- The session is activated and `isReachable`.
+- The phone app says it takes chunks: it puts `messageTransfer: 1` in its application
+  context, next to `rawVersions`. A phone build without it has no handler, so the watch never
+  tries; nothing changes for older phone builds.
+- It has not been turned off for the process (messages too large at every chunk size), and
+  no pause after a failure is running.
+
+While these hold, the fast path chooses what is sent: a send queues no new file transfers,
+and file transfers already queued carry on. When any stops holding, every waiting recording
+is sent again through the normal file path (`sendAllPending`).
+
+### Chunks
+
+- A unit is what the file path would send: a whole file up to 1 MiB, or one 1 MiB part
+  (the same `file|total|partSize` layout). The fast path sends one unit at a time, as
+  chunks, each waiting for the phone's reply before the next goes. The reply is the flow
+  control: one message in flight.
+- **Chunk size.** The limit for a message is undocumented (`WCErrorCodePayloadTooLarge`,
+  7009, exists; reports put it near 64 KB). The first chunk is 60 KiB of data plus a header
+  of a few hundred bytes, under 64,000 bytes in all (a test checks this for the largest
+  header). On 7009 the size halves (30, 15, 7.5, then 4 KiB) and the same chunk goes again;
+  the size that worked is kept for the process and shown on the watch's diagnostics. If
+  4 KiB is too large, the fast path is off until the app is relaunched, and files carry on.
+  A 1 MiB part is 18 messages at 60 KiB.
+- **Frame.** `MGT1`, a 4-byte header length, a binary property list header (session ID,
+  file, the part's metadata with the same keys as a file transfer's, the unit's length, its
+  CRC-32 and the chunk's offset), then the chunk's bytes.
+- **Phone.** A chunk is written at its offset into a staging file per unit,
+  `.messages/<file>~<layout>.<index>~<crc>` in the recording folder (`.messages` is never a
+  recording file, so listings, exports and acknowledgements ignore it). The reply says how
+  many bytes of the unit the staging file holds (`have`). Once it holds all of them, the file
+  is synced to disk, checked against the unit's length and CRC-32, then handed to the same
+  store path as a file transfer: `TransferParts.store` for a part, the staged rename for a
+  whole file, `meta.json`'s version check, then joining and the `transferUserInfo`
+  acknowledgement listing every file. The reply says `done` only after the store; the join
+  and acknowledgement follow, so a long join does not time out the reply.
+- **Watch.** A `done` reply counts like a file transfer that finished: the unit is handed
+  over (`handoverGrace`) until the acknowledgement says what the phone holds. A queued file
+  transfer of the same unit that has not started (no progress, not transferring) is then
+  cancelled, since the phone stored its content; one that has started is left alone.
+  Deleting still needs the acknowledgement that lists every file at the watch's size.
+
+### How the two paths share the work
+
+- A unit is never sent by message while its file transfer is moving (transferring, or any
+  progress), or while a transfer's callback is not handled yet (`Submitted`).
+- File transfers queued but not started are taken last, after everything no file carries,
+  and the last queued first, so the one the file queue starts next is the last the fast path
+  takes. This is what makes opening the app help when the window of 32 parts was queued in
+  the background and is not moving: the fast path works from the far end of the queue.
+  If the file queue starts a part the fast path is sending, both arrive; the second is kept
+  as "already had" and costs only link time.
+- The unit the fast path is sending is in flight for the file path, as long as a message
+  went or a reply came in the last 60 s (`MessageTransfer.claimGrace`). So after the fast
+  path stops, a send does not queue that unit as a file while its last message may still
+  land, and a callback that never comes does not block it for longer.
+- `meta.json` stays last on both paths (`units` and `MessageTransfer.order`).
+- All of this runs on the watch's send queue, the same serial queue as file sends, so
+  choosing what goes by message and queuing files never race.
+
+### When reachability drops mid-part
+
+The message in flight fails with `WCErrorCodeNotReachable` (or the next chunk sees
+`isReachable` false, or the app leaves the screen). The run stops, every waiting recording
+goes to the file path, and the unit is queued as a file once its claim lapses (at once if the
+error came). The phone keeps the staging file. If the fast path takes the same unit again,
+its first chunk goes from offset 0, the reply says how much the phone holds, and the rest
+continues from there: one repeated chunk, not the whole part. If the file arrives first, the
+phone stores it and removes the staging file.
+
+Other failures (a reply timeout, delivery failed, the phone refusing a chunk, an unreadable
+reply, three replies in a row that do not move forward, no answer for 60 s) also stop the
+run and pause the fast path: 30 s, doubling to 30 min while failures continue
+(`TransferPolicy.retryDelay`), reset by a unit delivered. Not reachable is no failure: the
+fast path resumes as soon as the phone is reachable again.
+
+### Duplicates
+
+Every way a unit can arrive twice is harmless:
+
+- A chunk sent again (its reply was lost) is not written again; an overlapping chunk (after
+  the chunk size changed) adds only the new bytes; a chunk past what the phone holds is not
+  written, and the reply brings the watch back.
+- A unit the phone holds already (as a stored part, or the joined file in place at the
+  part's total size, or a whole file at its length) is answered `done` without writing.
+- A part stored by both paths is kept once (`TransferParts.store` returns "already had").
+- Staging files are removed when the part or file is stored by either path. Staging names
+  carry the layout and CRC, so chunks of different content or layout never mix.
+
+### What is still unknown
+
+- Throughput. With one chunk in flight, a part costs 18 round trips. Pipelining several
+  chunks is possible later if the round trip, not the link, turns out to limit it.
+- The real message size limit, and whether it differs by watch or OS version. The log says
+  when a size was too large.
+- Battery and radio cost while sending by message. It runs only while the app is open.
+
+## Window and part size
 ## Window and part size
 
 - **Part size stays 1 MiB.** At about 2 MB/min a part takes about 30 s, so an interruption
@@ -137,6 +226,8 @@ time between part acknowledgements in the transfer log with a test build that se
 | The watch app is reinstalled | Its recordings are gone with its container. Nothing is left to send. |
 | A join on the phone is cut short | Finished and acknowledged at the next activation. |
 | `meta.json` acknowledged while the last parts are in flight or handed over | No longer sent again on each acknowledgement. It used to go back and forth until the parts arrived. |
+| A message gets no reply or error, or the phone stops being reachable mid-part | The run stops (after 60 s at most), the unit and everything else waiting go as files, and the phone keeps the bytes it has for a later run by message. |
+| Messages fail while the app is open | The fast path pauses (30 s, doubling to 30 min) and files carry on meanwhile. |
 | The phone app cannot read the raw version | Not sent, and no refreshes are asked for. The watch asks the user to update the phone app. |
 
 ## Design note: sending during the recording
@@ -168,8 +259,8 @@ devices, and it overlaps the separate work on making raw recordings smaller.
 
 ## Device test steps
 
-The simulator does not deliver WatchConnectivity files or background tasks, so these need a
-paired iPhone and watch:
+The simulator does not deliver WatchConnectivity files, messages or background tasks, so
+these need a paired iPhone and watch:
 
 1. **Background progress.** Record a session of 20 minutes or more, stop it, and lower your
    wrist so the watch app goes to the background. Open the iPhone app's History once, then
@@ -191,6 +282,26 @@ paired iPhone and watch:
 5. **Phone reinstall.** With a recording partly sent, delete and reinstall the iPhone app.
    Open it. The watch should send `meta.json` alone, then the whole recording again, and
    delete it only after the phone lists every file.
-6. **Rate.** With both apps open, note the times of successive "iPhone holds" lines. The
-   interval per 1 MiB part is the transfer rate to compare with the 2 MB/min baseline and
-   with any fast-path experiment.
+6. **Rate (files).** The baseline is the 2 MB/min above. To measure files again with the
+   watch app open, use an iPhone build from before the fast path (the watch then sends files
+   only, step 10) and note the times of successive "iPhone holds" lines: the interval per
+   1 MiB part is the file rate.
+7. **Rate (messages).** Finish a 20-minute session with both apps open and the iPhone
+   nearby. About → iPhone → Waiting to send should say "Sending by: Messages". The log shows
+   "Sent motion.ndjson.gz part … by message: 1048576 B in 18 messages, … s" per part. Compare
+   those seconds with step 6, and check that the recording completes and is removed from the
+   watch. Note the message size shown: if it is below 60 KB, a size was too large (the log
+   says which).
+8. **Reachability drop mid-part.** While parts go by message, walk out of Bluetooth range
+   (or turn the iPhone's Bluetooth and Wi-Fi off). The log should show "Stopped sending …
+   by message at N of 1048576 B: … sending as files" and "Queued …" lines. Come back: the
+   next "Sent … by message" for that part should take fewer messages than 18 if the fast path
+   took it again, or the file arrives and the phone keeps one copy. The recording completes
+   and the joined file is byte-identical (export it from the iPhone and compare its size and
+   checksum with the watch's diagnostics sizes).
+9. **Background.** While parts go by message, press the crown to leave the app. The log
+   should show "Sending as files: the watch app is in the background", and the file path's
+   "Queued …" lines. Open the app again: "Sending by: Messages" again.
+10. **Old iPhone build.** With an iPhone build from before this change, the watch's
+    diagnostics should say the iPhone app does not take recordings by message, and the
+    recording should arrive as files as before.
