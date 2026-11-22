@@ -923,8 +923,8 @@ struct ManOverboardPage: View {
     /// Shown outside a session: lets the user record again without clearing the mark.
     var newSession: (() -> AnyView)?
     @State private var confirmClear = false
-    /// The mark shown when Clear was tapped: the one the confirmation clears.
-    @State private var clearing: UUID?
+    /// The mark (or waiting press) shown when Clear was tapped: what the confirmation clears.
+    @State private var clearing: ManOverboard.ClearTarget?
 
     var body: some View {
         let display = UserSettings.display(for: sport)
@@ -985,7 +985,7 @@ struct ManOverboardPage: View {
                     }
                     // A wet sleeve or a wave can press it: the mark is the way back, so ask.
                     Button("Clear", role: .destructive) {
-                        clearing = manOverboard.mark?.identity
+                        clearing = manOverboard.clearTarget
                         confirmClear = true
                     }
                     .accessibilityIdentifier("mob.clear")

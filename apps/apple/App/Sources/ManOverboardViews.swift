@@ -14,7 +14,7 @@ struct ManOverboardScreen: View {
     var points: [SessionRecorder.TrackPoint] = []
     @State private var confirmClear = false
     /// The mark shown when Clear was tapped: the one the confirmation clears.
-    @State private var clearing: UUID?
+    @State private var clearing: ManOverboard.ClearTarget?
     @ScaledMetric(relativeTo: .largeTitle) private var arrowSize = 120.0
 
     var body: some View {
@@ -59,7 +59,7 @@ struct ManOverboardScreen: View {
                     otherMarks(display: display)
                 }
                 Button(role: .destructive) {
-                    clearing = manOverboard.mark?.identity
+                    clearing = manOverboard.clearTarget
                     confirmClear = true
                 } label: {
                     // With only a press waiting, clearing cancels it.

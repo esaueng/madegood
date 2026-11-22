@@ -14,6 +14,7 @@ final class WatchSessionUITests: XCTestCase {
         XCTAssertTrue(kayak.waitForExistence(timeout: 15))
         attachScreenshot("1 sport cards")
         let started = Date()
+        scrollTo(kayak, in: app)
         kayak.tap()
 
         // Metrics page: speed from the engine, and distance accumulating.
@@ -124,6 +125,7 @@ final class WatchSessionUITests: XCTestCase {
         let app = launchDemoApp()
         let kayak = app.buttons["sport.kayak"]
         XCTAssertTrue(kayak.waitForExistence(timeout: 15))
+        scrollTo(kayak, in: app)
         kayak.tap()
         XCTAssertTrue(app.staticTexts["metric.speed"].waitForExistence(timeout: 15))
         waitForLabel(app.staticTexts["metric.speed"], "9.0 km/h")

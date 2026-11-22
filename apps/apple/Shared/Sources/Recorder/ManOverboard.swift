@@ -381,22 +381,37 @@ final class ManOverboard {
     /// Clears the guidance target, or with no mark, cancels a waiting press. The next
     /// newest mark becomes the target.
     func clear() {
-        clear(confirmed: mark?.identity)
+        clear(confirmed: clearTarget)
     }
 
-    /// Clears the mark the user confirmed clearing (`markID`, the target when they asked),
-    /// not whichever is the target by the time they confirm: a press while the
-    /// confirmation is open adds a mark that must survive it. Nil, asked with no mark,
-    /// cancels a waiting press, unless a mark has arrived since.
-    func clear(confirmed markID: UUID?) {
-        if let markID {
+    /// What Clear would remove now: the guidance target, or with no mark, the waiting press.
+    enum ClearTarget: Equatable, Sendable {
+        case mark(UUID)
+        /// A press waiting for a fix, by its press time (a later press replaces it).
+        case waitingPress(Date)
+    }
+
+    var clearTarget: ClearTarget? {
+        if let mark { return .mark(mark.identity) }
+        return awaitingFixSince.map(ClearTarget.waitingPress)
+    }
+
+    /// Clears what the user confirmed clearing (`clearTarget` when they asked), not
+    /// whatever Clear would remove by the time they confirm: a press while the
+    /// confirmation is open, marked or still waiting for a fix, must survive it. A waiting
+    /// press that has since become a mark is kept too.
+    func clear(confirmed target: ClearTarget?) {
+        switch target {
+        case .mark(let markID):
             guard marks.contains(where: { $0.identity == markID }) else { return }
             remove(markID)
-        } else {
-            guard mark == nil else { return }
+        case .waitingPress(let pressedAt):
+            guard mark == nil, awaitingFixSince == pressedAt else { return }
             setAwaiting(nil)
             fallback?.cancel()
             fallback = nil
+        case nil:
+            return
         }
         if !isActive {
             stopOwnUpdates()
