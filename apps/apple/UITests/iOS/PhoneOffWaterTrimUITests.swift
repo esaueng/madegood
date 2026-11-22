@@ -13,7 +13,7 @@ final class PhoneOffWaterTrimUITests: XCTestCase {
         let duration = app.staticTexts["stat.Total time"]
         scrollTo(duration, in: app)
         XCTAssertEqual(duration.label, "4:30")
-        scrollTo(trim, in: app)
+        openSessionMenu("session.more", in: app)
         trim.tap()
 
         let propose = app.buttons["trim.suggestion.preview"]
@@ -67,7 +67,7 @@ final class PhoneOffWaterTrimUITests: XCTestCase {
         XCTAssertTrue(cursor?.hasPrefix("0:00 elapsed, GPS speed ") == true)
         XCTAssertFalse(cursor?.contains("unavailable") == true)
 
-        scrollTo(trim, in: app)
+        openSessionMenu("session.more", in: app)
         trim.tap()
         let undo = app.buttons["trim.cut.0.undo"]
         scrollTo(undo, in: app)
@@ -79,7 +79,7 @@ final class PhoneOffWaterTrimUITests: XCTestCase {
         scrollTo(duration, in: app)
         XCTAssertEqual(duration.label, "4:30")
 
-        scrollTo(trim, in: app)
+        openSessionMenu("session.more", in: app)
         trim.tap()
         let restore = app.buttons["trim.restore"]
         scrollTo(restore, in: app)
@@ -94,7 +94,7 @@ final class PhoneOffWaterTrimUITests: XCTestCase {
         let app = launchBoundaryDemo(["-demoUnsupportedBoundaryPack"])
         openRecording(in: app)
         let trim = app.buttons["session.trim"]
-        scrollTo(trim, in: app)
+        openSessionMenu("session.more", in: app)
         trim.tap()
         XCTAssertTrue(app.sliders["trim.start"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.buttons["trim.suggestion.preview"].waitForExistence(timeout: 2))
