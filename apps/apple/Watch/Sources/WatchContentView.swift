@@ -414,7 +414,12 @@ private struct WatchAboutView: View {
                 Text("MadeGood asks the first time you start a session. Change access in the Settings app.")
             }
             Section("iPhone") {
-                LabeledContent("Waiting to send", value: "\(waiting)")
+                NavigationLink {
+                    TransferDiagnosticsView()
+                } label: {
+                    LabeledContent("Waiting to send", value: "\(waiting)")
+                }
+                .accessibilityIdentifier("about.transferDiagnostics")
                 Text("Settings you change here or on iPhone stay in sync.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
