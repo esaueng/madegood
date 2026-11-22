@@ -135,14 +135,16 @@ final class PhoneAppStoreScreenshots: XCTestCase {
     /// Scrolls until `element` sits `below` points under the top of the session panel's
     /// list. Drags run down the left margin, clear of the charts' scrub gesture.
     private func bringToTop(_ element: XCUIElement, in app: XCUIApplication, below: CGFloat = 12) {
-        scrollTo(element, in: app, column: 0.06)
+        // scrollTo looks further down for a row that isn't loaded; a row above the loaded
+        // ones (the wind row, after the maneuvers) is found by the upward drags below.
+        if element.exists { scrollTo(element, in: app, column: 0.06) }
         let window = app.windows.firstMatch
         let list = self.element("session.panel", in: app).collectionViews.firstMatch
         XCTAssertTrue(list.exists)
         let top = list.frame.minY + below
-        for _ in 0..<8 {
-            // A drag that overshoots leaves the row above the list, where it unloads:
-            // bring the content back down a little and measure again.
+        for _ in 0..<12 {
+            // A row above the list (not loaded yet, or left there by an overshoot): bring
+            // the content down a little and measure again.
             let offset = element.exists ? element.frame.minY - top : -window.frame.height * 0.2
             guard abs(offset) > 12 else { return }
             let from = window.coordinate(withNormalizedOffset: CGVector(dx: 0.06, dy: 0.5))

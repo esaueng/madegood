@@ -105,7 +105,12 @@ struct SessionMomentsSection: View {
     @ViewBuilder
     private var sailingSection: some View {
         let request = SailingRequest(source: source, wind: wind, prior: currentForecast?.fromDegrees)
-        let analysis = sailingResult?.request == request ? sailingResult?.analysis : nil
+        let current = sailingResult?.request == request ? sailingResult?.analysis : nil
+        // A new wind or forecast prior for the same recording keeps the previous answer on
+        // screen until the new one is ready. Swapping a long maneuver list for one progress
+        // row collapsed the list, and the scroll position jumped when the rows came back.
+        let analysis = current ?? (sailingResult?.request.source == source ? sailingResult?.analysis : nil)
+        let isUpdating = current == nil && analysis != nil
         Section {
             Button {
                 editingWind = true
@@ -140,7 +145,15 @@ struct SessionMomentsSection: View {
             }
             forecastRow
         } header: {
-            Text("Moments")
+            HStack(spacing: 6) {
+                Text("Moments")
+                if isUpdating {
+                    ProgressView()
+                        .controlSize(.mini)
+                        .accessibilityLabel("Updating maneuvers")
+                        .accessibilityIdentifier("moments.updating")
+                }
+            }
         } footer: {
             Text(footer(analysis))
         }
