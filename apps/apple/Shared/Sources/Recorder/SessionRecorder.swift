@@ -284,7 +284,9 @@ final class SessionRecorder {
             }
         #endif
         #if os(iOS)
-            backgroundActivity = CLBackgroundActivitySession()
+            // Not for the demo feed: a background activity session asks for location the
+            // first time, which interrupted synthetic UI tests with the system prompt.
+            if !demo { backgroundActivity = CLBackgroundActivitySession() }
         #endif
 
         if demo {
