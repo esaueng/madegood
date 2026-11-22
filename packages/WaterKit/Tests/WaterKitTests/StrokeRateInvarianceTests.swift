@@ -242,18 +242,140 @@ import Testing
     }
 
     /// A polarity flip moves the peak to the other lobe; the interval across it is not a
-    /// period, so the rate does not jump.
-    @Test func noPeriodSpansAPolarityFlip() {
-        var simulator = PaddleMotionSimulator(sport: .kayak, segments: [.init(duration: 300, strokeRate: 50)])
+    /// period, so the rate does not jump. The second harmonic changes sign over 30 cycles
+    /// from 120 s: the axis stays, but the projection's skewness turns negative, so the
+    /// running skewness flips the sign a while later. (The review of #178 found that the
+    /// earlier version of this test never flipped.) Canoe, one lobe per stroke: on the
+    /// wrong sign the broad lobe of a slower kayak cycle has no clear peak.
+    @Test(arguments: [50.0, 40.0])
+    func noPeriodSpansAPolarityFlip(rate: Double) {
+        let sport = Sport.canoe
+        var simulator = PaddleMotionSimulator(sport: sport, segments: [.init(duration: 120, strokeRate: rate)])
         simulator.seed = 50
-        let output = simulator.generate()
-        var detector = StrokeDetector(sport: .kayak, recordsCycles: true)
-        for sample in output.samples { detector.ingest(sample) }
-        let basePeriod = 60.0 * 2 / 50
-        for cycle in detector.cycles {
+        simulator.harmonic = 0.5
+        var motion = simulator.generate().samples
+        let cycle = 60.0 * (sport == .kayak ? 2 : 1) / rate
+        for step in 1...90 {
+            simulator.seed = 50 + UInt64(step)
+            simulator.harmonic = 0.5 - min(1, Double(step) / 30)
+            simulator.segments = [.init(duration: cycle, strokeRate: rate)]
+            // Each part ends on a whole cycle, so the cadence carries on.
+            simulator.startTime = (motion.last?.t ?? 0) + 1 / simulator.sampleRate
+            motion += simulator.generate().samples
+        }
+        var detector = StrokeDetector(sport: sport, recordsCycles: true)
+        for sample in motion { detector.ingest(sample) }
+        detector.finish()
+        #expect(detector.polarityFlips >= 1, "no flip")
+        let basePeriod = 60.0 * Double(detector.strokesPerCycle) / rate
+        let cycles = detector.cycles
+        // The flip did move the peak: an interval across it is far from the cadence...
+        let jumps = zip(cycles, cycles.dropFirst()).filter { abs($1.t - $0.t - basePeriod) > 0.15 * basePeriod }
+        #expect(!jumps.isEmpty, "no peak moved to the other lobe")
+        // ...and it is not a period.
+        for cycle in cycles {
             if let period = cycle.period {
                 #expect(abs(period - basePeriod) <= 0.15 * basePeriod, "period \(period) at \(cycle.t)")
             }
         }
+    }
+
+    /// The device frame turned by `angle` (radians) about the paddle frame's third axis,
+    /// which turns the main axis of motion by the same angle: at once at `from`, or evenly
+    /// over `over` seconds from it.
+    static func turned(_ motion: [MotionSample], from: Double, over: Double = 0, by angle: Double) -> [MotionSample] {
+        let pose = PaddleMotionSimulator.pose(side: 0)
+        let inverse = (0..<3).map { i in (0..<3).map { j in pose[j][i] } }
+        return motion.map { sample in
+            guard sample.t >= from else { return sample }
+            let share = over > 0 ? min(1, (sample.t - from) / over) : 1
+            let rotation = PaddleMotionSimulator.multiply(
+                pose, PaddleMotionSimulator.multiply(PaddleMotionSimulator.rotationZ(share * angle), inverse))
+            func rotate(_ v: Vector3) -> Vector3 {
+                let r = PaddleMotionSimulator.apply(rotation, [v.x, v.y, v.z])
+                return Vector3(x: r[0], y: r[1], z: r[2])
+            }
+            var sample = sample
+            sample.rotationRate = rotate(sample.rotationRate)
+            sample.userAcceleration = rotate(sample.userAcceleration)
+            sample.gravity = rotate(sample.gravity)
+            return sample
+        }
+    }
+
+    /// Review of #178: the watch turned about 100° on the wrist (a side switch). The turn was
+    /// measured between consecutive axis estimates only, and the 3 s window turns in about
+    /// 45° steps here, just below or above the limit depending on noise: one rate carried the
+    /// old sign through the turn while the other took the new window's, and every peak
+    /// after it was on the other lobe, about 0.7 s away.
+    @Test(arguments: [UInt64(1), 2, 3, 4])
+    func aLargeTurnKeepsTheCyclesAt50Hz(seed: UInt64) {
+        var simulator = PaddleMotionSimulator(sport: .canoe, segments: [.init(duration: 60, strokeRate: 30)])
+        simulator.seed = seed
+        let samples = simulator.generate().samples
+        for degrees in stride(from: 96.0, through: 114, by: 3) {
+            let motion = Self.turned(samples, from: 20, by: degrees * .pi / 180)
+            let reference = Self.cycles(motion, sport: .canoe).filter { $0.t > 24 }
+            for phase in [0, 1] {
+                let cycles = Self.cycles(Self.decimated(motion, phase: phase), sport: .canoe).filter { $0.t > 24 }
+                expectSameCycles(cycles, reference, "\(degrees)° phase \(phase)")
+            }
+        }
+    }
+
+    /// Review of #178: a turned axis that took its own sign could move the peak to the other
+    /// lobe, but only a flip kept the interval across it out of the rate (2.3 s at a steady
+    /// 2.0 s cadence). The watch turns slowly here, so the motion itself has no step.
+    @Test(arguments: [72.0, 105.0, 150.0])
+    func noPeriodSpansATurnedAxis(degrees: Double) {
+        var simulator = PaddleMotionSimulator(sport: .canoe, segments: [.init(duration: 60, strokeRate: 30)])
+        simulator.seed = 3
+        simulator.periodJitter = 0.02
+        let motion = Self.turned(simulator.generate().samples, from: 20, over: 6, by: degrees * .pi / 180)
+        let streams = [
+            ("100 Hz", motion), ("even", Self.decimated(motion)), ("odd", Self.decimated(motion, phase: 1)),
+        ]
+        for (name, stream) in streams {
+            var detector = StrokeDetector(sport: .canoe, recordsCycles: true)
+            for sample in stream { detector.ingest(sample) }
+            detector.finish()
+            #expect(detector.axisTurns + detector.polarityFlips >= 1, "\(name): the sign was never decided again")
+            for cycle in detector.cycles {
+                guard let period = cycle.period else { continue }
+                #expect(abs(period - 2) <= 0.15, "\(name): period \(period) at \(cycle.t)")
+            }
+        }
+    }
+
+    /// Review of #178: the first axis waited for a full 3 s window, and a sensor gap
+    /// restarted before it, so paddling in stretches shorter than that counted nothing.
+    @Test(arguments: [100.0, 50.0])
+    func strokesBetweenShortSensorGapsCount(rate: Double) {
+        var simulator = PaddleMotionSimulator(sport: .canoe, segments: [.init(duration: 30, strokeRate: 30)])
+        simulator.seed = 7
+        simulator.sampleRate = rate
+        let output = simulator.generate()
+        // Ten 2.5 s stretches with 0.5 s gaps between them.
+        let stretches = output.samples.filter { $0.t.truncatingRemainder(dividingBy: 3) < 2.5 }
+        let truth = output.cycleTimes.filter { $0.truncatingRemainder(dividingBy: 3) < 2.5 }
+        let cycles = Self.cycles(stretches, sport: .canoe)
+        #expect(cycles.count >= truth.count - 4, "\(cycles.count) cycles of \(truth.count)")
+    }
+
+    /// Review of #178: a recording shorter than the 3 s window found no axis, so its strokes
+    /// were lost. The end decides the axis from what there is, on session detail's path and
+    /// on the live one (`finish()`).
+    @Test(arguments: [100.0, 50.0])
+    func aRecordingShorterThanTheWindowCountsItsStrokes(rate: Double) {
+        var simulator = PaddleMotionSimulator(sport: .canoe, segments: [.init(duration: 2.4, strokeRate: 50)])
+        simulator.seed = 9
+        simulator.sampleRate = rate
+        let output = simulator.generate()
+        #expect((output.samples.last?.t ?? 0) < 3)
+        let detection = StrokeAnalysis.detect(motion: output.samples, sport: .canoe)
+        #expect(
+            detection.cycles.count >= output.cycleTimes.count - 1,
+            "\(detection.cycles.count) of \(output.cycleTimes.count)")
+        #expect(!detection.cycles.isEmpty)
     }
 }

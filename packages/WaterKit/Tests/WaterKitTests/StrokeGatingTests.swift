@@ -85,9 +85,7 @@ import Testing
             counts[Int(fix.t)] = (liveCount(), detector.snapshot.strokeCount)
         }
         for sample in motion { detector.ingest(sample) }
-        if let last = session.motion.last {
-            detector.ingest(StrokeAnalysis.closingSample(after: last, binInterval: detector.config.binInterval))
-        }
+        detector.finish()
 
         #expect(engine.autoPausedIntervals == [60...99, 142...Double.infinity])
         #expect(liveCount() == detail.strokeCount)
@@ -105,15 +103,22 @@ import Testing
     }
 
     /// Review of #173: one bin width added to 8.0 s rounds into the same bin, so the last
-    /// bin was never closed. The closing sample now sits in the middle of the next bin.
-    @Test func closingSampleLandsInTheNextBin() {
-        let bin = StrokeDetector.Config().binInterval
+    /// bin was never closed. `finish()` closes the open bin itself, whatever its time, and
+    /// only once.
+    @Test func finishClosesTheLastBin() {
         for t in [8.0, 0.0, 0.04, 12.36, 3_600.0, 7_199.98] {
-            let last = MotionSample(
-                t: t, userAcceleration: .zero, gravity: .zero, rotationRate: .zero,
-                attitude: Quaternion(x: 0, y: 0, z: 0, w: 1))
-            let closing = StrokeAnalysis.closingSample(after: last, binInterval: bin)
-            #expect(Int((closing.t / bin).rounded(.down)) == Int((t / bin).rounded(.down)) + 1, "at \(t) s")
+            var detector = StrokeDetector(sport: .kayak)
+            for offset in [0.08, 0.04, 0.0] {
+                detector.ingest(
+                    MotionSample(
+                        t: t + offset - 0.08, userAcceleration: .zero, gravity: .zero, rotationRate: .zero,
+                        attitude: Quaternion(x: 0, y: 0, z: 0, w: 1)))
+            }
+            let open = detector.processedBins
+            detector.finish()
+            #expect(detector.processedBins == open + 1, "at \(t) s")
+            detector.finish()
+            #expect(detector.processedBins == open + 1, "at \(t) s, finished twice")
         }
     }
 

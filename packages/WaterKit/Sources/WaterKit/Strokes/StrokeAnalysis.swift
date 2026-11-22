@@ -69,8 +69,9 @@ public struct StrokeAnalysis: Sendable, Hashable {
             }
             detector.ingest(sample)
         }
-        // Close the last bin, so a cycle that ended in it is not lost.
-        if let last = motion.last { detector.ingest(closingSample(after: last, binInterval: config.binInterval)) }
+        // Close the last bin, so a cycle that ended in it is not lost, and settle an axis
+        // still waiting for a full window.
+        detector.finish()
         for event in pauses[next...] { detector.ingest(event) }
         let cycles = detector.cycles
         let strokes = expand(cycles, strokesPerCycle: detector.strokesPerCycle) { detector.isPaused(at: $0) }
@@ -105,15 +106,6 @@ public struct StrokeAnalysis: Sendable, Hashable {
         return detect(motion: motion, sport: sport, events: pauseEvents, config: config) {
             clock.fromMono($0 + origin)
         }
-    }
-
-    /// A copy of the last motion sample in the middle of the next 40 ms bin: fed to the
-    /// detector at the end, it closes the last bin. Adding one bin width to the time could
-    /// land in the same bin by rounding (8.0 s + 0.04 s gives bin 200, not 201).
-    public static func closingSample(after last: MotionSample, binInterval: Double) -> MotionSample {
-        var closing = last
-        closing.t = ((last.t / binInterval).rounded(.down) + 1.5) * binInterval
-        return closing
     }
 
     /// Strokes in `cycles` outside every `excluded` interval, counted the way session detail

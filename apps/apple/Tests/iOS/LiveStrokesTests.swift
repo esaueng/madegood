@@ -100,4 +100,19 @@ final class LiveStrokesTests: XCTestCase {
                 "ending at \(end) s")
         }
     }
+
+    /// Review of #178: the first axis waits for a full 3 s window, so a session shorter than
+    /// that counted no strokes live. `finish()` settles the axis from what there is.
+    func testFinishCountsStrokesInASessionShorterThanTheAxisWindow() {
+        let clock = Uptime()
+        let strokes = LiveStrokes(sport: .sup, startMono: startUptime, now: clock.read)
+        let samples = motion(seconds: 2.5, rate: 50)
+        XCTAssertLessThan(samples.last?.t ?? 0, 3)
+        feed(samples, to: strokes, clock: clock)
+        XCTAssertEqual(strokes.snapshot().strokeCount, 0)
+        strokes.finish()
+        let detail = StrokeAnalysis.detect(motion: samples, sport: .sup).strokes.count
+        XCTAssertGreaterThan(detail, 0)
+        XCTAssertEqual(strokes.snapshot().strokeCount, detail)
+    }
 }

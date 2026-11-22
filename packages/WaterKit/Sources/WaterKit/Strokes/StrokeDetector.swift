@@ -9,8 +9,9 @@ import Foundation
 /// 2. Each of the six channels (rotation rate, and user acceleration scaled to a comparable
 ///    size) is band-passed to 0.3–3 Hz.
 /// 3. The filtered vector is projected onto its main axis of movement: the first principal
-///    component over the last 3 s, refreshed every 0.5 s, signed so the projection's
-///    long-run skewness is positive (the same lobe at any sample rate or start time).
+///    component over the last 3 s (with a share of the last minute, so it holds through a
+///    rest), refreshed every 0.5 s, signed so the projection's long-run skewness is positive
+///    (the same lobe at any sample rate or start time).
 /// 4. A wrist cycle is a positive lobe of that signal above an adaptive threshold (a share
 ///    of its running RMS, never below a noise floor), followed by a swing below a negative
 ///    hysteresis level. Cycles closer than the minimum gap are merged.
@@ -29,16 +30,25 @@ public struct StrokeDetector: LiveAnalyzer {
         /// where 5 s missed a stroke or two at each switch on the synthetic tests.
         public var axisWindow = 3.0
         public var axisUpdateInterval = 0.5
+        /// The running second moments of the channels (see `polarityTimeConstant`) are added
+        /// to the window's covariance with this weight, so the axis holds through a rest.
+        public var axisHistoryWeight = 0.15
         /// The axis's sign (which lobe of the wrist cycle is the peak) follows the long-run
-        /// skewness of the projected signal: its third and second moments are averaged with
-        /// this time constant (evenly over the first windows after a start or gap), s...
+        /// skewness of the projected signal. The second and third moments of the filtered
+        /// channels are averaged with this time constant (evenly over the first bins after a
+        /// start or gap), s, and each axis is evaluated on them...
         public var polarityTimeConstant = 60.0
         /// ...and the sign flips once that skewness is below minus this, so noise around zero
         /// does not flip it back and forth.
         public var polarityDeadBand = 0.05
-        /// A new axis further than this from the previous one (|cosine| below it) takes its
-        /// sign from its own window: the previous axis says nothing about it.
+        /// An axis further than this from the one whose sign was last decided (|cosine| below
+        /// it) takes the sign of its skewness without the dead band: that axis says nothing
+        /// about it. Measured from the last decision, not the previous estimate, so a turn
+        /// gives the same sign however many steps it takes.
         public var axisTurnCosine = 0.7
+        /// A restart or the end of the motion before a full axis window still decides the
+        /// axis from this much, s, and detects strokes in it.
+        public var minimumAxisWindow = 1.0
         /// User acceleration is divided by this before it is combined with rotation rate,
         /// m/s² per rad/s, so neither dominates just because of its unit.
         public var accelerationScale = 4.0
@@ -131,18 +141,26 @@ public struct StrokeDetector: LiveAnalyzer {
     private var filtersPrimed = false
     // Principal axis
     private var window: [[Double]] = []
-    /// Time of the first bin in `window` while it has not wrapped yet.
-    private var windowStart = 0.0
+    /// Time of the newest bin in `window`.
+    private var windowEnd = 0.0
     private var windowHead = 0
     private var binsSinceAxis = 0
     private var axis: [Double]?
-    /// Running second and third moments of the projected signal, on the current axis's sign.
-    private var polarity = (m2: 0.0, m3: 0.0, windows: 0)
-    /// When the sign last flipped: an interval between peaks either side of it spans a change
-    /// of phase, so it is not a period.
-    private var polarityFlippedAt: Double?
-    /// Polarity flips (for tests).
+    /// The axis when its sign was last decided (a first axis, a turn or a flip).
+    private var signReference: [Double]?
+    /// Running second (6 × 6) and third (6 × 6 × 6) moments of the filtered channels, and how
+    /// many bins they hold since the start or the last gap.
+    private var secondMoments = [Double](repeating: 0, count: 36)
+    private var thirdMoments = [Double](repeating: 0, count: 216)
+    private var momentBins = 0
+    /// When the sign was last decided: an interval between peaks either side of it may span a
+    /// change of lobe, so it is not a period.
+    private var signDecidedAt: Double?
+    /// Polarity flips and turned axes that took their own sign (for tests).
     private(set) var polarityFlips = 0
+    private(set) var axisTurns = 0
+    /// Bins run through the filters (for tests).
+    private(set) var processedBins = 0
     // Detection
     private var meanSquare = 0.0
     private var inLobe = false
@@ -250,6 +268,14 @@ public struct StrokeDetector: LiveAnalyzer {
         latestTime = max(latestTime ?? t, t)
     }
 
+    /// Ends the motion: closes the last bin, so a cycle that ended in it counts, and decides
+    /// the axis if a full window never came, so strokes in a short last stretch count. Call it
+    /// once the last sample is in (session detail and the live count both do).
+    public mutating func finish() {
+        if let index = binIndex, binCount > 0 { closeBin(index) }
+        settlePendingAxis()
+    }
+
     public var snapshot: Metrics {
         Metrics(strokeCount: strokeCount, strokeRate: strokeRate, sideSwitches: sideSwitches, lastStrokeAt: lastPeak)
     }
@@ -292,6 +318,8 @@ public struct StrokeDetector: LiveAnalyzer {
     }
 
     private mutating func restart(at t: Double) {
+        // Strokes in a stretch shorter than the axis window still count.
+        settlePendingAxis()
         restarts += 1
         resetFilters()
         window.removeAll(keepingCapacity: true)
@@ -305,9 +333,13 @@ public struct StrokeDetector: LiveAnalyzer {
         // The watch may sit differently after a gap: find the axis afresh from the new
         // window (and run detection over it once it exists).
         axis = nil
+        signReference = nil
+        secondMoments = [Double](repeating: 0, count: secondMoments.count)
+        thirdMoments = [Double](repeating: 0, count: thirdMoments.count)
+        momentBins = 0
         // A gap is a pause: the next cycle's period does not count.
         lastPeak = nil
-        polarityFlippedAt = nil
+        signDecidedAt = nil
         periods.removeAll()
         gravitySum = .zero
         gravityCount = 0
@@ -336,9 +368,11 @@ public struct StrokeDetector: LiveAnalyzer {
         gravitySum.y += bin[7]
         gravitySum.z += bin[8]
         gravityCount += 1
+        processedBins += 1
+        accumulateMoments(filtered)
 
         let capacity = Int((config.axisWindow / config.binInterval).rounded())
-        if window.isEmpty { windowStart = t }
+        windowEnd = t
         if window.count < capacity {
             window.append(filtered)
         } else {
@@ -359,13 +393,62 @@ public struct StrokeDetector: LiveAnalyzer {
         if hadAxis {
             project(filtered, on: axis, at: t)
         } else {
-            // The first axis: run detection over the bins that were waiting for it (the
-            // window has not wrapped yet, so they are in time order), so the first stroke
-            // after a start or a gap still counts.
-            for (offset, row) in window.enumerated() {
-                project(row, on: axis, at: windowStart + Double(offset) * config.binInterval)
+            replayWindow(on: axis)
+        }
+    }
+
+    /// The first axis: run detection over the bins that were waiting for it, oldest first,
+    /// so the first stroke after a start or a gap still counts.
+    private mutating func replayWindow(on axis: [Double]) {
+        let count = window.count
+        for offset in 0..<count {
+            let row = window[(windowHead + offset) % count]
+            project(row, on: axis, at: windowEnd - Double(count - 1 - offset) * config.binInterval)
+        }
+    }
+
+    /// A restart or the end before the first full window: decide the axis from the bins there
+    /// are (at least `minimumAxisWindow`) and detect over them.
+    private mutating func settlePendingAxis() {
+        let minimum = Int((config.minimumAxisWindow / config.binInterval).rounded())
+        guard axis == nil, !window.isEmpty, window.count >= max(2, minimum) else { return }
+        updateAxis(at: windowEnd)
+        binsSinceAxis = 0
+        if let axis { replayWindow(on: axis) }
+    }
+
+    /// Adds a filtered bin to the running moments behind the axis's sign.
+    private mutating func accumulateMoments(_ x: [Double]) {
+        momentBins += 1
+        let settled = min(1, config.binInterval / config.polarityTimeConstant)
+        let weight = max(1 / Double(momentBins), settled)
+        for i in 0..<6 {
+            for j in 0..<6 {
+                let xij = x[i] * x[j]
+                let ij = i * 6 + j
+                secondMoments[ij] += weight * (xij - secondMoments[ij])
+                for k in 0..<6 {
+                    let ijk = ij * 6 + k
+                    thirdMoments[ijk] += weight * (xij * x[k] - thirdMoments[ijk])
+                }
             }
         }
+    }
+
+    /// Skewness of the projection on `vector` over the running moments.
+    private func skewness(along vector: [Double]) -> Double {
+        var m2 = 0.0
+        var m3 = 0.0
+        for i in 0..<6 {
+            for j in 0..<6 {
+                let vij = vector[i] * vector[j]
+                let ij = i * 6 + j
+                m2 += secondMoments[ij] * vij
+                for k in 0..<6 { m3 += thirdMoments[ij * 6 + k] * vij * vector[k] }
+            }
+        }
+        guard m2 > 0 else { return 0 }
+        return m3 / (m2 * m2.squareRoot())
     }
 
     private mutating func project(_ filtered: [Double], on axis: [Double], at t: Double) {
@@ -418,10 +501,10 @@ public struct StrokeDetector: LiveAnalyzer {
         var period: Double?
         if let lastPeak {
             let interval = peak - lastPeak
-            let spansFlip = polarityFlippedAt.map { lastPeak < $0 && $0 <= peak } ?? false
+            let spansSignDecision = signDecidedAt.map { lastPeak < $0 && $0 <= peak } ?? false
             if interval > config.maxCyclePeriod || pauseSpans(lastPeak, peak) {
                 periods.removeAll()
-            } else if !spansFlip {
+            } else if !spansSignDecision {
                 period = interval
                 periods.append(interval)
                 if periods.count > config.rateCycles { periods.removeFirst(periods.count - config.rateCycles) }
@@ -493,49 +576,47 @@ public struct StrokeDetector: LiveAnalyzer {
             }
             trace += covariance[i][i]
         }
+        // A share of the running second moments (the last minute or so): at rest the window
+        // holds only noise, and the axis stays with the last paddling instead of following
+        // it, so the first stroke after a rest is projected the same way at any sample rate.
+        // While paddling the window outweighs it, so a side switch is still followed.
+        for i in 0..<6 {
+            for j in 0..<6 { covariance[i][j] += config.axisHistoryWeight * secondMoments[i * 6 + j] }
+            trace += config.axisHistoryWeight * secondMoments[i * 6 + i]
+        }
         // Too little movement to define an axis: keep the last one.
         guard trace > 1e-9 else { return }
         guard var vector = Self.principalAxis(of: covariance) else { return }
         // The eigenvector's sign is arbitrary, and it decides which lobe of the wrist cycle
         // is its peak: the other lobe is a few hundred ms away. Carrying the first sign along
         // made that choice depend on where the recording started, the sample rate and the
-        // bin phase. The sign follows the signal instead: the projection's long-run skewness
-        // is positive.
-        var m2 = 0.0
-        var m3 = 0.0
-        for row in window {
-            var x = 0.0
-            for channel in 0..<6 { x += vector[channel] * (row[channel] - mean[channel]) }
-            m2 += x * x / count
-            m3 += x * x * x / count
-        }
-        let alignment = axis.map { zip($0, vector).reduce(0) { $0 + $1.0 * $1.1 } } ?? 0
-        if abs(alignment) < config.axisTurnCosine {
-            // A first axis, or the movement plane turned: this window alone sets the sign.
-            // After a first axis (at the start or after a gap) the windows that follow are
-            // averaged evenly, so a first window that misjudged the sign is corrected within
-            // seconds; a turned axis keeps the time constant, so turns while not paddling
-            // do not flip it back and forth.
-            if m3 < 0 { vector = vector.map { -$0 } }
-            let settled = Int((config.polarityTimeConstant / config.axisUpdateInterval).rounded(.up))
-            polarity = (m2, abs(m3), axis == nil ? 1 : settled)
-        } else {
-            // Keep the previous axis's sign while the running skewness agrees with it.
+        // bin phase. The sign follows the signal instead: the projection's long-run skewness,
+        // over the running moments (so it depends on the axis and the motion, not on the
+        // steps the estimates took to get there), is positive.
+        var skew = skewness(along: vector)
+        let alignment = signReference.map { zip($0, vector).reduce(0) { $0 + $1.0 * $1.1 } } ?? 0
+        if abs(alignment) >= config.axisTurnCosine {
+            // Near the axis whose sign was last decided: keep that sign while the skewness
+            // does not clearly disagree.
             if alignment < 0 {
                 vector = vector.map { -$0 }
-                m3 = -m3
+                skew = -skew
             }
-            polarity.windows += 1
-            let settledWeight = min(1, config.axisUpdateInterval / config.polarityTimeConstant)
-            let weight = max(1 / Double(polarity.windows), settledWeight)
-            polarity.m2 += weight * (m2 - polarity.m2)
-            polarity.m3 += weight * (m3 - polarity.m3)
-            if polarity.m3 < -config.polarityDeadBand * polarity.m2 * polarity.m2.squareRoot() {
+            if skew < -config.polarityDeadBand {
                 vector = vector.map { -$0 }
-                polarity.m3 = -polarity.m3
                 polarityFlips += 1
-                polarityFlippedAt = t
+                signDecidedAt = t
+                signReference = vector
             }
+        } else {
+            // A first axis, or one that has turned away from the last decision: the sign of
+            // its skewness. A turned axis may move the peak to the other lobe.
+            if skew < 0 { vector = vector.map { -$0 } }
+            if signReference != nil {
+                axisTurns += 1
+                signDecidedAt = t
+            }
+            signReference = vector
         }
         axis = vector
     }

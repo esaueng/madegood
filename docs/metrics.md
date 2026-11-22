@@ -194,8 +194,8 @@ so post-session strokes need the raw recording.
 | Resampling | Samples are averaged into 40 ms bins (25 Hz), whatever the sensor rate. When the time between two samples is at most 0.2 s, any empty bins are interpolated between the bins either side (never held at the last value); a longer gap restarts the filters, the main axis and the rate |
 | Signal | Rotation rate (rad/s) and user acceleration divided by 4 m/s² per rad/s, six channels |
 | Band-pass | 0.3–3 Hz per channel (second-order Butterworth high-pass and low-pass) |
-| Main axis | First principal component of the filtered channels over the last 3 s, refreshed every 0.5 s: the eigenvector with the largest eigenvalue of their covariance, by the Jacobi method, so a change of movement plane is always found. The first axis waits for a full 3 s window. After a restart the axis is found afresh and detection runs over the bins that waited for it. PLAN §5 suggests 5 s; 3 s follows a side switch within about a stroke |
-| Axis sign | The sign decides which lobe of the wrist cycle is the peak (the other one is a few hundred ms away), so it follows the signal: the projection's skewness is positive. A first axis, or one more than about 45° (cosine 0.7) from the previous one, takes the sign of its own window's skewness. Otherwise the sign stays with the previous axis while the running skewness agrees: the third and second moments of the projection over each window, averaged (evenly after a first axis, then with a 60 s time constant), and the sign flips when skewness falls below −0.05. An interval between peaks either side of a flip is not a period |
+| Main axis | First principal component of the filtered channels over the last 3 s, refreshed every 0.5 s: the eigenvector with the largest eigenvalue of their covariance plus 0.15 × their running second moments (see "Axis sign"), by the Jacobi method, so a change of movement plane is always found. The running part keeps the axis with the last paddling through a rest, when the window holds only noise; while paddling the window outweighs it. The first axis waits for a full 3 s window, unless a restart or the end of the motion comes first: then it is found from what there is, if at least 1 s. After a restart the axis is found afresh, and detection runs over the bins that waited for it. PLAN §5 suggests 5 s; 3 s follows a side switch within about a stroke |
+| Axis sign | The sign decides which lobe of the wrist cycle is the peak (the other one is a few hundred ms away), so it follows the signal: the projection's long-run skewness is positive. The second and third moments of the six filtered channels are averaged, evenly after a start or restart and then with a 60 s time constant, and each axis's skewness is read from them, so it depends on the axis and the motion, not on the steps the estimates took. A first axis, or one more than about 45° (cosine 0.7) from the axis whose sign was last decided, takes the sign of its skewness. Otherwise it keeps that axis's sign unless the skewness falls below −0.05, which flips it. An interval between peaks either side of a sign decision (a turned axis or a flip) is not a period |
 | Cycle | A positive lobe of the projected signal above max(0.25, 0.5 × running RMS (3 s time constant)), ended by a swing below −0.3 × that threshold. The peak time is refined with a parabola through the top three bins |
 | Minimum gap | Peaks closer than max(0.33 s, 0.45 × median recent period) are one cycle |
 | Strokes | Kayak: two per wrist cycle (left and right). Canoe and SUP: one |
@@ -285,9 +285,8 @@ side switches and heavy noise) and checks that the cycles agree, and the fixture
 also run on every 100 Hz paddling fixture decimated to 50 Hz. Before 1.3.0 the axis kept
 the sign of the first axis, which was arbitrary: in a real kayak recording
 decimated to 50 Hz, only 17–40 % of the cycles stayed within 40 ms, the rest on the
-other lobe about 450 ms away. Now about 98 % (97.6–98.6 %) stay within 40 ms, none on
-the other lobe, and strokes in moving time are within 0.5 % of the 100 Hz count. The
-recorder samples motion at 50 Hz since.
+other lobe about 450 ms away. Now about 98 % stay within 40 ms, and strokes in moving
+time are within 0.5 % of the 100 Hz count. The recorder samples motion at 50 Hz since.
 
 ## Sailing maneuvers
 
