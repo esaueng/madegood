@@ -274,6 +274,10 @@ public enum FixtureCheck {
         guard let truthValue = object["truth"] else { return problems }
         guard case .object(let truth) = truthValue else { return problems + ["\(context): truth must be an object"] }
         problems += unknownKeys(Set(truth.keys), allowed: labelsTruthFields, context: "\(context) truth")
+        // Excluded segments only qualify stroke times: alone they would score nothing.
+        if truth["excluded"] != nil, truth["strokeTimes"] == nil {
+            problems.append("\(context): truth.excluded needs truth.strokeTimes")
+        }
         for key in ["strokes", "strokeRateSPM", "windDirectionDeg", "distanceM"]
         where truth[key] != nil && !isNumber(truth[key]) {
             problems.append("\(context): truth.\(key) must be a number")

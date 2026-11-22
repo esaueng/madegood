@@ -134,6 +134,11 @@ func score(_ arguments: [String]) -> Never {
         Per stroke (within 0.45 × the stroke interval, at most \(StrokeScore.matchWindow) s): \(result.matched) matched, \(result.missed) missed, \
         \(result.extra) extra (\(result.extraInExcluded) in excluded segments)
         """)
+    if file.source == FixtureLabelsFile.draftSource {
+        // Never a pass: a draft is the detector's own output, not ground truth.
+        print("\nNot a result: review the labels and export them first.")
+        exit(3)
+    }
     exit(result.countPasses && result.ratePasses ? 0 : 1)
 }
 

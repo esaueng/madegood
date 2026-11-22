@@ -63,12 +63,13 @@ public struct StrokeLabels: Sendable, Hashable, Codable {
     public var count: Int { strokes.count }
 
     /// Average strokes per minute while paddling: strokes are split into bouts at an
-    /// excluded segment or at a gap longer than `maxCyclePeriod` per cycle, and the rate is
-    /// the intervals within bouts of at least three strokes over their total time. Nil when
-    /// no such bout exists.
+    /// excluded segment or where a wrist cycle is longer than `maxCyclePeriod` (one stroke
+    /// for canoe and SUP; for kayak the two strokes ending at a stroke, so blades that are
+    /// not evenly spaced, 0.9 s and 2.1 s say, still make one bout), and the rate is the
+    /// intervals within bouts of at least three strokes over their total time. Nil when no
+    /// such bout exists.
     public func strokeRate(sport: Sport) -> Double? {
-        let perCycle = sport == .kayak ? 2.0 : 1.0
-        let maxGap = Self.maxCyclePeriod / perCycle
+        let strokesPerCycle = sport == .kayak ? 2 : 1
         var intervals = 0
         var time = 0.0
         var boutIntervals = 0
@@ -81,9 +82,17 @@ public struct StrokeLabels: Sendable, Hashable, Codable {
             boutIntervals = 0
             boutTime = 0
         }
-        for (a, b) in zip(strokes, strokes.dropFirst()) {
+        for index in strokes.indices.dropFirst() {
+            let a = strokes[index - 1]
+            let b = strokes[index]
             let gap = b.t - a.t
-            let split = gap <= 0 || gap > maxGap || excluded.contains { $0.overlaps(a.t, b.t) }
+            // The cycle ending at b: back one stroke (canoe, SUP) or two (kayak), within the
+            // bout; at a bout's start only this gap is known.
+            let cycleStart = index - strokesPerCycle
+            let cycle = boutIntervals + 1 >= strokesPerCycle && cycleStart >= 0 ? b.t - strokes[cycleStart].t : gap
+            let split =
+                gap <= 0 || gap > Self.maxCyclePeriod || cycle > Self.maxCyclePeriod
+                || excluded.contains { $0.overlaps(a.t, b.t) }
             if split {
                 closeBout()
             } else {

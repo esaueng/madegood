@@ -38,7 +38,9 @@ import Testing
                         case .object(let labels)? = try? JSONDecoder().decode(JSONValue.self, from: data),
                         case .object(let truth)? = labels["truth"]
                     {
-                        hasStrokes = !Set(truth.keys).isDisjoint(with: ["strokes", "strokeRateSPM", "strokeTimes"])
+                        hasStrokes = !Set(truth.keys).isDisjoint(with: [
+                            "strokes", "strokeRateSPM", "strokeTimes", "excluded",
+                        ])
                     }
                     guard hasStrokes == strokes else { continue }
                     let context = folder.path.replacingOccurrences(of: repository.path + "/", with: "")
@@ -94,6 +96,9 @@ import Testing
         if let strokeLabels = labels.strokeLabels {
             let problems = strokeLabels.problems(duration: max(session.duration, session.motion.last?.t ?? 0))
             try #require(problems.isEmpty, "\(context): \(problems)")
+            // Stroke-by-stroke labels always score both: a rate they cannot give would
+            // otherwise drop the ±2 SPM check without a word.
+            try #require(strokes.strokeRateSPM != nil, "\(context): the stroke labels give no rate")
         }
         try check(truth, session: session, context: context)
         // The thresholds must also hold after writing the recording with the

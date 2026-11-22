@@ -31,6 +31,28 @@ import Testing
         #expect(StrokeLabels(strokes: Self.strokes(from: 0, every: 1, count: 2)).strokeRate(sport: .kayak) == nil)
     }
 
+    /// Review of #177: kayak blades 0.9 s and 2.1 s apart (a 3 s cycle, 40 spm) were split
+    /// at every 2.1 s gap, every bout had two strokes, and the rate came out nil, which
+    /// dropped the rate check. Bouts now split per wrist cycle.
+    @Test func unevenKayakBladesStayOneBout() throws {
+        var times: [Double] = [0]
+        for index in 1..<41 { times.append(times[index - 1] + (index.isMultiple(of: 2) ? 2.1 : 0.9)) }
+        let labels = StrokeLabels(strokes: times.map { StrokeLabels.Stroke(t: $0) })
+        #expect(abs(try #require(labels.strokeRate(sport: .kayak)) - 40) < 1e-9)
+        // A real stop still splits: 5 s after a stroke is more than a 4 s cycle.
+        let stopped = StrokeLabels(strokes: (times + times.map { $0 + times.last! + 5 }).map { .init(t: $0) })
+        #expect(abs(try #require(stopped.strokeRate(sport: .kayak)) - 40) < 1e-9)
+    }
+
+    /// Review of #177: excluded segments with no stroke times passed the check and scored
+    /// nothing.
+    @Test func excludedSegmentsNeedStrokeTimes() {
+        let data = Data(
+            #"{"v":1,"sport":"kayak","source":"motion-review","license":"CC-BY-4.0","truth":{"excluded":[{"start":0,"end":10}]}}"#
+                .utf8)
+        #expect(FixtureCheck.labelsProblems(data).contains { $0.contains("truth.excluded needs truth.strokeTimes") })
+    }
+
     @Test func anExcludedSegmentEndsABout() throws {
         let strokes = Self.strokes(from: 0, every: 1, count: 6) + Self.strokes(from: 6.5, every: 1, count: 6)
         let joined = StrokeLabels(strokes: strokes)

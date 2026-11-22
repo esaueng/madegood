@@ -141,9 +141,9 @@ for generated data), as stated in `labels.json`.
 | `truth.distanceM` | Optional reference distance in metres for inspection. |
 
 Include only measured values. Stroke truth from `strokeTimes`: the count is every
-labelled stroke. For the rate, strokes form bouts that end at an excluded stretch or at a
-gap longer than 4 s per wrist cycle (2 s between kayak strokes, 4 s for canoe and SUP),
-and the rate is 60 × the intervals within bouts of at least three strokes over their total
+labelled stroke. For the rate, strokes form bouts that end at an excluded stretch or where
+a wrist cycle is longer than 4 s (one stroke for canoe and SUP, the two strokes ending at a
+stroke for kayak, so uneven blades still make one bout), and the rate is 60 × the intervals within bouts of at least three strokes over their total
 time. The accuracy test compares these with what session detail shows: its count and
 average rate, in moving time only. A stroke session detail counts in an excluded stretch
 is an error, and so is a labelled stroke it leaves out (for example, paddling below the
@@ -214,8 +214,11 @@ candidates. Everything below stays on your computer until step 7.
    **Export labels.json**.
 6. **Score (optional).** `scripts/label-strokes score <session-folder> labels.json`
    prints the labelled and session-detail counts and rates against PLAN §5, with a
-   per-stroke breakdown of missed and extra strokes.
+   per-stroke breakdown of missed and extra strokes. It exits 0 only when both pass, and
+   never for a draft (exit 3): a draft is the detector's own output.
 7. **Make the fixture.** Follow [Publishing a recording](#publishing-a-recording) with
-   `--labels labels.json` in step 2. Only the anonymized folder leaves your computer. The
+   `--labels labels.json` in step 2. Only the anonymized folder leaves your computer.
+   The export leaves out the description, which no check can clear; add one in the
+   fixture's pull request, where it is reviewed. Excluded stretches need stroke times. The
    accuracy test `labeledPaddlingRecordingsMeetStrokeThresholds` picks up every
    labelled kayak, canoe and SUP fixture; until the first one exists it is skipped.

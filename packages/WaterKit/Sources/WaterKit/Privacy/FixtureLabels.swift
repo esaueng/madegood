@@ -100,12 +100,14 @@ public struct FixtureLabelsError: Error, Sendable, Hashable, CustomStringConvert
 public enum FixtureLabels {
     /// Checks reviewed labels against the recording they were made on and returns them
     /// re-encoded with only the documented fields. Times are seconds since the session
-    /// start, which anonymizing keeps, so they stay valid for the anonymized recording.
+    /// start, which anonymizing keeps, so they stay valid for the anonymized recording. The
+    /// free-text description is left out: it could name a person, a place or a date, and
+    /// no check can tell. Add one by hand in the fixture's pull request, where it is reviewed.
     /// Throws for a draft, a schema problem, another sport, or times outside the recording.
     public static func export(_ data: Data, for session: RawSession) throws(FixtureLabelsError) -> Data {
         var problems = FixtureCheck.labelsProblems(data)
         guard problems.isEmpty else { throw FixtureLabelsError(problems: problems) }
-        let labels: FixtureLabelsFile
+        var labels: FixtureLabelsFile
         do {
             labels = try JSONDecoder().decode(FixtureLabelsFile.self, from: data)
         } catch {
@@ -130,6 +132,7 @@ public enum FixtureLabels {
             problems += error.problems.map { "labels.json: \($0)" }
         }
         guard problems.isEmpty else { throw FixtureLabelsError(problems: problems) }
+        labels.description = nil
         do {
             return try labels.encoded()
         } catch {

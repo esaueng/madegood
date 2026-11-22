@@ -92,6 +92,10 @@ import Testing
         // free text, altitude or magnetic heading.
         let files = try Self.contents(of: output)
         #expect(files.keys.contains("labels.json") && files.keys.contains("motion.ndjson.gz"))
+        // Review of #177: the description is free text a check cannot clear (a name, a
+        // place, a date), so it is not exported.
+        #expect(files["labels.json"]?.contains("description") == false)
+        #expect(files["labels.json"]?.contains("left wrist") == false)
         let id = original.meta.sessionId.uuidString
         var keys = Set<String>()
         var numbers: [Double] = []
