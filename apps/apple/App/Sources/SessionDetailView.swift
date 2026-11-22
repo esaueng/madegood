@@ -23,6 +23,7 @@ struct SessionDetailView: View {
     @State private var rawExportError: String?
     @State private var confirmDelete = false
     @State private var panelDetent = PanelDetent.middle
+    @State private var editingDetails = false
     /// Bumped when a file arrives from the watch, to reload a recording still arriving.
     @State private var reloads = 0
     @Environment(\.dismiss) private var dismiss
@@ -72,6 +73,10 @@ struct SessionDetailView: View {
         let url: URL
     }
 
+    /// The library's copy of this session, not the one it was opened with: its name and
+    /// notes can change here or in another tab's detail of the same session.
+    private var current: SessionLibrary.Item { library.items.first { $0.id == item.id } ?? item }
+
     var body: some View {
         Group {
             if let analysis {
@@ -89,7 +94,9 @@ struct SessionDetailView: View {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .navigationTitle(item.entry.meta?.sport.displayName ?? "Session")
+        .navigationTitle(
+            current.details.name.isEmpty ? item.entry.meta?.sport.displayName ?? "Session" : current.details.name
+        )
         .navigationBarTitleDisplayMode(.inline)
         .task(id: reloads) { await load() }
         .onReceive(NotificationCenter.default.publisher(for: RecordingTransfer.didReceiveFile)) { _ in
@@ -109,6 +116,14 @@ struct SessionDetailView: View {
                 analysis: analysis, boundaryPack: DemoOffWater.boundaryPack(for: analysis.session.meta.sessionId)
             ) { trim, preview in
                 try applyTrim(trim, preview: preview, to: analysis)
+            }
+        }
+        .sheet(isPresented: $editingDetails) {
+            // From the loaded recording: the item may predate its metadata arriving.
+            if let meta = analysis?.session.meta {
+                SessionDetailsEditor(details: current.details, sport: meta.sport) { details in
+                    try library.updateDetails(details, sessionId: meta.sessionId, folder: item.entry.folder)
+                }
             }
         }
         .sheet(item: $share) { file in
@@ -364,6 +379,15 @@ struct SessionDetailView: View {
     /// Edits to this session, then deleting it.
     private func moreMenu(_ analysis: Analysis) -> some View {
         Menu {
+            Button(
+                current.details.isEmpty ? "Add Name & Notes" : "Edit Name & Notes", systemImage: "pencil"
+            ) {
+                isPlaying = false
+                editingDetails = true
+            }
+            // A newer version's file stays as it is until an update can read it.
+            .disabled(current.detailsUnreadable)
+            .accessibilityIdentifier("session.editDetails")
             if analysis.current.summary.trimUnavailable {
                 Button("Restore Original", systemImage: "arrow.uturn.backward") { restoreOriginal(analysis) }
                     .accessibilityIdentifier("session.restoreOriginal")
@@ -392,15 +416,28 @@ struct SessionDetailView: View {
         }
     }
 
+    /// The name over the date, or the date over the time when there's no name.
     private func panelHeader(_ analysis: Analysis) -> some View {
-        HStack(spacing: 12) {
+        let name = current.details.name
+        let startedAt = analysis.session.startedAt
+        return HStack(spacing: 12) {
             SportBadge(sport: analysis.session.meta.sport, diameter: 40)
             VStack(alignment: .leading, spacing: 1) {
-                Text(analysis.session.startedAt, format: .dateTime.weekday(.wide).day().month(.wide).year())
-                    .font(.headline)
-                    .fontDesign(.rounded)
+                Group {
+                    if name.isEmpty {
+                        Text(startedAt, format: .dateTime.weekday(.wide).day().month(.wide).year())
+                    } else {
+                        Text(name).lineLimit(2)
+                    }
+                }
+                .font(.headline)
+                .fontDesign(.rounded)
                 HStack(spacing: 8) {
-                    Text(analysis.session.startedAt, format: .dateTime.hour().minute())
+                    if name.isEmpty {
+                        Text(startedAt, format: .dateTime.hour().minute())
+                    } else {
+                        Text(startedAt, format: .dateTime.weekday(.abbreviated).day().month().year().hour().minute())
+                    }
                     if analysis.trim != nil {
                         Label("Trimmed", systemImage: "scissors")
                     }
@@ -434,6 +471,15 @@ struct SessionDetailView: View {
         let replayData = analysis.current.replayData
         let strokeIntervals = analysis.strokes?.strokeIntervals ?? []
         List {
+            if !current.details.notes.isEmpty {
+                Section("Notes") {
+                    Text(current.details.notes)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .accessibilityIdentifier("session.notes")
+                }
+            }
+
             if !replayData.timeline.removedIntervals.isEmpty {
                 Section {
                     ForEach(replayData.timeline.removedIntervals, id: \.self) { range in
@@ -598,8 +644,17 @@ struct SessionDetailView: View {
             }
 
             // Trim and export live in the toolbar's menus; what they report shows here.
-            if analysis.current.summary.trimUnavailable || rawExportProgress != nil || rawExportError != nil {
+            if analysis.current.summary.trimUnavailable || current.detailsUnreadable || rawExportProgress != nil
+                || rawExportError != nil
+            {
                 Section {
+                    if current.detailsUnreadable {
+                        Label(
+                            "This session's name and notes were saved by a newer version of MadeGood. Update the app to see or edit them.",
+                            systemImage: "exclamationmark.triangle"
+                        )
+                        .font(.footnote)
+                    }
                     if analysis.current.summary.trimUnavailable {
                         Label(
                             "Couldn't read the saved trim. Showing the original recording.",
@@ -731,7 +786,9 @@ struct SessionDetailView: View {
         let name = "\(track.sport.rawValue)-\(Int(track.startedAt.timeIntervalSince1970)).gpx"
         do {
             let url = try ExportFiles.url(named: name)
-            try GPXWriter().data(for: analysis.current.selection).write(to: url, options: .atomic)
+            let title = current.details.name
+            try GPXWriter(name: title.isEmpty ? nil : title).data(for: analysis.current.selection).write(
+                to: url, options: .atomic)
             share = ShareFile(url: url)
         } catch {
             operationError = "Couldn't export this GPX file."

@@ -29,6 +29,16 @@ final class SessionLibrary {
         var id: URL { entry.folder }
         var entry: RecordingStore.Entry
         var summary: Summary?
+        /// The name and notes the user gave it; empty when there are none.
+        var details = SessionDetails()
+        /// A saved name and notes file this version can't read (a newer app wrote it).
+        /// It is kept, and editing waits until an update can read it.
+        var detailsUnreadable = false
+
+        /// The user's name for the session, or its sport's.
+        var title: String {
+            details.name.isEmpty ? entry.meta?.sport.displayName ?? "Receiving…" : details.name
+        }
     }
 
     private(set) var items: [Item] = []
@@ -85,6 +95,7 @@ final class SessionLibrary {
 
     enum EditError: Error {
         case recordingChanged
+        case detailsUnreadable
     }
 
     private nonisolated static var trimStore: SessionTrimStore {
@@ -96,6 +107,20 @@ final class SessionLibrary {
             return SessionTrimStore(directory: trims.appendingPathComponent(namespace.uuidString, isDirectory: true))
         }
         return SessionTrimStore(directory: trims)
+    }
+
+    /// Names and notes, beside the trims and likewise outside the recording folders, so
+    /// sharing a raw recording never carries them.
+    private nonisolated static var detailsStore: SessionDetailsStore {
+        let support =
+            DemoOffWater.storage
+            ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let details = support.appendingPathComponent("SessionDetails", isDirectory: true)
+        if let namespace = RecordingStore.demoNamespace {
+            return SessionDetailsStore(
+                directory: details.appendingPathComponent(namespace.uuidString, isDirectory: true))
+        }
+        return SessionDetailsStore(directory: details)
     }
 
     private var cache: [URL: (key: Source, summary: Summary)] = [:]
@@ -150,6 +175,22 @@ final class SessionLibrary {
         return updated
     }
 
+    /// Saves a session's name and notes (empty details remove them). Refuses when the
+    /// recording is gone (deleted from another screen), so no file outlives it, and while a
+    /// newer app's file is there, so it isn't overwritten.
+    func updateDetails(_ details: SessionDetails, sessionId: UUID, folder: URL) throws {
+        defer { reload() }
+        // Under the transfer's lock, as `delete` removes the folder under it: either the
+        // recording is still there when this saves, or the delete removes the file after.
+        try RecordingTransfer.storageLock.withLock {
+            guard (try? RawSessionReader.readMeta(folder: folder))?.sessionId == sessionId else {
+                throw EditError.recordingChanged
+            }
+            if case .failure = Self.loadDetails(sessionId: sessionId) { throw EditError.detailsUnreadable }
+            try Self.detailsStore.save(details, sessionId: sessionId)
+        }
+    }
+
     /// Deletes a recording, unless its files changed since `item` was read (a file arrived
     /// from the watch): the user saw something else. The watch deletes its copy once the
     /// phone holds all of it, so deleting a "Receiving…" row that just completed would lose
@@ -180,7 +221,10 @@ final class SessionLibrary {
             reload()
         }
         if let sessionId, !FileManager.default.fileExists(atPath: item.entry.folder.path) {
+            // Try both, so a failed trim removal doesn't leave the name and notes behind.
+            let details = Result { try Self.detailsStore.remove(sessionId: sessionId) }
             try Self.trimStore.restoreOriginal(sessionId: sessionId)
+            try details.get()
         }
     }
 
@@ -197,8 +241,19 @@ final class SessionLibrary {
         items = entries.map { entry in
             let cached = cache[entry.folder]
             let summary = cached?.key == sources[entry.folder] ? cached?.summary : nil
-            return Item(entry: entry, summary: summary)
+            var item = Item(entry: entry, summary: summary)
+            if let sessionId = entry.meta?.sessionId {
+                switch Self.loadDetails(sessionId: sessionId) {
+                case .success(let details): item.details = details ?? SessionDetails()
+                case .failure: item.detailsUnreadable = true
+                }
+            }
+            return item
         }
+    }
+
+    private nonisolated static func loadDetails(sessionId: UUID) -> Result<SessionDetails?, Error> {
+        Result { try detailsStore.load(sessionId: sessionId) }
     }
 
     nonisolated static func source(for folder: URL) -> Source? {
