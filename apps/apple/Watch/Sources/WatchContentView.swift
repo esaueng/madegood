@@ -125,7 +125,7 @@ private struct StartScreen: View {
                             .accessibilityIdentifier("transfer.updatePhone")
                         }
                         Button("Send again") {
-                            RecordingTransfer.shared.sendAllPending(restart: true)
+                            RecordingTransfer.shared.sendAllPending(requeue: .all)
                         }
                     }
                     .padding(.top, 4)
