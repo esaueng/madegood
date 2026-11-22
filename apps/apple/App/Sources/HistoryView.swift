@@ -63,6 +63,16 @@ struct HistoryView: View {
             }
             .listSectionSpacing(8)
             .navigationTitle("History")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    NavigationLink {
+                        StatisticsView(library: library)
+                    } label: {
+                        Label("Statistics", systemImage: "chart.bar.xaxis")
+                    }
+                    .accessibilityIdentifier("history.statistics")
+                }
+            }
             .navigationDestination(for: SessionLibrary.Item.self) { item in
                 SessionDetailView(item: item, library: library)
             }
@@ -288,7 +298,7 @@ private struct HistorySummaryCard: View {
 }
 
 /// A History filter as a capsule; tinted while it narrows the list.
-private struct FilterPill: View {
+struct FilterPill: View {
     let title: String
     let isActive: Bool
 
