@@ -261,7 +261,9 @@ summary.
 within ±3 %, rate within ±2 SPM) are checked in `StrokeDetectorTests` against
 `PaddleMotionSimulator`: synthetic wrist motion with noise, harmonics, per-cycle
 amplitude and period jitter, pauses, rate changes, side switches, sensor gaps and 50 or
-100 Hz sampling. Labeled real sessions still have to confirm them.
+100 Hz sampling. Labeled real sessions still have to confirm them: `FixtureAccuracyTests`
+scores any labeled paddling fixture on session detail's path (its selection, with strokes
+in moving time only), and none is in the fixture set yet.
 
 ## Sailing maneuvers
 
