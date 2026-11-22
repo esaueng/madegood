@@ -327,25 +327,48 @@ private struct StartView: View {
                     .listRowBackground(Color.clear)
             }
 
-            let recent = Array(library.items.prefix(3))
+            let recent = Array(library.items.prefix(6))
             if !recent.isEmpty {
                 Section {
-                    ForEach(recent) { item in
-                        NavigationLink(value: item) {
-                            SessionRow(item: item).padding(.vertical, 4)
+                    // A row of compact cards, as in History, that scrolls sideways.
+                    ScrollView(.horizontal) {
+                        LazyHStack(spacing: 12) {
+                            ForEach(recent) { item in
+                                NavigationLink(value: item) { RecentSessionCard(item: item) }
+                                    .buttonStyle(.plain)
+                                    .accessibilityIdentifier("recent.session")
+                            }
                         }
-                        .listRowBackground(Color(.secondarySystemBackground))
+                        .scrollTargetLayout()
                     }
+                    .scrollTargetBehavior(.viewAligned)
+                    .scrollIndicators(.hidden)
+                    .scrollClipDisabled()
+                    .accessibilityElement(children: .contain)
+                    .accessibilityLabel("Recent sessions")
+                    .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
                 } header: {
-                    HStack(alignment: .firstTextBaseline) {
-                        Text("Recent")
-                            .font(.title3.weight(.bold))
-                            .fontDesign(.rounded)
-                            .foregroundStyle(Color.primary)
-                        Spacer()
-                        Button("See All", action: showHistory)
-                            .font(.subheadline.weight(.semibold))
-                            .accessibilityIdentifier("recent.seeAll")
+                    let title = Text("Recent")
+                        .font(.title3.weight(.bold))
+                        .fontDesign(.rounded)
+                        .foregroundStyle(Color.primary)
+                    let seeAll = Button("See All", action: showHistory)
+                        .font(.subheadline.weight(.semibold))
+                        .accessibilityIdentifier("recent.seeAll")
+                    // Side by side while both fit; stacked at the largest text sizes, where the
+                    // title would otherwise break mid-word.
+                    ViewThatFits(in: .horizontal) {
+                        HStack(alignment: .firstTextBaseline) {
+                            title.fixedSize()
+                            Spacer()
+                            seeAll.fixedSize()
+                        }
+                        VStack(alignment: .leading, spacing: 4) {
+                            title
+                            seeAll
+                        }
                     }
                     .textCase(nil)
                 }
