@@ -303,17 +303,8 @@ struct SessionDetailView: View {
                         EdgeInsets(top: insets.top, leading: 0, bottom: panelHeight + insets.bottom, trailing: 0)
                     )
                     .ignoresSafeArea()
-                    .overlay(alignment: .bottomTrailing) {
-                        Text("Not for navigation")
-                            .font(.caption2.weight(.medium))
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(.regularMaterial, in: .capsule)
-                            .padding(.trailing, 12)
-                            .padding(.bottom, panelHeight + 8)
-                            .allowsHitTesting(false)
-                    }
+                    // A new source (a saved or removed trim) starts a fresh camera on its route.
+                    .id(analysis.source)
                 } else {
                     Color(.systemGroupedBackground).ignoresSafeArea()
                 }
@@ -321,6 +312,20 @@ struct SessionDetailView: View {
                     panelHeader(analysis)
                 } content: {
                     content(analysis, scroll: scroll)
+                }
+                // On the panel's top edge, so it follows the panel while it is dragged.
+                .overlay(alignment: .topTrailing) {
+                    if !data.timeline.points.isEmpty {
+                        Text("Not for navigation")
+                            .font(.caption2.weight(.medium))
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(.regularMaterial, in: .capsule)
+                            .alignmentGuide(.top) { $0[.bottom] + 8 }
+                            .padding(.trailing, 12)
+                            .allowsHitTesting(false)
+                    }
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
