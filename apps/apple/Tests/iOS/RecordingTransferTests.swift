@@ -22,31 +22,55 @@ final class RecordingTransferTests: XCTestCase {
     // watch used to treat every outstanding transfer as in flight, so a stuck one was never
     // sent again, not even by "Send again", and the recording stayed "waiting for iPhone".
 
-    func testATransferFromAnEarlierBuildIsQueuedAgainAtLaunch() {
-        // Builds before this fix did not stamp transfers; theirs may be stuck.
-        XCTAssertTrue(RecordingTransfer.shouldRequeue(queuedAt: nil, now: now, requeue: .stuck))
+    private func requeue(
+        queuedMinutesAgo: Double?, progress: Bool = false, movedMinutesAgo: Double? = nil,
+        _ mode: RecordingTransfer.Requeue
+    ) -> Bool {
+        RecordingTransfer.shouldRequeue(
+            oldestQueuedAt: queuedMinutesAgo.map { now.addingTimeInterval(-$0 * 60) }, anyProgress: progress,
+            progressSince: movedMinutesAgo.map { now.addingTimeInterval(-$0 * 60) }, now: now, requeue: mode)
+    }
+
+    func testATransferFromAnEarlierBuildIsQueuedAgainAtLaunchIfItNeverStarted() {
+        // Builds before stamps did not record when a transfer was queued; it may be stuck.
+        XCTAssertTrue(requeue(queuedMinutesAgo: nil, .stuck))
         XCTAssertNil(RecordingTransfer.queuedAt(metadata: ["sessionId": "x", "file": "meta.json"]))
         XCTAssertNil(RecordingTransfer.queuedAt(metadata: nil))
     }
 
     func testARecentTransferIsLeftToFinish() {
-        let recent = now.addingTimeInterval(-(RecordingTransfer.stuckAfter - 1))
-        XCTAssertFalse(RecordingTransfer.shouldRequeue(queuedAt: recent, now: now, requeue: .stuck))
-        XCTAssertFalse(RecordingTransfer.shouldRequeue(queuedAt: now, now: now, requeue: .stuck))
+        XCTAssertFalse(requeue(queuedMinutesAgo: RecordingTransfer.stuckAfter / 60 - 1, .stuck))
+        XCTAssertFalse(requeue(queuedMinutesAgo: 0, .stuck))
     }
 
     func testAStuckTransferIsQueuedAgainAtLaunch() {
-        let old = now.addingTimeInterval(-RecordingTransfer.stuckAfter)
-        XCTAssertTrue(RecordingTransfer.shouldRequeue(queuedAt: old, now: now, requeue: .stuck))
+        XCTAssertTrue(requeue(queuedMinutesAgo: RecordingTransfer.stuckAfter / 60, .stuck))
         // A stamp far in the future (the clock was set back) does not pin it forever.
-        let future = now.addingTimeInterval(RecordingTransfer.stuckAfter)
-        XCTAssertTrue(RecordingTransfer.shouldRequeue(queuedAt: future, now: now, requeue: .stuck))
+        XCTAssertTrue(requeue(queuedMinutesAgo: -RecordingTransfer.stuckAfter / 60, .stuck))
     }
 
-    func testOnlyALaunchOrSendAgainCancelsATransfer() {
-        // Settings updates send too; they never restart a transfer that may be progressing.
-        XCTAssertFalse(RecordingTransfer.shouldRequeue(queuedAt: nil, now: now, requeue: .none))
-        XCTAssertTrue(RecordingTransfer.shouldRequeue(queuedAt: now, now: now, requeue: .all))
+    func testSettingsUpdatesNeverCancelATransfer() {
+        XCTAssertFalse(requeue(queuedMinutesAgo: nil, .none))
+        XCTAssertFalse(requeue(queuedMinutesAgo: 60, progress: true, movedMinutesAgo: 30, .none))
+    }
+
+    /// Seen on device after #165: a 35 MB motion stream was 23% sent after 4 minutes, and
+    /// every launch or "Send again" cancelled it and started it over, so the recording never
+    /// arrived. A transfer that is moving is never cancelled.
+    func testATransferThatIsMovingIsNeverCancelled() {
+        // A launch sees a started transfer for the first time: it may be moving.
+        XCTAssertFalse(requeue(queuedMinutesAgo: 32, progress: true, movedMinutesAgo: 0, .stuck))
+        XCTAssertFalse(requeue(queuedMinutesAgo: nil, progress: true, movedMinutesAgo: 0, .stuck))
+        // "Send again" while it moves.
+        XCTAssertFalse(requeue(queuedMinutesAgo: 4, progress: true, movedMinutesAgo: 1, .all))
+        // A launch never cancels a started transfer, however long ago it last moved.
+        XCTAssertFalse(requeue(queuedMinutesAgo: 60, progress: true, movedMinutesAgo: 10, .stuck))
+    }
+
+    func testSendAgainRestartsATransferThatStalledOrNeverStarted() {
+        let stalled = RecordingTransfer.stalledAfter / 60
+        XCTAssertTrue(requeue(queuedMinutesAgo: 10, progress: true, movedMinutesAgo: stalled, .all))
+        XCTAssertTrue(requeue(queuedMinutesAgo: 0, progress: false, movedMinutesAgo: 0, .all))
     }
 
     func testTheQueuedTimeRoundTripsThroughMetadata() {

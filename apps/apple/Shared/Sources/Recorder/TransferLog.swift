@@ -17,7 +17,7 @@ final class TransferLog: Sendable {
     }
 
     /// The most entries kept; the oldest go first.
-    static let limit = 200
+    static let limit = 500
     static let defaultsKey = "transferLog"
 
     /// The defaults suite (tests); nil for the standard defaults. UserDefaults itself is not
@@ -60,6 +60,14 @@ final class TransferLog: Sendable {
     /// The first block of a session ID, enough to tell recordings apart on screen.
     static func short(_ sessionId: String) -> String {
         String(sessionId.prefix(8))
+    }
+
+    /// The parts held of files still arriving, for a log line; empty when there are none.
+    static func describe(parts: [String: [Int]]) -> String {
+        guard !parts.isEmpty else { return "" }
+        return "; parts of "
+            + parts.sorted { $0.key < $1.key }.map { "\($0.key): \($0.value.count)" }
+            .joined(separator: ", ")
     }
 
     /// Files and exact sizes for a log line, sorted by name, so sizes compare across devices.
