@@ -22,6 +22,7 @@ struct SessionDetailView: View {
     /// Why the last attempt to prepare the raw recording failed, shown on its row.
     @State private var rawExportError: String?
     @State private var confirmDelete = false
+    @State private var panelDetent = PanelDetent.middle
     /// Bumped when a file arrives from the watch, to reload a recording still arriving.
     @State private var reloads = 0
     @Environment(\.dismiss) private var dismiss
@@ -75,7 +76,7 @@ struct SessionDetailView: View {
         Group {
             if let analysis {
                 ScrollViewReader { scroll in
-                    content(analysis, scroll: scroll)
+                    layout(analysis, scroll: scroll)
                 }
             } else if failed {
                 List {
@@ -283,6 +284,89 @@ struct SessionDetailView: View {
         .id("session.speedBests")
     }
 
+    /// The map fills the screen; the panel over it holds the replay controls and the rest.
+    private func layout(_ analysis: Analysis, scroll: ScrollViewProxy) -> some View {
+        let data = analysis.current.replayData
+        let cursor = SessionReplayView.cursor(
+            data: data, elapsed: selectedReplayElapsed, isPlaying: isPlaying, highlight: replayHighlight)
+        return GeometryReader { geometry in
+            // The panel's heights are shares of the space between the bars; the map fills
+            // the whole screen behind it, as a background so it never changes that space.
+            let insets = geometry.safeAreaInsets
+            let panelHeight = panelDetent.height(in: geometry.size.height)
+            SessionPanel(detent: $panelDetent, available: geometry.size.height) {
+                panelHeader(analysis)
+            } content: {
+                content(analysis, scroll: scroll)
+            }
+            // On the panel's top edge, so it follows the panel while it is dragged.
+            .overlay(alignment: .topTrailing) {
+                if !data.timeline.points.isEmpty {
+                    Text("Not for navigation")
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(.regularMaterial, in: .capsule)
+                        .alignmentGuide(.top) { $0[.bottom] + 8 }
+                        .padding(.trailing, 12)
+                        .allowsHitTesting(false)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+            .background {
+                if !data.timeline.points.isEmpty {
+                    SessionReplayMap(
+                        data: data, selection: cursor.selection, time: cursor.time, highlight: replayHighlight,
+                        insideCut: cursor.insideCut && replayHighlight?.isTrim != true,
+                        select: { seek($0, data: data) }, fitKey: panelDetent.rawValue
+                    )
+                    .safeAreaPadding(
+                        EdgeInsets(top: insets.top, leading: 0, bottom: panelHeight + insets.bottom, trailing: 0)
+                    )
+                    .ignoresSafeArea()
+                    // A new source (a saved or removed trim) starts a fresh camera on its route.
+                    .id(analysis.source)
+                } else {
+                    Color(.systemGroupedBackground).ignoresSafeArea()
+                }
+            }
+        }
+        .toolbarBackground(.hidden, for: .navigationBar)
+    }
+
+    private func panelHeader(_ analysis: Analysis) -> some View {
+        HStack(spacing: 12) {
+            SportBadge(sport: analysis.session.meta.sport, diameter: 40)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(analysis.session.startedAt, format: .dateTime.weekday(.wide).day().month(.wide).year())
+                    .font(.headline)
+                    .fontDesign(.rounded)
+                HStack(spacing: 8) {
+                    Text(analysis.session.startedAt, format: .dateTime.hour().minute())
+                    if analysis.trim != nil {
+                        Label("Trimmed", systemImage: "scissors")
+                    }
+                }
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 20)
+        .padding(.bottom, 6)
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isHeader)
+    }
+
+    /// A tap on the map moves the replay there, as a tap on the chart does.
+    private func seek(_ time: Double, data: SessionReplayView.Data) {
+        isPlaying = false
+        let time = data.timeline.selection(at: time).elapsed
+        selectedReplayElapsed = time
+        if replayHighlight?.range.contains(time) == false { replayHighlight = nil }
+    }
+
     @ViewBuilder
     private func content(_ analysis: Analysis, scroll: ScrollViewProxy) -> some View {
         let sport = analysis.session.meta.sport
@@ -293,27 +377,6 @@ struct SessionDetailView: View {
         let replayData = analysis.current.replayData
         let strokeIntervals = analysis.strokes?.strokeIntervals ?? []
         List {
-            Section {
-                HStack(spacing: 12) {
-                    SportBadge(sport: sport, diameter: 44)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(analysis.session.startedAt, format: .dateTime.weekday(.wide).day().month(.wide).year())
-                            .font(.headline)
-                            .fontDesign(.rounded)
-                        Text(analysis.session.startedAt, format: .dateTime.hour().minute())
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                        if analysis.trim != nil {
-                            Label("Trimmed", systemImage: "scissors")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-                .padding(.vertical, 2)
-                .accessibilityElement(children: .combine)
-            }
-
             if !replayData.timeline.removedIntervals.isEmpty {
                 Section {
                     ForEach(replayData.timeline.removedIntervals, id: \.self) { range in
@@ -335,7 +398,7 @@ struct SessionDetailView: View {
             if !replayData.timeline.points.isEmpty || !strokeIntervals.isEmpty {
                 SessionReplayView(
                     data: replayData, display: display, elapsed: $selectedReplayElapsed, isPlaying: $isPlaying,
-                    highlight: replayHighlight
+                    highlight: replayHighlight, showsMap: false
                 ) { time in
                     if replayHighlight?.range.contains(time) == false { replayHighlight = nil }
                 }
@@ -547,6 +610,8 @@ struct SessionDetailView: View {
                 Button("Delete session", role: .destructive) { confirmDelete = true }
             }
         }
+        .scrollContentBackground(.hidden)
+        .contentMargins(.top, 4, for: .scrollContent)
         .onChange(of: analysis.trim) { _, trim in
             if trim != nil {
                 scroll.scrollTo("session.stats", anchor: .top)

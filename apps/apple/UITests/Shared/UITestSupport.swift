@@ -334,6 +334,16 @@ extension XCTestCase {
             "\(element) never showed \(label); last label: \(element.exists ? element.label : "missing")")
     }
 
+    #if os(iOS)
+        /// Raises the session detail's panel over the map to full height.
+        func expandSessionPanel(in app: XCUIApplication) {
+            let handle = app.buttons["session.panel.handle"]
+            XCTAssertTrue(handle.waitForExistence(timeout: 20))
+            for _ in 0..<3 where handle.value as? String != "Full" { handle.tap() }
+            XCTAssertEqual(handle.value as? String, "Full")
+        }
+    #endif
+
     func waitForLabelPrefix(_ element: XCUIElement, _ prefix: String, timeout: TimeInterval = 15) {
         let predicate = NSPredicate(format: "label BEGINSWITH %@", prefix)
         let expectation = XCTNSPredicateExpectation(predicate: predicate, object: element)

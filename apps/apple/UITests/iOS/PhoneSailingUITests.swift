@@ -82,7 +82,8 @@ final class PhoneSailingUITests: XCTestCase {
         XCTAssertTrue(fetch.label.contains("approximate area (~11 km) and time range with Apple"), fetch.label)
         attachScreenshot("2 vmg and apple weather button")
         fetch.tap()
-        // The prior re-runs the analysis, and the list grows again, so find the row after.
+        // The prior re-runs the analysis. The earlier maneuvers stay on screen meanwhile, so
+        // the list keeps its place (it used to collapse to a progress row and jump).
         let resolvedTack = app.buttons.matching(
             NSPredicate(format: "identifier BEGINSWITH 'moments.maneuver.' AND label BEGINSWITH 'Tack · '")
         ).firstMatch
