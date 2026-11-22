@@ -40,13 +40,14 @@ final class TransferLog: Sendable {
     /// Adds an entry (and prints it, for a debugger).
     func add(_ message: String, sessionId: String? = nil, at date: Date = Date()) {
         print("RecordingTransfer: \(sessionId.map { "\(Self.short($0)) " } ?? "")\(message)")
-        let snapshot = entries.withLock { entries -> [Entry] in
+        // Saved under the lock, so a writer on another queue never replaces a newer saved
+        // log with an older one.
+        entries.withLock { entries in
             entries.append(Entry(date: date, sessionId: sessionId, message: message))
             if entries.count > Self.limit { entries.removeFirst(entries.count - Self.limit) }
-            return entries
-        }
-        if let data = try? JSONEncoder().encode(snapshot) {
-            defaults.set(data, forKey: Self.defaultsKey)
+            if let data = try? JSONEncoder().encode(entries) {
+                defaults.set(data, forKey: Self.defaultsKey)
+            }
         }
     }
 

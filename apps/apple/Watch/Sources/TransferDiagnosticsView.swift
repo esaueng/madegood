@@ -7,14 +7,13 @@ import WaterKit
 /// is being sent, and what the iPhone last said it holds; then the transfer log. For finding
 /// out why a recording does not reach the iPhone.
 struct TransferDiagnosticsView: View {
-    @State private var recordings: [RecordingStore.Entry] = []
+    @State private var recordings: [Pending] = []
     @State private var log: [TransferLog.Entry] = []
     @State private var connection = Connection()
     private let refresh = Timer.publish(every: 2, on: .main, in: .common).autoconnect()
 
     struct Connection: Equatable {
         var status = ""
-        var companionInstalled = false
         var reachable = false
         var phoneReads = ""
 
@@ -29,7 +28,7 @@ struct TransferDiagnosticsView: View {
                 }
             let versions = RecordingTransfer.phoneRawVersions(fromContext: session.receivedApplicationContext)
             return Connection(
-                status: status, companionInstalled: session.isCompanionAppInstalled, reachable: session.isReachable,
+                status: status, reachable: session.isReachable,
                 phoneReads: versions.sorted().map(String.init).joined(separator: ", "))
         }
     }
@@ -38,7 +37,6 @@ struct TransferDiagnosticsView: View {
         List {
             Section("Connection") {
                 LabeledContent("Status", value: connection.status)
-                LabeledContent("iPhone app", value: connection.companionInstalled ? "Installed" : "Missing")
                 LabeledContent("Reachable", value: connection.reachable ? "Yes" : "No")
                 LabeledContent("Reads raw", value: connection.phoneReads)
             }
@@ -47,8 +45,8 @@ struct TransferDiagnosticsView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
-            ForEach(recordings) { entry in
-                RecordingSection(entry: entry)
+            ForEach(recordings) { pending in
+                RecordingSection(pending: pending)
             }
             if !recordings.isEmpty {
                 Button("Send again") {
@@ -72,23 +70,53 @@ struct TransferDiagnosticsView: View {
     }
 
     private func reload() {
-        recordings = RecordingStore.list()
+        recordings = RecordingStore.list().map(Pending.init)
         log = TransferLog.shared.recent()
         connection = .current()
     }
 }
 
-private struct RecordingSection: View {
-    let entry: RecordingStore.Entry
+/// One waiting recording as polled, so a refresh redraws its rows.
+private struct Pending: Identifiable, Equatable {
+    var id: URL { entry.folder }
+    var entry: RecordingStore.Entry
+    var local: [String: Int64]
+    var others: [String]
+    var outstanding: [RecordingTransfer.Outstanding]
+    var phone: [String: Int64]?
+    var metaReadable: Bool
+    var phoneReads: Bool
+    var log: [TransferLog.Entry]
 
+    init(entry: RecordingStore.Entry) {
+        let sessionId = entry.folder.lastPathComponent
+        self.entry = entry
+        local = RecordingTransfer.recordingFiles(in: entry.folder) ?? [:]
+        others = ((try? FileManager.default.contentsOfDirectory(atPath: entry.folder.path)) ?? [])
+            .filter { !RecordingStore.isRecordingFileName($0) }.sorted()
+        outstanding = RecordingTransfer.shared.outstanding(sessionId: sessionId)
+        phone = RecordingTransfer.shared.phoneFiles(sessionId: sessionId)
+        let meta = try? Data(contentsOf: entry.folder.appendingPathComponent(RawFormat.metaFileName))
+        metaReadable = meta.flatMap(RecordingTransfer.metaVersion) != nil
+        phoneReads = RecordingTransfer.shared.phoneReads(folder: entry.folder)
+        log = Array(TransferLog.shared.recent(sessionId: sessionId).prefix(8))
+    }
+}
+
+private struct RecordingSection: View {
+    let pending: Pending
+
+    private var entry: RecordingStore.Entry { pending.entry }
     private var sessionId: String { entry.folder.lastPathComponent }
 
     var body: some View {
-        let phone = RecordingTransfer.shared.phoneFiles(sessionId: sessionId)
-        let local = RecordingTransfer.recordingFiles(in: entry.folder) ?? [:]
-        let others = otherItems()
+        let phone = pending.phone
+        let local = pending.local
+        let others = pending.others
         Section {
-            if !RecordingTransfer.shared.phoneReads(folder: entry.folder) {
+            if !pending.metaReadable {
+                Text("This recording's meta.json is missing or unreadable.").font(.footnote).foregroundStyle(.orange)
+            } else if !pending.phoneReads {
                 Text("The iPhone app can't read this recording's format.").font(.footnote).foregroundStyle(.orange)
             }
             ForEach(local.sorted { $0.key < $1.key }, id: \.key) { name, size in
@@ -102,7 +130,7 @@ private struct RecordingSection: View {
             ForEach(others, id: \.self) { name in
                 Text("\(name) (not sent)").font(.caption2).foregroundStyle(.secondary)
             }
-            ForEach(RecordingTransfer.shared.outstanding(sessionId: sessionId), id: \.self) { transfer in
+            ForEach(pending.outstanding, id: \.self) { transfer in
                 Text(describe(transfer)).font(.caption2)
             }
             if phone == nil {
@@ -110,7 +138,7 @@ private struct RecordingSection: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
-            ForEach(TransferLog.shared.recent(sessionId: sessionId).prefix(8)) { entry in
+            ForEach(pending.log) { entry in
                 LogRow(entry: entry, showsSession: false)
             }
         } header: {
@@ -135,12 +163,6 @@ private struct RecordingSection: View {
         let state = transfer.isTransferring ? "sending" : "queued"
         let age = transfer.queuedAt.map { " · \(Int(Date().timeIntervalSince($0) / 60)) min" } ?? ""
         return "\(state) \(transfer.file) \(percent)%\(age)"
-    }
-
-    /// Anything in the folder that is not a recording file (never sent).
-    private func otherItems() -> [String] {
-        let names = (try? FileManager.default.contentsOfDirectory(atPath: entry.folder.path)) ?? []
-        return names.filter { !RecordingStore.isRecordingFileName($0) }.sorted()
     }
 }
 

@@ -30,6 +30,17 @@ final class TransferLogTests: XCTestCase {
         XCTAssertEqual(TransferLog(suiteName: suiteName).recent().map(\.message), ["stored"])
     }
 
+    /// Review of #166, finding 1: entries added from several queues at once (the main
+    /// thread and WatchConnectivity callbacks) all survive a relaunch; an older snapshot
+    /// never overwrites a newer saved one.
+    func testConcurrentWritersAllSurviveARelaunch() {
+        let log = TransferLog(suiteName: suiteName)
+        DispatchQueue.concurrentPerform(iterations: 100) { index in
+            log.add("\(index)")
+        }
+        XCTAssertEqual(Set(TransferLog(suiteName: suiteName).recent().map(\.message)), Set((0..<100).map(String.init)))
+    }
+
     func testTheLogKeepsOnlyTheNewestEntries() {
         let log = TransferLog(suiteName: suiteName)
         for index in 0..<(TransferLog.limit + 5) { log.add("\(index)") }

@@ -244,9 +244,14 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
             }
             guard phoneReads(folder: folder) else {
                 let phone = Self.phoneRawVersions(fromContext: session.receivedApplicationContext)
-                log.add(
-                    "Not sent: the iPhone app reads raw versions \(phone.sorted()), not this recording's",
-                    sessionId: sessionId)
+                let data = try? Data(contentsOf: folder.appendingPathComponent(RawFormat.metaFileName))
+                if let version = data.flatMap(Self.metaVersion) {
+                    log.add(
+                        "Not sent: the iPhone app reads raw versions \(phone.sorted()), not \(version)",
+                        sessionId: sessionId)
+                } else {
+                    log.add("Not sent: meta.json is missing or unreadable", sessionId: sessionId)
+                }
                 return
             }
 
@@ -275,7 +280,8 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
                     metadata: [Key.sessionId: sessionId, Key.file: name, Key.queuedAt: now.timeIntervalSince1970])
             }
             if !queued.isEmpty { log.add("Queued \(queued.joined(separator: ", "))", sessionId: sessionId) }
-            if !inFlight.isEmpty {
+            // Only when asked to send now (launch, Send again), not on every settings update.
+            if !inFlight.isEmpty, requeue != .none {
                 log.add("Still sending \(inFlight.sorted().joined(separator: ", "))", sessionId: sessionId)
             }
         }
