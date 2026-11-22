@@ -8,6 +8,12 @@ import Testing
 /// most cycles moved by about ±450 ms: the principal axis's sign is arbitrary, it decides
 /// which lobe of the wrist cycle is the peak, and the first sign was carried through the
 /// session. Any small change (sample rate, bin phase, start time) could pick the other one.
+///
+/// The bar is what the user sees: the stroke count, the rate and (canoe, SUP) the paddling
+/// side. Where the stroke is nearly symmetric and the watch turns, which lobe is the stroke
+/// is ambiguous, and the two rates can settle on lobes 0.5–1 s apart, so the turn tests
+/// compare counts, rates and sides, not stroke times. Steady paddling, rests and gaps still
+/// keep the same stroke times.
 @Suite struct StrokeRateInvarianceTests {
     /// Every second sample from `phase` (0 or 1), as a 100 Hz recording would be at 50 Hz.
     static func decimated(_ motion: [MotionSample], phase: Int = 0) -> [MotionSample] {
@@ -32,6 +38,33 @@ import Testing
 
     static func cycles(_ motion: [MotionSample], sport: Sport) -> [StrokeDetector.Cycle] {
         StrokeAnalysis.detect(motion: motion, sport: sport).cycles
+    }
+
+    /// Session detail's strokes over the whole stream: count, average rate and cycles.
+    static func strokes(_ motion: [MotionSample], sport: Sport) -> (
+        count: Int, rate: Double?, cycles: [StrokeDetector.Cycle]
+    ) {
+        let detection = StrokeAnalysis.detect(motion: motion, sport: sport)
+        let analysis = StrokeAnalysis(detection: detection, sport: sport, distance: nil)
+        return (analysis.strokeCount, analysis.averageStrokeRate, detection.cycles)
+    }
+
+    /// Cycles after `from` whose nearest cycle in `reference` (within `tolerance`) has the
+    /// same side, and how many were compared.
+    static func sideAgreement(
+        _ cycles: [StrokeDetector.Cycle], _ reference: [StrokeDetector.Cycle], after from: Double,
+        tolerance: Double
+    ) -> (agree: Int, compared: Int) {
+        var agree = 0
+        var compared = 0
+        for cycle in cycles where cycle.t > from {
+            guard let match = reference.min(by: { abs($0.t - cycle.t) < abs($1.t - cycle.t) }),
+                abs(match.t - cycle.t) <= tolerance
+            else { continue }
+            compared += 1
+            if match.side == cycle.side { agree += 1 }
+        }
+        return (agree, compared)
     }
 
     /// Share of `times` within `tolerance` of a time in `reference` (both sorted).
@@ -146,6 +179,19 @@ import Testing
         let motion = simulator.generate().samples
         let reference = Self.cycles(motion, sport: sport)
         let shares = (within40ms: 0.95, within200ms: 0.98)
+        // What the user sees: the count within 2 strokes or 1 %, the average rate within
+        // 1 spm. (They are equal here; before #178 they differed by up to 4 kayak strokes.)
+        let whole = Self.strokes(motion, sport: sport)
+        for phase in [0, 1] {
+            let other = Self.strokes(Self.decimated(motion, phase: phase), sport: sport)
+            let bound = max(2, Int((0.01 * Double(whole.count)).rounded(.up)))
+            #expect(abs(other.count - whole.count) <= bound, "phase \(phase): \(other.count) strokes, \(whole.count)")
+            if let a = other.rate, let b = whole.rate {
+                #expect(abs(a - b) <= 1, "phase \(phase): \(a) spm, \(b)")
+            } else {
+                Issue.record("phase \(phase): no average rate")
+            }
+        }
         expectSameCycles(Self.cycles(Self.decimated(motion, phase: 0), sport: sport), reference, "even", shares: shares)
         expectSameCycles(Self.cycles(Self.decimated(motion, phase: 1), sport: sport), reference, "odd", shares: shares)
         let shifted = motion.map { sample in
@@ -303,24 +349,72 @@ import Testing
         }
     }
 
-    /// Review of #178: the watch turned about 100° on the wrist (a side switch). The turn was
-    /// measured between consecutive axis estimates only, and the 3 s window turns in about
-    /// 45° steps here, just below or above the limit depending on noise: one rate carried the
-    /// old sign through the turn while the other took the new window's, and every peak
-    /// after it was on the other lobe, about 0.7 s away.
-    @Test(arguments: [UInt64(1), 2, 3, 4])
-    func aLargeTurnKeepsTheCyclesAt50Hz(seed: UInt64) {
-        var simulator = PaddleMotionSimulator(sport: .canoe, segments: [.init(duration: 60, strokeRate: 30)])
-        simulator.seed = seed
-        let samples = simulator.generate().samples
-        for degrees in stride(from: 96.0, through: 114, by: 3) {
-            let motion = Self.turned(samples, from: 20, by: degrees * .pi / 180)
-            let reference = Self.cycles(motion, sport: .canoe).filter { $0.t > 24 }
-            for phase in [0, 1] {
-                let cycles = Self.cycles(Self.decimated(motion, phase: phase), sport: .canoe).filter { $0.t > 24 }
-                expectSameCycles(cycles, reference, "\(degrees)° phase \(phase)")
+    struct TurnCase: Sendable, CustomTestStringConvertible {
+        var sport: Sport
+        var harmonic: Double
+        var testDescription: String { "\(sport.rawValue) harmonic \(harmonic)" }
+    }
+
+    static let turnCases: [TurnCase] = [Sport.canoe, .sup, .kayak].flatMap { sport in
+        [0.03, 0.15, 0.35].map { TurnCase(sport: sport, harmonic: $0) }
+    }
+
+    /// The watch turns on the wrist by 30–180° 20 s into the session, at once or over 2, 6 or
+    /// 12 s (each angle with a different duration for each seed, so five seeds cover them
+    /// all), at both 50 Hz sample phases. Canoe and SUP paddle 2 minutes at 30 spm, kayak 4
+    /// minutes at 60 spm (a missed or extra kayak cycle is 2 strokes, which needs the longer
+    /// session to stay within the rate bound). The two rates may settle on different lobes of
+    /// a nearly symmetric stroke (harmonic 0.03), but what the user sees agrees:
+    ///
+    /// - the stroke count within 3 cycles or 1 %, whichever is larger. A sign decision that
+    ///   moves the peak to the other lobe adds or drops a cycle, depending on where in the
+    ///   cycle it falls, so the rates can differ by a cycle per decision: at most 2 cycles
+    ///   over the full grid of every angle with every duration (1.6 % of runs);
+    /// - the average rate within 1 spm;
+    /// - canoe and SUP: the side of at least 98 % of the strokes from 8 s after the turn
+    ///   (all of them on the full grid), each matched to the nearest 100 Hz stroke.
+    ///
+    /// This replaces a test that required the same stroke times through a 96–114° turn.
+    @Test(arguments: turnCases)
+    func turnsKeepTheCountRateAndSideAt50Hz(_ test: TurnCase) {
+        let sport = test.sport
+        let strokesPerCycle = sport == .kayak ? 2 : 1
+        let period = 2.0
+        let durations = [0.0, 2, 6, 12]
+        var issues: [String] = []
+        let length = sport == .kayak ? 240.0 : 120
+        for seed in 1...5 {
+            var simulator = PaddleMotionSimulator(
+                sport: sport, segments: [.init(duration: length, strokeRate: 60 * Double(strokesPerCycle) / period)])
+            simulator.seed = UInt64(seed)
+            simulator.harmonic = test.harmonic
+            let samples = simulator.generate().samples
+            for (index, degrees) in stride(from: 30.0, through: 180, by: 30).enumerated() {
+                let over = durations[(index + seed) % durations.count]
+                let motion = Self.turned(samples, from: 20, over: over, by: degrees * .pi / 180)
+                let reference = Self.strokes(motion, sport: sport)
+                let bound = max(3 * strokesPerCycle, Int((0.01 * Double(reference.count)).rounded(.up)))
+                for phase in [0, 1] {
+                    let name = "seed \(seed), \(Int(degrees))° over \(over) s, phase \(phase)"
+                    let other = Self.strokes(Self.decimated(motion, phase: phase), sport: sport)
+                    if abs(other.count - reference.count) > bound {
+                        issues.append("\(name): \(other.count) strokes, \(reference.count) at 100 Hz")
+                    }
+                    if let a = other.rate, let b = reference.rate {
+                        if abs(a - b) > 1 { issues.append("\(name): \(a) spm, \(b) at 100 Hz") }
+                    } else {
+                        issues.append("\(name): no average rate")
+                    }
+                    guard sport != .kayak else { continue }
+                    let sides = Self.sideAgreement(
+                        other.cycles, reference.cycles, after: 20 + over + 8, tolerance: 0.6 * period)
+                    if sides.compared < 30 || Double(sides.agree) < 0.98 * Double(sides.compared) {
+                        issues.append("\(name): sides agree on \(sides.agree) of \(sides.compared)")
+                    }
+                }
             }
         }
+        #expect(issues.isEmpty, "\(issues.count) runs: \(issues.prefix(10))")
     }
 
     /// Review of #178: a turned axis that took its own sign could move the peak to the other
@@ -377,5 +471,88 @@ import Testing
             detection.cycles.count >= output.cycleTimes.count - 1,
             "\(detection.cycles.count) of \(output.cycleTimes.count)")
         #expect(!detection.cycles.isEmpty)
+    }
+
+    /// Re-check of #178 (blocking): the axis took 0.15 × the last minute's moments, so it kept
+    /// the old axis for about 40 s after a grip change and missed half the strokes (29 of
+    /// 61; main found them). Canoe at 60 spm; at 120 s the watch turns 90° and the peak
+    /// rotation drops from 3 to 0.8 rad/s. Simulated natively at 100 and 50 Hz.
+    @Test(arguments: [100.0, 50.0])
+    func aGripChangeIsFollowedWithinAFewStrokes(rate: Double) {
+        var before = PaddleMotionSimulator(sport: .canoe, segments: [.init(duration: 120, strokeRate: 60)])
+        before.seed = 1
+        before.sampleRate = rate
+        before.rotationAmplitude = 3
+        before.accelerationAmplitude = 7.5
+        let first = before.generate()
+        var after = PaddleMotionSimulator(sport: .canoe, segments: [.init(duration: 60, strokeRate: 60)])
+        after.seed = 101
+        after.sampleRate = rate
+        after.rotationAmplitude = 0.8
+        after.accelerationAmplitude = 2
+        after.startTime = (first.samples.last?.t ?? 0) + 1 / rate
+        let second = after.generate()
+        let motion = first.samples + Self.turned(second.samples, from: 0, by: .pi / 2)
+        let cycles = Self.cycles(motion, sport: .canoe).map(\.t)
+        let truth = second.cycleTimes
+        let found = cycles.filter { $0 > 120 }
+        #expect(found.count >= truth.count - 3, "\(found.count) of \(truth.count) strokes after the change")
+        // Within a few strokes of the change, and every 10 s after it.
+        for start in stride(from: 124.0, to: 180, by: 10) {
+            let block = start..<(start + 10)
+            let expected = truth.filter { block.contains($0) }.count
+            let counted = cycles.filter { block.contains($0) }.count
+            #expect(counted >= expected - 1, "\(counted) of \(expected) strokes in \(block)")
+        }
+    }
+
+    /// Re-check of #178: the minimum stretch for an axis was a count of bins (25), so one
+    /// 0.96 s canoe stroke spanned 24 or 25 bins depending on where the 40 ms bins fell, and
+    /// counted 0 or 1 stroke with a 10 ms shift. The minimum is now the time from the first to
+    /// the last sample (1 s), whatever the bins' alignment, so every shift counts the same.
+    @Test(arguments: [100.0, 50.0])
+    func aShortTraceCountsTheSameWhateverItsBinPhase(rate: Double) {
+        var counts: [Int] = []
+        for shift in stride(from: 0.0, to: 0.04, by: 0.005) {
+            var simulator = PaddleMotionSimulator(sport: .canoe, segments: [.init(duration: 0.96, strokeRate: 64)])
+            simulator.seed = 9
+            simulator.sampleRate = rate
+            simulator.startTime = shift
+            let samples = simulator.generate().samples.filter { $0.t < shift + 0.96 }
+            counts.append(Self.cycles(samples, sport: .canoe).count)
+        }
+        #expect(Set(counts).count == 1, "counts by shift: \(counts)")
+    }
+
+    /// Re-check of #178: only the latest sign decision was kept. A turn and then a flip, or
+    /// a decision after a peak but before its cycle ended, left an interval across the earlier
+    /// decision counted as a period, though the peak may have moved to the other lobe there.
+    /// Every decision since the last peak now counts. A canoe at 30 spm turns 120–180°.
+    @Test func noPeriodSpansAnyOfSeveralSignDecisions() {
+        var close = 0
+        for seed in UInt64(1)...5 {
+            var simulator = PaddleMotionSimulator(sport: .canoe, segments: [.init(duration: 60, strokeRate: 30)])
+            simulator.seed = seed
+            let samples = simulator.generate().samples
+            for (degrees, over) in [(120.0, 0.0), (150, 4), (180, 6)] {
+                let motion = Self.turned(samples, from: 20, over: over, by: degrees * .pi / 180)
+                for (name, stream) in [("100 Hz", motion), ("even", Self.decimated(motion))] {
+                    var detector = StrokeDetector(sport: .canoe, recordsCycles: true)
+                    for sample in stream { detector.ingest(sample) }
+                    detector.finish()
+                    let decisions = detector.signDecisionLog
+                    close += zip(decisions, decisions.dropFirst()).filter { $1 - $0 < 2 }.count
+                    for cycle in detector.cycles {
+                        guard let period = cycle.period else { continue }
+                        let spanned = decisions.filter { cycle.t - period < $0 && $0 <= cycle.t }
+                        #expect(
+                            spanned.isEmpty,
+                            "seed \(seed) \(Int(degrees))° \(name): period \(period) at \(cycle.t) spans \(spanned)")
+                    }
+                }
+            }
+        }
+        // The case this is about: sign decisions less than a cycle apart.
+        #expect(close > 0)
     }
 }
