@@ -6,7 +6,7 @@ through the same types the readers use.
 
 | Format | Used for | Leaves the device? |
 |---|---|---|
-| **Raw recording v2** | Research and algorithm work: every sensor stream at full rate | Only when the user shares it (AirDrop/Files), or with an opt-in "contribute data" setting |
+| **Raw recording v2** | Research and algorithm work: every sensor stream (motion at 100 Hz, GPS at 1 Hz, heading at about 1 Hz), rounded well below sensor noise | Only when the user shares it (AirDrop/Files), or with an opt-in "contribute data" setting |
 | **Track v1** | The stored and uploaded session: GPS, heart rate, events, analysis summary | Uploaded when sync is on |
 
 WaterKit also exports tracks as **GPX 1.1** for other apps (see [GPX export](#gpx-export)).
@@ -24,6 +24,10 @@ definitions 1 nm = 1852 m, 1 mi = 1609.344 m and 1 h = 3600 s.
 - Removing a field, renaming one, changing a unit or meaning, or making an optional
   field required bumps the version. WaterKit keeps a reader for every older version.
 - Wire names (field names, sport names, event types) never change once released.
+- Sampling rates and value resolution are not part of a version. Writers may record a
+  stream at a different rate or round its values to a different step (see
+  [Resolution](#resolution)) without a version bump, so readers must take rates from the
+  timestamps and must not assume more precision than the written digits carry.
 
 ---
 
@@ -102,7 +106,7 @@ strokes, with the user's pauses) runs on the monotonic clock instead.
   "endedAt": 1809169200.0,
   "device": { "kind": "watch", "model": "Watch7,5", "os": "watchOS 26.1" },
   "app": { "version": "0.1.0", "build": "1" },
-  "requestedRates": { "motion": 100, "gps": 1 }
+  "requestedRates": { "motion": 100, "gps": 1, "heading": 1 }
 }
 ```
 
@@ -156,7 +160,9 @@ values, and the line encoder rejects them.
 **hr** (HealthKit heart-rate samples): `{"ts":1809165603.0,"bpm":99}`, where `ts` is the sample's start date.
 
 **heading** (`CLHeading`): `{"ts":…,"mag":10.0,"true":12.0,"acc":5.0}`. All values are in
-degrees. `true` is left out when no location is available.
+degrees. `true` is left out when no location is available. The recorder writes at most one
+line per second (about 1 Hz), although CoreLocation reports heading about 50 times a second.
+Earlier recordings hold every report.
 
 **events**: `{"ts":…,"type":"mark","data":{…}}`. Types: `start`, `stop`, `pause`,
 `resume`, `mark`, `lap`, `mob`, plus analysis types such as `tack` and `gybe`. Unknown
@@ -172,6 +178,33 @@ It holds positions, so it is not part of published recordings or shared copies.
 
 **clock**: `{"unix":1809165660.5,"mono":1809165660.0}` (here the wall clock is 0.5 s
 ahead of the monotonic clock 60 s in).
+
+### Resolution
+
+Writers round motion and heading values to these steps (`RawFormat.Resolution`). Each step
+is far below the sensor's noise, so analysis of a written recording differs from the live
+readings by no more than noise would, and short numbers keep a recording about a third of
+its unrounded size. Rounding divides by an exact power of ten,
+so a value prints as its short decimal (`0.079`, not `0.07900000000000001`).
+
+| Stream | Fields | Step | Sensor, for comparison |
+|---|---|---|---|
+| motion | `ax ay az`, `gx gy gz` | 0.001 m/s² | noise 0.04–0.19 m/s² (acceleration), 0.002–0.004 m/s² (gravity) |
+| motion | `rx ry rz` | 0.0001 rad/s | noise 0.01–0.04 rad/s |
+| motion | `qx qy qz qw` | 0.00001 | noise 1–2e-4 |
+| heading | `mag`, `true` | 0.1° | accuracy typically about 10° |
+
+Timestamps (`ts`, and `unix`/`mono` in `clock`) are written exactly: readers place motion
+samples relative to clock anchors and fixes relative to pause events, and a rounded time
+could move a reading across either. Accuracy fields (`hacc`, `vacc`, `spdacc`, `crsacc`,
+heading `acc`) and every `gps` value are written as
+reported, never rounded: analysis accepts or rejects readings by comparing them with
+thresholds (for example `hacc` at most 25 m), and rounding must not change that decision.
+`hr`, `events` and `clock` values are written as reported. Anonymized copies are written
+with the same steps. Converting a version 1 recording changes only its clocks: every value
+keeps the precision it was recorded with. Earlier recordings hold every
+value at full double precision. Both are valid version 2; readers must not assume either
+precision.
 
 ### Raw recording v1
 
@@ -228,8 +261,8 @@ rewrites it when the analysis changes. Times are `t`, seconds since
 | `summary` | The sport's analysis summary (defined per sport in `docs/metrics.md`). Optional. |
 | `analyzerVersion` | Version of the analyzer that wrote `summary` and analysis events. Optional. |
 
-Writers round values to keep files small. Rounding never matters for analysis,
-because the raw recording keeps full precision:
+Writers round values to keep files small. Rounding never matters for analysis, because
+the raw recording keeps GPS exactly as reported (see [Resolution](#resolution)).
 
 | Column | Step |
 |---|---|

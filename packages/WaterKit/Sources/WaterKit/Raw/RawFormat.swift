@@ -197,6 +197,29 @@ public enum RawFormat {
             self.crs = crs
             self.crsacc = crsacc
         }
+
+        enum CodingKeys: String, CodingKey {
+            case ts, lat, lon, alt, hacc, vacc, spd, spdacc, crs, crsacc
+        }
+
+        /// Writes every value as reported. GPS is small (about 1 Hz), and analysis compares
+        /// almost every field with a threshold: accuracy (25 m, 15 m, 20°), speed (the 50 m/s
+        /// limit, auto-pause), the distance between fixes (the jump limit) and course steps
+        /// (manoeuvres). Rounding any of them could turn a decision made live into a
+        /// different one on replay.
+        public func encode(to encoder: any Encoder) throws {
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            try c.encode(ts, forKey: .ts)
+            try c.encode(lat, forKey: .lat)
+            try c.encode(lon, forKey: .lon)
+            try c.encodeIfPresent(alt, forKey: .alt)
+            try c.encodeIfPresent(hacc, forKey: .hacc)
+            try c.encodeIfPresent(vacc, forKey: .vacc)
+            try c.encodeIfPresent(spd, forKey: .spd)
+            try c.encodeIfPresent(spdacc, forKey: .spdacc)
+            try c.encodeIfPresent(crs, forKey: .crs)
+            try c.encodeIfPresent(crsacc, forKey: .crsacc)
+        }
     }
 
     /// `motion.ndjson`. `ts` is the session's monotonic clock, Unix s (version 1: device
@@ -227,6 +250,28 @@ public enum RawFormat {
             qy = q.y
             qz = q.z
             qw = q.w
+        }
+
+        enum CodingKeys: String, CodingKey {
+            case ts, ax, ay, az, gx, gy, gz, rx, ry, rz, qx, qy, qz, qw
+        }
+
+        /// Writes the values rounded to `Resolution` (docs/formats.md, "Resolution"), and
+        /// `ts` exactly: readers place it relative to clock anchors.
+        public func encode(to encoder: any Encoder) throws {
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            typealias R = Resolution
+            let rounding = LineRounding(encoder)
+            try c.encode(ts, forKey: .ts)
+            for (key, value) in [(CodingKeys.ax, ax), (.ay, ay), (.az, az), (.gx, gx), (.gy, gy), (.gz, gz)] {
+                try c.encode(rounding(value, R.acceleration), forKey: key)
+            }
+            for (key, value) in [(CodingKeys.rx, rx), (.ry, ry), (.rz, rz)] {
+                try c.encode(rounding(value, R.rotationRate), forKey: key)
+            }
+            for (key, value) in [(CodingKeys.qx, qx), (.qy, qy), (.qz, qz), (.qw, qw)] {
+                try c.encode(rounding(value, R.attitude), forKey: key)
+            }
         }
     }
 
@@ -259,6 +304,38 @@ public enum RawFormat {
             self.trueHeading = trueHeading
             self.acc = acc
         }
+
+        /// Writes the headings rounded to `Resolution`; `acc` is written as reported, like
+        /// every accuracy.
+        public func encode(to encoder: any Encoder) throws {
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            typealias R = Resolution
+            let rounding = LineRounding(encoder)
+            try c.encode(ts, forKey: .ts)
+            try c.encodeIfPresent(mag.map { rounding($0, R.heading) }, forKey: .mag)
+            try c.encodeIfPresent(trueHeading.map { rounding($0, R.heading) }, forKey: .trueHeading)
+            try c.encodeIfPresent(acc, forKey: .acc)
+        }
+    }
+
+    /// Passes at most one heading line per `interval` of `ts`. CoreLocation delivers
+    /// heading at about 50 Hz with no filter; the recording keeps about 1 Hz (PLAN §4.2,
+    /// `Resolution.headingInterval`). A `ts` earlier than the last one passed (a wall-clock
+    /// correction) passes and restarts the interval.
+    public struct HeadingThrottle: Sendable, Hashable {
+        public let interval: Double
+        private var last: Double?
+
+        public init(interval: Double = Resolution.headingInterval) {
+            self.interval = interval
+        }
+
+        /// Whether to write a line at `ts`; records it as the last line when it does.
+        public mutating func admit(_ ts: Double) -> Bool {
+            if let last, ts >= last, ts - last < interval { return false }
+            last = ts
+            return true
+        }
     }
 
     /// `events.ndjson`: start, stop, pause, resume, mark, lap, mob, ...
@@ -274,12 +351,66 @@ public enum RawFormat {
         }
     }
 
+    // MARK: Resolution
+
+    /// The steps writers round motion and heading values to (docs/formats.md, "Resolution").
+    /// Each is far below the sensor's noise, so analysis of a written recording differs from
+    /// the live readings by no more than noise would, and short numbers keep the files small.
+    /// Readers must not assume finer values. GPS lines, accuracy fields (heading `acc`) and
+    /// timestamps are never rounded: analysis compares them with thresholds and places
+    /// readings relative to clock anchors and pause events, and rounding must not change
+    /// those decisions.
+    public enum Resolution {
+        /// `motion` user acceleration and gravity, m/s².
+        public static let acceleration = 1e-3
+        /// `motion` rotation rate, rad/s.
+        public static let rotationRate = 1e-4
+        /// `motion` attitude quaternion components.
+        public static let attitude = 1e-5
+        /// `heading` `mag`, `true`, degrees.
+        public static let heading = 0.1
+        /// The shortest time between two heading lines, s (about 1 Hz).
+        public static let headingInterval = 1.0
+    }
+
+    /// `value` rounded to the nearest multiple of `step`, a negative power of ten (or 1).
+    /// Divides by the exact power of ten rather than multiplying by `step`, so the result
+    /// is the double nearest the decimal and JSON prints it short (`0.079`, never
+    /// `0.07900000000000001`). The result is within half a step of `value`, plus the error
+    /// of the scaling product (under 1e-14 of the value), so a value within that distance
+    /// of a half step may round either way. Values too large to scale exactly, and NaN, are
+    /// returned unchanged; -0 becomes 0.
+    public static func round(_ value: Double, to step: Double) -> Double {
+        let scale = (1 / step).rounded()
+        let scaled = (value * scale).rounded()
+        guard scaled.magnitude < 0x1p53 else { return value }
+        return scaled / scale + 0
+    }
+
+    /// Rounds a line's values to `Resolution` unless its encoder asks for exact values.
+    struct LineRounding {
+        static let exactValuesKey = CodingUserInfoKey(rawValue: "app.madegood.raw.exactValues")!
+        let isOn: Bool
+
+        init(_ encoder: any Encoder) {
+            isOn = encoder.userInfo[Self.exactValuesKey] as? Bool != true
+        }
+
+        func callAsFunction(_ value: Double, _ step: Double) -> Double {
+            isOn ? RawFormat.round(value, to: step) : value
+        }
+    }
+
     // MARK: Writing
 
     /// Encodes one NDJSON line, including the trailing newline. Throws on NaN or infinity,
     /// which JSON cannot represent; recorders must map invalid readings to nil first.
-    public static func line(_ value: some Encodable) throws -> Data {
-        var data = try lineEncoder.encode(value)
+    /// Values are rounded to `Resolution`; `exactValues` writes them unrounded, for
+    /// converting a recording without changing it.
+    public static func line(_ value: some Encodable, exactValues: Bool = false) throws -> Data {
+        let encoder = lineEncoder
+        if exactValues { encoder.userInfo[LineRounding.exactValuesKey] = true }
+        var data = try encoder.encode(value)
         data.append(0x0A)
         return data
     }
@@ -293,7 +424,8 @@ public enum RawFormat {
 
     private static var lineEncoder: JSONEncoder {
         let encoder = JSONEncoder()
-        encoder.outputFormatting = [.withoutEscapingSlashes]
+        // Sorted keys give every line of a stream the same key order, which compresses better.
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         return encoder
     }
 }

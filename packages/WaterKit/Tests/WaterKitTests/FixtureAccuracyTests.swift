@@ -42,6 +42,11 @@ import Testing
                             labels.sport == sport && labels.sport == session.meta.sport, "\(context): sport mismatch")
                         try #require(session.issues.isEmpty, "\(context): \(session.issues)")
                         try Self.check(labels.truth, session: session, context: context)
+                        // The thresholds must also hold after writing the recording with the
+                        // current writer (rounded values) and reading it back.
+                        if let rewritten = try Self.rewritten(folder, session, truth: labels.truth) {
+                            try Self.check(labels.truth, session: rewritten, context: context + " (rewritten)")
+                        }
                     } catch is CancellationError {
                         throw CancellationError()
                     } catch {
@@ -50,6 +55,17 @@ import Testing
                 }
             }
         }
+    }
+
+    /// A raw recording written by `RawSessionWriter` and read back; nil for a track fixture.
+    private static func rewritten(_ folder: URL, _ session: RawSession, truth: Labels.Truth) throws -> RawSession? {
+        guard FileManager.default.fileExists(atPath: folder.appendingPathComponent("meta.json").path) else {
+            return nil
+        }
+        let needsMotion = truth.strokes != nil || truth.strokeRateSPM != nil
+        let temp = try TempFolder()
+        try RawSessionWriter.write(session, to: temp.url)
+        return try RawSessionReader.read(folder: temp.url, includeMotion: needsMotion)
     }
 
     private static func loadRecording(_ folder: URL, truth: Labels.Truth) throws -> RawSession {
