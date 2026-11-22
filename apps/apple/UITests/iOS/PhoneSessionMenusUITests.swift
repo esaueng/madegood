@@ -44,6 +44,8 @@ final class PhoneSessionMenusUITests: XCTestCase {
         // Keep the session: the confirmation is a popover, so a tap outside cancels it, and
         // the detail is still open.
         app.otherElements["PopoverDismissRegion"].firstMatch.tap()
+        let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: confirm)
+        XCTAssertEqual(XCTWaiter().wait(for: [gone], timeout: 5), .completed, "the confirmation stayed open")
         XCTAssertTrue(app.buttons["session.panel.handle"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.navigationBars["Sailing"].exists)
     }
