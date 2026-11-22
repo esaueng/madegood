@@ -45,7 +45,8 @@ struct StatisticsView: View {
                     .buttonStyle(.borderless)
                     .accessibilityIdentifier("statistics.sportFilter")
                     if pending > 0 {
-                        Text("\(pending) \(pending == 1 ? "session is" : "sessions are") still being analyzed.")
+                        // As History says: a recording that can't be analyzed also waits here.
+                        Text("\(pending) awaiting metrics, not counted.")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
@@ -97,17 +98,20 @@ private struct StatisticsChart: View {
     var body: some View {
         let selected = selection.flatMap { date in buckets.first { $0.start <= date && date < $0.end } }
         VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(title)
-                    .font(.headline)
-                    .fontDesign(.rounded)
-                    .foregroundStyle(color)
-                Spacer()
-                Text(headline(selected))
-                    .font(.footnote.weight(.medium).monospacedDigit())
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .multilineTextAlignment(.trailing)
+            // Beside the title while it fits on two lines; under it, in full, when it doesn't.
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .firstTextBaseline) {
+                    titleText
+                    Spacer()
+                    headlineText(selected)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.trailing)
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    titleText
+                    headlineText(selected)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             Chart(buckets) { bucket in
                 BarMark(
@@ -135,6 +139,19 @@ private struct StatisticsChart: View {
         }
         .padding(16)
         .background(Color(.secondarySystemGroupedBackground), in: .rect(cornerRadius: 20, style: .continuous))
+    }
+
+    private var titleText: some View {
+        Text(title)
+            .font(.headline)
+            .fontDesign(.rounded)
+            .foregroundStyle(color)
+    }
+
+    private func headlineText(_ selected: Statistics.Bucket?) -> some View {
+        Text(headline(selected))
+            .font(.footnote.weight(.medium).monospacedDigit())
+            .foregroundStyle(.secondary)
     }
 
     /// The selected bar stands out; otherwise the unfinished current period is dimmed.

@@ -59,19 +59,22 @@ enum Statistics {
         guard let current = calendar.dateInterval(of: period.component, for: now) else { return [] }
         let count: Int
         if period == .year {
+            // By year number: a year that began off midnight (an offset change) would make
+            // a count of whole elapsed years come out one short.
             let first = samples.map(\.startedAt).filter { $0 < current.end }.min() ?? now
-            let firstYear = calendar.dateInterval(of: .year, for: first)?.start ?? current.start
-            let years = calendar.dateComponents([.year], from: firstYear, to: current.start).year ?? 0
+            let years = calendar.component(.year, from: current.start) - calendar.component(.year, from: first)
             count = max(1, min(years + 1, 50))
         } else {
             count = recentCount
         }
-        var buckets: [Bucket] = []
-        for offset in stride(from: count - 1, through: 0, by: -1) {
-            guard let date = calendar.date(byAdding: period.component, value: -offset, to: current.start),
-                let interval = calendar.dateInterval(of: period.component, for: date)
-            else { continue }
-            buckets.append(Bucket(start: interval.start, end: interval.end, isCurrent: offset == 0))
+        // Step back one period at a time from the current one, and end each period where
+        // the next begins: across a skipped day (Samoa's date-line change) Foundation's
+        // interval for that week is a day short, and a session in the gap would be lost.
+        var buckets = [Bucket(start: current.start, end: current.end, isCurrent: true)]
+        while buckets.count < count, let earliest = buckets.first,
+            let interval = calendar.dateInterval(of: period.component, for: earliest.start.addingTimeInterval(-1))
+        {
+            buckets.insert(Bucket(start: interval.start, end: earliest.start), at: 0)
         }
         for sample in samples {
             guard

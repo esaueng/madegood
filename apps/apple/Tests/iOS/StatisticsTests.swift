@@ -75,4 +75,34 @@ final class StatisticsTests: XCTestCase {
         let none = Statistics.buckets([], period: .year, now: now, calendar: calendar)
         XCTAssertEqual(none.map(\.start), [date(2026, 1, 1, 0)])
     }
+
+    /// Review regression: years were counted as whole years elapsed between year starts.
+    /// Kathmandu's 1986 began at 00:15 (an offset change), so Year started at 1987 and a
+    /// June 1986 session was left out.
+    func testYearsCountByYearNumberWhenAYearStartsOffMidnight() {
+        var kathmandu = Calendar(identifier: .gregorian)
+        kathmandu.timeZone = TimeZone(identifier: "Asia/Kathmandu")!
+        let june1986 = kathmandu.date(from: DateComponents(year: 1986, month: 6, day: 1, hour: 10))!
+        let now = kathmandu.date(from: DateComponents(year: 2026, month: 11, day: 21, hour: 10))!
+        let buckets = Statistics.buckets([sample(june1986)], period: .year, now: now, calendar: kathmandu)
+        XCTAssertEqual(buckets.count, 41)
+        XCTAssertEqual(buckets.first.map { kathmandu.component(.year, from: $0.start) }, 1986)
+        XCTAssertEqual(buckets.first?.sessions, 1)
+    }
+
+    /// Review regression: weeks were found by adding whole weeks to the current one, and
+    /// Samoa's skipped 30 December 2011 made the week of 25 December drop out.
+    func testWeeksStayConsecutiveAcrossASkippedDay() {
+        var apia = Calendar(identifier: .gregorian)
+        apia.timeZone = TimeZone(identifier: "Pacific/Apia")!
+        apia.firstWeekday = 1  // Sunday
+        let now = apia.date(from: DateComponents(year: 2012, month: 1, day: 5, hour: 12))!
+        let december27 = apia.date(from: DateComponents(year: 2011, month: 12, day: 27, hour: 12))!
+        let buckets = Statistics.buckets([sample(december27)], period: .week, now: now, calendar: apia)
+        XCTAssertEqual(buckets.count, 12)
+        for (earlier, later) in zip(buckets, buckets.dropFirst()) {
+            XCTAssertEqual(earlier.end, later.start, "weeks must meet with no gap")
+        }
+        XCTAssertEqual(buckets.reduce(0) { $0 + $1.sessions }, 1)
+    }
 }
