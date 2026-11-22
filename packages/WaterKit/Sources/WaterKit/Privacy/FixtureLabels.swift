@@ -122,6 +122,10 @@ public enum FixtureLabels {
         if let strokes = labels.strokeLabels {
             problems += strokes.problems(duration: duration).map { "labels.json: \($0)" }
             if strokes.count == 0 { problems.append("labels.json: truth.strokeTimes is empty") }
+            // The accuracy test scores both count and rate, so labels must give a rate.
+            if strokes.count > 0, strokes.strokeRate(sport: labels.sport) == nil {
+                problems.append("labels.json: the strokes give no rate (no bout of three strokes in a row)")
+            }
         }
         if (labels.truth.maneuvers ?? []).contains(where: { $0.t < 0 || $0.t > duration + 1 }) {
             problems.append("labels.json: maneuver times must lie within the recording")

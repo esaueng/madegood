@@ -63,13 +63,32 @@ public struct StrokeLabels: Sendable, Hashable, Codable {
     public var count: Int { strokes.count }
 
     /// Average strokes per minute while paddling: strokes are split into bouts at an
-    /// excluded segment or where a wrist cycle is longer than `maxCyclePeriod` (one stroke
-    /// for canoe and SUP; for kayak the two strokes ending at a stroke, so blades that are
-    /// not evenly spaced, 0.9 s and 2.1 s say, still make one bout), and the rate is the
-    /// intervals within bouts of at least three strokes over their total time. Nil when no
-    /// such bout exists.
+    /// excluded segment or a pause, and the rate is the intervals within bouts of at least
+    /// three strokes over their total time. Nil when no such bout exists.
+    ///
+    /// A pause is a wrist cycle longer than `maxCyclePeriod`. For canoe and SUP a cycle is
+    /// one stroke, so a gap over 4 s. For kayak it is two strokes, and the labels do not say
+    /// which strokes pair: a gap over 2 s is a pause when it makes a cycle over 4 s with
+    /// either neighbouring gap that is paddling itself (not a pause on its own, not across
+    /// an excluded segment). Blades that are not evenly spaced (0.9 s and 2.1 s) stay one
+    /// bout, even next to a stop, and a 3.25 s stop after a 0.5 s gap still splits at the stop.
     public func strokeRate(sport: Sport) -> Double? {
-        let strokesPerCycle = sport == .kayak ? 2 : 1
+        guard strokes.count >= 2 else { return nil }
+        let gaps = zip(strokes, strokes.dropFirst()).map { $1.t - $0.t }
+        func crossesExcluded(_ index: Int) -> Bool {
+            excluded.contains { $0.overlaps(strokes[index].t, strokes[index + 1].t) }
+        }
+        func isPauseAlone(_ index: Int) -> Bool {
+            gaps[index] <= 0 || gaps[index] > Self.maxCyclePeriod || crossesExcluded(index)
+        }
+        func isPause(_ index: Int) -> Bool {
+            let gap = gaps[index]
+            if isPauseAlone(index) { return true }
+            guard sport == .kayak, gap > Self.maxCyclePeriod / 2 else { return false }
+            let neighbours = [index - 1, index + 1].filter { gaps.indices.contains($0) && !isPauseAlone($0) }
+            if neighbours.isEmpty { return true }
+            return neighbours.contains { gap + gaps[$0] > Self.maxCyclePeriod }
+        }
         var intervals = 0
         var time = 0.0
         var boutIntervals = 0
@@ -82,22 +101,12 @@ public struct StrokeLabels: Sendable, Hashable, Codable {
             boutIntervals = 0
             boutTime = 0
         }
-        for index in strokes.indices.dropFirst() {
-            let a = strokes[index - 1]
-            let b = strokes[index]
-            let gap = b.t - a.t
-            // The cycle ending at b: back one stroke (canoe, SUP) or two (kayak), within the
-            // bout; at a bout's start only this gap is known.
-            let cycleStart = index - strokesPerCycle
-            let cycle = boutIntervals + 1 >= strokesPerCycle && cycleStart >= 0 ? b.t - strokes[cycleStart].t : gap
-            let split =
-                gap <= 0 || gap > Self.maxCyclePeriod || cycle > Self.maxCyclePeriod
-                || excluded.contains { $0.overlaps(a.t, b.t) }
-            if split {
+        for index in gaps.indices {
+            if isPause(index) {
                 closeBout()
             } else {
                 boutIntervals += 1
-                boutTime += gap
+                boutTime += gaps[index]
             }
         }
         closeBout()

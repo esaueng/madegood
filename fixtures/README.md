@@ -141,10 +141,11 @@ for generated data), as stated in `labels.json`.
 | `truth.distanceM` | Optional reference distance in metres for inspection. |
 
 Include only measured values. Stroke truth from `strokeTimes`: the count is every
-labelled stroke. For the rate, strokes form bouts that end at an excluded stretch or where
-a wrist cycle is longer than 4 s (one stroke for canoe and SUP, the two strokes ending at a
-stroke for kayak, so uneven blades still make one bout), and the rate is 60 × the intervals within bouts of at least three strokes over their total
-time. The accuracy test compares these with what session detail shows: its count and
+labelled stroke. For the rate, strokes form bouts that end at an excluded stretch or a
+pause: a wrist cycle longer than 4 s. For canoe and SUP that is a gap over 4 s. For kayak
+it is a gap over 4 s, or a gap over 2 s that makes more than 4 s with a neighbouring
+paddling gap, so blades that are not evenly spaced still make one bout. The rate is
+60 × the intervals within bouts of at least three strokes over their total time. The accuracy test compares these with what session detail shows: its count and
 average rate, in moving time only. A stroke session detail counts in an excluded stretch
 is an error, and so is a labelled stroke it leaves out (for example, paddling below the
 auto-pause speed). Sailing maneuver matching uses the correct type

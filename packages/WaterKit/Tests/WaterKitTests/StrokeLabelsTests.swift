@@ -42,6 +42,13 @@ import Testing
         // A real stop still splits: 5 s after a stroke is more than a 4 s cycle.
         let stopped = StrokeLabels(strokes: (times + times.map { $0 + times.last! + 5 }).map { .init(t: $0) })
         #expect(abs(try #require(stopped.strokeRate(sport: .kayak)) - 40) < 1e-9)
+        // Re-check of #177: a 3.25 s stop after a 0.5 s gap made a 3.75 s cycle and was
+        // counted as paddling (46.45 spm). Both bouts are 60 spm.
+        let short = StrokeLabels(strokes: [0, 1.5, 2, 5.25, 6.75, 7.25, 8.75, 9.25].map { .init(t: $0) })
+        #expect(abs(try #require(short.strokeRate(sport: .kayak)) - 60) < 1e-9)
+        // Canoe and SUP: only a gap over 4 s is a pause.
+        let canoe = StrokeLabels(strokes: [0, 3.5, 7, 10.5, 15, 18.5, 22].map { .init(t: $0) })
+        #expect(abs(try #require(canoe.strokeRate(sport: .canoe)) - 60 / 3.5) < 1e-9)
     }
 
     /// Review of #177: excluded segments with no stroke times passed the check and scored
