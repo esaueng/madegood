@@ -12,6 +12,8 @@ struct SessionReplayView: View {
     @Binding var isPlaying: Bool
     var highlight: Highlight?
     var allowsPlayback = true
+    /// False when the screen draws the map itself (the session detail's full-screen map).
+    var showsMap = true
     var onSeek: (Double) -> Void = { _ in }
 
     struct Highlight {
@@ -62,14 +64,25 @@ struct SessionReplayView: View {
         }
     }
 
-    private var selection: SessionReplayTimeline.Selection {
-        let speedWindow = highlight.flatMap { $0.speedCurve.isEmpty ? nil : $0.range }
-        return data.timeline.selection(
-            at: elapsed ?? data.timeline.points.first?.elapsed ?? 0, speedWindow: speedWindow)
+    private var selection: SessionReplayTimeline.Selection { cursor.selection }
+
+    private var cursor: Cursor {
+        Self.cursor(data: data, elapsed: elapsed, isPlaying: isPlaying, highlight: highlight)
     }
 
-    var body: some View {
-        let selected = selection
+    /// Where the replay is: the selected point, its clock text, and whether it falls in a
+    /// removed interval. Shared with a map drawn outside this view.
+    struct Cursor {
+        let selection: SessionReplayTimeline.Selection
+        let time: String
+        let removedIntervals: [ClosedRange<Double>]
+        let insideCut: Bool
+    }
+
+    static func cursor(data: Data, elapsed: Double?, isPlaying: Bool, highlight: Highlight?) -> Cursor {
+        let speedWindow = highlight.flatMap { $0.speedCurve.isEmpty ? nil : $0.range }
+        let selected = data.timeline.selection(
+            at: elapsed ?? data.timeline.points.first?.elapsed ?? 0, speedWindow: speedWindow)
         let removedIntervals =
             highlight?.isTrim == true ? (highlight?.removedIntervals ?? []) : data.timeline.removedIntervals
         let insideCut = removedIntervals.contains {
@@ -78,13 +91,24 @@ struct SessionReplayView: View {
         let time =
             (highlight != nil && !isPlaying) || selected.elapsed < 0
             ? Highlight.time(selected.elapsed) : Formatting.elapsed(selected.elapsed)
+        return Cursor(selection: selected, time: time, removedIntervals: removedIntervals, insideCut: insideCut)
+    }
+
+    var body: some View {
+        let cursor = cursor
+        let selected = cursor.selection
+        let removedIntervals = cursor.removedIntervals
+        let insideCut = cursor.insideCut
+        let time = cursor.time
         Section {
-            SessionReplayMap(
-                data: data, selection: selected, time: time, highlight: highlight,
-                insideCut: insideCut && highlight?.isTrim != true, select: seek
-            )
-            .frame(height: 220)
-            .listRowInsets(EdgeInsets())
+            if showsMap {
+                SessionReplayMap(
+                    data: data, selection: selected, time: time, highlight: highlight,
+                    insideCut: insideCut && highlight?.isTrim != true, select: seek
+                )
+                .frame(height: 220)
+                .listRowInsets(EdgeInsets())
+            }
 
             if let highlight {
                 Text(highlight.label)
@@ -503,13 +527,17 @@ extension SessionReplayView {
     }
 }
 
-private struct SessionReplayMap: View {
+struct SessionReplayMap: View {
     let data: SessionReplayView.Data
     let selection: SessionReplayTimeline.Selection
     let time: String
     let highlight: SessionReplayView.Highlight?
     let insideCut: Bool
     let select: (Double) -> Void
+    /// Changes when the visible area does (the detail panel moved); the map refits the
+    /// route into the new area.
+    var fitKey: Int = 0
+    @State private var position: MapCameraPosition?
 
     var body: some View {
         Group {
@@ -581,7 +609,7 @@ private struct SessionReplayMap: View {
 
     private var basemap: some View {
         MapReader { proxy in
-            Map(initialPosition: data.mapRect.map { .rect($0) } ?? .automatic) {
+            Map(position: cameraPosition) {
                 ForEach(data.lines.indices, id: \.self) { index in
                     let line = data.lines[index]
                     MapPolyline(coordinates: line.coordinates)
@@ -628,11 +656,21 @@ private struct SessionReplayMap: View {
                 }
             }
             .mapStyle(.standard(elevation: .flat, pointsOfInterest: .excludingAll))
+            .onChange(of: fitKey) {
+                withAnimation(.snappy) { position = fitted }
+            }
             .simultaneousGesture(
                 SpatialTapGesture().onEnded { tap in
                     if let time = time(at: tap.location, on: proxy) { select(time) }
                 })
         }
+    }
+
+    private var fitted: MapCameraPosition { data.mapRect.map { .rect($0) } ?? .automatic }
+
+    /// The camera starts on the whole route; the person can pan and zoom from there.
+    private var cameraPosition: Binding<MapCameraPosition> {
+        Binding(get: { position ?? fitted }, set: { position = $0 })
     }
 
     /// Project the visible route into screen space. At crossings, prefer the pass

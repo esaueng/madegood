@@ -80,6 +80,46 @@ final class PhoneReplayUITests: XCTestCase {
         XCTAssertEqual(total.label, "48:00")
     }
 
+    /// The panel over the map rests at three heights: a tap on its header steps up, from
+    /// full a tap drops to the replay height, and a drag on the header moves it.
+    @MainActor
+    func testSessionPanelRestsAtThreeHeights() {
+        let app = launchDemoHistory(extraArguments: ["-demoOmitMapKit"])
+        app.tabBars.buttons["History"].tap()
+        let sailing = app.buttons.matching(identifier: "session.row")
+            .containing(.staticText, identifier: "Sailing").firstMatch
+        XCTAssertTrue(sailing.waitForExistence(timeout: 15))
+        sailing.tap()
+
+        let handle = app.buttons["session.panel.handle"]
+        let panel = element("session.panel", in: app)
+        XCTAssertTrue(handle.waitForExistence(timeout: 20))
+        XCTAssertEqual(handle.value as? String, "Half")
+        let half = panel.frame.minY
+        XCTAssertTrue(element("replay.map", in: app).exists)
+
+        handle.tap()
+        waitForValue(handle, "Full")
+        XCTAssertLessThan(panel.frame.minY, half - 50)
+
+        handle.tap()
+        waitForValue(handle, "Replay")
+        XCTAssertGreaterThan(panel.frame.minY, half + 50)
+        // The replay controls stay in reach at the lowest height.
+        XCTAssertTrue(app.buttons["replay.playPause"].isHittable)
+
+        // Drag the header up past the middle height and let go: it settles at full.
+        let start = handle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 4))
+        start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: 0, dy: -420)))
+        waitForValue(handle, "Full")
+    }
+
+    private func waitForValue(_ element: XCUIElement, _ value: String) {
+        let expectation = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value == %@", value), object: element)
+        XCTAssertEqual(XCTWaiter().wait(for: [expectation], timeout: 5), .completed, "\(element.value ?? "nil")")
+    }
+
     @MainActor
     func testHeartRateZonesRefreshAfterEditingSettings() {
         let app = launchDemoHistory()

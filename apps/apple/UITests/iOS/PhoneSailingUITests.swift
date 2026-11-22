@@ -45,6 +45,9 @@ final class PhoneSailingUITests: XCTestCase {
         XCTAssertTrue(sailing.waitForExistence(timeout: 15))
         scrollTo(sailing, in: app)
         sailing.tap()
+        // Read the session with the panel at full height: the Apple Weather result re-runs
+        // the analysis, and the list must keep enough rows loaded to find it after.
+        expandSessionPanel(in: app)
 
         let windRow = app.buttons["moments.wind.edit"]
         scrollTo(windRow, in: app)
