@@ -147,11 +147,14 @@ final class MotionSource {
 
 // MARK: Heading
 
-/// Compass heading where the hardware has a magnetometer.
+/// Compass heading where the hardware has a magnetometer, written at about 1 Hz
+/// (PLAN §4.2). With no heading filter CoreLocation delivers about 50 Hz; nothing reads
+/// heading live, and the recording keeps one line per second (`RawFormat.HeadingThrottle`).
 @MainActor
 final class HeadingSource: NSObject, CLLocationManagerDelegate {
     private let manager = CLLocationManager()
     private let writer: RawStreamWriter
+    private let throttle = Mutex(RawFormat.HeadingThrottle())
 
     init(writer: RawStreamWriter) {
         self.writer = writer
@@ -173,9 +176,11 @@ final class HeadingSource: NSObject, CLLocationManagerDelegate {
 
     nonisolated func locationManager(_ manager: CLLocationManager, didUpdateHeading heading: CLHeading) {
         guard heading.headingAccuracy >= 0 else { return }
+        let ts = heading.timestamp.timeIntervalSince1970
+        guard throttle.withLock({ $0.admit(ts) }) else { return }
         writer.append(
             RawFormat.HeadingLine(
-                ts: heading.timestamp.timeIntervalSince1970,
+                ts: ts,
                 mag: heading.magneticHeading,
                 trueHeading: heading.trueHeading >= 0 ? heading.trueHeading : nil,
                 acc: heading.headingAccuracy))

@@ -228,7 +228,7 @@ final class SessionRecorder {
         let meta = RawFormat.Meta(
             sessionId: sessionId, sport: sport, startedAt: clock.startUnix,
             device: DeviceInfo.current, app: DeviceInfo.app,
-            requestedRates: ["gps": 1, "motion": Self.motionRate])
+            requestedRates: ["gps": 1, "motion": Self.motionRate, "heading": 1 / RawFormat.Resolution.headingInterval])
         self.meta = meta
         writeMeta()
         engine = SessionEngine(profile: UserSettings.profile(for: sport))

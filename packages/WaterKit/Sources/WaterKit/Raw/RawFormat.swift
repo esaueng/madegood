@@ -197,6 +197,26 @@ public enum RawFormat {
             self.crs = crs
             self.crsacc = crsacc
         }
+
+        enum CodingKeys: String, CodingKey {
+            case ts, lat, lon, alt, hacc, vacc, spd, spdacc, crs, crsacc
+        }
+
+        /// Writes every value rounded to `Resolution`, the steps track v1 uses.
+        public func encode(to encoder: any Encoder) throws {
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            typealias R = Resolution
+            try c.encode(round(ts, to: R.time), forKey: .ts)
+            try c.encode(round(lat, to: R.position), forKey: .lat)
+            try c.encode(round(lon, to: R.position), forKey: .lon)
+            try c.encodeIfPresent(alt.map { round($0, to: R.gpsTenth) }, forKey: .alt)
+            try c.encodeIfPresent(hacc.map { round($0, to: R.gpsTenth) }, forKey: .hacc)
+            try c.encodeIfPresent(vacc.map { round($0, to: R.gpsTenth) }, forKey: .vacc)
+            try c.encodeIfPresent(spd.map { round($0, to: R.speed) }, forKey: .spd)
+            try c.encodeIfPresent(spdacc.map { round($0, to: R.speed) }, forKey: .spdacc)
+            try c.encodeIfPresent(crs.map { round($0, to: R.gpsTenth) }, forKey: .crs)
+            try c.encodeIfPresent(crsacc.map { round($0, to: R.gpsTenth) }, forKey: .crsacc)
+        }
     }
 
     /// `motion.ndjson`. `ts` is the session's monotonic clock, Unix s (version 1: device
@@ -227,6 +247,26 @@ public enum RawFormat {
             qy = q.y
             qz = q.z
             qw = q.w
+        }
+
+        enum CodingKeys: String, CodingKey {
+            case ts, ax, ay, az, gx, gy, gz, rx, ry, rz, qx, qy, qz, qw
+        }
+
+        /// Writes every value rounded to `Resolution` (docs/formats.md, "Resolution").
+        public func encode(to encoder: any Encoder) throws {
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            typealias R = Resolution
+            try c.encode(round(ts, to: R.motionTime), forKey: .ts)
+            for (key, value) in [(CodingKeys.ax, ax), (.ay, ay), (.az, az), (.gx, gx), (.gy, gy), (.gz, gz)] {
+                try c.encode(round(value, to: R.acceleration), forKey: key)
+            }
+            for (key, value) in [(CodingKeys.rx, rx), (.ry, ry), (.rz, rz)] {
+                try c.encode(round(value, to: R.rotationRate), forKey: key)
+            }
+            for (key, value) in [(CodingKeys.qx, qx), (.qy, qy), (.qz, qz), (.qw, qw)] {
+                try c.encode(round(value, to: R.attitude), forKey: key)
+            }
         }
     }
 
@@ -259,6 +299,36 @@ public enum RawFormat {
             self.trueHeading = trueHeading
             self.acc = acc
         }
+
+        /// Writes every value rounded to `Resolution`.
+        public func encode(to encoder: any Encoder) throws {
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            typealias R = Resolution
+            try c.encode(round(ts, to: R.time), forKey: .ts)
+            try c.encodeIfPresent(mag.map { round($0, to: R.heading) }, forKey: .mag)
+            try c.encodeIfPresent(trueHeading.map { round($0, to: R.heading) }, forKey: .trueHeading)
+            try c.encodeIfPresent(acc.map { round($0, to: R.heading) }, forKey: .acc)
+        }
+    }
+
+    /// Passes at most one heading line per `interval` of `ts`. CoreLocation delivers
+    /// heading at about 50 Hz with no filter; the recording keeps about 1 Hz (PLAN §4.2,
+    /// `Resolution.headingInterval`). A `ts` earlier than the last one passed (a wall-clock
+    /// correction) passes and restarts the interval.
+    public struct HeadingThrottle: Sendable, Hashable {
+        public let interval: Double
+        private var last: Double?
+
+        public init(interval: Double = Resolution.headingInterval) {
+            self.interval = interval
+        }
+
+        /// Whether to write a line at `ts`; records it as the last line when it does.
+        public mutating func admit(_ ts: Double) -> Bool {
+            if let last, ts >= last, ts - last < interval { return false }
+            last = ts
+            return true
+        }
     }
 
     /// `events.ndjson`: start, stop, pause, resume, mark, lap, mob, ...
@@ -272,6 +342,46 @@ public enum RawFormat {
             self.type = type.rawValue
             self.data = data
         }
+    }
+
+    // MARK: Resolution
+
+    /// The steps writers round values to (docs/formats.md, "Resolution"). Each is far below
+    /// the sensor's noise or accuracy, so analysis gives the same results, and short numbers
+    /// keep the files small. Readers must not assume finer values.
+    public enum Resolution {
+        /// `motion` `ts`, s: 1/10,000 of the 100 Hz sample interval.
+        public static let motionTime = 1e-6
+        /// `motion` user acceleration and gravity, m/s².
+        public static let acceleration = 1e-3
+        /// `motion` rotation rate, rad/s.
+        public static let rotationRate = 1e-4
+        /// `motion` attitude quaternion components.
+        public static let attitude = 1e-5
+        /// `gps` and `heading` `ts`, s.
+        public static let time = 1e-3
+        /// `gps` `lat`, `lon`, degrees (about 1 cm).
+        public static let position = 1e-7
+        /// `gps` `spd`, `spdacc`, m/s.
+        public static let speed = 0.01
+        /// `gps` `alt`, `hacc`, `vacc` (m) and `crs`, `crsacc` (degrees).
+        public static let gpsTenth = 0.1
+        /// `heading` `mag`, `true`, `acc`, degrees.
+        public static let heading = 0.1
+        /// The shortest time between two heading lines, s (about 1 Hz).
+        public static let headingInterval = 1.0
+    }
+
+    /// `value` rounded to the nearest multiple of `step`, a negative power of ten (or 1).
+    /// Divides by the exact power of ten rather than multiplying by `step`, so the result
+    /// is the double nearest the decimal and JSON prints it short (`0.079`, never
+    /// `0.07900000000000001`). Values too large to scale exactly, and NaN, are returned
+    /// unchanged; -0 becomes 0.
+    public static func round(_ value: Double, to step: Double) -> Double {
+        let scale = (1 / step).rounded()
+        let scaled = (value * scale).rounded()
+        guard scaled.magnitude < 0x1p53 else { return value }
+        return scaled / scale + 0
     }
 
     // MARK: Writing
@@ -293,7 +403,8 @@ public enum RawFormat {
 
     private static var lineEncoder: JSONEncoder {
         let encoder = JSONEncoder()
-        encoder.outputFormatting = [.withoutEscapingSlashes]
+        // Sorted keys give every line of a stream the same key order, which compresses better.
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         return encoder
     }
 }
