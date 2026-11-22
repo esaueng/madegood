@@ -759,6 +759,8 @@ private struct LiveView: View {
             }
             .padding()
         }
+        // Grouped, as History and the session panel are, so the metric cards stand out.
+        .background(Color(.systemGroupedBackground))
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if let recorder {
                 LiveControls(
@@ -872,17 +874,28 @@ private struct LiveView: View {
 
     private func liveMetrics(display: LiveDisplay, readings: LiveReadings, elapsed: TimeInterval) -> [LiveMetric] {
         let heartRate = LiveMetric(
-            id: "metric.heartRate", title: "Heart rate", text: LiveDisplay.heartRate(readings.heartRate))
+            id: "metric.heartRate", title: "Heart rate", text: LiveDisplay.heartRate(readings.heartRate),
+            color: Theme.Metric.heartRate)
         let course = LiveMetric(id: "metric.course", title: "Course", text: LiveDisplay.course(readings.course))
         return [
-            LiveMetric(id: "metric.speed", title: "Speed", text: display.speed(readings.speed)),
-            LiveMetric(id: "metric.time", title: "Elapsed time", text: Formatting.elapsed(elapsed)),
-            LiveMetric(id: "metric.distance", title: "Distance", text: display.distance(readings.distance)),
+            LiveMetric(
+                id: "metric.speed", title: "Speed", text: display.speed(readings.speed), color: Theme.Metric.speed),
+            LiveMetric(
+                id: "metric.time", title: "Elapsed time", text: Formatting.elapsed(elapsed), color: Theme.Metric.time),
+            LiveMetric(
+                id: "metric.distance", title: "Distance", text: display.distance(readings.distance),
+                color: Theme.Metric.distance),
             sport.isPaddling ? heartRate : course,
             sport.isPaddling ? course : heartRate,
-            LiveMetric(id: "metric.moving", title: "Moving time", text: Formatting.elapsed(readings.movingTime)),
-            LiveMetric(id: "metric.average", title: "Average speed", text: display.speed(readings.averageSpeed)),
-            LiveMetric(id: "metric.max", title: "Max speed (10 s)", text: display.speed(readings.maxSpeed10s)),
+            LiveMetric(
+                id: "metric.moving", title: "Moving time", text: Formatting.elapsed(readings.movingTime),
+                color: Theme.Metric.time),
+            LiveMetric(
+                id: "metric.average", title: "Average speed", text: display.speed(readings.averageSpeed),
+                color: Theme.Metric.speed),
+            LiveMetric(
+                id: "metric.max", title: "Max speed (10 s)", text: display.speed(readings.maxSpeed10s),
+                color: Theme.Metric.speed),
         ]
     }
 
@@ -914,7 +927,8 @@ private struct LiveView: View {
                 ForEach(metrics) { metric in
                     VStack(alignment: .leading, spacing: 4) {
                         metric.caption.font(.subheadline)
-                        metric.reading(numberFont: .title2.weight(.semibold), unitFont: .subheadline)
+                        metric.reading(
+                            numberFont: .system(.title2, design: .rounded).weight(.bold), unitFont: .subheadline)
                     }
                     .fixedSize(horizontal: true, vertical: false)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -926,8 +940,8 @@ private struct LiveView: View {
                 }
             }
         }
-        .padding(12)
-        .background(.background.secondary, in: .rect(cornerRadius: 12))
+        .padding(14)
+        .background(Color(.secondarySystemGroupedBackground), in: .rect(cornerRadius: 20, style: .continuous))
     }
 
     /// Windsurfing: the speedsurfing categories (docs/metrics.md), two to a row.
@@ -949,7 +963,7 @@ private struct LiveView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(12)
-        .background(.background.secondary, in: .rect(cornerRadius: 12))
+        .background(Color(.secondarySystemGroupedBackground), in: .rect(cornerRadius: 20, style: .continuous))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("live.speedBests")
     }
@@ -988,7 +1002,7 @@ private struct LiveView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(12)
-        .background(.background.secondary, in: .rect(cornerRadius: 12))
+        .background(Color(.secondarySystemGroupedBackground), in: .rect(cornerRadius: 20, style: .continuous))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("live.sailing")
     }
@@ -1003,7 +1017,8 @@ private struct LiveView: View {
     }
 
     private func metricRow(_ metric: LiveMetric) -> some View {
-        let reading = metric.reading(numberFont: .title2.weight(.semibold), unitFont: .footnote)
+        let reading = metric.reading(
+            numberFont: .system(.title2, design: .rounded).weight(.bold), unitFont: .footnote)
         return ViewThatFits(in: .horizontal) {
             HStack(alignment: .firstTextBaseline, spacing: 12) {
                 metric.caption.font(.caption).fixedSize()
@@ -1024,10 +1039,14 @@ private struct LiveMetric: Identifiable {
     let id: String
     let title: String
     let text: String
+    /// The metric's color from Theme.Metric (speed, distance, time, heart rate); others
+    /// keep a plain caption.
+    var color: Color?
 
     var caption: some View {
         Text(title)
-            .foregroundStyle(.secondary)
+            .fontWeight(color == nil ? .regular : .semibold)
+            .foregroundStyle(color ?? .secondary)
             .accessibilityHidden(true)
     }
 
