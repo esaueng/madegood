@@ -110,6 +110,8 @@ final class TransferPartsTests: XCTestCase {
         "meta.json": 4, "events.ndjson.gz": 3, "gps.ndjson.gz": 8, "motion.ndjson.gz": 25,
     ]
 
+    private var motion: [TransferParts.Part] { TransferParts.plan(file: "motion.ndjson.gz", size: 25, partSize: partSize) }
+
     private func names(_ units: [RecordingTransfer.Unit]) -> [String] {
         units.map { unit in unit.part.map { "\(unit.file)#\($0.index)" } ?? unit.file }
     }
@@ -131,7 +133,7 @@ final class TransferPartsTests: XCTestCase {
             files: ["events.ndjson.gz": 3, "gps.ndjson.gz": 7, "meta.json": 4],
             parts: ["motion.ndjson.gz|25|10": [0]])
         let units = RecordingTransfer.units(
-            local: local, holds: holds, inFlight: [.init(file: "motion.ndjson.gz", part: 2)], partSize: partSize)
+            local: local, holds: holds, inFlight: [.init(motion[2])], partSize: partSize)
         // gps differs in size on the phone, so it goes; meta.json always goes, last.
         XCTAssertEqual(names(units), ["gps.ndjson.gz", "motion.ndjson.gz#1", "meta.json"])
     }
@@ -193,15 +195,33 @@ final class TransferPartsTests: XCTestCase {
         // Two parts in flight fill the window.
         let full = RecordingTransfer.units(
             local: local, holds: nil,
-            inFlight: [.init(file: "motion.ndjson.gz", part: 2), .init(file: "motion.ndjson.gz", part: 0)],
+            inFlight: [.init(motion[2]), .init(motion[0])],
             partSize: partSize, window: 2)
         XCTAssertEqual(names(full), ["events.ndjson.gz", "gps.ndjson.gz"])
         // The last part fits: meta.json follows it.
         let last = RecordingTransfer.units(
             local: local, holds: nil,
-            inFlight: [.init(file: "motion.ndjson.gz", part: 2), .init(file: "motion.ndjson.gz", part: 0)],
+            inFlight: [.init(motion[2]), .init(motion[0])],
             partSize: partSize, window: 3)
         XCTAssertEqual(names(last), ["events.ndjson.gz", "gps.ndjson.gz", "motion.ndjson.gz#1", "meta.json"])
+    }
+
+    /// Re-check of #167, finding 1: a part that just finished but whose acknowledgement has
+    /// not come in is not queued again, or the window would cycle through the same parts
+    /// and meta.json would never go.
+    func testAPartJustHandedOverIsNotSentAgainAndMetaStillGoes() {
+        let units = RecordingTransfer.units(
+            local: local, holds: nil, inFlight: [], handedOver: [.init(motion[0]), .init(motion[1]), .init(motion[2])],
+            partSize: partSize, window: 1)
+        XCTAssertEqual(names(units), ["events.ndjson.gz", "gps.ndjson.gz", "meta.json"])
+    }
+
+    /// Re-check finding 2: a part of another layout in flight doesn't block this layout's.
+    func testAPartOfAnotherLayoutInFlightDoesNotBlockThisOne() {
+        let old = TransferParts.plan(file: "motion.ndjson.gz", size: 25, partSize: 20)[0]
+        let units = RecordingTransfer.units(
+            local: local, holds: nil, inFlight: [.init(old)], partSize: partSize, window: 10)
+        XCTAssertTrue(names(units).contains("motion.ndjson.gz#0"))
     }
 
     func testOnlyAPartsSliceIsEverRemoved() throws {
@@ -217,7 +237,7 @@ final class TransferPartsTests: XCTestCase {
     func testAWholeFileInFlightCoversItsParts() {
         // A transfer queued whole by an earlier build keeps going; no parts are added.
         let units = RecordingTransfer.units(
-            local: local, holds: nil, inFlight: [.init(file: "motion.ndjson.gz", part: nil)], partSize: partSize)
+            local: local, holds: nil, inFlight: [.whole("motion.ndjson.gz")], partSize: partSize)
         XCTAssertFalse(units.contains { $0.file == "motion.ndjson.gz" })
     }
 
