@@ -419,7 +419,10 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
     /// How long a delivered part waits for the phone's acknowledgement before it may go again.
     static let handoverGrace: TimeInterval = 10 * 60
     /// Failed rounds in a row per recording, and when the pending retry is due (watch side).
-    private let retries = Mutex<[String: Retry]>([:])
+    private let retries = Mutex<[String: Retry]>(RecordingTransfer.loadRetries())
+    private static let retriesDefaultsKey = "transferRetries"
+    /// Whether this launch has armed the retries kept from an earlier one.
+    private let retriesResumed = Mutex(false)
     /// When the background app refresh asked for last is due (watch side).
     private let scheduledRefresh = Mutex<Date?>(nil)
     /// Delivered content and sends still being handled; a background task waits for 0.
@@ -435,7 +438,7 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
     /// time gates every send of the recording: until it is due, nothing of the recording is
     /// queued (other transfers in flight carry on), so the backoff holds however often
     /// finished parts, acknowledgements and refreshes ask to send.
-    struct Retry: Equatable, Sendable {
+    struct Retry: Codable, Equatable, Sendable {
         var failures = 0
         var at: Date?
 
@@ -547,6 +550,26 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
             .flatMap { try? JSONDecoder().decode([String: ProgressTracker].self, from: $0) } ?? [:]
     }
 
+    /// Retries kept across launches, so a relaunch during a backoff neither sends at once
+    /// nor starts the count over.
+    private static func loadRetries() -> [String: Retry] {
+        UserDefaults.standard.data(forKey: retriesDefaultsKey)
+            .flatMap { try? JSONDecoder().decode([String: Retry].self, from: $0) } ?? [:]
+    }
+
+    /// Changes the retries of recordings, saving them when they changed.
+    @discardableResult
+    private func updateRetries<T>(_ body: (inout [String: Retry]) -> T) -> T {
+        retries.withLock { all in
+            let before = all
+            let result = body(&all)
+            if all != before, let data = try? JSONEncoder().encode(all) {
+                UserDefaults.standard.set(data, forKey: Self.retriesDefaultsKey)
+            }
+            return result
+        }
+    }
+
     /// Changes the progress kept of recordings, saving it when it changed.
     @discardableResult
     private func updateProgress<T>(_ body: (inout [String: ProgressTracker]) -> T) -> T {
@@ -632,7 +655,7 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
             guard FileManager.default.fileExists(atPath: folder.path) else { return }
             // Nothing of a recording goes before its retry is due (`Retry`), unless the user
             // asked; then the backoff ends here.
-            let mayGo = retries.withLock { all in
+            let mayGo = updateRetries { all in
                 guard all[sessionId]?.allowsSend(now: Date(), userAsked: requeue == .all) ?? true else { return false }
                 if requeue == .all { all[sessionId]?.at = nil }
                 return true
@@ -852,19 +875,42 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
         /// as one failure. Returns the wait, or nil if a retry was already pending.
         private func scheduleRetry(sessionId: String, folder: URL) -> TimeInterval? {
             let now = Date()
-            let due = retries.withLock { $0[sessionId, default: Retry()].failed(now: now) }
+            let due = updateRetries { $0[sessionId, default: Retry()].failed(now: now) }
             guard let due else { return nil }
-            // On the wall clock, so time asleep counts. Fires late if the app is suspended;
-            // the background refresh asked for below wakes it, and its send (allowed once the
-            // retry is due) covers it.
-            DispatchQueue.global(qos: .utility).asyncAfter(wallDeadline: .now() + due.timeIntervalSince(now)) {
-                self.retries.withLock { $0[sessionId]?.fired(due) }
+            armRetry(sessionId: sessionId, due: due)
+            scheduleRefresh(hasPending: true)
+            return due.timeIntervalSince(now)
+        }
+
+        /// Sends the recording again when its retry is due. On the wall clock, so time asleep
+        /// counts. Fires late if the app is suspended; the background refresh asked for wakes
+        /// it, and its send (allowed once the retry is due) covers it.
+        private func armRetry(sessionId: String, due: Date) {
+            let folder = RecordingStore.root.appendingPathComponent(sessionId, isDirectory: true)
+            DispatchQueue.global(qos: .utility).asyncAfter(wallDeadline: .now() + max(0, due.timeIntervalSinceNow)) {
+                self.updateRetries { $0[sessionId]?.fired(due) }
                 guard FileManager.default.fileExists(atPath: folder.path) else { return }
                 self.log.add("Sending again after the failure", sessionId: sessionId)
                 self.send(folder: folder)
             }
-            scheduleRefresh(hasPending: true)
-            return due.timeIntervalSince(now)
+        }
+
+        /// After a relaunch: arms the retries still to come (kept from the earlier launch) and
+        /// drops those of recordings no longer on the watch.
+        private func resumeRetries() {
+            let first = retriesResumed.withLock { resumed in
+                defer { resumed = true }
+                return !resumed
+            }
+            guard first else { return }
+            let now = Date()
+            let pending = updateRetries { all -> [(String, Date)] in
+                all = all.filter {
+                    FileManager.default.fileExists(atPath: RecordingStore.root.appendingPathComponent($0.key).path)
+                }
+                return all.compactMap { id, retry in retry.at.flatMap { $0 > now ? (id, $0) : nil } }
+            }
+            for (sessionId, due) in pending { armRetry(sessionId: sessionId, due: due) }
         }
 
         /// Keeps a background app refresh asked for while recordings wait
@@ -1014,7 +1060,7 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
             guard let sessionId else { return }
             let now = Date()
             updateProgress { $0[sessionId, default: ProgressTracker()].finished(at: now) }
-            retries.withLock { $0[sessionId]?.succeeded(now: now) }
+            updateRetries { $0[sessionId]?.succeeded(now: now) }
             // Not sent again while its acknowledgement is on the way (`handoverGrace`).
             if let part { handedOver.withLock { $0[sessionId, default: [:]][UnitKey(part)] = now } }
             // Keeps the window of parts full (`TransferPolicy.window`).
@@ -1047,7 +1093,7 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
             )
             // The link works (unless a retry is pending: this may be for a part queued before
             // the failure); a retry after this starts from the shortest wait.
-            retries.withLock { $0[sessionId]?.succeeded(now: Date()) }
+            updateRetries { $0[sessionId]?.succeeded(now: Date()) }
             let isMeta = userInfo[Key.file] as? String == RawFormat.metaFileName
             // Why the watch keeps it, only once meta.json (sent last) is in, not for every part.
             let delivered = deleteIfDelivered(sessionId: sessionId, phone: phone, logsWhyKept: isMeta)
@@ -1087,7 +1133,7 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
             setPhoneHolds(nil, sessionId: sessionId)
             updateProgress { $0[sessionId] = nil }
             handedOver.withLock { $0[sessionId] = nil }
-            retries.withLock { $0[sessionId] = nil }
+            updateRetries { $0[sessionId] = nil }
             submitted.withLock { $0[sessionId] = nil }
             // Copies re-queued after a stall have nothing left to send.
             for transfer in WCSession.default.outstandingFileTransfers
@@ -1451,6 +1497,7 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
         // (whose push returned early) goes out now, and the receiver keeps the newer.
         receiveSettings(session.receivedApplicationContext, alwaysPush: true)
         #if os(watchOS)
+            resumeRetries()
             // Transfers left stuck since an earlier launch go again.
             sendAllPending(requeue: .stuck)
         #else

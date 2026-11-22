@@ -48,6 +48,25 @@ final class TransferPolicyTests: XCTestCase {
         XCTAssertEqual(retry.failures, 0)
     }
 
+    /// Re-check of #170, finding 4: retries lived only in memory, so a relaunch during a
+    /// 30-minute backoff sent at once and the next failure started over at 30 s. They are
+    /// saved and read back.
+    func testARetryKeptAcrossALaunchStillHoldsAndCounts() throws {
+        var retry = RecordingTransfer.Retry()
+        for minute in 0..<7 { _ = retry.failed(now: now.addingTimeInterval(Double(minute) * 3600)) }
+        let lastFailure = now.addingTimeInterval(6 * 3600)
+        XCTAssertEqual(retry.at, lastFailure.addingTimeInterval(TransferPolicy.longestRetry))
+        let saved = try JSONEncoder().encode(["s": retry])
+        var loaded = try XCTUnwrap(JSONDecoder().decode([String: RecordingTransfer.Retry].self, from: saved)["s"])
+        XCTAssertEqual(loaded, retry)
+        // A relaunch ten minutes in still waits, and the next failure keeps the longest wait.
+        let relaunch = lastFailure.addingTimeInterval(10 * 60)
+        XCTAssertFalse(loaded.allowsSend(now: relaunch, userAsked: false))
+        let afterDue = lastFailure.addingTimeInterval(TransferPolicy.longestRetry + 1)
+        XCTAssertEqual(loaded.failed(now: afterDue), afterDue.addingTimeInterval(TransferPolicy.longestRetry))
+        XCTAssertEqual(loaded.failures, 8)
+    }
+
     /// The timer of a retry that ran late (the app was suspended) must not clear a later one.
     func testALateTimerDoesNotEndALaterRetry() throws {
         var retry = RecordingTransfer.Retry()
