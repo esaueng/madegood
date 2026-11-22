@@ -202,7 +202,9 @@ public enum RawFormat {
             case ts, lat, lon, alt, hacc, vacc, spd, spdacc, crs, crsacc
         }
 
-        /// Writes every value rounded to `Resolution`, the steps track v1 uses.
+        /// Writes values rounded to `Resolution`, the steps track v1 uses. Accuracies are
+        /// written as reported: filters compare them with thresholds (25 m, 15 m, 20°), and
+        /// rounding could turn a rejected fix into an accepted one on replay.
         public func encode(to encoder: any Encoder) throws {
             var c = encoder.container(keyedBy: CodingKeys.self)
             typealias R = Resolution
@@ -210,12 +212,12 @@ public enum RawFormat {
             try c.encode(round(lat, to: R.position), forKey: .lat)
             try c.encode(round(lon, to: R.position), forKey: .lon)
             try c.encodeIfPresent(alt.map { round($0, to: R.gpsTenth) }, forKey: .alt)
-            try c.encodeIfPresent(hacc.map { round($0, to: R.gpsTenth) }, forKey: .hacc)
-            try c.encodeIfPresent(vacc.map { round($0, to: R.gpsTenth) }, forKey: .vacc)
+            try c.encodeIfPresent(hacc, forKey: .hacc)
+            try c.encodeIfPresent(vacc, forKey: .vacc)
             try c.encodeIfPresent(spd.map { round($0, to: R.speed) }, forKey: .spd)
-            try c.encodeIfPresent(spdacc.map { round($0, to: R.speed) }, forKey: .spdacc)
+            try c.encodeIfPresent(spdacc, forKey: .spdacc)
             try c.encodeIfPresent(crs.map { round($0, to: R.gpsTenth) }, forKey: .crs)
-            try c.encodeIfPresent(crsacc.map { round($0, to: R.gpsTenth) }, forKey: .crsacc)
+            try c.encodeIfPresent(crsacc, forKey: .crsacc)
         }
     }
 
@@ -300,14 +302,15 @@ public enum RawFormat {
             self.acc = acc
         }
 
-        /// Writes every value rounded to `Resolution`.
+        /// Writes the headings rounded to `Resolution`; `acc` is written as reported, like
+        /// every accuracy.
         public func encode(to encoder: any Encoder) throws {
             var c = encoder.container(keyedBy: CodingKeys.self)
             typealias R = Resolution
             try c.encode(round(ts, to: R.time), forKey: .ts)
             try c.encodeIfPresent(mag.map { round($0, to: R.heading) }, forKey: .mag)
             try c.encodeIfPresent(trueHeading.map { round($0, to: R.heading) }, forKey: .trueHeading)
-            try c.encodeIfPresent(acc.map { round($0, to: R.heading) }, forKey: .acc)
+            try c.encodeIfPresent(acc, forKey: .acc)
         }
     }
 
@@ -348,7 +351,9 @@ public enum RawFormat {
 
     /// The steps writers round values to (docs/formats.md, "Resolution"). Each is far below
     /// the sensor's noise or accuracy, so analysis gives the same results, and short numbers
-    /// keep the files small. Readers must not assume finer values.
+    /// keep the files small. Readers must not assume finer values. Accuracy fields (`hacc`,
+    /// `vacc`, `spdacc`, `crsacc`, heading `acc`) are never rounded: analysis compares them
+    /// with thresholds, and rounding must not change which readings pass.
     public enum Resolution {
         /// `motion` `ts`, s: 1/10,000 of the 100 Hz sample interval.
         public static let motionTime = 1e-6
@@ -362,11 +367,11 @@ public enum RawFormat {
         public static let time = 1e-3
         /// `gps` `lat`, `lon`, degrees (about 1 cm).
         public static let position = 1e-7
-        /// `gps` `spd`, `spdacc`, m/s.
+        /// `gps` `spd`, m/s.
         public static let speed = 0.01
-        /// `gps` `alt`, `hacc`, `vacc` (m) and `crs`, `crsacc` (degrees).
+        /// `gps` `alt` (m) and `crs` (degrees).
         public static let gpsTenth = 0.1
-        /// `heading` `mag`, `true`, `acc`, degrees.
+        /// `heading` `mag`, `true`, degrees.
         public static let heading = 0.1
         /// The shortest time between two heading lines, s (about 1 Hz).
         public static let headingInterval = 1.0

@@ -194,11 +194,14 @@ so a value prints as its short decimal (`0.079`, not `0.07900000000000001`).
 | motion | `qx qy qz qw` | 0.00001 | noise 1–2e-4 |
 | gps | `ts` | 0.001 s | |
 | gps | `lat`, `lon` | 1e-7° (about 1 cm) | accuracy several metres |
-| gps | `spd`, `spdacc` | 0.01 m/s | |
-| gps | `alt`, `hacc`, `vacc`, `crs`, `crsacc` | 0.1 (m or degrees) | |
+| gps | `spd` | 0.01 m/s | |
+| gps | `alt`, `crs` | 0.1 (m or degrees) | |
 | heading | `ts` | 0.001 s | |
-| heading | `mag`, `true`, `acc` | 0.1° | accuracy typically about 10° |
+| heading | `mag`, `true` | 0.1° | accuracy typically about 10° |
 
+Accuracy fields (`hacc`, `vacc`, `spdacc`, `crsacc`, heading `acc`) are written as
+reported, never rounded: analysis accepts or rejects readings by comparing them with
+thresholds (for example `hacc` at most 25 m), and rounding must not change that decision.
 `hr`, `events` and `clock` values are written as reported. Converted (version 1) and
 anonymized copies are written with the same steps. Earlier recordings hold every
 value at full double precision. Both are valid version 2; readers must not assume either

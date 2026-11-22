@@ -103,9 +103,10 @@ import Testing
         let decoded = try JSONDecoder().decode(RawFormat.GPSLine.self, from: Data(text.utf8))
         #expect(decoded.ts == Self.start + 1)
         #expect(decoded.lat == 47.123_456_8 && decoded.lon == -122.987_654_3)
-        #expect(decoded.alt == 12.3 && decoded.hacc == 3.9 && decoded.vacc == 4.1)
-        #expect(decoded.spd == 1.23 && decoded.spdacc == 0.3)
-        #expect(decoded.crs == 90 && decoded.crsacc == 5.1)
+        #expect(decoded.alt == 12.3 && decoded.spd == 1.23 && decoded.crs == 90)
+        // Accuracies are written as reported.
+        #expect(decoded.hacc == 3.888_888_8 && decoded.vacc == 4.111_111_1)
+        #expect(decoded.spdacc == 0.299_999_9 && decoded.crsacc == 5.050_505)
         // Absent optional values stay absent.
         let bare = try Self.text(RawFormat.GPSLine(ts: Self.start, lat: 0.000_123_456_78, lon: 0))
         #expect(!bare.contains("alt") && !bare.contains("spd") && !bare.contains("crs"))
@@ -119,7 +120,7 @@ import Testing
         Self.expectShortNumbers(text)
         let decoded = try JSONDecoder().decode(RawFormat.HeadingLine.self, from: Data(text.utf8))
         #expect(decoded.ts == Self.start + 0.02)
-        #expect(decoded.mag == 230.8 && decoded.trueHeading == 244.2 && decoded.acc == 11.6)
+        #expect(decoded.mag == 230.8 && decoded.trueHeading == 244.2 && decoded.acc == 11.637_5)
         #expect(text.contains(#""true":244.2"#))
         let noTrue = try Self.text(RawFormat.HeadingLine(ts: Self.start, mag: 1, acc: 2))
         #expect(!noTrue.contains("true"))
@@ -130,6 +131,68 @@ import Testing
         #expect(a == #"{"acc":3,"mag":1,"true":2,"ts":1809165600}"# + "\n")
         let b = try Self.text(RawFormat.GPSLine(ts: Self.start, lat: 1, lon: 2, hacc: 3, spd: 4))
         #expect(b == #"{"hacc":3,"lat":1,"lon":2,"spd":4,"ts":1809165600}"# + "\n")
+    }
+
+    // MARK: Accuracy thresholds
+
+    /// Every accuracy limit analysis compares readings with.
+    static let accuracyLimits: [Double] = [
+        SessionStats.maxHorizontalAccuracy, GPSFilter.Config().maxHorizontalAccuracy, AnchorAlarm.maximumAccuracy,
+        StartLineState.venueFixMaxAccuracy, StartLinePingAverager.maximumAccuracy,
+        SailingManeuverDetector.axisProximity,
+    ]
+
+    /// Regression: `hacc` 25.04 m was written as 25.0 m, so replay accepted a fix the live
+    /// filter rejected. Accuracies must come back exactly as reported.
+    @Test func accuracyFieldsAreWrittenAsReported() throws {
+        for limit in Self.accuracyLimits {
+            let below: Double = limit - 0.04
+            let above: Double = limit + 0.04
+            for value in [below, limit.nextDown, limit, limit.nextUp, above] {
+                let gps = RawFormat.GPSLine(
+                    ts: Self.start, lat: 1, lon: 2, hacc: value, vacc: value, spdacc: value, crsacc: value)
+                let gpsText = try Self.text(gps)
+                let decodedGPS = try JSONDecoder().decode(RawFormat.GPSLine.self, from: Data(gpsText.utf8))
+                #expect(decodedGPS.hacc == value && decodedGPS.vacc == value, "\(value)")
+                #expect(decodedGPS.spdacc == value && decodedGPS.crsacc == value, "\(value)")
+                let headingText = try Self.text(RawFormat.HeadingLine(ts: Self.start, mag: 1, acc: value))
+                let decodedHeading = try JSONDecoder().decode(RawFormat.HeadingLine.self, from: Data(headingText.utf8))
+                #expect(decodedHeading.acc == value, "\(value)")
+            }
+        }
+    }
+
+    @Test func fixesJustOutsideAnAccuracyLimitStayRejectedAfterWriting() throws {
+        let limit: Double = SessionStats.maxHorizontalAccuracy
+        var fixes: [GPSFix] = []
+        for second in 0..<120 {
+            let t: Double = Double(second)
+            let latitude: Double = 10 + t * 1e-5
+            // Every third fix is just too inaccurate; its position would add distance.
+            let isBad: Bool = second % 3 == 1
+            let hacc: Double = isBad ? limit + 0.04 : limit - 0.04
+            let crsacc: Double = isBad ? SailingManeuverDetector.axisProximity + 0.04 : 5
+            let offset: Double = isBad ? 5e-4 : 0
+            fixes.append(
+                GPSFix(
+                    t: t, latitude: latitude + offset, longitude: 20, horizontalAccuracy: hacc, speed: 1.1,
+                    course: 0, courseAccuracy: crsacc))
+        }
+        let meta = RawFormat.Meta(
+            sessionId: UUID(), sport: .sailing, startedAt: Self.start, endedAt: Self.start + 120,
+            device: .init(kind: "watch", model: "Watch0,0", os: "watchOS 26.0"), app: .init(version: "0", build: "0"))
+        let original = RawSession(meta: meta, gps: fixes)
+        let reread = try Self.roundTrip(original)
+        let before = SessionStats(session: original)
+        let after = SessionStats(session: reread)
+        #expect(before.acceptedFixes == 80)
+        #expect(after.acceptedFixes == before.acceptedFixes)
+        #expect(after.rejectedFixes == before.rejectedFixes)
+        let distanceChange: Double = abs(after.distance - before.distance)
+        #expect(distanceChange <= 0.01)
+        let reliable: [Bool] = reread.gps.map { SailingManeuverDetector.reliableCourseAccuracy($0.courseAccuracy) }
+        let reliableBefore: [Bool] = fixes.map { SailingManeuverDetector.reliableCourseAccuracy($0.courseAccuracy) }
+        #expect(reliable == reliableBefore)
     }
 
     // MARK: Heading rate
