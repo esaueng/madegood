@@ -9,6 +9,7 @@ struct SessionTrimEditor: View {
     let save: (SessionTrim?, SessionDetailView.Presentation) throws -> Void
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var draft: Draft
     @State private var elapsed: Double?
     @State private var preview: Preview
@@ -381,18 +382,39 @@ struct SessionTrimEditor: View {
             ("Average speed", display.speed(before.averageSpeed), display.speed(after.averageSpeed)),
             ("Max 2 s", display.speed(before.maxSpeed2s), display.speed(after.maxSpeed2s)),
         ]
-        return Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
-            ForEach(rows, id: \.title) { row in
-                GridRow {
-                    Text(row.title)
-                        .foregroundStyle(.secondary)
-                    Text(row.original)
-                        .strikethrough(row.original != row.kept)
-                        .foregroundStyle(.secondary)
-                        .gridColumnAlignment(.trailing)
-                    Text(row.kept)
-                        .fontWeight(.semibold)
-                        .gridColumnAlignment(.trailing)
+        return Group {
+            // Three columns while they fit; at accessibility sizes each row stacks its title
+            // over "original → kept", so neither value breaks across lines.
+            if dynamicTypeSize.isAccessibilitySize {
+                VStack(alignment: .leading, spacing: 10) {
+                    ForEach(rows, id: \.title) { row in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(row.title).foregroundStyle(.secondary)
+                            HStack(spacing: 6) {
+                                Text(row.original)
+                                    .strikethrough(row.original != row.kept)
+                                    .foregroundStyle(.secondary)
+                                Text("→").foregroundStyle(.secondary)
+                                Text(row.kept).fontWeight(.semibold)
+                            }
+                        }
+                    }
+                }
+            } else {
+                Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
+                    ForEach(rows, id: \.title) { row in
+                        GridRow {
+                            Text(row.title)
+                                .foregroundStyle(.secondary)
+                            Text(row.original)
+                                .strikethrough(row.original != row.kept)
+                                .foregroundStyle(.secondary)
+                                .gridColumnAlignment(.trailing)
+                            Text(row.kept)
+                                .fontWeight(.semibold)
+                                .gridColumnAlignment(.trailing)
+                        }
+                    }
                 }
             }
         }

@@ -285,7 +285,9 @@ final class PhoneReplayUITests: XCTestCase {
         let comparison = element("trim.preview", in: app)
         scrollUpTo(comparison, in: app, column: Self.trimMargin)
         let cutApplied = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "label CONTAINS %@", "Total time: original 48:00, kept "),
+            predicate: NSPredicate(
+                format: "label CONTAINS %@ AND NOT (label CONTAINS %@)", "Total time: original 48:00, kept ",
+                "kept 48:00"),
             object: comparison)
         XCTAssertEqual(XCTWaiter().wait(for: [cutApplied], timeout: 10), .completed, comparison.label)
         let save = app.buttons["trim.save"]
