@@ -36,9 +36,17 @@ public struct SessionStats: Sendable, Hashable, Codable {
     /// 10 s windows ending at a fix, over GPS-filtered fixes, m/s.
     public var maxSpeed2s: Double?
     public var maxSpeed10s: Double?
+    /// The live engine's figures, as session detail shows them: distance and time while
+    /// not paused (manual or auto) and not in a vehicle (docs/metrics.md), m and s, and
+    /// distance over moving time, m/s. `distance` and `averageSpeed` above are diagnostics
+    /// over every accurate fix.
+    public var movingDistance: Double?
+    public var movingTime: Double?
+    public var movingAverageSpeed: Double?
     /// Windsurfing only: speedsurfing categories over the live engine's accepted fixes, m/s,
     /// keyed like the track summary (docs/metrics.md). Missing categories are left out.
     public var speedCategories: [String: Double]?
+    /// The engine's: every valid reading except those in a vehicle leg.
     public var heartRateAverage: Double?
     public var heartRateMax: Double?
     public var events: [String: Int]
@@ -63,10 +71,11 @@ public struct SessionStats: Sendable, Hashable, Codable {
     }
 
     public struct StrokeStats: Sendable, Hashable, Codable {
+        /// Strokes in moving time, as session detail counts them.
         public var count: Int
         /// SPM
         public var averageRate: Double?
-        /// m, over the distance above
+        /// m, over the moving distance
         public var distancePerStroke: Double?
         public var sideSwitches: Int?
         /// Share of strokes on the side paddled first, 0–1.
@@ -86,8 +95,16 @@ extension SessionStats {
             track: session.track(), motion: session.motion.map(\.t), heading: session.heading.map(\.t),
             duration: session.duration, issues: session.issues.map(\.description))
         if session.meta.sport.isPaddling, !session.motion.isEmpty {
+            // As session detail: strokes in moving time (not in an auto-pause or a vehicle
+            // leg, nor a manual pause), per metre of moving distance.
+            // Without GPS a selection has no time range, so only the pauses apply.
+            let retained =
+                session.gps.isEmpty
+                ? nil
+                : (try? SessionSelection(session: session)).map { StrokeAnalysis.movingRanges(of: $0) }
             let analysis = StrokeAnalysis(
-                detection: StrokeAnalysis.detect(session: session), sport: session.meta.sport, distance: distance)
+                detection: StrokeAnalysis.detect(session: session), sport: session.meta.sport,
+                distance: movingDistance, retained: retained)
             let singleBlade = session.meta.sport != .kayak
             strokes = StrokeStats(
                 count: analysis.strokeCount, averageRate: analysis.averageStrokeRate,
@@ -142,11 +159,13 @@ extension SessionStats {
         averageSpeed = SpeedProfile(replay.fixes).mean(maxGap: Self.maxSpeedGap)
         maxSpeed2s = replay.metrics.maxSpeed2s
         maxSpeed10s = replay.metrics.maxSpeed10s
+        movingDistance = replay.metrics.distance
+        movingTime = replay.metrics.movingTime
+        movingAverageSpeed = replay.metrics.averageSpeed
         speedCategories = track.sport == .windsurfing ? replay.metrics.speedCategories?.summaryFields : nil
 
-        let bpm = hr.map(\.bpm)
-        heartRateAverage = bpm.isEmpty ? nil : bpm.reduce(0, +) / Double(bpm.count)
-        heartRateMax = bpm.max()
+        heartRateAverage = replay.metrics.heartRateAverage
+        heartRateMax = replay.metrics.heartRateMax
         events = track.events.reduce(into: [:]) { $0[$1.type.rawValue, default: 0] += 1 }
         self.issues = issues
     }

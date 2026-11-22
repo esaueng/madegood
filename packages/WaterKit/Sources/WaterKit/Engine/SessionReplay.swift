@@ -13,6 +13,13 @@ public struct SessionReplay: Sendable {
     /// Observed moving steps for paddling analyses, excluding replay route gaps.
     let paddlingMovement: [SessionEngine.MovementInterval]
     let windsurfPlaning: WindsurfAnalysis.Planing?
+    /// Vehicle legs the engine left out (docs/metrics.md "Transport"), on the replay clock.
+    public let transportIntervals: [ClosedRange<Double>]
+    /// Auto-pauses and vehicle legs on the replay clock, merged and in time order: each
+    /// auto-pause runs to the next resume, manual pause or stop, or a removed interval; one
+    /// still open at the end has no upper bound (+infinity). Manual pauses are left out: stroke detection already applies them on
+    /// the motion sensor's clock (docs/metrics.md "Strokes").
+    public let autoPausedIntervals: [ClosedRange<Double>]
 
     /// Open intervals on the replay clock whose samples were removed by a local edit.
     /// Both boundary instants of each interval are retained.
@@ -68,6 +75,9 @@ public struct SessionReplay: Sendable {
         metrics = engine.snapshot
         self.fixes = fixes
         events = (userEvents + engine.generatedEvents).sorted { $0.t < $1.t }
+        transportIntervals = engine.transportIntervals
+        autoPausedIntervals = Self.autoPausedIntervals(
+            events: events, transport: engine.transportIntervals, removed: removedIntervals, end: .infinity)
         let intervals = engine.movementIntervals ?? []
         let movement = intervals.filter { $0.duration <= SessionReplayTimeline.maxRouteGap }
         paddlingMovement = track.sport.isPaddling ? movement : []
@@ -78,10 +88,43 @@ public struct SessionReplay: Sendable {
             : nil
     }
 
+    static func autoPausedIntervals(
+        events: [SessionEvent], transport: [ClosedRange<Double>], removed: [ClosedRange<Double>], end: Double
+    ) -> [ClosedRange<Double>] {
+        var intervals = transport
+        var pausedSince: Double?
+        var nextCut = 0
+        for event in events where event.type == .pause || event.type == .resume || event.type == .stop {
+            // The engine starts each retained span moving.
+            while nextCut < removed.count, event.t >= removed[nextCut].upperBound {
+                if let since = pausedSince { intervals.append(since...max(since, removed[nextCut].lowerBound)) }
+                pausedSince = nil
+                nextCut += 1
+            }
+            switch event.type {
+            case .pause where event.data?["auto"] == .bool(true):
+                if pausedSince == nil { pausedSince = event.t }
+            default:
+                if let since = pausedSince { intervals.append(since...max(since, event.t)) }
+                pausedSince = nil
+            }
+        }
+        if let since = pausedSince { intervals.append(since...max(since, end)) }
+        var merged: [ClosedRange<Double>] = []
+        for interval in intervals.sorted(by: { $0.lowerBound < $1.lowerBound }) {
+            if let last = merged.last, interval.lowerBound <= last.upperBound {
+                merged[merged.count - 1] = last.lowerBound...max(last.upperBound, interval.upperBound)
+            } else {
+                merged.append(interval)
+            }
+        }
+        return merged
+    }
+
     /// Version of the analysis that produced `summary` and the generated events. Bump it
     /// when a metric definition in docs/metrics.md changes, so stored tracks can be
     /// re-analyzed.
-    public static let analyzerVersion = "1.1.0"
+    public static let analyzerVersion = "1.2.0"
 
     /// The session summary stored in track v1 (`summary`, docs/metrics.md "Session
     /// summary"). Values are SI; absent values are left out.

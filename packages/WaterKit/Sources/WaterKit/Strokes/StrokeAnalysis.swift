@@ -183,8 +183,41 @@ public struct StrokeAnalysis: Sendable, Hashable {
         sideBalance = sides.isEmpty ? nil : Double(sides.filter { $0 == 0 }.count) / Double(sides.count)
     }
 
+    /// The selection's retained ranges (source clock) without its auto-paused intervals and
+    /// vehicle legs.
+    static func movingRanges(of selection: SessionSelection) -> [ClosedRange<Double>] {
+        let paused = selection.replay.autoPausedIntervals.map { interval in
+            let start = selection.sourceTime(forReplayTime: interval.lowerBound)
+            return start...max(start, selection.sourceTime(forReplayTime: interval.upperBound))
+        }
+        return ranges(selection.retainedRanges, excluding: paused)
+    }
+
+    /// `ranges` with the sorted `paused` intervals cut out. A time at a pause's start is
+    /// out and one at its resume is in, as for manual pauses.
+    static func ranges(
+        _ ranges: [ClosedRange<Double>], excluding paused: [ClosedRange<Double>]
+    ) -> [ClosedRange<Double>] {
+        var result: [ClosedRange<Double>] = []
+        for range in ranges {
+            var start = range.lowerBound
+            var open = true
+            for pause in paused where pause.upperBound >= range.lowerBound && pause.lowerBound <= range.upperBound {
+                if pause.lowerBound > start { result.append(start...pause.lowerBound.nextDown) }
+                if pause.upperBound >= range.upperBound {
+                    open = false
+                    break
+                }
+                start = max(start, pause.upperBound)
+            }
+            if open { result.append(start...range.upperBound) }
+        }
+        return result
+    }
+
     /// Strokes for a selection of a recording (trimmed or not), on the replay clock, with
-    /// distance per stroke from the selection's moving distance.
+    /// distance per stroke from the selection's moving distance. Like distance, strokes and
+    /// rates count only in moving time: not in a manual pause or auto-pause, or a vehicle leg.
     public init(session: RawSession, selection: SessionSelection) {
         self.init(detection: Self.detect(session: session), sport: session.meta.sport, selection: selection)
     }
@@ -193,7 +226,7 @@ public struct StrokeAnalysis: Sendable, Hashable {
     public init(detection: Detection, sport: Sport, selection: SessionSelection) {
         self.init(
             detection: detection, sport: sport, distance: selection.replay.metrics.distance,
-            retained: selection.retainedRanges, clock: { selection.replayTime(forSourceTime: $0) })
+            retained: Self.movingRanges(of: selection), clock: { selection.replayTime(forSourceTime: $0) })
         if sport.isPaddling {
             strokeIntervals = PaddlingStrokeInterval.makeIntervals(
                 strokes: strokes, movement: selection.replay.paddlingMovement,
