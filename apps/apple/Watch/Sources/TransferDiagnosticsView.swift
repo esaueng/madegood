@@ -83,7 +83,7 @@ private struct Pending: Identifiable, Equatable {
     var local: [String: Int64]
     var others: [String]
     var outstanding: [RecordingTransfer.Outstanding]
-    var phone: [String: Int64]?
+    var phone: RecordingTransfer.PhoneHolds?
     var metaReadable: Bool
     var phoneReads: Bool
     var log: [TransferLog.Entry]
@@ -130,11 +130,14 @@ private struct RecordingSection: View {
             ForEach(others, id: \.self) { name in
                 Text("\(name) (not sent)").font(.caption2).foregroundStyle(.secondary)
             }
-            ForEach(pending.outstanding, id: \.self) { transfer in
+            ForEach(pending.outstanding.prefix(6), id: \.self) { transfer in
                 Text(describe(transfer)).font(.caption2)
             }
+            if pending.outstanding.count > 6 {
+                Text("and \(pending.outstanding.count - 6) more queued").font(.caption2).foregroundStyle(.secondary)
+            }
             if phone == nil {
-                Text("The iPhone hasn't reported this recording since this launch.")
+                Text("The iPhone hasn't reported on this recording yet.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -152,17 +155,23 @@ private struct RecordingSection: View {
         }
     }
 
-    private func status(name: String, size: Int64, phone: [String: Int64]?) -> String {
+    private func status(name: String, size: Int64, phone: RecordingTransfer.PhoneHolds?) -> String {
         guard let phone else { return "iPhone: unknown" }
-        guard let held = phone[name] else { return "missing on iPhone" }
-        return held == size ? "on iPhone" : "iPhone has \(held) bytes"
+        if let held = phone.files[name] {
+            return held == size ? "on iPhone" : "iPhone has \(held) bytes"
+        }
+        let parts = TransferParts.plan(file: name, size: size)
+        if let first = parts.first, let held = phone.parts[TransferParts.layoutKey(first)] {
+            return "\(held.count) of \(parts.count) parts on iPhone"
+        }
+        return "missing on iPhone"
     }
 
     private func describe(_ transfer: RecordingTransfer.Outstanding) -> String {
         let percent = Int(transfer.fractionCompleted * 100)
         let state = transfer.isTransferring ? "sending" : "queued"
         let age = transfer.queuedAt.map { " · \(Int(Date().timeIntervalSince($0) / 60)) min" } ?? ""
-        return "\(state) \(transfer.file) \(percent)%\(age)"
+        return "\(state) \(transfer.name) \(percent)%\(age)"
     }
 }
 

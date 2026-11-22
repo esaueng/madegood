@@ -155,14 +155,24 @@ final class SessionLibrary {
     /// phone holds all of it, so deleting a "Receiving…" row that just completed would lose
     /// the recording on both devices.
     func delete(_ item: Item) throws {
-        guard RawSessionReader.revision(of: item.entry.folder) == item.entry.revision else {
+        // Under the transfer's lock, so a file from the watch can't be stored (and the
+        // recording acknowledged as complete) between this check and the delete.
+        let sessionId: UUID?
+        do {
+            sessionId = try RecordingTransfer.storageLock.withLock { () throws -> UUID? in
+                guard RawSessionReader.revision(of: item.entry.folder) == item.entry.revision else {
+                    throw EditError.recordingChanged
+                }
+                let sessionId =
+                    (try? RawSessionReader.readMeta(folder: item.entry.folder))?.sessionId
+                    ?? UUID(uuidString: item.entry.folder.lastPathComponent)
+                try RecordingStore.delete(item.entry)
+                return sessionId
+            }
+        } catch EditError.recordingChanged {
             reload()
             throw EditError.recordingChanged
         }
-        let sessionId =
-            (try? RawSessionReader.readMeta(folder: item.entry.folder))?.sessionId
-            ?? UUID(uuidString: item.entry.folder.lastPathComponent)
-        try RecordingStore.delete(item.entry)
         // Its prepared copies for sharing go with it.
         ZipExport.removePrepared(for: item.entry.folder)
         defer {
