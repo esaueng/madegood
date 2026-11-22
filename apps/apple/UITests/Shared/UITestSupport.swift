@@ -326,4 +326,12 @@ extension XCTestCase {
             XCTWaiter().wait(for: [expectation], timeout: timeout), .completed,
             "\(element) never showed \(label); last label: \(element.exists ? element.label : "missing")")
     }
+
+    func waitForLabelPrefix(_ element: XCUIElement, _ prefix: String, timeout: TimeInterval = 15) {
+        let predicate = NSPredicate(format: "label BEGINSWITH %@", prefix)
+        let expectation = XCTNSPredicateExpectation(predicate: predicate, object: element)
+        XCTAssertEqual(
+            XCTWaiter().wait(for: [expectation], timeout: timeout), .completed,
+            "\(element) never started with \(prefix); last label: \(element.exists ? element.label : "missing")")
+    }
 }

@@ -30,9 +30,10 @@ struct HistoryView: View {
                             .foregroundStyle(.secondary)
                         }
                     }
+                    .cardRow()
                     if !shown.isEmpty {
-                        HistoryTotals(items: shown, display: display)
-                            .accessibilityIdentifier("history.totals")
+                        HistorySummaryCard(items: shown, display: display)
+                            .cardRow()
                     }
                 }
                 if shown.isEmpty {
@@ -41,8 +42,10 @@ struct HistoryView: View {
                 ForEach(months(in: shown), id: \.title) { month in
                     Section {
                         ForEach(month.items) { item in
-                            NavigationLink(value: item) { SessionRow(item: item, showsRoute: true) }
+                            NavigationLink(value: item) { SessionCard(item: item) }
+                                .navigationLinkIndicatorVisibility(.hidden)
                                 .accessibilityIdentifier("session.row")
+                                .cardRow()
                         }
                         .onDelete { offsets in
                             for index in offsets {
@@ -58,6 +61,7 @@ struct HistoryView: View {
                     }
                 }
             }
+            .listSectionSpacing(8)
             .navigationTitle("History")
             .navigationDestination(for: SessionLibrary.Item.self) { item in
                 SessionDetailView(item: item, library: library)
@@ -82,7 +86,7 @@ struct HistoryView: View {
     private var filters: some View {
         let layout =
             dynamicTypeSize.isAccessibilitySize
-            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 12)) : AnyLayout(HStackLayout(spacing: 16))
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8)) : AnyLayout(HStackLayout(spacing: 8))
         return layout {
             Menu {
                 Picker("Sport", selection: $sport) {
@@ -92,7 +96,7 @@ struct HistoryView: View {
                     }
                 }
             } label: {
-                Label(sport?.displayName ?? "All Sports", systemImage: "line.3.horizontal.decrease")
+                FilterPill(title: sport?.displayName ?? "All Sports", isActive: sport != nil)
             }
             .accessibilityIdentifier("history.sportFilter")
 
@@ -105,7 +109,7 @@ struct HistoryView: View {
                 }
                 Button("Choose Dates…") { choosingDates = true }
             } label: {
-                Label(dates.title, systemImage: "calendar")
+                FilterPill(title: dates.title, isActive: dates != .all)
             }
             .accessibilityIdentifier("history.dateFilter")
         }
@@ -184,6 +188,14 @@ private struct HistoryTotals: View {
     let display: LiveDisplay
 
     var body: some View {
+        // Wraps between metrics at large text sizes, never between a value and its unit.
+        Text(Self.line(items: items, display: display))
+            .font(.footnote.weight(.medium).monospacedDigit())
+            .foregroundStyle(Color.secondary)
+    }
+
+    /// "3 sessions · 24.2 km · 1 h 46 min", plus any sessions still being analyzed.
+    static func line(items: [SessionLibrary.Item], display: LiveDisplay) -> String {
         let totals = SessionLibrary.totals(items)
         let pending = items.count - totals.count
         var parts = ["\(items.count) \(items.count == 1 ? "session" : "sessions")"]
@@ -191,93 +203,106 @@ private struct HistoryTotals: View {
             parts += [display.distance(totals.distance), Formatting.duration(totals.movingTime)]
         }
         if pending > 0 { parts.append("\(pending) awaiting metrics") }
-        // Wraps between metrics at large text sizes, never between a value and its unit.
-        return Text(Formatting.metricLine(parts))
-            .font(.footnote.weight(.medium).monospacedDigit())
-            .foregroundStyle(Color.secondary)
+        return Formatting.metricLine(parts)
     }
 }
 
-/// One session in a list: sport, when, and the headline numbers.
-struct SessionRow: View {
-    let item: SessionLibrary.Item
-    var showsRoute = false
+/// The totals for the current filters: distance, moving time, sessions and the fastest
+/// 10 s. VoiceOver reads it as one line, the same as each month's totals.
+private struct HistorySummaryCard: View {
+    let items: [SessionLibrary.Item]
+    let display: LiveDisplay
+    @Environment(\.calendar) private var calendar
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
-        let sport = item.summary?.sport ?? item.entry.meta?.sport
-        HStack(spacing: 12) {
+        let summaries = items.compactMap(\.summary)
+        let totals = SessionLibrary.totals(items)
+        let fastest = summaries.compactMap(\.metrics.maxSpeed10s).max()
+        let days = Set(summaries.map { calendar.startOfDay(for: $0.startedAt) }).count
+        let pending = items.count - totals.count
+        VStack(alignment: .leading, spacing: 0) {
+            let distance = MetricValue(
+                title: "Distance", value: display.distance(totals.distance), color: Theme.Metric.distance)
+            let moving = MetricValue(
+                title: "Moving time", value: Formatting.duration(totals.movingTime), color: Theme.Metric.time)
+            let speed = MetricValue(
+                title: "Fastest 10 s", value: display.speed(fastest), color: Theme.Metric.speed, size: .medium)
+            let sessions = MetricValue(title: "Sessions", value: "\(items.count)", size: .medium)
             Group {
-                if let sport {
-                    SportIcon(sport: sport, size: 26)
+                // One column at accessibility sizes, so no caption is cut short.
+                if dynamicTypeSize.isAccessibilitySize {
+                    VStack(alignment: .leading, spacing: 14) {
+                        distance
+                        moving
+                        speed
+                        sessions
+                    }
                 } else {
-                    Image(systemName: "applewatch.radiowaves.left.and.right").font(.title3)
+                    Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 14) {
+                        GridRow {
+                            distance
+                            moving
+                        }
+                        GridRow {
+                            speed
+                            sessions
+                        }
+                    }
                 }
             }
-            .foregroundStyle(Color.accentColor)
-            .frame(width: 36, height: 36)
-            .background(Color.accentColor.opacity(0.12), in: .circle)
-            .overlay(alignment: .bottomTrailing) {
-                SessionSyncBadge(sessionID: item.entry.meta?.sessionId).offset(x: 6, y: 4)
-            }
-            VStack(alignment: .leading, spacing: 2) {
-                Text(sport?.displayName ?? "Receiving…").font(.body.weight(.semibold)).fontDesign(.rounded)
-                if item.summary?.isTrimmed == true {
-                    Text("Trimmed").font(.caption).foregroundStyle(.secondary)
-                } else if item.summary?.trimUnavailable == true {
-                    Text("Trim unavailable").font(.caption).foregroundStyle(.secondary)
-                }
-                if let startedAt = item.entry.startedAt {
-                    Text(startedAt, format: .dateTime.weekday(.abbreviated).day().month().hour().minute())
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            Spacer()
-            if showsRoute, let route = item.summary?.historyRoute {
-                HistoryRouteThumbnail(route: route)
-            }
-            if let summary = item.summary {
-                let display = UserSettings.display(for: summary.sport)
-                VStack(alignment: .trailing, spacing: 2) {
-                    Text(display.distance(summary.metrics.distance))
-                        .font(.body.weight(.semibold).monospacedDigit())
-                        .fontDesign(.rounded)
-                    Text(Formatting.elapsed(summary.metrics.movingTime))
-                        .font(.footnote.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                }
-            } else if item.entry.meta != nil {
-                ProgressView()
-            }
+            .padding(16)
+            Divider().padding(.leading, 16)
+            Text(footer(days: days, pending: pending))
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
         }
-        .contentShape(.rect)
+        .background(Color(.secondarySystemGroupedBackground))
+        .clipShape(.rect(cornerRadius: 20, style: .continuous))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(HistoryTotals.line(items: items, display: display))
+        .accessibilityValue(fastest.map { "fastest 10 seconds \(display.speed($0))" } ?? "")
+        .accessibilityIdentifier("history.totals")
+    }
+
+    private func footer(days: Int, pending: Int) -> String {
+        var parts = ["On \(days) \(days == 1 ? "day" : "days")"]
+        if pending > 0 { parts.append("\(pending) awaiting metrics") }
+        return Formatting.metricLine(parts)
     }
 }
 
-private struct HistoryRouteThumbnail: View {
-    let route: HistoryRoute
+/// A History filter as a capsule; tinted while it narrows the list.
+private struct FilterPill: View {
+    let title: String
+    let isActive: Bool
 
     var body: some View {
-        Canvas { context, size in
-            let scale = min(size.width, size.height) - 10
-            for span in route.spans {
-                let points = span.map { point in
-                    CGPoint(x: size.width / 2 + point.x * scale, y: size.height / 2 + point.y * scale)
-                }
-                if points.count == 1, let point = points.first {
-                    let dot = CGRect(x: point.x - 1, y: point.y - 1, width: 2, height: 2)
-                    context.fill(Path(ellipseIn: dot), with: .color(.accentColor))
-                } else {
-                    var path = Path()
-                    path.addLines(points)
-                    context.stroke(
-                        path, with: .color(.accentColor),
-                        style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
-                }
-            }
+        HStack(spacing: 4) {
+            Text(title)
+            Image(systemName: "chevron.down").font(.caption2.weight(.bold)).accessibilityHidden(true)
         }
-        .frame(width: 42, height: 36)
-        .background(Color.accentColor.opacity(0.08), in: .rect(cornerRadius: 7))
-        .accessibilityHidden(true)
+        .font(.subheadline.weight(.semibold))
+        // System background on the accent: white on petrol, black on the dark-mode bright petrol.
+        .foregroundStyle(isActive ? Color(.systemBackground) : Color.primary)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(
+            isActive ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(Color(.secondarySystemGroupedBackground)),
+            in: .capsule
+        )
+        .contentShape(.capsule)
+    }
+}
+
+extension View {
+    /// A list row that draws its own card: no row background, separator or insets.
+    func cardRow() -> some View {
+        listRowInsets(EdgeInsets(top: 6, leading: 0, bottom: 6, trailing: 0))
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
     }
 }

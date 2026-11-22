@@ -46,7 +46,9 @@ final class PhoneAppStoreScreenshots: XCTestCase {
         app.tabBars.buttons["History"].tap()
         let rows = app.buttons.matching(identifier: "session.row")
         XCTAssertTrue(rows.firstMatch.waitForExistence(timeout: 15))
-        XCTAssertGreaterThanOrEqual(rows.count, 3)
+        // The cards are tall, so the list loads only the first few rows; the totals card
+        // counts every demo session once all three are analyzed.
+        waitForLabelPrefix(element("history.totals", in: app), "3\u{00A0}sessions\u{00A0}· ")
         sleep(3)  // summaries and route previews
         attachAppStoreScreenshot("03-history")
     }

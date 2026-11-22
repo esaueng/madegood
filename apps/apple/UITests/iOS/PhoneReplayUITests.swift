@@ -117,7 +117,7 @@ final class PhoneReplayUITests: XCTestCase {
         let sailing = sailingRows.containing(.staticText, identifier: "48:00").firstMatch
         let trimmedSailing = sailingRows.containing(.staticText, identifier: "Trimmed").firstMatch
         XCTAssertTrue(sailing.waitForExistence(timeout: 15))
-        let totals = app.staticTexts["history.totals"]
+        let totals = element("history.totals", in: app)
         let ready = XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "label CONTAINS %@", "\u{00A0}km"), object: totals)
         XCTAssertEqual(XCTWaiter().wait(for: [ready], timeout: 15), .completed)
