@@ -344,19 +344,31 @@ private struct StartView: View {
                     .scrollTargetBehavior(.viewAligned)
                     .scrollIndicators(.hidden)
                     .scrollClipDisabled()
+                    .accessibilityElement(children: .contain)
+                    .accessibilityLabel("Recent sessions")
                     .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
                 } header: {
-                    HStack(alignment: .firstTextBaseline) {
-                        Text("Recent")
-                            .font(.title3.weight(.bold))
-                            .fontDesign(.rounded)
-                            .foregroundStyle(Color.primary)
-                        Spacer()
-                        Button("See All", action: showHistory)
-                            .font(.subheadline.weight(.semibold))
-                            .accessibilityIdentifier("recent.seeAll")
+                    let title = Text("Recent")
+                        .font(.title3.weight(.bold))
+                        .fontDesign(.rounded)
+                        .foregroundStyle(Color.primary)
+                    let seeAll = Button("See All", action: showHistory)
+                        .font(.subheadline.weight(.semibold))
+                        .accessibilityIdentifier("recent.seeAll")
+                    // Side by side while both fit; stacked at the largest text sizes, where the
+                    // title would otherwise break mid-word.
+                    ViewThatFits(in: .horizontal) {
+                        HStack(alignment: .firstTextBaseline) {
+                            title.fixedSize()
+                            Spacer()
+                            seeAll.fixedSize()
+                        }
+                        VStack(alignment: .leading, spacing: 4) {
+                            title
+                            seeAll
+                        }
                     }
                     .textCase(nil)
                 }

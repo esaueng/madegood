@@ -116,6 +116,7 @@ struct RecentSessionCard: View {
     let item: SessionLibrary.Item
     // Narrow enough that the next card peeks in, so the row reads as scrollable.
     @ScaledMetric private var width: CGFloat = 160
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
         let sport = item.summary?.sport ?? item.entry.meta?.sport
@@ -139,7 +140,12 @@ struct RecentSessionCard: View {
                 }
                 if let summary = item.summary {
                     let display = UserSettings.display(for: summary.sport)
-                    HStack(alignment: .top, spacing: 8) {
+                    // Side by side, or stacked at accessibility sizes so neither leaves the card.
+                    let layout =
+                        dynamicTypeSize.isAccessibilitySize
+                        ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
+                        : AnyLayout(HStackLayout(alignment: .top, spacing: 8))
+                    layout {
                         MetricValue(
                             title: "Distance", value: display.distance(summary.metrics.distance),
                             color: Theme.Metric.distance, size: .medium)
@@ -153,7 +159,8 @@ struct RecentSessionCard: View {
             }
             .padding(12)
         }
-        .frame(width: width, alignment: .leading)
+        // Never wider than most of the row, however large the text.
+        .containerRelativeFrame(.horizontal, alignment: .leading) { available, _ in min(width, available * 0.85) }
         .background(Color(.secondarySystemGroupedBackground))
         .clipShape(.rect(cornerRadius: 18, style: .continuous))
         .contentShape(.rect(cornerRadius: 18, style: .continuous))
