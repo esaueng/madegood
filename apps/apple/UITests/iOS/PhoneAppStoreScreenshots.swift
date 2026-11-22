@@ -66,6 +66,8 @@ final class PhoneAppStoreScreenshots: XCTestCase {
         sleep(3)  // map tiles
         attachAppStoreScreenshot("04-session-map")
 
+        // The stats and tacks read with the panel at full height.
+        expandSessionPanel(in: app)
         bringToTop(app.staticTexts["stat.Distance"], in: app)
         sleep(1)
         attachAppStoreScreenshot("05-session-stats")
@@ -89,7 +91,8 @@ final class PhoneAppStoreScreenshots: XCTestCase {
     func test07Paddling() {
         let app = launchDemoHistory(extraArguments: look)
         openHistorySession(sport: "Kayak", duration: nil, in: app)
-        bringToTop(app.staticTexts["stat.Strokes"], in: app, at: 0.21)  // keeps the section title
+        expandSessionPanel(in: app)
+        bringToTop(app.staticTexts["stat.Strokes"], in: app, below: 40)  // keeps the section title
         sleep(1)
         attachAppStoreScreenshot("07-paddling-strokes")
     }
@@ -129,13 +132,18 @@ final class PhoneAppStoreScreenshots: XCTestCase {
         XCTAssertTrue(element("replay.map", in: app).waitForExistence(timeout: 20))
     }
 
-    /// Scrolls until `element` sits just below the navigation bar. Drags run down the left
-    /// margin, clear of the charts' scrub gesture and the interactive map.
-    private func bringToTop(_ element: XCUIElement, in app: XCUIApplication, at top: CGFloat = 0.17) {
+    /// Scrolls until `element` sits `below` points under the top of the session panel's
+    /// list. Drags run down the left margin, clear of the charts' scrub gesture.
+    private func bringToTop(_ element: XCUIElement, in app: XCUIApplication, below: CGFloat = 12) {
         scrollTo(element, in: app, column: 0.06)
         let window = app.windows.firstMatch
-        for _ in 0..<4 {
-            let offset = element.frame.minY - window.frame.height * top
+        let list = self.element("session.panel", in: app).collectionViews.firstMatch
+        XCTAssertTrue(list.exists)
+        let top = list.frame.minY + below
+        for _ in 0..<8 {
+            // A drag that overshoots leaves the row above the list, where it unloads:
+            // bring the content back down a little and measure again.
+            let offset = element.exists ? element.frame.minY - top : -window.frame.height * 0.2
             guard abs(offset) > 12 else { return }
             let from = window.coordinate(withNormalizedOffset: CGVector(dx: 0.06, dy: 0.5))
             let step = max(-window.frame.height * 0.3, min(offset, window.frame.height * 0.4))

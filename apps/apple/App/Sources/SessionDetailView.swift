@@ -290,9 +290,31 @@ struct SessionDetailView: View {
         let cursor = SessionReplayView.cursor(
             data: data, elapsed: selectedReplayElapsed, isPlaying: isPlaying, highlight: replayHighlight)
         return GeometryReader { geometry in
+            // The panel's heights are shares of the space between the bars; the map fills
+            // the whole screen behind it, as a background so it never changes that space.
             let insets = geometry.safeAreaInsets
             let panelHeight = panelDetent.height(in: geometry.size.height)
-            ZStack(alignment: .bottom) {
+            SessionPanel(detent: $panelDetent, available: geometry.size.height) {
+                panelHeader(analysis)
+            } content: {
+                content(analysis, scroll: scroll)
+            }
+            // On the panel's top edge, so it follows the panel while it is dragged.
+            .overlay(alignment: .topTrailing) {
+                if !data.timeline.points.isEmpty {
+                    Text("Not for navigation")
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(.regularMaterial, in: .capsule)
+                        .alignmentGuide(.top) { $0[.bottom] + 8 }
+                        .padding(.trailing, 12)
+                        .allowsHitTesting(false)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+            .background {
                 if !data.timeline.points.isEmpty {
                     SessionReplayMap(
                         data: data, selection: cursor.selection, time: cursor.time, highlight: replayHighlight,
@@ -308,27 +330,7 @@ struct SessionDetailView: View {
                 } else {
                     Color(.systemGroupedBackground).ignoresSafeArea()
                 }
-                SessionPanel(detent: $panelDetent, available: geometry.size.height) {
-                    panelHeader(analysis)
-                } content: {
-                    content(analysis, scroll: scroll)
-                }
-                // On the panel's top edge, so it follows the panel while it is dragged.
-                .overlay(alignment: .topTrailing) {
-                    if !data.timeline.points.isEmpty {
-                        Text("Not for navigation")
-                            .font(.caption2.weight(.medium))
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(.regularMaterial, in: .capsule)
-                            .alignmentGuide(.top) { $0[.bottom] + 8 }
-                            .padding(.trailing, 12)
-                            .allowsHitTesting(false)
-                    }
-                }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
         }
         .toolbarBackground(.hidden, for: .navigationBar)
     }
