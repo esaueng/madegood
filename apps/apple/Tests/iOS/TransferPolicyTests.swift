@@ -16,6 +16,51 @@ final class TransferPolicyTests: XCTestCase {
         XCTAssertEqual(TransferPolicy.retryDelay(afterFailures: 10_000), TransferPolicy.longestRetry)
     }
 
+    /// Review of #170, finding 3: one part failed and another finished a second later; that
+    /// success queued a send that resubmitted the failed part at once and cleared the failure
+    /// count, so the backoff never held or grew. Acknowledgements and refreshes did the same.
+    func testNothingGoesBeforeTheRetryIsDueAndEarlierPartsDoNotClearTheFailures() throws {
+        var retry = RecordingTransfer.Retry()
+        let due = try XCTUnwrap(retry.failed(now: now))
+        XCTAssertEqual(due, now.addingTimeInterval(30))
+        // Another part (queued before the failure) finishes a second later.
+        let second = now.addingTimeInterval(1)
+        retry.succeeded(now: second)
+        XCTAssertEqual(retry.failures, 1)
+        // The send it, an acknowledgement or a refresh asks for does not go...
+        XCTAssertFalse(retry.allowsSend(now: second, userAsked: false))
+        XCTAssertFalse(retry.allowsSend(now: due.addingTimeInterval(-1), userAsked: false))
+        // ...unless the user asked ("Send again").
+        XCTAssertTrue(retry.allowsSend(now: second, userAsked: true))
+        // A part failing during the backoff does not start another retry or count again.
+        XCTAssertNil(retry.failed(now: second))
+        XCTAssertEqual(retry.failures, 1)
+
+        // Due: sending resumes; it fails again, and the wait doubles.
+        XCTAssertTrue(retry.allowsSend(now: due, userAsked: false))
+        let again = try XCTUnwrap(retry.failed(now: due.addingTimeInterval(5)))
+        XCTAssertEqual(again, due.addingTimeInterval(5 + 60))
+        XCTAssertEqual(retry.failures, 2)
+        // Only a success once the retry is due clears the failures.
+        retry.succeeded(now: again.addingTimeInterval(-1))
+        XCTAssertEqual(retry.failures, 2)
+        retry.succeeded(now: again.addingTimeInterval(1))
+        XCTAssertEqual(retry.failures, 0)
+    }
+
+    /// The timer of a retry that ran late (the app was suspended) must not clear a later one.
+    func testALateTimerDoesNotEndALaterRetry() throws {
+        var retry = RecordingTransfer.Retry()
+        let first = try XCTUnwrap(retry.failed(now: now))
+        let second = try XCTUnwrap(retry.failed(now: first.addingTimeInterval(10)))
+        retry.fired(first)
+        XCTAssertEqual(retry.at, second)
+        XCTAssertFalse(retry.allowsSend(now: first.addingTimeInterval(11), userAsked: false))
+        retry.fired(second)
+        XCTAssertNil(retry.at)
+        XCTAssertTrue(retry.allowsSend(now: first.addingTimeInterval(11), userAsked: false))
+    }
+
     func testOnlyACancellationIsNoReasonToRetry() {
         XCTAssertTrue(RecordingTransfer.isCancellation(NSError(domain: NSCocoaErrorDomain, code: NSUserCancelledError)))
         // WCErrorCodeTransferTimedOut, WCErrorCodeNotReachable, WCErrorCodeCompanionAppNotInstalled.

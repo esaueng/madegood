@@ -422,9 +422,48 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
     /// Runs sends one at a time (watch side).
     private let sendQueue = DispatchQueue(label: "RecordingTransfer.send", qos: .utility)
 
+    /// A recording's failed rounds in a row and its pending retry (watch side). The retry's
+    /// time gates every send of the recording: until it is due, nothing of the recording is
+    /// queued (other transfers in flight carry on), so the backoff holds however often
+    /// finished parts, acknowledgements and refreshes ask to send.
     struct Retry: Equatable, Sendable {
         var failures = 0
         var at: Date?
+
+        /// Whether a retry is pending at `now`.
+        func isPending(now: Date) -> Bool {
+            at.map { $0 > now } ?? false
+        }
+
+        /// A transfer failed. Starts a retry after `TransferPolicy.retryDelay` and returns
+        /// its time, or nil if one is already pending (parts failing together, or a part
+        /// queued before the failure failing during the backoff, count once).
+        mutating func failed(now: Date) -> Date? {
+            guard !isPending(now: now) else { return nil }
+            failures += 1
+            let due = now.addingTimeInterval(TransferPolicy.retryDelay(afterFailures: failures))
+            at = due
+            return due
+        }
+
+        /// A transfer finished or the phone acknowledged one. Clears the failures only once
+        /// no retry is pending: a transfer queued before the failure that lands during the
+        /// backoff says nothing about whether the link works again.
+        mutating func succeeded(now: Date) {
+            if !isPending(now: now) { failures = 0 }
+        }
+
+        /// Whether a send may queue the recording's transfers now: no retry is pending, or the
+        /// user asked ("Send again").
+        func allowsSend(now: Date, userAsked: Bool) -> Bool {
+            userAsked || !isPending(now: now)
+        }
+
+        /// The retry due at `due` ran (its timer fired). A later retry, started after it was
+        /// due, stays.
+        mutating func fired(_ due: Date) {
+            if at == due { at = nil }
+        }
     }
 
     /// Runs `work`, counted as busy for a background task waiting on it.
@@ -527,6 +566,14 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
             let sessionId = folder.lastPathComponent
             guard !isActive(sessionId) else { return }
             guard FileManager.default.fileExists(atPath: folder.path) else { return }
+            // Nothing of a recording goes before its retry is due (`Retry`), unless the user
+            // asked; then the backoff ends here.
+            let mayGo = retries.withLock { all in
+                guard all[sessionId]?.allowsSend(now: Date(), userAsked: requeue == .all) ?? true else { return false }
+                if requeue == .all { all[sessionId]?.at = nil }
+                return true
+            }
+            guard mayGo else { return }
             guard session.activationState == .activated else {
                 log.add("Not sent: the connection to iPhone is not active yet", sessionId: sessionId)
                 ensureActivated()
@@ -724,26 +771,19 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
         /// as one failure. Returns the wait, or nil if a retry was already pending.
         private func scheduleRetry(sessionId: String, folder: URL) -> TimeInterval? {
             let now = Date()
-            let delay: TimeInterval? = retries.withLock { all in
-                var retry = all[sessionId, default: Retry()]
-                if let at = retry.at, at > now { return nil }
-                retry.failures += 1
-                let delay = TransferPolicy.retryDelay(afterFailures: retry.failures)
-                retry.at = now.addingTimeInterval(delay)
-                all[sessionId] = retry
-                return delay
-            }
-            guard let delay else { return nil }
-            // Fires late if the app is suspended; the background refresh asked for below
-            // wakes it, and its send covers the retry.
-            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + delay) {
-                self.retries.withLock { $0[sessionId]?.at = nil }
+            let due = retries.withLock { $0[sessionId, default: Retry()].failed(now: now) }
+            guard let due else { return nil }
+            // On the wall clock, so time asleep counts. Fires late if the app is suspended;
+            // the background refresh asked for below wakes it, and its send (allowed once the
+            // retry is due) covers it.
+            DispatchQueue.global(qos: .utility).asyncAfter(wallDeadline: .now() + due.timeIntervalSince(now)) {
+                self.retries.withLock { $0[sessionId]?.fired(due) }
                 guard FileManager.default.fileExists(atPath: folder.path) else { return }
                 self.log.add("Sending again after the failure", sessionId: sessionId)
                 self.send(folder: folder)
             }
             scheduleRefresh(hasPending: true)
-            return delay
+            return due.timeIntervalSince(now)
         }
 
         /// Keeps a background app refresh asked for while recordings wait
@@ -751,7 +791,7 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
         /// acknowledgement wakes it.
         private func scheduleRefresh(hasPending: Bool) {
             let now = Date()
-            let retryAt = retries.withLock { $0.values.compactMap(\.at).min() }
+            let retryAt = retries.withLock { $0.values.compactMap(\.at).filter { $0 > now }.min() }
             guard let wanted = TransferPolicy.nextRefresh(now: now, hasPending: hasPending, retryAt: retryAt) else {
                 return
             }
@@ -853,7 +893,7 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
             guard let sessionId else { return }
             let now = Date()
             updateProgress { $0[sessionId, default: ProgressTracker()].finished(at: now) }
-            retries.withLock { $0[sessionId]?.failures = 0 }
+            retries.withLock { $0[sessionId]?.succeeded(now: now) }
             // Not sent again while its acknowledgement is on the way (`handoverGrace`).
             if let part { handedOver.withLock { $0[sessionId, default: [:]][UnitKey(part)] = now } }
             // Keeps the window of parts full (`TransferPolicy.window`).
@@ -884,8 +924,9 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
             log.add(
                 "iPhone holds \(TransferLog.describe(phone))\(TransferLog.describe(parts: parts))", sessionId: sessionId
             )
-            // The link works: a retry after this starts from the shortest wait.
-            retries.withLock { $0[sessionId]?.failures = 0 }
+            // The link works (unless a retry is pending: this may be for a part queued before
+            // the failure); a retry after this starts from the shortest wait.
+            retries.withLock { $0[sessionId]?.succeeded(now: Date()) }
             let isMeta = userInfo[Key.file] as? String == RawFormat.metaFileName
             // Why the watch keeps it, only once meta.json (sent last) is in, not for every part.
             let delivered = deleteIfDelivered(sessionId: sessionId, phone: phone, logsWhyKept: isMeta)
