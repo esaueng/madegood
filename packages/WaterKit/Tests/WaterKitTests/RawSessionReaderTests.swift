@@ -208,11 +208,11 @@ import Testing
         #expect(throws: RawSessionReader.Error.self) { try RawSessionReader.read(folder: empty.url) }
 
         let future = try TempFolder()
-        try future.write(RawFormat.metaFileName, Data(#"{"format":"madegood-raw","version":3}"#.utf8))
+        try future.write(RawFormat.metaFileName, Data(#"{"format":"madegood-raw","version":4}"#.utf8))
         #expect {
             try RawSessionReader.read(folder: future.url)
         } throws: { error in
-            if case RawSessionReader.Error.unsupportedVersion(3) = error { true } else { false }
+            if case RawSessionReader.Error.unsupportedVersion(4) = error { true } else { false }
         }
 
         let foreign = try TempFolder()
@@ -238,7 +238,7 @@ import Testing
         let data = try RawFormat.encodeMeta(Self.meta())
         let text = String(decoding: data, as: UTF8.self)
         #expect(text.contains("\"format\" : \"madegood-raw\""))
-        #expect(text.contains("\"version\" : 2"))
+        #expect(text.contains("\"version\" : \(RawFormat.version)"))
         #expect(!text.lowercased().contains("name"))
         #expect(!text.contains("uptime") && !text.contains("clock"))
         let decoded = try JSONDecoder().decode(RawFormat.Meta.self, from: data)

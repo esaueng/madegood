@@ -46,8 +46,10 @@ import WaterKit
 ///
 /// - Raw format versions (docs/formats.md): the phone advertises the versions it reads
 ///   (`rawVersions` in its application context; a phone build without it reads only 1).
-///   The watch sends a recording only to a phone that reads its version and otherwise
-///   keeps it, and the phone never acknowledges a `meta.json` whose version it cannot read.
+///   The watch records in the latest version only once its phone reads it, and in version 2
+///   until then (`recordingVersion`). It sends a recording only to a phone that reads its
+///   version and otherwise keeps it, and the phone never acknowledges a `meta.json` whose
+///   version it cannot read.
 ///
 /// The watch never talks to the API (docs/PLAN.md §4.1); the phone is the hub.
 final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
@@ -145,6 +147,12 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
     struct PhoneHolds: Codable, Equatable, Sendable {
         var files: [String: Int64] = [:]
         var parts: [String: [Int]] = [:]
+    }
+
+    /// The raw versions the phone build that sent an acknowledgement reads. Builds that
+    /// leave them out predate version 3 and read at most 1 and 2.
+    static func phoneRawVersions(fromAcknowledgement userInfo: [String: Any]) -> Set<Int> {
+        (userInfo[Key.rawVersions] as? [Int]).map(Set.init) ?? [1, 2]
     }
 
     /// The phone's parts of files still arriving, from an acknowledgement; empty when it has
@@ -349,6 +357,27 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
     /// format 2 do not say, and read only version 1.
     static func phoneRawVersions(fromContext context: [String: Any]) -> Set<Int> {
         (context[Key.rawVersions] as? [Int]).map(Set.init) ?? [1]
+    }
+
+    /// The raw format version a recording on a watch paired with a phone that reads `phone`
+    /// is written in: the latest writable version the phone reads. A phone that reads none of
+    /// them (a build from before raw format 2) gets the oldest, 2, which waits on the watch
+    /// until the phone app is updated, as before. So a watch updated before its phone never
+    /// records a version the phone cannot take.
+    static func recordingVersion(phoneReads phone: Set<Int>) -> Int {
+        let writable = RawFormat.writableVersions.sorted()
+        return writable.last { phone.contains($0) } ?? writable[0]
+    }
+
+    /// The raw format version for a recording starting now on this device. The phone reads
+    /// everything it writes, so it writes the latest; the watch asks `recordingVersion(phoneReads:)`
+    /// with the phone's last application context (empty before the first one arrives).
+    static func recordingVersion() -> Int {
+        #if os(watchOS)
+            recordingVersion(phoneReads: phoneRawVersions(fromContext: WCSession.default.receivedApplicationContext))
+        #else
+            RawFormat.version
+        #endif
     }
 
     /// Whether a recording of `version` may go to a phone that reads `phone`. Fails closed:
@@ -1096,7 +1125,9 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
             updateRetries { $0[sessionId]?.succeeded(now: Date()) }
             let isMeta = userInfo[Key.file] as? String == RawFormat.metaFileName
             // Why the watch keeps it, only once meta.json (sent last) is in, not for every part.
-            let delivered = deleteIfDelivered(sessionId: sessionId, phone: phone, logsWhyKept: isMeta)
+            let delivered = deleteIfDelivered(
+                sessionId: sessionId, phone: phone, phoneReads: Self.phoneRawVersions(fromAcknowledgement: userInfo),
+                logsWhyKept: isMeta)
             // Sends what the phone lacks and is not in flight: the next parts of the window
             // (this is what keeps a suspended watch app sending, since acknowledgements wake
             // it and finished transfers do not), or, once meta.json is in, what the phone lost
@@ -1107,10 +1138,15 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
             }
         }
 
-        /// Deletes the recording if `phone`, the phone's latest list for it, holds all of it.
+        /// Deletes the recording if `phone`, the phone's latest list for it, holds all of it
+        /// and the phone build that sent that list (`phoneReads`) reads its version. The build
+        /// is the one that confirmed, not the cached application context: a phone rolled back
+        /// to an older build can finish joining a newer recording and list it whole.
         /// Returns whether it is gone.
         @discardableResult
-        private func deleteIfDelivered(sessionId: String, phone: [String: Int64], logsWhyKept: Bool = true) -> Bool {
+        private func deleteIfDelivered(
+            sessionId: String, phone: [String: Int64], phoneReads: Set<Int>, logsWhyKept: Bool = true
+        ) -> Bool {
             guard !isActive(sessionId) else { return false }
             let folder = RecordingStore.root.appendingPathComponent(sessionId, isDirectory: true)
             guard FileManager.default.fileExists(atPath: folder.path) else { return true }
@@ -1121,6 +1157,12 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
             let gaps = Self.deliveryGaps(local: local, phone: phone)
             guard gaps.isEmpty else {
                 if logsWhyKept { log.add("Kept on watch: \(gaps.joined(separator: "; "))", sessionId: sessionId) }
+                return false
+            }
+            guard Self.mayDeliver(folder: folder, toPhoneReading: phoneReads) else {
+                log.add(
+                    "Kept on watch: the iPhone build that confirmed it reads raw \(phoneReads.sorted()) only",
+                    sessionId: sessionId)
                 return false
             }
             do {
@@ -1290,6 +1332,8 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
             let parts = TransferParts.held(in: folder)
             session.transferUserInfo([
                 Key.stored: true, Key.sessionId: sessionId, Key.file: file, Key.files: stored, Key.parts: parts,
+                // The watch deletes a recording only if this build reads its version.
+                Key.rawVersions: Self.readableRawVersions,
             ])
             log.add(
                 "Confirmed to watch: \(TransferLog.describe(stored))\(TransferLog.describe(parts: parts))",

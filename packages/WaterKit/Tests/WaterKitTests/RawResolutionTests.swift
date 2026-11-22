@@ -8,8 +8,8 @@ import Testing
 @Suite struct RawResolutionTests {
     static let start = 1_809_165_600.0
 
-    static func text(_ line: some Encodable) throws -> String {
-        String(decoding: try RawFormat.line(line), as: UTF8.self)
+    static func text(_ line: some Encodable, version: Int = RawFormat.version) throws -> String {
+        String(decoding: try RawFormat.line(line, version: version), as: UTF8.self)
     }
 
     /// No number in `text` has eight or more digits after the point, or an exponent.
@@ -67,14 +67,16 @@ import Testing
 
     // MARK: Lines
 
-    @Test func motionLinesAreRoundedToTheirResolution() throws {
-        let line = RawFormat.MotionLine(
+    static let roundingSample = RawFormat.MotionLine(
             ts: Self.start + 12.345_678_912_3,
             userAcceleration: Vector3(x: 0.079_497_497_748_024_75, y: -36.123_456_789, z: 0.000_000_1),
             gravity: Vector3(x: 0.009_000_4, y: -9.806_649_999_9, z: 0.123_456_789),
             rotationRate: Vector3(x: 1.234_567_89, y: -0.000_049_9, z: 16.999_999_9),
             attitude: Quaternion(x: 0.707_106_781_186_547_5, y: -0.000_003_33, z: 0.1, w: -0.707_106_781_186_547_5))
-        let text = try Self.text(line)
+
+    @Test func motionLinesAreRoundedToTheirResolution() throws {
+        let line = Self.roundingSample
+        let text = try Self.text(line, version: 2)
         Self.expectShortNumbers(text)
         for part in [
             #""ax":0.079"#, #""ay":-36.123"#, #""az":0"#, #""gx":0.009"#,
@@ -91,6 +93,22 @@ import Testing
         #expect(decoded.ts == line.ts)
         #expect(decoded.ax == 0.079 && decoded.gy == -9.807 && decoded.rx == 1.2346 && decoded.qw == -0.70711)
         #expect(decoded.az == 0 && decoded.az.sign == .plus)
+    }
+
+    /// Version 3 writes the same rounded numbers, as an array in key order.
+    @Test func version3MotionLinesAreRoundedToTheirResolution() throws {
+        let line = Self.roundingSample
+        let text = try Self.text(line, version: 3)
+        Self.expectShortNumbers(text)
+        let numbers = try JSONDecoder().decode([Double].self, from: Data(text.utf8))
+        let expected: [Double] = [
+            line.ts, 0.079, -36.123, 0, 0.009, -9.807, 0.123, 1.2346, 0, 17, 0.70711, 0, 0.1, -0.70711,
+        ]
+        #expect(numbers == expected)
+        let v2 = try JSONDecoder().decode(RawFormat.MotionLine.self, from: Data(try Self.text(line, version: 2).utf8))
+        let v3 = try JSONDecoder().decode(RawFormat.MotionLine.self, from: Data(text.utf8))
+        #expect(v3 == v2)
+        #expect(v3.az.sign == .plus)
     }
 
     @Test func motionLinesStaySmall() throws {
@@ -232,7 +250,9 @@ import Testing
                     attitude: Quaternion(x: x / 10, y: 0.707_106_781_186_547_5, z: small, w: -0.707_106_781_186_547_5)))
         }
         var motion = Data()
-        for line in original { motion.append(try RawFormat.line(line, exactValues: true)) }
+        // Keyed lines, as a v1 recording holds them (version 2 writes objects).
+        for line in original { motion.append(try RawFormat.line(line, exactValues: true, version: 2)) }
+        #expect(motion.first == UInt8(ascii: "{"))
         try motion.write(to: v1Folder.appendingPathComponent(RawFormat.Stream.motion.fileName))
 
         #expect(try RawFormatConversion.convertToCurrent(folder: v1Folder, into: v2Folder))

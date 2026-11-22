@@ -3,8 +3,8 @@ import Testing
 
 @testable import WaterKit
 
-/// Raw recording version 2: only absolute timestamps on disk, version 1 still readable, and
-/// converting a version 1 recording changes nothing the analysis sees.
+/// Raw recording versions 2 and 3: only absolute timestamps on disk, version 1 still readable,
+/// and converting a version 1 recording changes nothing the analysis sees.
 @Suite struct RawFormatVersionTests {
     static let start = 946_684_800.0
     static let uptime0 = 5_000.0
@@ -128,28 +128,35 @@ import Testing
         }
     }
 
-    @Test func aClockJumpDuringAVersion2SessionKeepsMonotonicOrder() throws {
+    /// Versions 2 and 3 differ only in the shape of motion lines.
+    @Test(arguments: [2, 3]) func aClockJumpDuringASessionKeepsMonotonicOrder(version: Int) throws {
         let temp = try TempFolder()
         let folder = temp.url
         // As the recorder writes it: motion on the monotonic clock, an anchor when the wall
         // clock was set forward 3600 s at 10 s in, a pause and resume either side of it.
         let clock = RawFormat.MonotonicClock(startUnix: Self.start, startUptime: Self.uptime0)
-        try RawFormat.encodeMeta(Self.meta(sport: .sup, endedAt: Self.start + 3620))
-            .write(to: folder.appendingPathComponent(RawFormat.metaFileName))
+        var meta = Self.meta(sport: .sup, endedAt: Self.start + 3620)
+        meta.version = version
+        try RawFormat.encodeMeta(meta).write(to: folder.appendingPathComponent(RawFormat.metaFileName))
         try Self.lines([clock.anchor(unix: Self.start + 3610, uptime: Self.uptime0 + 10)])
             .write(to: folder.appendingPathComponent(RawFormat.Stream.clock.fileName))
-        try Self.lines((0..<2000).map { tick in
-            RawFormat.MotionLine(
+        var motion = Data()
+        for tick in 0..<2000 {
+            let line = RawFormat.MotionLine(
                 ts: clock.absolute(uptime: Self.uptime0 + Double(tick) / 100), userAcceleration: .zero,
                 gravity: Vector3(x: 0, y: 0, z: -9.8), rotationRate: .zero, attitude: .identity)
-        }).write(to: folder.appendingPathComponent(RawFormat.Stream.motion.fileName))
+            motion.append(try RawFormat.line(line, version: version))
+        }
+        try motion.write(to: folder.appendingPathComponent(RawFormat.Stream.motion.fileName))
         try Self.lines([
             RawFormat.EventLine(ts: Self.start + 5, type: .pause),
             RawFormat.EventLine(ts: Self.start + 3612, type: .resume),
         ]).write(to: folder.appendingPathComponent(RawFormat.Stream.events.fileName))
 
         let session = try RawSessionReader.read(folder: folder)
-        #expect(session.meta.version == 2)
+        #expect(session.meta.version == version)
+        #expect(session.issues.isEmpty)
+        #expect(session.motion.count == 2000)
         // Motion after the jump moves to the corrected wall clock, in order and without a gap.
         let times = session.motion.map(\.t)
         #expect(times.isSorted())

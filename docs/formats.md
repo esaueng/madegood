@@ -6,7 +6,7 @@ through the same types the readers use.
 
 | Format | Used for | Leaves the device? |
 |---|---|---|
-| **Raw recording v2** | Research and algorithm work: every sensor stream (motion at 100 Hz, GPS at 1 Hz, heading at about 1 Hz), rounded well below sensor noise | Only when the user shares it (AirDrop/Files), or with an opt-in "contribute data" setting |
+| **Raw recording v3** | Research and algorithm work: every sensor stream (motion at 100 Hz, GPS at 1 Hz, heading at about 1 Hz), rounded well below sensor noise | Only when the user shares it (AirDrop/Files), or with an opt-in "contribute data" setting |
 | **Track v1** | The stored and uploaded session: GPS, heart rate, events, analysis summary | Uploaded when sync is on |
 
 WaterKit also exports tracks as **GPX 1.1** for other apps (see [GPX export](#gpx-export)).
@@ -31,11 +31,15 @@ definitions 1 nm = 1852 m, 1 mi = 1609.344 m and 1 h = 3600 s.
 
 ---
 
-## Raw recording v2
+## Raw recording v3
 
-A session folder, zipped for sharing. Version 2 holds only absolute timestamps: no file
-carries a reading of the device's boot-time clock (version 1 did; see
-[Raw recording v1](#raw-recording-v1), which readers still accept):
+A session folder, zipped for sharing. Version 3 differs from version 2 only in the shape
+of `motion` lines: each is an array of its 14 numbers instead of an object (see
+[motion](#stream-lines)). Every other file, and every value, is as in version 2, which
+readers still accept and some watches still write (see [Raw recording v2](#raw-recording-v2)).
+Like version 2 it holds only absolute timestamps: no file carries a reading of the
+device's boot-time clock (version 1 did; see [Raw recording v1](#raw-recording-v1), which
+readers still accept):
 
 ```
 <sessionId>/
@@ -48,7 +52,8 @@ carries a reading of the device's boot-time clock (version 1 did; see
   clock.ndjson[.gz]
 ```
 
-- Each stream is newline-delimited JSON: one object per line, UTF-8, `\n` line ends.
+- Each stream is newline-delimited JSON: one value per line (an object, or for `motion`
+  an array), UTF-8, `\n` line ends.
 - Each stream may be plain (`.ndjson`) or gzipped (`.ndjson.gz`), but not both.
   A gzipped stream may hold several gzip members appended one after another; the
   recorder writes one member per flush, so a crash loses at most the last flush.
@@ -99,7 +104,7 @@ strokes, with the user's pauses) runs on the monotonic clock instead.
 ```json
 {
   "format": "madegood-raw",
-  "version": 2,
+  "version": 3,
   "sessionId": "6F1C2A3E-8A5B-4C1D-9E2F-0A1B2C3D4E5F",
   "sport": "kayak",
   "startedAt": 1809165600.0,
@@ -112,7 +117,7 @@ strokes, with the user's pauses) runs on the monotonic clock instead.
 
 | Field | Notes |
 |---|---|
-| `format`, `version` | Always `madegood-raw` and `2`. |
+| `format`, `version` | Always `madegood-raw` and `3` (`2` from a watch whose iPhone app does not read version 3 yet). |
 | `sessionId` | Device-generated UUID, also used as the track's session ID. |
 | `sport` | One of `sailing`, `windsurfing`, `motorboating`, `kayak`, `canoe`, `sup`. |
 | `startedAt` | Unix time of the session start, s. |
@@ -143,19 +148,24 @@ values, and the line encoder rejects them.
 | `spd`, `spdacc` | m/s | no |
 | `crs`, `crsacc` | degrees true | no |
 
-**motion** (`CMDeviceMotion`, device frame)
+**motion** (`CMDeviceMotion`, device frame): an array of exactly 14 numbers, in this order
 
 ```json
-{"ts":1809165600.01,"ax":0.12,"ay":-0.3,"az":0.05,"gx":0.0,"gy":0.0,"gz":-9.80665,"rx":0.1,"ry":0.0,"rz":-0.2,"qx":0.0,"qy":0.0,"qz":0.0,"qw":1.0}
+[1809165600.01,0.12,-0.3,0.05,0,0,-9.807,0.1,0,-0.2,0,0,0,1]
 ```
 
-| Fields | Meaning | Unit |
-|---|---|---|
-| `ts` | monotonic clock (Unix) | s |
-| `ax ay az` | user acceleration (gravity removed) | m/s² (CoreMotion's g × 9.80665) |
-| `gx gy gz` | gravity | m/s² (g × 9.80665) |
-| `rx ry rz` | rotation rate | rad/s |
-| `qx qy qz qw` | attitude quaternion | unitless |
+| Position | Name | Meaning | Unit |
+|---|---|---|---|
+| 0 | `ts` | monotonic clock (Unix) | s |
+| 1–3 | `ax ay az` | user acceleration (gravity removed) | m/s² (CoreMotion's g × 9.80665) |
+| 4–6 | `gx gy gz` | gravity | m/s² (g × 9.80665) |
+| 7–9 | `rx ry rz` | rotation rate | rad/s |
+| 10–13 | `qx qy qz qw` | attitude quaternion | unitless |
+
+Motion is about 100 lines a second and almost all of a recording; leaving out the keys
+makes it about a sixth smaller compressed, with the same numbers. A line with more or fewer values, or a value that is not a
+number, is skipped like any damaged line. Versions 1 and 2 write each line as an object
+keyed by the names above (`{"ts":…,"ax":…,…,"qw":…}`); WaterKit reads either shape.
 
 **hr** (HealthKit heart-rate samples): `{"ts":1809165603.0,"bpm":99}`, where `ts` is the sample's start date.
 
@@ -204,19 +214,41 @@ thresholds (for example `hacc` at most 25 m), and rounding must not change that 
 with the same steps. Converting a version 1 recording changes only its clocks: every value
 keeps the precision it was recorded with. Earlier recordings hold every
 value at full double precision. Both are valid version 2; readers must not assume either
-precision.
+precision. Version 3 uses the same steps.
+
+### Which version a device writes
+
+The iPhone writes version 3. A watch writes version 3 only once its iPhone app has said it
+reads version 3 (`rawVersions` in its WatchConnectivity application context, as received
+when the recording starts), and version 2 otherwise, which every iPhone build since version
+2 reads. So a watch updated before its iPhone records what the iPhone can take.
+
+The watch sends a recording only when its `meta.json` names a version the iPhone app says it
+reads; one whose version it cannot read stays on the watch until the iPhone app is updated.
+An iPhone never acknowledges a recording whose version it cannot read, so the watch keeps
+its copy.
+
+### Raw recording v2
+
+Written before version 3, and by a watch whose iPhone app does not read version 3 yet.
+Identical to version 3 except that `meta.json` has `"version": 2` and each `motion` line is
+an object keyed by the field names:
+
+```json
+{"ax":0.12,"ay":-0.3,"az":0.05,"gx":0,"gy":0,"gz":-9.807,"qw":1,"qx":0,"qy":0,"qz":0,"rx":0.1,"ry":0,"rz":-0.2,"ts":1809165600.01}
+```
+
+Shared and exported as it is: version 2 holds no device-uptime reading.
 
 ### Raw recording v1
 
 Recordings made before version 2. Readers convert them on reading, and the iPhone converts
 one before sharing it (`RawFormatConversion`, streamed and cached per target version and
-revision), so a shared raw recording is always version 2 and holds only the recording's own
-files. A conversion that hits anything but a truncated or damaged last gzip member (a read
-error, a stream that is not gzip, the inflate limit) fails and leaves nothing behind. The
-watch sends a recording only when its `meta.json` names a version the iPhone app says it
-reads (`rawVersions` in its WatchConnectivity application context); one whose version it
-cannot read stays on the watch too. An iPhone never acknowledges a recording whose version
-it cannot read, so the watch keeps its copy. Version 1 differs only in its clocks:
+revision), so a shared raw recording is always version 2 or 3 and holds only the
+recording's own files: a version 1 recording is converted to version 3, with every value as
+recorded. A conversion that hits anything but a truncated or damaged last gzip member (a
+read error, a stream that is not gzip, the inflate limit) fails and leaves nothing behind.
+Version 1 differs from version 2 only in its clocks:
 
 - `meta.json` has `"version": 1` and `"clock": {"unix": …, "uptime": …}`, the wall clock and
   the device uptime (seconds since boot) read together at the start.

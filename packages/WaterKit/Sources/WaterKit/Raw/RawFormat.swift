@@ -1,6 +1,6 @@
 import Foundation
 
-/// The raw recording format, version 2 (docs/formats.md): a session folder holding
+/// The raw recording format, version 3 (docs/formats.md): a session folder holding
 /// `meta.json` and one NDJSON file per stream, each optionally gzipped.
 ///
 /// Every timestamp is an absolute time in Unix seconds; no file holds a reading of the
@@ -12,14 +12,21 @@ import Foundation
 /// Clock anchors in `clock.ndjson` pair the two (wall and monotonic, both absolute) so
 /// readers can put every stream on one timeline. Version 1 stored raw device uptime in
 /// `meta.clock`, motion and clock lines; `RawSessionReader` still reads it (`RawFormat.V1`).
+/// Version 3 writes each motion line as an array of its 14 numbers instead of an object
+/// (`MotionLine`); every other line, and every value, is as in version 2.
 ///
 /// The recorder writes lines with `RawFormat.line(_:)` and readers decode them with the
 /// same types, so the format is defined once.
 public enum RawFormat {
     public static let formatName = "madegood-raw"
-    public static let version = 2
-    /// Versions `RawSessionReader` reads. Writers always write `version`.
-    public static let readableVersions: Set<Int> = [1, 2]
+    /// The latest version, which writers write unless told otherwise.
+    public static let version = 3
+    /// Versions `RawSessionReader` reads.
+    public static let readableVersions: Set<Int> = [1, 2, 3]
+    /// Versions writers can write. A watch writes 2 until its phone says it reads 3
+    /// (`RecordingTransfer`), so a watch updated before its phone records what the phone
+    /// can take.
+    public static let writableVersions: Set<Int> = [2, 3]
     public static let metaFileName = "meta.json"
     /// Standard gravity, for converting accelerometer values from g to m/s².
     public static let standardGravity = 9.80665
@@ -50,10 +57,10 @@ public enum RawFormat {
 
         public init(
             sessionId: UUID, sport: Sport, startedAt: Double, endedAt: Double? = nil,
-            device: Device, app: App, requestedRates: [String: Double]? = nil
+            device: Device, app: App, requestedRates: [String: Double]? = nil, version: Int = RawFormat.version
         ) {
             self.format = RawFormat.formatName
-            self.version = RawFormat.version
+            self.version = version
             self.sessionId = sessionId
             self.sport = sport
             self.startedAt = startedAt
@@ -225,6 +232,11 @@ public enum RawFormat {
     /// `motion.ndjson`. `ts` is the session's monotonic clock, Unix s (version 1: device
     /// uptime). Accelerations are m/s² (convert from g with
     /// `standardGravity`), rotation rate rad/s, attitude a unit quaternion.
+    ///
+    /// Versions 1 and 2 write an object with a key per value. Version 3 writes the same
+    /// numbers as an array in `CodingKeys` order, `[ts, ax, ay, az, gx, gy, gz, rx, ry, rz,
+    /// qx, qy, qz, qw]`: motion is about 100 lines a second, and the keys were a sixth of
+    /// its compressed size. Decoding takes either shape.
     public struct MotionLine: Sendable, Hashable, Codable {
         public var ts: Double
         public var ax: Double, ay: Double, az: Double
@@ -252,25 +264,75 @@ public enum RawFormat {
             qw = q.w
         }
 
-        enum CodingKeys: String, CodingKey {
+        enum CodingKeys: String, CodingKey, CaseIterable {
             case ts, ax, ay, az, gx, gy, gz, rx, ry, rz, qx, qy, qz, qw
         }
 
-        /// Writes the values rounded to `Resolution` (docs/formats.md, "Resolution"), and
-        /// `ts` exactly: readers place it relative to clock anchors.
-        public func encode(to encoder: any Encoder) throws {
-            var c = encoder.container(keyedBy: CodingKeys.self)
+        /// The values in `CodingKeys` order, `ts` first.
+        var values: [Double] { [ts, ax, ay, az, gx, gy, gz, rx, ry, rz, qx, qy, qz, qw] }
+
+        /// Each value's `Resolution` step, in `values` order; `ts` (nil) is never rounded.
+        static let steps: [Double?] = {
             typealias R = Resolution
+            let a = R.acceleration
+            let r = R.rotationRate
+            let q = R.attitude
+            return [nil, a, a, a, a, a, a, r, r, r, q, q, q, q]
+        }()
+
+        init(values v: [Double]) {
+            ts = v[0]
+            ax = v[1]
+            ay = v[2]
+            az = v[3]
+            gx = v[4]
+            gy = v[5]
+            gz = v[6]
+            rx = v[7]
+            ry = v[8]
+            rz = v[9]
+            qx = v[10]
+            qy = v[11]
+            qz = v[12]
+            qw = v[13]
+        }
+
+        /// Reads either shape: an array of exactly the 14 numbers (version 3) or an object
+        /// (versions 1 and 2).
+        public init(from decoder: any Decoder) throws {
+            guard var array = try? decoder.unkeyedContainer() else {
+                let c = try decoder.container(keyedBy: CodingKeys.self)
+                var v: [Double] = []
+                for key in CodingKeys.allCases { v.append(try c.decode(Double.self, forKey: key)) }
+                self.init(values: v)
+                return
+            }
+            var v: [Double] = []
+            while v.count < CodingKeys.allCases.count {
+                v.append(try array.decode(Double.self))
+            }
+            guard array.isAtEnd else {
+                throw DecodingError.dataCorrupted(
+                    .init(codingPath: decoder.codingPath, debugDescription: "More than 14 motion values"))
+            }
+            self.init(values: v)
+        }
+
+        /// Writes the values rounded to `Resolution` (docs/formats.md, "Resolution"), and
+        /// `ts` exactly: readers place it relative to clock anchors. The shape follows the
+        /// version the line is written for (`RawFormat.line`).
+        public func encode(to encoder: any Encoder) throws {
             let rounding = LineRounding(encoder)
-            try c.encode(ts, forKey: .ts)
-            for (key, value) in [(CodingKeys.ax, ax), (.ay, ay), (.az, az), (.gx, gx), (.gy, gy), (.gz, gz)] {
-                try c.encode(rounding(value, R.acceleration), forKey: key)
+            var rounded: [Double] = []
+            for (value, step) in zip(values, Self.steps) {
+                rounded.append(step.map { rounding(value, $0) } ?? value)
             }
-            for (key, value) in [(CodingKeys.rx, rx), (.ry, ry), (.rz, rz)] {
-                try c.encode(rounding(value, R.rotationRate), forKey: key)
-            }
-            for (key, value) in [(CodingKeys.qx, qx), (.qy, qy), (.qz, qz), (.qw, qw)] {
-                try c.encode(rounding(value, R.attitude), forKey: key)
+            if RawFormat.lineVersion(encoder) >= 3 {
+                var c = encoder.unkeyedContainer()
+                for value in rounded { try c.encode(value) }
+            } else {
+                var c = encoder.container(keyedBy: CodingKeys.self)
+                for (key, value) in zip(CodingKeys.allCases, rounded) { try c.encode(value, forKey: key) }
             }
         }
     }
@@ -387,6 +449,13 @@ public enum RawFormat {
         return scaled / scale + 0
     }
 
+    /// The version a line is being written for (`RawFormat.line`).
+    static func lineVersion(_ encoder: any Encoder) -> Int {
+        encoder.userInfo[lineVersionKey] as? Int ?? version
+    }
+
+    static let lineVersionKey = CodingUserInfoKey(rawValue: "app.madegood.raw.version")!
+
     /// Rounds a line's values to `Resolution` unless its encoder asks for exact values.
     struct LineRounding {
         static let exactValuesKey = CodingUserInfoKey(rawValue: "app.madegood.raw.exactValues")!
@@ -403,13 +472,17 @@ public enum RawFormat {
 
     // MARK: Writing
 
-    /// Encodes one NDJSON line, including the trailing newline. Throws on NaN or infinity,
-    /// which JSON cannot represent; recorders must map invalid readings to nil first.
-    /// Values are rounded to `Resolution`; `exactValues` writes them unrounded, for
-    /// converting a recording without changing it.
-    public static func line(_ value: some Encodable, exactValues: Bool = false) throws -> Data {
+    /// Encodes one NDJSON line for a recording of `version` (one of `writableVersions`),
+    /// including the trailing newline. Throws on NaN or infinity, which JSON cannot
+    /// represent; recorders must map invalid readings to nil first. Values are rounded to
+    /// `Resolution`; `exactValues` writes them unrounded, for converting a recording without
+    /// changing it.
+    public static func line(
+        _ value: some Encodable, exactValues: Bool = false, version: Int = RawFormat.version
+    ) throws -> Data {
         let encoder = lineEncoder
         if exactValues { encoder.userInfo[LineRounding.exactValuesKey] = true }
+        encoder.userInfo[lineVersionKey] = version
         var data = try encoder.encode(value)
         data.append(0x0A)
         return data
