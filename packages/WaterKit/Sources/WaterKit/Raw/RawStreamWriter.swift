@@ -26,14 +26,21 @@ public final class RawStreamWriter: Sendable {
 
     public let stream: RawFormat.Stream
     public let url: URL
+    /// The raw format version of the recording; it decides the shape of motion lines.
+    public let version: Int
     private let maxRetainedBytes: Int
     private let buffer = Mutex(Data())
     private let state = Mutex(Status())
     private let io: DispatchQueue
 
-    public init(stream: RawFormat.Stream, folder: URL, maxRetainedBytes: Int = defaultMaxRetainedBytes) {
+    public init(
+        stream: RawFormat.Stream, folder: URL, version: Int = RawFormat.version,
+        maxRetainedBytes: Int = defaultMaxRetainedBytes
+    ) {
+        precondition(RawFormat.writableVersions.contains(version), "Raw format \(version) is not writable")
         self.stream = stream
         self.url = folder.appendingPathComponent(stream.gzippedFileName)
+        self.version = version
         self.maxRetainedBytes = maxRetainedBytes
         self.io = DispatchQueue(label: "app.madegood.rawstream.\(stream.rawValue)", qos: .utility)
     }
@@ -41,7 +48,7 @@ public final class RawStreamWriter: Sendable {
     public var status: Status { state.withLock { $0 } }
 
     public func append(_ line: some Encodable) {
-        guard let data = try? RawFormat.line(line) else {
+        guard let data = try? RawFormat.line(line, version: version) else {
             state.withLock { $0.dropped += 1 }
             return
         }

@@ -16,8 +16,8 @@ import Testing
 
     /// Finding 1: the wall clock is set back 20 s during a pause. Post-session analysis
     /// keeps pause before resume (the monotonic clock) and counts the strokes after it.
-    /// Version 2 (absolute monotonic times) and version 1 (device uptime) alike.
-    @Test(arguments: [1, 2]) func backwardClockCorrectionKeepsPauseOrder(version: Int) throws {
+    /// Versions 2 and 3 (absolute monotonic times) and version 1 (device uptime) alike.
+    @Test(arguments: [1, 2, 3]) func backwardClockCorrectionKeepsPauseOrder(version: Int) throws {
         let start = 946_684_800.0
         let uptime0 = 100.0
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -26,7 +26,8 @@ import Testing
             sessionId: UUID(), sport: .sup, startedAt: start, endedAt: start + 70,
             device: .init(kind: "watch", model: "Watch0,0", os: "watchOS 26.0"), app: .init(version: "0", build: "0"))
         let motion = rotation(from: 0, to: 90, cyclesPerMinute: 60)
-        try RawSessionWriter.write(RawSession(meta: meta, motion: motion), to: folder, gzip: false)
+        try RawSessionWriter.write(
+            RawSession(meta: meta, motion: motion), to: folder, gzip: false, version: max(version, 2))
         let encoder = JSONEncoder()
         func lines<T: Encodable>(_ items: [T]) throws -> Data {
             Data(try items.map { String(decoding: try encoder.encode($0), as: UTF8.self) + "\n" }.joined().utf8)

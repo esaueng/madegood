@@ -2,12 +2,14 @@ import Foundation
 
 /// Converts a recording folder to the current raw format version, file by file, for
 /// exports of recordings made before version 2: no file then holds a device-uptime reading.
+/// Version 2 and later recordings are readable as they are and are copied unchanged.
 ///
 /// Only the files of a recording are written (`RawSessionReader.isRecordingFileName`):
 /// staging files of an interrupted watch transfer (`.incoming-…`), the derived track and
-/// anything else in the folder are left out. Only what version 2 changed is rewritten:
+/// anything else in the folder are left out. Only what versions 2 and 3 changed is rewritten:
 /// `meta.json` loses `clock` and gets the new version, motion and clock lines move from
-/// device uptime to the session's monotonic clock (`mono = clock.unix + (uptime − clock.uptime)`).
+/// device uptime to the session's monotonic clock (`mono = clock.unix + (uptime − clock.uptime)`),
+/// and motion lines take the current shape with their values exactly as recorded.
 /// Every wall-clock stream is copied byte for byte, so event order and every value stay as
 /// recorded. Motion and clock lines are converted as a stream, line by line through gzip in
 /// and out, so a long recording is never held in memory; lines that do not parse are left
@@ -30,9 +32,9 @@ public enum RawFormatConversion {
         return true
     }
 
-    /// The recording in `folder`, in the current version and with only its own files, in
-    /// `destination`: what sharing a raw recording sends. A current-version recording is
-    /// copied; a version 1 recording is converted. `progress` goes from 0 to 1.
+    /// The recording in `folder`, with only its own files, in `destination`: what sharing a
+    /// raw recording sends. A version 2 or 3 recording is copied; a version 1 recording is
+    /// converted to the current version. `progress` goes from 0 to 1.
     public static func exportCopy(
         folder: URL, into destination: URL, progress: @escaping (Double) -> Void = { _ in }
     ) throws {

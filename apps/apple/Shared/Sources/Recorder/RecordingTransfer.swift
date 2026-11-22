@@ -46,8 +46,10 @@ import WaterKit
 ///
 /// - Raw format versions (docs/formats.md): the phone advertises the versions it reads
 ///   (`rawVersions` in its application context; a phone build without it reads only 1).
-///   The watch sends a recording only to a phone that reads its version and otherwise
-///   keeps it, and the phone never acknowledges a `meta.json` whose version it cannot read.
+///   The watch records in the latest version only once its phone reads it, and in version 2
+///   until then (`recordingVersion`). It sends a recording only to a phone that reads its
+///   version and otherwise keeps it, and the phone never acknowledges a `meta.json` whose
+///   version it cannot read.
 ///
 /// The watch never talks to the API (docs/PLAN.md §4.1); the phone is the hub.
 final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
@@ -349,6 +351,27 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
     /// format 2 do not say, and read only version 1.
     static func phoneRawVersions(fromContext context: [String: Any]) -> Set<Int> {
         (context[Key.rawVersions] as? [Int]).map(Set.init) ?? [1]
+    }
+
+    /// The raw format version a recording on a watch paired with a phone that reads `phone`
+    /// is written in: the latest writable version the phone reads. A phone that reads none of
+    /// them (a build from before raw format 2) gets the oldest, 2, which waits on the watch
+    /// until the phone app is updated, as before. So a watch updated before its phone never
+    /// records a version the phone cannot take.
+    static func recordingVersion(phoneReads phone: Set<Int>) -> Int {
+        let writable = RawFormat.writableVersions.sorted()
+        return writable.last { phone.contains($0) } ?? writable[0]
+    }
+
+    /// The raw format version for a recording starting now on this device. The phone reads
+    /// everything it writes, so it writes the latest; the watch asks `recordingVersion(phoneReads:)`
+    /// with the phone's last application context (empty before the first one arrives).
+    static func recordingVersion() -> Int {
+        #if os(watchOS)
+            recordingVersion(phoneReads: phoneRawVersions(fromContext: WCSession.default.receivedApplicationContext))
+        #else
+            RawFormat.version
+        #endif
     }
 
     /// Whether a recording of `version` may go to a phone that reads `phone`. Fails closed:

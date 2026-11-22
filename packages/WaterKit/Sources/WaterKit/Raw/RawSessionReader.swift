@@ -60,10 +60,11 @@ public enum RawSessionReader {
         }
     }
 
-    /// Reads a recording folder, version 1 or 2. Pass `includeMotion: false` to skip the
+    /// Reads a recording folder, version 1, 2 or 3. Pass `includeMotion: false` to skip the
     /// 100 Hz motion stream (tens of MB per hour) when only GPS, heart rate and events are
-    /// needed. Both versions come out on the session's monotonic clock: version 1's device
+    /// needed. Every version comes out on the session's monotonic clock: version 1's device
     /// uptimes are converted with its start anchor, `mono = clock.unix + (uptime − clock.uptime)`.
+    /// Version 3 differs from 2 only in the shape of motion lines, which `MotionLine` decodes.
     public static func read(folder: URL, includeMotion: Bool = true) throws -> RawSession {
         let (meta, legacyClock) = try readMetaAndLegacyClock(folder: folder)
         var issues: [RawReadIssue] = []
@@ -137,7 +138,7 @@ public enum RawSessionReader {
         return session
     }
 
-    /// The recording's `meta.json` (version 1 or 2; version 1's clock anchor is dropped).
+    /// The recording's `meta.json` (any readable version; version 1's clock anchor is dropped).
     public static func readMeta(folder: URL) throws -> RawFormat.Meta {
         try readMetaAndLegacyClock(folder: folder).meta
     }

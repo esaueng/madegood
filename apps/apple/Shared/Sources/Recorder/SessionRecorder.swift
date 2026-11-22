@@ -225,10 +225,14 @@ final class SessionRecorder {
         let clock = RawFormat.MonotonicClock(
             startUnix: startedAt.timeIntervalSince1970, startUptime: ProcessInfo.processInfo.systemUptime)
         monotonicClock = clock
+        // A watch writes a version its phone reads (docs/formats.md, "Which version a device
+        // writes"); every file of the recording uses the same one.
+        let version = RecordingTransfer.recordingVersion()
         let meta = RawFormat.Meta(
             sessionId: sessionId, sport: sport, startedAt: clock.startUnix,
             device: DeviceInfo.current, app: DeviceInfo.app,
-            requestedRates: ["gps": 1, "motion": Self.motionRate, "heading": 1 / RawFormat.Resolution.headingInterval])
+            requestedRates: ["gps": 1, "motion": Self.motionRate, "heading": 1 / RawFormat.Resolution.headingInterval],
+            version: version)
         self.meta = meta
         writeMeta()
         engine = SessionEngine(profile: UserSettings.profile(for: sport))
@@ -248,7 +252,9 @@ final class SessionRecorder {
         distanceAlertTracker = DistanceAlert(interval: settings.distanceAlertMetres(for: sport))
 
         let writers = Dictionary(
-            uniqueKeysWithValues: RawFormat.Stream.allCases.map { ($0, RawStreamWriter(stream: $0, folder: folder)) })
+            uniqueKeysWithValues: RawFormat.Stream.allCases.map {
+                ($0, RawStreamWriter(stream: $0, folder: folder, version: version))
+            })
         self.writers = writers
 
         // A workout session keeps the app running with the screen off (watch and iPhone).

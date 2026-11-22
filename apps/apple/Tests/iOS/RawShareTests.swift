@@ -162,6 +162,28 @@ final class RawShareTests: XCTestCase {
         XCTAssertFalse(RecordingTransfer.mayDeliver(version: nil, toPhoneReading: new))
         // This build advertises what it reads.
         XCTAssertEqual(Set(RecordingTransfer.readableRawVersions), RawFormat.readableVersions)
+        XCTAssertEqual(RecordingTransfer.readableRawVersions, [1, 2, 3])
+    }
+
+    /// A watch updated before its phone keeps writing version 2 until the phone says it reads 3.
+    func testTheWatchRecordsAVersionItsPhoneReads() {
+        // A phone build from before raw format 3, and one from before raw format 2.
+        XCTAssertEqual(RecordingTransfer.recordingVersion(phoneReads: [1, 2]), 2)
+        XCTAssertEqual(RecordingTransfer.recordingVersion(phoneReads: [1]), 2)
+        // No application context from the phone yet.
+        XCTAssertEqual(
+            RecordingTransfer.recordingVersion(phoneReads: RecordingTransfer.phoneRawVersions(fromContext: [:])), 2)
+        // A phone that reads version 3, and a later one that reads more.
+        XCTAssertEqual(RecordingTransfer.recordingVersion(phoneReads: [1, 2, 3]), 3)
+        XCTAssertEqual(RecordingTransfer.recordingVersion(phoneReads: [1, 2, 3, 4]), 3)
+        // The phone itself writes the latest version, which it reads.
+        XCTAssertEqual(RecordingTransfer.recordingVersion(), RawFormat.version)
+        XCTAssertEqual(RawFormat.version, 3)
+        // What a watch writes for a phone, that phone takes.
+        for phone: Set<Int> in [[1], [1, 2], [1, 2, 3]] where phone.contains(2) {
+            let version = RecordingTransfer.recordingVersion(phoneReads: phone)
+            XCTAssertTrue(RecordingTransfer.mayDeliver(version: version, toPhoneReading: phone), "\(phone)")
+        }
     }
 
     /// Scoped re-check of #87, finding 1: a recording whose version cannot be read, or is one
@@ -179,8 +201,13 @@ final class RawShareTests: XCTestCase {
         try Data(#"{"format":"madegood-raw","version":3,"sessionId":"x"}"#.utf8).write(to: metaURL)
         XCTAssertEqual(RecordingTransfer.metaVersion(try Data(contentsOf: metaURL)), 3)
         XCTAssertFalse(RecordingTransfer.mayDeliver(folder: folder, toPhoneReading: phone))
-        // The versions the phone reads go.
         try RawFormat.encodeMeta(meta()).write(to: metaURL)
+        XCTAssertFalse(RecordingTransfer.mayDeliver(folder: folder, toPhoneReading: phone))
+        XCTAssertTrue(RecordingTransfer.mayDeliver(folder: folder, toPhoneReading: [1, 2, 3]))
+        // The versions the phone reads go.
+        var v2 = meta()
+        v2.version = 2
+        try RawFormat.encodeMeta(v2).write(to: metaURL)
         XCTAssertTrue(RecordingTransfer.mayDeliver(folder: folder, toPhoneReading: phone))
         try RawFormat.V1.encodeMeta(meta(), clock: .init(unix: start, uptime: 1)).write(to: metaURL)
         XCTAssertTrue(RecordingTransfer.mayDeliver(folder: folder, toPhoneReading: [1]))
@@ -191,7 +218,9 @@ final class RawShareTests: XCTestCase {
         XCTAssertTrue(
             RecordingTransfer.acknowledgesMeta(
                 try RawFormat.V1.encodeMeta(meta(), clock: .init(unix: start, uptime: 1))))
-        XCTAssertFalse(RecordingTransfer.acknowledgesMeta(Data(#"{"format":"madegood-raw","version":3}"#.utf8)))
+        XCTAssertTrue(RecordingTransfer.acknowledgesMeta(Data(#"{"format":"madegood-raw","version":3}"#.utf8)))
+        XCTAssertTrue(RecordingTransfer.acknowledgesMeta(Data(#"{"format":"madegood-raw","version":2}"#.utf8)))
+        XCTAssertFalse(RecordingTransfer.acknowledgesMeta(Data(#"{"format":"madegood-raw","version":4}"#.utf8)))
         XCTAssertFalse(RecordingTransfer.acknowledgesMeta(Data(#"{"format":"gpx","version":2}"#.utf8)))
         XCTAssertFalse(RecordingTransfer.acknowledgesMeta(Data("garbage".utf8)))
     }

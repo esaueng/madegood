@@ -51,8 +51,14 @@ public enum FixtureCheck {
         }
         for stream in RawFormat.Stream.allCases {
             for name in [stream.fileName, stream.gzippedFileName] where names.contains(name) {
+                let url = folder.appendingPathComponent(name)
+                if version >= 3, stream == .motion {
+                    let count = RawFormat.MotionLine.CodingKeys.allCases.count
+                    problems += checkArrayLines(of: url, count: count, context: name)
+                    continue
+                }
                 let allowed = version == 1 && stream == .clock ? ["unix", "uptime"] : streamFields[stream] ?? []
-                problems += checkLines(of: folder.appendingPathComponent(name), allowed: allowed, context: name)
+                problems += checkLines(of: url, allowed: allowed, context: name)
             }
         }
 
@@ -191,17 +197,33 @@ public enum FixtureCheck {
     ]
     static let trackGPSColumns: Set<String> = ["t", "lat", "lon", "spd", "crs", "hacc", "alt", "spdacc", "crsacc"]
 
-    private static func checkLines(of url: URL, allowed: Set<String>, context: String) -> [String] {
-        guard let raw = try? Data(contentsOf: url) else { return ["\(context): unreadable"] }
-        let data: Data
-        var problems: [String] = []
-        if url.pathExtension == "gz" {
-            guard let decoded = try? Gzip.decompress(raw) else { return ["\(context): damaged gzip data"] }
-            data = decoded
-            problems += gzipHeaderProblems(raw, context: context)
-        } else {
-            data = raw
+    /// A stream file's decompressed lines, and problems with its gzip headers; nil data if
+    /// it cannot be read.
+    private static func streamData(of url: URL, context: String) -> (data: Data?, problems: [String]) {
+        guard let raw = try? Data(contentsOf: url) else { return (nil, ["\(context): unreadable"]) }
+        guard url.pathExtension == "gz" else { return (raw, []) }
+        guard let decoded = try? Gzip.decompress(raw) else { return (nil, ["\(context): damaged gzip data"]) }
+        return (decoded, gzipHeaderProblems(raw, context: context))
+    }
+
+    /// Lines that must each be an array of exactly `count` numbers (version 3 motion).
+    private static func checkArrayLines(of url: URL, count: Int, context: String) -> [String] {
+        let (read, headerProblems) = streamData(of: url, context: context)
+        guard let data = read else { return headerProblems }
+        let decoder = JSONDecoder()
+        var invalid = 0
+        for line in data.split(separator: 0x0A, omittingEmptySubsequences: true) {
+            let numbers = try? decoder.decode([Double].self, from: Data(line))
+            if numbers?.count != count { invalid += 1 }
         }
+        guard invalid > 0 else { return headerProblems }
+        return headerProblems + ["\(context): \(invalid) lines are not arrays of \(count) numbers"]
+    }
+
+    private static func checkLines(of url: URL, allowed: Set<String>, context: String) -> [String] {
+        let (read, headerProblems) = streamData(of: url, context: context)
+        guard let data = read else { return headerProblems }
+        var problems = headerProblems
         var unknown = Set<String>()
         var invalid = 0
         for line in data.split(separator: 0x0A, omittingEmptySubsequences: true) {
