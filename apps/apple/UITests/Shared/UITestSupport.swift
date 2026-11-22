@@ -117,7 +117,12 @@ extension XCTestCase {
                 : frame.minY >= bounds.minY && frame.maxY <= bounds.maxY
             return vertical && bounds.intersects(frame) && element.isHittable
         }
-        var dragColumn = column
+        // Where the drags start across the window, in turn, while a drag moves nothing: the
+        // caller's column, a side margin, then the trailing gutter. Content padded 16 pt from
+        // the edges (the man-overboard map, which a slow drag pans instead of scrolling the
+        // page) can cover both of the first two; 8 pt from the edge is outside it.
+        let columns = [column, 0.15, 1 - 8 / max(window.frame.width, 16)]
+        var columnIndex = 0
         var lastFrame: CGRect?
         for _ in 0..<12 {
             if reachable() { return }
@@ -136,8 +141,9 @@ extension XCTestCase {
                     // toward the middle.
                     shift = current.midY - bounds.midY
                 }
-                // A drag that moved nothing may have landed on a control: try a side margin.
-                if let lastFrame, lastFrame == current { dragColumn = dragColumn == column ? 0.15 : column }
+                // A drag that moved nothing may have landed on a control or a map: start the
+                // next one somewhere else.
+                if let lastFrame, lastFrame == current { columnIndex = (columnIndex + 1) % columns.count }
             }
             lastFrame = current
             // Short drags near the target so it does not overshoot; at most 45% of the screen.
@@ -147,6 +153,7 @@ extension XCTestCase {
             let (fromY, toY) =
                 shift > 0 ? (0.6 + distance / 2, 0.6 - distance / 2) : (0.4 - distance / 2, 0.4 + distance / 2)
             // A slow drag, like a finger: the watch ignores XCUITest's quick swipes.
+            let dragColumn = columns[columnIndex]
             let from = window.coordinate(withNormalizedOffset: CGVector(dx: dragColumn, dy: fromY))
             let to = window.coordinate(withNormalizedOffset: CGVector(dx: dragColumn, dy: toY))
             from.press(forDuration: 0.05, thenDragTo: to, withVelocity: .slow, thenHoldForDuration: 0.1)
