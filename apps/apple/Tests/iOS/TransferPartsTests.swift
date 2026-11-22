@@ -350,6 +350,56 @@ final class TransferPartsTests: XCTestCase {
             [])
     }
 
+    /// Re-check of #170, finding 1: a send passed the retry check; WatchConnectivity then
+    /// dropped a failed part from its outstanding list, the send took its snapshot without
+    /// it, and queued it again before the failure's callback set the retry.
+    func testAPartWhoseFailureIsBeingHandledIsNotQueuedAgain() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        var ledger = RecordingTransfer.Submitted()
+        var retry = RecordingTransfer.Retry()
+        let failing = RecordingTransfer.UnitKey(motion[1])
+        ledger.add(id: "motion#1", key: failing)
+
+        // Gone from the outstanding list, callback not handled yet: still in flight.
+        let snapshot = ledger.inFlight(outstanding: [], now: now)
+        XCTAssertTrue(snapshot.contains(failing))
+        let units = RecordingTransfer.units(local: local, holds: nil, inFlight: snapshot, partSize: partSize)
+        XCTAssertFalse(names(units).contains("motion.ndjson.gz#1"))
+
+        // The callback sets the retry, then leaves the ledger. A snapshot taken after that
+        // misses the part, but the check after it sees the retry.
+        XCTAssertNotNil(retry.failed(now: now))
+        ledger.finished(id: "motion#1")
+        XCTAssertFalse(ledger.inFlight(outstanding: [], now: now).contains(failing))
+        XCTAssertFalse(retry.allowsSend(now: now.addingTimeInterval(1), userAsked: false))
+    }
+
+    func testATransferLostWithoutACallbackIsNotCountedForever() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        var ledger = RecordingTransfer.Submitted()
+        let lost = RecordingTransfer.UnitKey(motion[0])
+        let moving = RecordingTransfer.UnitKey(motion[2])
+        ledger.add(id: "lost", key: lost)
+        ledger.add(id: "moving", key: moving)
+        XCTAssertEqual(ledger.inFlight(outstanding: ["moving"], now: now), [lost, moving])
+        let later = now.addingTimeInterval(RecordingTransfer.Submitted.callbackGrace)
+        // Outstanding ones stay however long; one missing for the grace period goes.
+        XCTAssertEqual(ledger.inFlight(outstanding: ["moving"], now: later), [moving])
+    }
+
+    func testEachTransferHasItsOwnID() {
+        func id(_ part: TransferParts.Part?, file: String = "motion.ndjson.gz", at: Double = 1) -> String? {
+            var metadata: [String: Any] = ["file": file, "queuedAt": at]
+            if let part { metadata.merge(TransferParts.metadata(for: part)) { $1 } }
+            return RecordingTransfer.transferID(metadata: metadata)
+        }
+        let other = TransferParts.plan(file: "motion.ndjson.gz", size: 25, partSize: 20)[0]
+        let ids = [id(motion[0]), id(motion[1]), id(other), id(motion[0], at: 2), id(nil), id(nil, file: "meta.json")]
+        XCTAssertEqual(Set(ids.compactMap { $0 }).count, ids.count)
+        XCTAssertEqual(id(motion[0]), id(motion[0]))
+        XCTAssertNil(RecordingTransfer.transferID(metadata: nil))
+    }
+
     func testOnlyAPartsSliceIsEverRemoved() throws {
         let watch = try folder("watch")
         try bytes(25).write(to: watch.appendingPathComponent("motion.ndjson.gz"))

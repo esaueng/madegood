@@ -424,6 +424,8 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
     private let scheduledRefresh = Mutex<Date?>(nil)
     /// Delivered content and sends still being handled; a background task waits for 0.
     private let busy = Mutex(0)
+    /// Per recording, transfers queued whose callback is not handled yet (`Submitted`).
+    private let submitted = Mutex<[String: Submitted]>([:])
     /// When the activation under way started; nil once it completed, either way.
     private let activationStartedAt = Mutex<Date?>(nil)
     /// Runs sends one at a time (watch side).
@@ -471,6 +473,61 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
         mutating func fired(_ due: Date) {
             if at == due { at = nil }
         }
+    }
+
+    /// Transfers of one recording this process queued whose `didFinish` it has not handled
+    /// yet (watch side). WatchConnectivity drops a finished transfer from
+    /// `outstandingFileTransfers` before the callback runs, so in that gap a part is neither
+    /// outstanding nor handed over nor failed; counting it in flight until its callback is
+    /// handled keeps a send from queuing it again before its failure sets the retry.
+    struct Submitted: Sendable {
+        /// How long a transfer may be missing from `outstandingFileTransfers` without a
+        /// callback before it is no longer counted (it was lost, for instance).
+        static let callbackGrace: TimeInterval = 60
+
+        private struct Entry: Sendable {
+            var key: UnitKey
+            var missingSince: Date?
+        }
+        private var entries: [String: Entry] = [:]
+
+        var isEmpty: Bool { entries.isEmpty }
+
+        /// Recorded before the transfer is handed to WatchConnectivity, so its callback can
+        /// never come first.
+        mutating func add(id: String, key: UnitKey) {
+            entries[id] = Entry(key: key)
+        }
+
+        /// Its callback was handled (after the retry or the handover it records), or it was
+        /// cancelled.
+        mutating func finished(id: String) {
+            entries[id] = nil
+        }
+
+        /// The units to count in flight, given the transfers WatchConnectivity still lists:
+        /// all submitted ones but those missing for `callbackGrace`, which are dropped.
+        mutating func inFlight(outstanding: Set<String>, now: Date) -> Set<UnitKey> {
+            for (id, entry) in entries where !outstanding.contains(id) {
+                let since = entry.missingSince ?? now
+                if abs(now.timeIntervalSince(since)) >= Self.callbackGrace {
+                    entries[id] = nil
+                } else {
+                    entries[id]?.missingSince = since
+                }
+            }
+            for id in outstanding where entries[id] != nil { entries[id]?.missingSince = nil }
+            return Set(entries.values.map(\.key))
+        }
+    }
+
+    /// Names one transfer (its file, part and layout, and when it was queued), from its
+    /// metadata.
+    static func transferID(metadata: [String: Any]?) -> String? {
+        guard let metadata, let file = metadata[Key.file] as? String else { return nil }
+        let part = try? TransferParts.part(file: file, metadata: metadata)
+        let layout = part.map(TransferParts.layoutKey) ?? "whole"
+        return "\(file)#\(part?.index ?? -1)#\(layout)#\(metadata[Key.queuedAt] as? Double ?? 0)"
     }
 
     /// Runs `work`, counted as busy for a background task waiting on it.
@@ -617,6 +674,9 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
                     requeue: requeue)
                 {
                     for transfer in outstanding { transfer.cancel() }
+                    // Cancelled: not waited for.
+                    let ids = outstanding.compactMap { Self.transferID(metadata: $0.file.metadata) }
+                    submitted.withLock { all in for id in ids { all[sessionId]?.finished(id: id) } }
                     let age = oldest.map { "\(Int(now.timeIntervalSince($0) / 60)) min" } ?? "since an earlier build"
                     log.add(
                         "Cancelled \(outstanding.count) transfers that had not moved (queued \(age)) to send again",
@@ -639,7 +699,18 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
                 try? FileManager.default.removeItem(at: stale)
             }
 
-            let inFlight = Set(outstanding.compactMap(Self.unitKey))
+            let outstandingIDs = Set(outstanding.compactMap { Self.transferID(metadata: $0.file.metadata) })
+            let awaitingCallback = submitted.withLock {
+                $0[sessionId, default: Submitted()].inFlight(outstanding: outstandingIDs, now: now)
+            }
+            // Again, after the snapshots: a failure handled since the first check set its retry
+            // before leaving `submitted`, so either its part is counted in flight above or the
+            // retry is seen here.
+            let stillMayGo = retries.withLock {
+                $0[sessionId]?.allowsSend(now: Date(), userAsked: requeue == .all) ?? true
+            }
+            guard stillMayGo else { return }
+            let inFlight = Set(outstanding.compactMap(Self.unitKey)).union(awaitingCallback)
             let holds = phoneHolds.withLock { $0[sessionId] }
             let recent = handedOver.withLock { all -> Set<UnitKey> in
                 let kept = (all[sessionId] ?? [:]).filter { abs(now.timeIntervalSince($0.value)) < Self.handoverGrace }
@@ -666,6 +737,9 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
                     metadata.merge(TransferParts.metadata(for: part)) { $1 }
                 } else {
                     url = folder.appendingPathComponent(unit.file)
+                }
+                if let id = Self.transferID(metadata: metadata) {
+                    submitted.withLock { $0[sessionId, default: Submitted()].add(id: id, key: unit.key) }
                 }
                 session.transferFile(url, metadata: metadata)
                 queued.append(unit.part.map { "\(unit.file) part \($0.index + 1)/\($0.count)" } ?? unit.file)
@@ -897,6 +971,12 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
         private func finished(_ fileTransfer: WCSessionFileTransfer, error: (any Error)?) {
             // Delivery is not storage: only the phone's acknowledgement allows deleting.
             let sessionId = fileTransfer.file.metadata?[Key.sessionId] as? String
+            // Last, once the retry or handover below is recorded (`Submitted`).
+            defer {
+                if let sessionId, let id = Self.transferID(metadata: fileTransfer.file.metadata) {
+                    submitted.withLock { $0[sessionId]?.finished(id: id) }
+                }
+            }
             let name = Self.describe(fileTransfer)
             let file = fileTransfer.file.metadata?[Key.file] as? String ?? fileTransfer.file.fileURL.lastPathComponent
             let part = try? TransferParts.part(file: file, metadata: fileTransfer.file.metadata)
@@ -994,6 +1074,7 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
             updateProgress { $0[sessionId] = nil }
             handedOver.withLock { $0[sessionId] = nil }
             retries.withLock { $0[sessionId] = nil }
+            submitted.withLock { $0[sessionId] = nil }
             // Copies re-queued after a stall have nothing left to send.
             for transfer in WCSession.default.outstandingFileTransfers
             where transfer.file.metadata?[Key.sessionId] as? String == sessionId {
