@@ -281,9 +281,15 @@ final class PhoneReplayUITests: XCTestCase {
         XCTAssertTrue(app.sliders["trim.cut.0.start"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.sliders["trim.cut.0.end"].exists)
 
-        let kept = element("trim.preview.Kept", in: app)
-        scrollTo(kept, in: app, column: Self.trimMargin)
-        XCTAssertTrue(element("trim.preview.Original", in: app).exists)
+        // The original → kept card sits at the top of the controls, under the map.
+        let comparison = element("trim.preview", in: app)
+        scrollUpTo(comparison, in: app, column: Self.trimMargin)
+        let cutApplied = XCTNSPredicateExpectation(
+            predicate: NSPredicate(
+                format: "label CONTAINS %@ AND NOT (label CONTAINS %@)", "Total time: original 48:00, kept ",
+                "kept 48:00"),
+            object: comparison)
+        XCTAssertEqual(XCTWaiter().wait(for: [cutApplied], timeout: 10), .completed, comparison.label)
         let save = app.buttons["trim.save"]
         let previewReady = XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "enabled == true"), object: save)

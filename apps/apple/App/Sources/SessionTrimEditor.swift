@@ -9,6 +9,7 @@ struct SessionTrimEditor: View {
     let save: (SessionTrim?, SessionDetailView.Presentation) throws -> Void
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var draft: Draft
     @State private var elapsed: Double?
     @State private var preview: Preview
@@ -119,64 +120,18 @@ struct SessionTrimEditor: View {
         let request = previewRequest
         let input = suggestionInput
         let visiblePreview = readyProposal ?? (preview.draft == draft ? preview : nil)
+        let highlight = SessionReplayView.Highlight(
+            keptRange: draft.bounds, removedIntervals: visiblePreview?.draft.cuts ?? draft.cuts,
+            preview: visiblePreview?.presentation.replayData)
         NavigationStack {
-            List {
-                suggestionControls
-
-                Section {
-                    let bounds = draft.bounds
-                    let startLimit = draft.cuts.first?.lowerBound.nextDown ?? bounds.upperBound - minSpan
-                    let endLimit = draft.cuts.last?.upperBound.nextUp ?? bounds.lowerBound + minSpan
-                    boundary(
-                        "Keep from", id: "trim.start", value: bounds.lowerBound,
-                        limits: 0...max(bounds.lowerBound, startLimit)
-                    ) { draft.bounds = $0...draft.bounds.upperBound }
-                    boundary(
-                        "Keep through", id: "trim.end", value: bounds.upperBound,
-                        limits: min(bounds.upperBound, endLimit)...availableEnd
-                    ) { draft.bounds = draft.bounds.lowerBound...$0 }
-                } footer: {
-                    Text("Times are measured from the start of the original recording.")
-                }
-
-                ForEach(draft.cuts.indices, id: \.self) { index in
-                    cutControls(index)
-                }
-                if let newCut {
-                    Button("Remove Middle Segment", systemImage: "scissors") {
-                        draft.cuts.append(newCut)
-                        draft.cuts.sort { $0.lowerBound < $1.lowerBound }
-                        elapsed = newCut.lowerBound
-                    }
-                    .accessibilityIdentifier("trim.addCut")
-                }
-
+            // The route on top, showing what is kept and what is removed, and the controls
+            // below it, so the effect of every handle is in view while it moves.
+            VStack(spacing: 0) {
                 if !replayData.timeline.points.isEmpty {
-                    SessionReplayView(
-                        data: replayData, display: analysis.display, elapsed: $elapsed, isPlaying: .constant(false),
-                        highlight: .init(
-                            keptRange: draft.bounds, removedIntervals: visiblePreview?.draft.cuts ?? draft.cuts,
-                            preview: visiblePreview?.presentation.replayData),
-                        allowsPlayback: false)
+                    trimMap(replayData, highlight: highlight)
+                        .containerRelativeFrame(.vertical) { height, _ in height * 0.38 }
                 }
-
-                Section("Preview") {
-                    metrics("Original", selection: analysis.original.selection)
-                    if preview.draft == draft {
-                        metrics("Kept", selection: preview.presentation.selection)
-                        if preview.presentation.replayData.timeline.points.isEmpty {
-                            Text("No usable GPS fixes in this interval.")
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
-                        }
-                    } else {
-                        ProgressView("Updating preview")
-                    }
-                }
-                if analysis.trim != nil {
-                    Button("Restore Original") { apply(nil, presentation: analysis.original) }
-                        .accessibilityIdentifier("trim.restore")
-                }
+                controls(replayData: replayData, highlight: highlight)
             }
             .navigationTitle("Trim Session")
             .navigationBarTitleDisplayMode(.inline)
@@ -202,6 +157,84 @@ struct SessionTrimEditor: View {
                 Button("OK") { error = nil }
             } message: {
                 Text(error ?? "")
+            }
+        }
+    }
+
+    private func trimMap(_ data: SessionReplayView.Data, highlight: SessionReplayView.Highlight) -> some View {
+        let cursor = SessionReplayView.cursor(data: data, elapsed: elapsed, isPlaying: false, highlight: highlight)
+        return SessionReplayMap(
+            data: data, selection: cursor.selection, time: cursor.time, highlight: highlight, insideCut: false,
+            select: { elapsed = data.timeline.selection(at: $0).elapsed }
+        )
+        .overlay(alignment: .bottomTrailing) {
+            Text("Not for navigation")
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(.regularMaterial, in: .capsule)
+                .padding(8)
+                .allowsHitTesting(false)
+        }
+    }
+
+    private func controls(replayData: SessionReplayView.Data, highlight: SessionReplayView.Highlight) -> some View {
+        List {
+            Section {
+                if preview.draft == draft {
+                    comparison(original: analysis.original.selection, kept: preview.presentation.selection)
+                    if preview.presentation.replayData.timeline.points.isEmpty {
+                        Text("No usable GPS fixes in this interval.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                } else {
+                    ProgressView("Updating preview")
+                }
+            } header: {
+                Text("Original → kept")
+            }
+
+            suggestionControls
+
+            Section {
+                let bounds = draft.bounds
+                let startLimit = draft.cuts.first?.lowerBound.nextDown ?? bounds.upperBound - minSpan
+                let endLimit = draft.cuts.last?.upperBound.nextUp ?? bounds.lowerBound + minSpan
+                boundary(
+                    "Keep from", id: "trim.start", value: bounds.lowerBound,
+                    limits: 0...max(bounds.lowerBound, startLimit)
+                ) { draft.bounds = $0...draft.bounds.upperBound }
+                boundary(
+                    "Keep through", id: "trim.end", value: bounds.upperBound,
+                    limits: min(bounds.upperBound, endLimit)...availableEnd
+                ) { draft.bounds = draft.bounds.lowerBound...$0 }
+            } footer: {
+                Text("Times are measured from the start of the original recording.")
+            }
+
+            ForEach(draft.cuts.indices, id: \.self) { index in
+                cutControls(index)
+            }
+            if let newCut {
+                Button("Remove Middle Segment", systemImage: "scissors") {
+                    draft.cuts.append(newCut)
+                    draft.cuts.sort { $0.lowerBound < $1.lowerBound }
+                    elapsed = newCut.lowerBound
+                }
+                .accessibilityIdentifier("trim.addCut")
+            }
+
+            if !replayData.timeline.points.isEmpty {
+                SessionReplayView(
+                    data: replayData, display: analysis.display, elapsed: $elapsed, isPlaying: .constant(false),
+                    highlight: highlight, allowsPlayback: false, showsMap: false)
+            }
+
+            if analysis.trim != nil {
+                Button("Restore Original") { apply(nil, presentation: analysis.original) }
+                    .accessibilityIdentifier("trim.restore")
             }
         }
     }
@@ -332,6 +365,66 @@ struct SessionTrimEditor: View {
                 .accessibilityIdentifier(id)
             }
         }
+    }
+
+    /// Original and kept side by side: the original struck through where the trim changes
+    /// it, so a dropped spike or a shorter session is plain at a glance.
+    private func comparison(original: SessionSelection, kept: SessionSelection) -> some View {
+        let display = analysis.display
+        let before = original.replay.metrics
+        let after = kept.replay.metrics
+        let rows: [(title: String, original: String, kept: String)] = [
+            ("Distance", display.distance(before.distance), display.distance(after.distance)),
+            (
+                "Total time", SessionReplayView.Highlight.time(original.retainedDuration),
+                SessionReplayView.Highlight.time(kept.retainedDuration)
+            ),
+            ("Average speed", display.speed(before.averageSpeed), display.speed(after.averageSpeed)),
+            ("Max 2 s", display.speed(before.maxSpeed2s), display.speed(after.maxSpeed2s)),
+        ]
+        return Group {
+            // Three columns while they fit; at accessibility sizes each row stacks its title
+            // over "original → kept", so neither value breaks across lines.
+            if dynamicTypeSize.isAccessibilitySize {
+                VStack(alignment: .leading, spacing: 10) {
+                    ForEach(rows, id: \.title) { row in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(row.title).foregroundStyle(.secondary)
+                            HStack(spacing: 6) {
+                                Text(row.original)
+                                    .strikethrough(row.original != row.kept)
+                                    .foregroundStyle(.secondary)
+                                Text("→").foregroundStyle(.secondary)
+                                Text(row.kept).fontWeight(.semibold)
+                            }
+                        }
+                    }
+                }
+            } else {
+                Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
+                    ForEach(rows, id: \.title) { row in
+                        GridRow {
+                            Text(row.title)
+                                .foregroundStyle(.secondary)
+                            Text(row.original)
+                                .strikethrough(row.original != row.kept)
+                                .foregroundStyle(.secondary)
+                                .gridColumnAlignment(.trailing)
+                            Text(row.kept)
+                                .fontWeight(.semibold)
+                                .gridColumnAlignment(.trailing)
+                        }
+                    }
+                }
+            }
+        }
+        .font(.subheadline.monospacedDigit())
+        .padding(.vertical, 4)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(
+            rows.map { "\($0.title): original \($0.original), kept \($0.kept)" }.joined(separator: ". ")
+        )
+        .accessibilityIdentifier("trim.preview")
     }
 
     private func metrics(_ title: String, selection: SessionSelection) -> some View {

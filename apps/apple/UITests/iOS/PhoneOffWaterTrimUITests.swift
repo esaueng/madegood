@@ -22,8 +22,9 @@ final class PhoneOffWaterTrimUITests: XCTestCase {
         XCTAssertEqual(app.staticTexts["trim.suggestion.replayRange"].label, "Replay 1:34 to 2:41")
         XCTAssertTrue(app.staticTexts["trim.suggestion.reason"].label.contains("water fixes on both sides"))
         propose.tap()
+        // The cut's preview opens below the suggestion; the list under the map is short.
         let accept = app.buttons["trim.suggestion.accept"]
-        XCTAssertTrue(accept.waitForExistence(timeout: 10))
+        scrollTo(accept, in: app)
         let before = element("trim.preview.Before cut", in: app)
         let after = element("trim.preview.After cut", in: app)
         XCTAssertTrue(before.label.contains("4:30"))
