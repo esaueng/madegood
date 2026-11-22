@@ -37,8 +37,9 @@ struct AnchorAlarmView: View {
                     let reading = position.map { watch.reading(at: $0.point) }
                     Section {
                         AnchorSwingGauge(
-                            distance: reading?.distance, radius: watch.radius,
-                            distanceText: length(reading?.distance, unit: unit),
+                            distance: reading?.distance, accuracy: position?.accuracy,
+                            isUsable: position?.isUsable == true, isDragging: anchorWatch.isAlarming,
+                            radius: watch.radius, distanceText: length(reading?.distance, unit: unit),
                             radiusText: length(watch.radius, unit: unit))
                         LabeledContent("Bearing to anchor", value: bearing(reading?.bearing))
                             .accessibilityIdentifier("anchor.bearing")
@@ -210,21 +211,50 @@ struct AnchorAlarmView: View {
 }
 
 /// The distance to the anchor, large, over how much of the swing circle it uses. The bar
-/// turns coral close to the edge and red outside it. It only shows the reading; the drift
-/// alarm decides on its own, with its GPS accuracy margin.
-private struct AnchorSwingGauge: View {
+/// follows what the alarm can know: full and red while the drift alarm sounds, empty while
+/// the GPS is too weak to tell, and otherwise placed with the fix's accuracy margin (red
+/// only when even the near edge of the fix is outside, coral when its far edge reaches 80 %
+/// of the radius). It never decides anything; the drift alarm does, in AnchorWatch.
+struct AnchorSwingGauge: View {
     let distance: Double?
+    let accuracy: Double?
+    let isUsable: Bool
+    let isDragging: Bool
     let radius: Double
     let distanceText: String
     let radiusText: String
 
+    enum Zone {
+        case unknown, inside, nearEdge, outside, dragging
+    }
+
+    static func zone(
+        distance: Double?, accuracy: Double?, isUsable: Bool, isDragging: Bool, radius: Double
+    ) -> Zone {
+        if isDragging { return .dragging }
+        guard isUsable, let distance, let accuracy, radius > 0 else { return .unknown }
+        if distance - accuracy > radius { return .outside }
+        if distance + accuracy >= radius * 0.8 { return .nearEdge }
+        return .inside
+    }
+
     var body: some View {
-        let share = distance.map { radius > 0 ? $0 / radius : 0 }
-        let tint: Color =
-            switch share {
-            case let share? where share > 1: .red
-            case let share? where share >= 0.8: Theme.coral
-            default: Theme.Metric.distance
+        let zone = Self.zone(
+            distance: distance, accuracy: accuracy, isUsable: isUsable, isDragging: isDragging, radius: radius)
+        let share = distance.map { radius > 0 ? $0 / radius : 0 } ?? 0
+        let (fill, tint, note, spoken): (Double, Color, String, String) =
+            switch zone {
+            case .dragging: (1, .red, "Anchor dragging", "anchor dragging")
+            case .unknown:
+                (0, .clear, "GPS too weak to place the boat in the circle", "GPS too weak to place the boat")
+            case .outside: (1, .red, "Outside the \(radiusText) swing radius", "outside the swing circle")
+            case .nearEdge:
+                (
+                    share, Theme.coral, "Near the edge of the \(radiusText) swing radius",
+                    "near the edge of the swing circle"
+                )
+            case .inside:
+                (share, Theme.Metric.distance, "Inside the \(radiusText) swing radius", "inside the swing circle")
             }
         VStack(alignment: .leading, spacing: 10) {
             MetricValue(title: "Distance to anchor", value: distanceText, color: Theme.Metric.distance)
@@ -233,18 +263,19 @@ private struct AnchorSwingGauge: View {
                     Capsule().fill(Color.secondary.opacity(0.2))
                     Capsule()
                         .fill(tint)
-                        .frame(width: geometry.size.width * min(1, max(0, share ?? 0)))
+                        .frame(width: geometry.size.width * min(1, max(0, fill)))
                 }
             }
             .frame(height: 8)
             .accessibilityHidden(true)
-            Text("of \(radiusText) swing radius")
+            Text(note)
                 .font(.footnote)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(zone == .dragging || zone == .outside ? Color.red : .secondary)
         }
         .padding(.vertical, 4)
-        .accessibilityElement(children: .combine)
-        .accessibilityValue(share.map { "\(Int(($0 * 100).rounded())) percent of the swing radius" } ?? "")
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Distance to anchor, \(distanceText)")
+        .accessibilityValue(spoken)
         .accessibilityIdentifier("anchor.distance")
     }
 }
