@@ -40,6 +40,10 @@ import WaterKit
 ///   (`TransferPolicy.nextRefresh`, `resumeFromRefresh`), and a failed transfer goes again
 ///   after a backoff (`TransferPolicy.retryDelay`). Sends run one at a time on a serial
 ///   queue, so a part is never queued twice by callers racing.
+/// - The fast path (`MessageTransfer`): while the watch app is open and the phone is
+///   reachable, the watch sends the same units as message chunks instead (one unit at a
+///   time), and queues no new file transfers. The phone assembles each unit and stores it
+///   through the same path as a received file. Background sending is files only.
 /// - The phone may be launched in the background to receive: the app activates the session
 ///   at launch, before any UI, and storing and joining run under an expiring background
 ///   activity. Joins cut short are finished, and acknowledged, at the next activation.
@@ -66,6 +70,7 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
         static let stored = "stored"
         static let settings = "settings"
         static let rawVersions = "rawVersions"
+        static let messageTransfer = "messageTransfer"
         static let queuedAt = "queuedAt"
         static let files = "files"
         static let parts = "parts"
@@ -197,7 +202,7 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
     /// `meta.json` last, so the phone sees a recording complete only when all of it is
     /// there, and a large file never holds up the small ones. Files over a part's size go in
     /// parts. Leaves out what is in flight (a whole file in flight covers its parts) and what
-    /// `holds` says the phone has (parts only of the same layout), and parts in `handedOver`
+    /// `holds` says the phone has (parts only of the same layout), and what is in `handedOver`
     /// (delivered, the phone's acknowledgement not in yet). `meta.json` goes unless it is in
     /// flight or the phone holds it at this size while something else of the recording is
     /// in flight, handed over or queued (their acknowledgements tell the watch what the phone
@@ -215,6 +220,9 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
             let isMeta = name == RawFormat.metaFileName
             if !isMeta, holds?.files[name] == size { continue }
             if inFlight.contains(.whole(name)) { continue }
+            // Only the fast path hands over whole files (a reply that says stored); a file
+            // transfer's handover is recorded for parts only.
+            if handedOver.contains(.whole(name)) { continue }
             let parts = isMeta ? [] : TransferParts.plan(file: name, size: size, partSize: partSize)
             if parts.isEmpty {
                 units.append(Unit(file: name, part: nil, length: size))
@@ -380,6 +388,12 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
         #endif
     }
 
+    /// Whether the phone's app takes recordings by message (`MessageTransfer`), from its
+    /// application context: only a build that says it speaks this build's chunk version.
+    static func phoneTakesMessages(fromContext context: [String: Any]) -> Bool {
+        (context[Key.messageTransfer] as? Int) == MessageTransfer.version
+    }
+
     /// Whether a recording of `version` may go to a phone that reads `phone`. Fails closed:
     /// a recording whose version could not be read stays on the watch (a phone build that
     /// predates the check would acknowledge it, and the watch would delete it).
@@ -460,8 +474,55 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
     private let submitted = Mutex<[String: Submitted]>([:])
     /// When the activation under way started; nil once it completed, either way.
     private let activationStartedAt = Mutex<Date?>(nil)
-    /// Runs sends one at a time (watch side).
+    /// Runs sends one at a time (watch side), and every step of the fast path, so choosing
+    /// what goes by message and what goes as a file never races.
     private let sendQueue = DispatchQueue(label: "RecordingTransfer.send", qos: .utility)
+    /// The fast path's state (watch side).
+    private let fastPath = Mutex(FastPath())
+
+    /// The fast path's state (watch side): whether the app is on screen, the chunk size that
+    /// works, a pause after a failure, and the unit being sent by message, if any.
+    struct FastPath: Sendable {
+        var foreground = false
+        var chunkSize = MessageTransfer.largestChunk
+        /// Why the fast path is off for the rest of the process (messages too large even at
+        /// the smallest chunk).
+        var disabled: String?
+        var failures = 0
+        var pausedUntil: Date?
+        var run: FastRun?
+        var generation = 0
+        /// Whether the last thing logged was that sending goes by message.
+        var inUse = false
+    }
+
+    /// One unit on its way by message (watch side). It holds the unit's bytes (at most a
+    /// part) and the next offset to send; a reply or error of an older run is ignored.
+    struct FastRun: Sendable {
+        var generation: Int
+        var sessionId: String
+        var unit: Unit
+        var data: Data
+        var crc: UInt32
+        var offset: Int64 = 0
+        var stalls = 0
+        var messages = 0
+        var startedAt: Date
+        var lastActivity: Date
+
+        /// Whether it still counts as in flight: a reply or error came, or a message went,
+        /// within `MessageTransfer.claimGrace`.
+        func isLive(now: Date) -> Bool {
+            abs(now.timeIntervalSince(lastActivity)) < MessageTransfer.claimGrace
+        }
+    }
+
+    /// What the watch's diagnostics show of the fast path.
+    struct FastPathStatus: Equatable, Sendable {
+        var byMessage: Bool
+        var detail: String
+        var chunkSize: Int
+    }
 
     /// A recording's failed rounds in a row and its pending retry (watch side). The retry's
     /// time gates every send of the recording: until it is due, nothing of the recording is
@@ -762,7 +823,14 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
                 $0[sessionId]?.allowsSend(now: Date(), userAsked: requeue == .all) ?? true
             }
             guard stillMayGo else { return }
+            // While the fast path sends, it chooses what goes; transfers already queued carry on.
+            if fastPathOwnsSending(now: now) {
+                scheduleRefresh(hasPending: true)
+                fastPathNext()
+                return
+            }
             let inFlight = Set(outstanding.compactMap(Self.unitKey)).union(awaitingCallback)
+                .union(fastPathClaim(sessionId: sessionId, now: now))
             let holds = phoneHolds.withLock { $0[sessionId] }
             let recent = handedOver.withLock { all -> Set<UnitKey> in
                 let kept = (all[sessionId] ?? [:]).filter { abs(now.timeIntervalSince($0.value)) < Self.handoverGrace }
@@ -895,6 +963,319 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
             for entry in RecordingStore.list() {
                 send(folder: entry.folder, requeue: requeue)
             }
+        }
+
+        // MARK: Watch: the fast path
+
+        /// Whether the fast path chooses what is sent now (`MessageTransfer.mayUse`): then a
+        /// send queues no new file transfers.
+        private func fastPathOwnsSending(now: Date) -> Bool {
+            let session = WCSession.default
+            let state = fastPath.withLock { $0 }
+            return MessageTransfer.mayUse(
+                foreground: state.foreground, activated: session.activationState == .activated,
+                reachable: session.isReachable,
+                phoneTakesMessages: Self.phoneTakesMessages(fromContext: session.receivedApplicationContext),
+                disabled: state.disabled != nil, pausedUntil: state.pausedUntil, now: now)
+        }
+
+        /// The unit of `sessionId` on its way by message, while it counts as in flight, so a
+        /// send after the fast path stopped does not queue it as a file too.
+        private func fastPathClaim(sessionId: String, now: Date) -> Set<UnitKey> {
+            fastPath.withLock { state in
+                guard let run = state.run, run.sessionId == sessionId, run.isLive(now: now) else { return [] }
+                return [run.unit.key]
+            }
+        }
+
+        /// The app came on screen (or the wrist was lowered: still the frontmost app) or left
+        /// it. Off screen, sending goes back to files.
+        func setForeground(_ foreground: Bool) {
+            let changed = fastPath.withLock { state -> Bool in
+                defer { state.foreground = foreground }
+                return state.foreground != foreground
+            }
+            guard changed else { return }
+            sendQueue.async {
+                if foreground {
+                    self.fastPathNext()
+                } else {
+                    self.fastPathYield("the watch app is in the background")
+                }
+            }
+        }
+
+        /// Called by WatchConnectivity when the phone becomes reachable or stops being so.
+        nonisolated func sessionReachabilityDidChange(_ session: WCSession) {
+            let reachable = session.isReachable
+            sendQueue.async {
+                if reachable {
+                    self.fastPathNext()
+                } else {
+                    self.fastPathYield("the iPhone is not reachable")
+                }
+            }
+        }
+
+        /// The fast path cannot run now: files take over (a unit on its way stops at its next
+        /// reply). On the send queue.
+        private func fastPathYield(_ reason: String) {
+            let wasInUse = fastPath.withLock { state -> Bool in
+                defer { state.inUse = false }
+                return state.inUse
+            }
+            if wasInUse { log.add("Sending as files: \(reason)") }
+            sendAllPending()
+        }
+
+        /// Starts sending the next unit by message if the fast path may run and nothing is
+        /// on its way already: the oldest waiting recording first, its units in
+        /// `MessageTransfer.order`. On the send queue.
+        private func fastPathNext() {
+            let now = Date()
+            guard fastPathOwnsSending(now: now) else { return }
+            if let run = fastPath.withLock({ $0.run }), run.isLive(now: now) { return }
+            for entry in RecordingStore.list().reversed() {
+                let folder = entry.folder
+                let sessionId = folder.lastPathComponent
+                guard !isActive(sessionId), phoneReads(folder: folder),
+                    let local = Self.recordingFiles(in: folder), !local.isEmpty
+                else { continue }
+                for unit in fastPathCandidates(sessionId: sessionId, local: local, now: now) {
+                    let data: Data
+                    do {
+                        data = try MessageTransfer.read(unit, in: folder)
+                    } catch {
+                        log.add(
+                            "Could not read \(Self.describe(unit)) to send by message: \(error)", sessionId: sessionId)
+                        continue
+                    }
+                    let (generation, announce) = fastPath.withLock { state -> (Int, Bool) in
+                        state.generation += 1
+                        state.run = FastRun(
+                            generation: state.generation, sessionId: sessionId, unit: unit, data: data,
+                            crc: MessageTransfer.crc32(data), startedAt: now, lastActivity: now)
+                        defer { state.inUse = true }
+                        return (state.generation, !state.inUse)
+                    }
+                    if announce { log.add("Sending by message while the iPhone is reachable", sessionId: sessionId) }
+                    fastPathSendChunk(generation: generation)
+                    return
+                }
+            }
+            fastPath.withLock { $0.run = nil }
+        }
+
+        /// What of a recording may go by message now: what `units` plans with nothing left
+        /// out by the window, leaving out file transfers that are moving (or whose callback
+        /// is not handled yet), in `MessageTransfer.order`.
+        private func fastPathCandidates(sessionId: String, local: [String: Int64], now: Date) -> [Unit] {
+            let outstanding = WCSession.default.outstandingFileTransfers
+                .filter { $0.file.metadata?[Key.sessionId] as? String == sessionId }
+            let moving = outstanding.filter { $0.isTransferring || $0.progress.fractionCompleted > 0 }
+            let notStarted = outstanding.filter { !$0.isTransferring && $0.progress.fractionCompleted == 0 }
+            let queued = Set(notStarted.compactMap(Self.unitKey))
+            let outstandingIDs = Set(outstanding.compactMap { Self.transferID(metadata: $0.file.metadata) })
+            // Every transfer this process queued whose callback is not handled: those still
+            // queued are offered (the last queued first), the rest count in flight.
+            let awaiting = submitted.withLock {
+                $0[sessionId, default: Submitted()].inFlight(outstanding: outstandingIDs, now: now)
+            }
+            let inFlight = Set(moving.compactMap(Self.unitKey)).union(awaiting.subtracting(queued))
+            let holds = phoneHolds.withLock { $0[sessionId] }
+            let recent = handedOver.withLock { all in
+                Set((all[sessionId] ?? [:]).filter { abs(now.timeIntervalSince($0.value)) < Self.handoverGrace }.keys)
+            }
+            let units = Self.units(
+                local: local, holds: holds, inFlight: inFlight, handedOver: recent, window: Int.max / 2)
+            return MessageTransfer.order(units, queuedAsFiles: queued)
+        }
+
+        /// Sends the run's next chunk. On the send queue.
+        private func fastPathSendChunk(generation: Int) {
+            let now = Date()
+            guard let run = fastPath.withLock({ $0.run }), run.generation == generation else { return }
+            let folder = RecordingStore.root.appendingPathComponent(run.sessionId, isDirectory: true)
+            guard FileManager.default.fileExists(atPath: folder.path), !isActive(run.sessionId) else {
+                // Delivered (and removed) meanwhile.
+                fastPath.withLock { if $0.run?.generation == generation { $0.run = nil } }
+                fastPathNext()
+                return
+            }
+            guard fastPathOwnsSending(now: now) else {
+                fastPathStop(generation: generation, reason: fastPathStatus().detail, failed: false)
+                return
+            }
+            let size = fastPath.withLock { $0.chunkSize }
+            let end = min(run.offset + Int64(size), run.unit.length)
+            let chunk = MessageTransfer.Chunk(
+                sessionId: run.sessionId, file: run.unit.file, part: run.unit.part, length: run.unit.length,
+                crc: run.crc, offset: run.offset, data: run.data.subdata(in: Int(run.offset)..<Int(end)))
+            fastPath.withLock { state in
+                state.run?.lastActivity = now
+                state.run?.messages += 1
+            }
+            WCSession.default.sendMessageData(
+                MessageTransfer.encode(chunk),
+                replyHandler: { reply in
+                    self.sendQueue.async { self.fastPathReplied(generation: generation, reply: reply) }
+                },
+                errorHandler: { error in
+                    self.sendQueue.async { self.fastPathFailed(generation: generation, error: error, chunkSize: size) }
+                })
+            // WatchConnectivity answers every message with a reply or an error; should neither
+            // come, files take over once the claim has lapsed.
+            sendQueue.asyncAfter(deadline: .now() + MessageTransfer.claimGrace) {
+                guard let run = self.fastPath.withLock({ $0.run }), run.generation == generation,
+                    !run.isLive(now: Date())
+                else { return }
+                self.fastPathStop(
+                    generation: generation,
+                    reason: "no answer from the iPhone in \(Self.describe(MessageTransfer.claimGrace))", failed: true)
+            }
+        }
+
+        private func fastPathReplied(generation: Int, reply data: Data) {
+            guard var run = fastPath.withLock({ $0.run }), run.generation == generation else { return }
+            guard let reply = MessageTransfer.decodeReply(data) else {
+                fastPathStop(generation: generation, reason: "the iPhone's reply was unreadable", failed: true)
+                return
+            }
+            let step = MessageTransfer.step(
+                after: reply, sentFrom: run.offset, length: run.unit.length, stalls: &run.stalls)
+            switch step {
+            case .send(let from):
+                let stalls = run.stalls
+                fastPath.withLock { state in
+                    state.run?.offset = from
+                    state.run?.stalls = stalls
+                    state.run?.lastActivity = Date()
+                }
+                fastPathSendChunk(generation: generation)
+            case .delivered:
+                fastPathDelivered(run)
+            case .failed(let why):
+                fastPathStop(generation: generation, reason: why, failed: true)
+            }
+        }
+
+        private func fastPathFailed(generation: Int, error: any Error, chunkSize: Int) {
+            guard let run = fastPath.withLock({ $0.run }), run.generation == generation else { return }
+            let nsError = error as NSError
+            switch MessageTransfer.classify(nsError) {
+            case .tooLarge:
+                if let smaller = MessageTransfer.smallerChunk(after: chunkSize) {
+                    let size = fastPath.withLock { state in
+                        state.chunkSize = min(state.chunkSize, smaller)
+                        state.run?.lastActivity = Date()
+                        return state.chunkSize
+                    }
+                    log.add(
+                        "A message of \(chunkSize >> 10) KB was too large; trying \(size >> 10) KB",
+                        sessionId: run.sessionId)
+                    fastPathSendChunk(generation: generation)
+                } else {
+                    let reason = "messages are too large even at \(chunkSize >> 10) KB"
+                    fastPath.withLock { $0.disabled = reason }
+                    fastPathStop(generation: generation, reason: reason, failed: false)
+                }
+            case .unreachable:
+                fastPathStop(generation: generation, reason: "the iPhone is not reachable", failed: false)
+            case .other:
+                fastPathStop(
+                    generation: generation,
+                    reason: "\(error.localizedDescription) (\(nsError.domain) \(nsError.code))", failed: true)
+            }
+        }
+
+        /// The phone stored the unit: it counts as handed over, like a file transfer that
+        /// finished, until the phone's acknowledgement says what it holds. A file transfer of
+        /// the same unit that has not started has nothing left to do and is cancelled; one
+        /// that has started is left alone.
+        private func fastPathDelivered(_ run: FastRun) {
+            let now = Date()
+            let sessionId = run.sessionId
+            let key = run.unit.key
+            handedOver.withLock { $0[sessionId, default: [:]][key] = now }
+            updateRetries { $0[sessionId]?.succeeded(now: now) }
+            for transfer in WCSession.default.outstandingFileTransfers
+            where transfer.file.metadata?[Key.sessionId] as? String == sessionId && Self.unitKey(transfer) == key
+                && !transfer.isTransferring && transfer.progress.fractionCompleted == 0
+            {
+                transfer.cancel()
+                if let id = Self.transferID(metadata: transfer.file.metadata) {
+                    submitted.withLock { $0[sessionId]?.finished(id: id) }
+                }
+            }
+            let seconds = max(0, now.timeIntervalSince(run.startedAt))
+            log.add(
+                "Sent \(Self.describe(run.unit)) by message: \(run.unit.length) B in \(run.messages) "
+                    + "message\(run.messages == 1 ? "" : "s"), \(String(format: "%.1f", seconds)) s",
+                sessionId: sessionId)
+            fastPath.withLock { state in
+                if state.run?.generation == run.generation { state.run = nil }
+                state.failures = 0
+            }
+            fastPathNext()
+        }
+
+        /// Ends the run: the unit, and what else waits, go as files unless the fast path can
+        /// run again. A failure pauses the fast path (`TransferPolicy.retryDelay`), so a
+        /// phone that keeps failing does not keep the watch busy while the app is open.
+        private func fastPathStop(generation: Int, reason: String, failed: Bool) {
+            let now = Date()
+            let stopped = fastPath.withLock { state -> (run: FastRun, pause: TimeInterval?)? in
+                guard let run = state.run, run.generation == generation else { return nil }
+                state.run = nil
+                state.inUse = false
+                guard failed else { return (run, nil) }
+                state.failures += 1
+                let pause = TransferPolicy.retryDelay(afterFailures: state.failures)
+                state.pausedUntil = now.addingTimeInterval(pause)
+                return (run, pause)
+            }
+            guard let stopped else { return }
+            let pause = stopped.pause.map { "; trying messages again in \(Self.describe($0))" } ?? ""
+            log.add(
+                "Stopped sending \(Self.describe(stopped.run.unit)) by message at \(stopped.run.offset) of "
+                    + "\(stopped.run.unit.length) B: \(reason); sending as files\(pause)",
+                sessionId: stopped.run.sessionId)
+            if let wait = stopped.pause {
+                sendQueue.asyncAfter(deadline: .now() + wait) { self.fastPathNext() }
+            }
+            sendAllPending()
+        }
+
+        /// What the diagnostics show: whether sending goes by message, and why not.
+        func fastPathStatus() -> FastPathStatus {
+            let now = Date()
+            let session = WCSession.default
+            let state = fastPath.withLock { $0 }
+            let owns = fastPathOwnsSending(now: now)
+            let detail: String
+            if let disabled = state.disabled {
+                detail = "Off: \(disabled)"
+            } else if !state.foreground {
+                detail = "The watch app is in the background"
+            } else if session.activationState != .activated {
+                detail = "Not connected"
+            } else if !session.isReachable {
+                detail = "The iPhone is not reachable"
+            } else if !Self.phoneTakesMessages(fromContext: session.receivedApplicationContext) {
+                detail = "The iPhone app does not take recordings by message; update it"
+            } else if let until = state.pausedUntil, until > now {
+                detail = "Paused after a failure until \(until.formatted(date: .omitted, time: .standard))"
+            } else if let run = state.run, run.isLive(now: now) {
+                let percent = run.unit.length > 0 ? Int(run.offset * 100 / run.unit.length) : 0
+                detail = "Sending \(Self.describe(run.unit)) (\(percent)%)"
+            } else {
+                detail = "Nothing waiting to go by message"
+            }
+            return FastPathStatus(byMessage: owns, detail: detail, chunkSize: state.chunkSize)
+        }
+
+        private static func describe(_ unit: Unit) -> String {
+            unit.part.map { "\(unit.file) part \($0.index + 1)/\($0.count)" } ?? unit.file
         }
 
         // MARK: Watch: retries and background
@@ -1240,11 +1621,26 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
                     return
                 }
             }
-            let fm = FileManager.default
             let folder = RecordingStore.recordingsRoot.appendingPathComponent(sessionId, isDirectory: true)
-            let destination = folder.appendingPathComponent(name)
             Self.storageLock.lock()
             defer { Self.storageLock.unlock() }
+            store(
+                file.fileURL, name: name, part: part, folder: folder, sessionId: sessionId, session: session,
+                time: time)
+        }
+
+        /// Stores a received file or part (`incoming`, which it moves away), then joins what is
+        /// complete and acknowledges. Files and units assembled from messages both come here,
+        /// so a unit is acknowledged only once it is stored like any received file.
+        /// `afterStoring` runs once it is stored, before joining. Returns whether it was
+        /// stored. The caller holds `storageLock`.
+        @discardableResult
+        private func store(
+            _ incoming: URL, name: String, part: TransferParts.Part?, folder: URL, sessionId: String,
+            session: WCSession, time: BackgroundTime, via: String? = nil, afterStoring: () -> Void = {}
+        ) -> Bool {
+            let fm = FileManager.default
+            let destination = folder.appendingPathComponent(name)
             // Stage next to the destination (same volume) so replacing is atomic and an old
             // copy survives if anything fails.
             var staged: URL?
@@ -1253,30 +1649,137 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
                 if let part {
                     let label = "\(name) part \(part.index + 1)/\(part.count)"
                     // Stored parts show in the confirmation below; only the unusual is logged.
-                    switch try TransferParts.store(file.fileURL, as: part, in: folder) {
+                    switch try TransferParts.store(incoming, as: part, in: folder) {
                     case .stored: break
                     case .alreadyHad: log.add("Already had \(label); kept it", sessionId: sessionId)
                     case .replaced: log.add("Replaced \(label)", sessionId: sessionId)
                     }
+                    // Any copy of it arriving by message (or this one, if already held) is not
+                    // needed.
+                    MessageTransfer.removeStaging(of: part, in: folder)
                 } else {
                     let whole = folder.appendingPathComponent(
                         "\(RecordingStore.stagingPrefix)\(UUID().uuidString)-\(name)")
                     staged = whole
-                    try fm.moveItem(at: file.fileURL, to: whole)
+                    try fm.moveItem(at: incoming, to: whole)
                     try place(whole, at: destination, name: name, sessionId: sessionId)
                     TransferParts.removeParts(file: name, in: folder)
+                    MessageTransfer.removeStaging(file: name, in: folder)
                 }
             } catch {
                 if let staged { try? fm.removeItem(at: staged) }
                 let nsError = error as NSError
                 log.add(
-                    "Could not store \(name): \(error) (\(nsError.domain) \(nsError.code))", sessionId: sessionId)
-                return
+                    "Could not store \(name)\(via.map { " (\($0))" } ?? ""): \(error) (\(nsError.domain) \(nsError.code))",
+                    sessionId: sessionId)
+                return false
             }
+            afterStoring()
             // Joins every file whose parts are all here: the one just completed, or one whose
             // join was cut short (the app stopped) and that no further part would trigger.
             joinCompleteFiles(in: folder, sessionId: sessionId) { time.hasTime }
-            acknowledge(folder: folder, sessionId: sessionId, file: name, session: session)
+            acknowledge(folder: folder, sessionId: sessionId, file: name, session: session, via: via)
+            return true
+        }
+
+        /// A chunk of a unit sent by message (`MessageTransfer`). It is written to the unit's
+        /// staging file, and the reply says how much of the unit the phone holds. Once the unit
+        /// is complete and its checksum matches, it is checked like a received file
+        /// (`meta.json`'s version) and stored through `store`; the reply says `done` only
+        /// after that, and the acknowledgement follows as for a file. Every path replies once.
+        nonisolated func session(
+            _ session: WCSession, didReceiveMessageData messageData: Data, replyHandler: @escaping (Data) -> Void
+        ) {
+            var replied = false
+            receiveChunk(messageData, session: session) { reply in
+                guard !replied else { return }
+                replied = true
+                replyHandler(MessageTransfer.encode(reply))
+            }
+            if !replied { replyHandler(MessageTransfer.encode(.init(have: 0, error: "not handled"))) }
+        }
+
+        private func receiveChunk(
+            _ data: Data, session: WCSession, reply: (MessageTransfer.Reply) -> Void
+        ) {
+            let chunk: MessageTransfer.Chunk
+            do {
+                chunk = try MessageTransfer.decode(data)
+            } catch {
+                log.add("Ignored a message: \(error)")
+                reply(.init(have: 0, error: "\(error)"))
+                return
+            }
+            let sessionId = chunk.sessionId.lowercased()
+            guard UUID(uuidString: sessionId) != nil, RecordingStore.isRecordingFileName(chunk.file) else {
+                log.add("Ignored a message without valid metadata (\(chunk.file))", sessionId: chunk.sessionId)
+                reply(.init(have: 0, error: "invalid metadata"))
+                return
+            }
+            if chunk.file == RawFormat.metaFileName, chunk.part != nil {
+                log.add("Ignored meta.json sent in parts", sessionId: sessionId)
+                reply(.init(have: 0, error: "meta.json in parts"))
+                return
+            }
+            let folder = RecordingStore.recordingsRoot.appendingPathComponent(sessionId, isDirectory: true)
+            let label = chunk.part.map { "\(chunk.file) part \($0.index + 1)/\($0.count)" } ?? chunk.file
+            Self.storageLock.lock()
+            defer { Self.storageLock.unlock() }
+            // Stored already (by a file, or a reply that was lost): nothing more to take. The
+            // acknowledgement goes again: the watch asks again when the earlier one was lost
+            // (the app quit before sending it), and only an acknowledgement lets it finish.
+            if Self.holds(chunk, in: folder) {
+                MessageTransfer.removeStaging(of: chunk, in: folder)
+                acknowledge(folder: folder, sessionId: sessionId, file: chunk.file, session: session, via: "again")
+                reply(.init(have: chunk.length, done: true))
+                return
+            }
+            let assembled: MessageTransfer.Assembled
+            do {
+                try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                assembled = try MessageTransfer.write(chunk, in: folder)
+            } catch {
+                log.add("Could not keep a message of \(label): \(error)", sessionId: sessionId)
+                reply(.init(have: 0, error: "\(error)"))
+                return
+            }
+            guard case .complete(let unit) = assembled else {
+                if case .partial(let have) = assembled { reply(.init(have: have)) }
+                return
+            }
+            if chunk.file == RawFormat.metaFileName {
+                let data = (try? Data(contentsOf: unit)) ?? Data()
+                guard Self.acknowledgesMeta(data) else {
+                    try? FileManager.default.removeItem(at: unit)
+                    let version = Self.metaVersion(data).map(String.init) ?? "unreadable"
+                    log.add(
+                        "Rejected meta.json (\(data.count) bytes) by message: raw version \(version); this build "
+                            + "reads \(RawFormat.readableVersions.sorted())",
+                        sessionId: sessionId)
+                    reply(.init(have: 0, error: "raw version \(version) is not read by this build"))
+                    return
+                }
+            }
+            BackgroundTime.run("Storing a recording from Apple Watch") { time in
+                let stored = store(
+                    unit, name: chunk.file, part: chunk.part, folder: folder, sessionId: sessionId, session: session,
+                    time: time, via: "by message"
+                ) { reply(.init(have: chunk.length, done: true)) }
+                if !stored {
+                    let have = TransferParts.size(of: unit) ?? 0
+                    reply(.init(have: have, error: "could not store \(label)"))
+                }
+            }
+        }
+
+        /// Whether the phone already holds the unit a chunk belongs to: the part among the
+        /// parts received, or the whole file in place at the right size.
+        static func holds(_ chunk: MessageTransfer.Chunk, in folder: URL) -> Bool {
+            let placed = TransferParts.size(of: folder.appendingPathComponent(chunk.file))
+            guard let part = chunk.part else { return placed == chunk.length }
+            if placed == part.total { return true }
+            let received = TransferParts.receivedFolder(part, in: folder).appendingPathComponent(String(part.index))
+            return TransferParts.size(of: received) == part.length
         }
 
         /// Joins every file of the recording in `folder` whose parts are all held, and puts it
@@ -1314,8 +1817,9 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
                     log.add("Could not join \(ready.file); its parts go again: \(error)", sessionId: sessionId)
                 }
                 // Joined, or unusable: the parts go. Kept, they would tell the watch not to
-                // send them.
+                // send them. So does anything of the file still arriving by message.
                 TransferParts.removeParts(file: ready.file, in: folder)
+                MessageTransfer.removeStaging(file: ready.file, in: folder)
             }
             return done
         }
@@ -1324,7 +1828,9 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
         /// storing `file`): every recording file with its size, so a file it lost since an
         /// earlier acknowledgement keeps the watch's copy, and the parts of files still
         /// arriving. The caller holds `storageLock`, so the list is what is stored.
-        private func acknowledge(folder: URL, sessionId: String, file: String, session: WCSession) {
+        private func acknowledge(
+            folder: URL, sessionId: String, file: String, session: WCSession, via: String? = nil
+        ) {
             guard let stored = Self.recordingFiles(in: folder) else {
                 log.add("Could not list the recording after storing \(file); not confirmed", sessionId: sessionId)
                 return
@@ -1336,7 +1842,7 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
                 Key.rawVersions: Self.readableRawVersions,
             ])
             log.add(
-                "Confirmed to watch: \(TransferLog.describe(stored))\(TransferLog.describe(parts: parts))",
+                "Confirmed to watch\(via.map { " (\($0))" } ?? ""): \(TransferLog.describe(stored))\(TransferLog.describe(parts: parts))",
                 sessionId: sessionId)
             DispatchQueue.main.async {
                 NotificationCenter.default.post(name: Self.didReceiveFile, object: nil)
@@ -1460,6 +1966,8 @@ final class RecordingTransfer: NSObject, WCSessionDelegate, Sendable {
         #if os(iOS)
             // Tells the watch which recordings this build can receive.
             context[Key.rawVersions] = Self.readableRawVersions
+            // And that it takes them by message too.
+            context[Key.messageTransfer] = MessageTransfer.version
         #endif
         guard !context.isEmpty else { return }
         do {

@@ -17,6 +17,7 @@ struct TransferDiagnosticsView: View {
         var reachable = false
         var phoneReads = ""
         var nextWake = ""
+        var fastPath = RecordingTransfer.FastPathStatus(byMessage: false, detail: "", chunkSize: 0)
 
         static func current() -> Connection {
             let session = WCSession.default
@@ -32,7 +33,8 @@ struct TransferDiagnosticsView: View {
             return Connection(
                 status: status, reachable: session.isReachable,
                 phoneReads: versions.sorted().map(String.init).joined(separator: ", "),
-                nextWake: wake.map { $0.formatted(date: .omitted, time: .shortened) } ?? "None")
+                nextWake: wake.map { $0.formatted(date: .omitted, time: .shortened) } ?? "None",
+                fastPath: RecordingTransfer.shared.fastPathStatus())
         }
     }
 
@@ -43,6 +45,12 @@ struct TransferDiagnosticsView: View {
                 LabeledContent("Reachable", value: connection.reachable ? "Yes" : "No")
                 LabeledContent("Reads raw", value: connection.phoneReads)
                 LabeledContent("Next wake", value: connection.nextWake)
+                // Which path new sends take: messages while the app is open and the iPhone
+                // reachable, otherwise files (docs/watch-transfer.md).
+                LabeledContent("Sending by", value: connection.fastPath.byMessage ? "Messages" : "Files")
+                    .accessibilityIdentifier("transfer.path")
+                LabeledContent("Message size", value: "\(connection.fastPath.chunkSize >> 10) KB")
+                Text(connection.fastPath.detail).font(.caption2).foregroundStyle(.secondary)
             }
             if recordings.isEmpty {
                 Text("Every recording has reached the iPhone.")
