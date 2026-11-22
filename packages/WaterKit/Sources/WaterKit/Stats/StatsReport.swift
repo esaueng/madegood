@@ -22,7 +22,12 @@ extension SessionStats {
         lines.append(
             "Distance  \(Self.fixed(distance / 1000, 2)) km  (\(acceptedFixes) fixes used, \(rejectedFixes) rejected: "
                 + "accuracy worse than \(Int(Self.maxHorizontalAccuracy)) m)")
-        lines.append("Avg speed \(Self.speed(averageSpeed))")
+        lines.append("Avg speed \(Self.speed(averageSpeed))  (Doppler, every accurate fix)")
+        if let movingDistance, let movingTime {
+            lines.append(
+                "Moving    \(Self.fixed(movingDistance / 1000, 2)) km in \(Self.clock(movingTime)), "
+                    + "avg \(Self.speed(movingAverageSpeed))  (as session detail: no pauses or vehicle legs)")
+        }
         lines.append("Max speed 2 s: \(Self.speed(maxSpeed2s))   10 s: \(Self.speed(maxSpeed10s))")
         if let categories = speedCategories {
             let rows = [

@@ -139,6 +139,20 @@ public struct SessionEngine: LiveAnalyzer {
         var duration: Double { elapsedRange.upperBound - elapsedRange.lowerBound }
     }
 
+    /// The state to roll back to when a vehicle leg is confirmed (docs/metrics.md
+    /// "Transport"): totals, windowed bests and heart rate as of the last slow fix.
+    private struct Checkpoint {
+        var since: Double
+        var movingTime: Double
+        var distance: Double
+        var underWayTime: Double
+        var best2s: WindowBest?
+        var best10s: WindowBest?
+        var heartRateSum: Double
+        var heartRateCount: Int
+        var heartRateMax: Double?
+    }
+
     /// Opt-in for post-session analysis. Live sessions only need the aggregate totals.
     private(set) var movementIntervals: [MovementInterval]?
     private var pendingResumeIntervals: [MovementInterval] = []
@@ -179,6 +193,27 @@ public struct SessionEngine: LiveAnalyzer {
     private var retainedSpanStart: Double?
     private var categoryTracker: SpeedCategoryTracker?
     private var sailingTracker: SailingTracker?
+    /// Transport: the last fix slower than the profile's `stoppedBelow` (or the first fix).
+    private var transportCheckpoint: Checkpoint?
+    /// Transport: the first and latest fix of the current run above the speed limit.
+    private var transportRunStart: Double?
+    private var transportRunLast: Double?
+    /// Transport: a checkpoint at every fix for the last `lookback` + hold, to bound the rollback.
+    private var transportHistory: [Checkpoint] = []
+    /// Transport: the first fix after each of the user's resumes in that window, where a
+    /// rolled-back leg records an auto pause so the resume does not reopen it.
+    private var transportResumeFixes: [Double] = []
+    private var awaitingResumeFix = false
+    /// Set while in a vehicle: where the leg was dated back to.
+    private var transportSince: Double?
+    private var closedTransportIntervals: [ClosedRange<Double>] = []
+
+    /// Vehicle legs left out of the session, in seconds since the session start (docs/metrics.md
+    /// "Transport"). An open leg ends at the latest sample.
+    public var transportIntervals: [ClosedRange<Double>] {
+        guard let transportSince else { return closedTransportIntervals }
+        return closedTransportIntervals + [transportSince...max(transportSince, latestTime)]
+    }
 
     public init(profile: SportProfile, filter: GPSFilter.Config = GPSFilter.Config()) {
         self.profile = profile
@@ -207,6 +242,15 @@ public struct SessionEngine: LiveAnalyzer {
             autoLapOrigin: distance)
         autoLapsSinceManual = 0
         retainedSpanStart = interval.upperBound
+        if let since = transportSince {
+            closedTransportIntervals.append(since...max(since, interval.lowerBound))
+        }
+        transportSince = nil
+        transportRunStart = nil
+        transportCheckpoint = nil
+        transportHistory.removeAll(keepingCapacity: true)
+        transportResumeFixes.removeAll(keepingCapacity: true)
+        awaitingResumeFix = false
         filter = GPSFilter(config: filter.config)
         lastAccepted = nil
         course = nil
@@ -276,7 +320,7 @@ public struct SessionEngine: LiveAnalyzer {
 
     private var pauseState: LiveMetrics.PauseState {
         switch mode {
-        case .moving: .moving
+        case .moving: transportSince == nil ? .moving : .autoPaused
         case .autoPaused: .autoPaused
         case .manuallyPaused: .manuallyPaused
         }
@@ -295,6 +339,14 @@ public struct SessionEngine: LiveAnalyzer {
         course = accepted.course
         let previous = lastAccepted
         lastAccepted = fix
+        if awaitingResumeFix {
+            awaitingResumeFix = false
+            transportResumeFixes.append(fix.t)
+        }
+        if transportSince != nil {
+            continueTransport(fix)
+            return
+        }
 
         var dt = 0.0
         var step = 0.0
@@ -324,6 +376,7 @@ public struct SessionEngine: LiveAnalyzer {
             dt: dt, step: step, speed: speed, underWay: (intervalSpeed ?? 0) >= Self.underWaySpeed, at: fix.t,
             intervalStart: startsInterval ? fix.t : (previous?.t ?? fix.t))
         updateSpeeds(fix, speed: speed)
+        if checkTransport(fix, speed: speed, isAnchor: accepted.isAnchor) { return }
         if accepted.isAnchor || mode == .manuallyPaused { sailingTracker?.breakRun() }
         if mode != .manuallyPaused {
             sailingTracker?.ingest(t: fix.t, speed: speed, course: fix.course, courseAccuracy: fix.courseAccuracy)
@@ -417,11 +470,7 @@ public struct SessionEngine: LiveAnalyzer {
 
     private mutating func updateSpeeds(_ fix: GPSFix, speed: Double?) {
         guard speed != nil else { return }
-        recent.append(fix)
-        let keep = fix.t - 2 * Self.maxSpeedWindows.long
-        if let firstKept = recent.firstIndex(where: { $0.t >= keep }), firstKept > 0 {
-            recent.removeFirst(firstKept)
-        }
+        appendRecent(fix)
         let profile = SpeedProfile(recent)
         for (window, keyPath) in [
             (Self.maxSpeedWindows.short, \SessionEngine.best2s), (Self.maxSpeedWindows.long, \.best10s),
@@ -432,6 +481,138 @@ public struct SessionEngine: LiveAnalyzer {
             if let best = self[keyPath: keyPath], !(best.mean < mean) { continue }
             self[keyPath: keyPath] = (mean, start...fix.t)
         }
+    }
+
+    private mutating func appendRecent(_ fix: GPSFix) {
+        recent.append(fix)
+        let keep = fix.t - 2 * Self.maxSpeedWindows.long
+        if let firstKept = recent.firstIndex(where: { $0.t >= keep }), firstKept > 0 {
+            recent.removeFirst(firstKept)
+        }
+    }
+
+    // MARK: - Transport
+
+    private var checkpointNow: Checkpoint {
+        Checkpoint(
+            since: lastAccepted?.t ?? latestTime, movingTime: movingTime, distance: distance,
+            underWayTime: underWayTime, best2s: best2s, best10s: best10s, heartRateSum: heartRateSum,
+            heartRateCount: heartRateCount, heartRateMax: heartRateMax)
+    }
+
+    /// Watches for a vehicle leg after a fix has been accounted. Returns true when this fix
+    /// confirmed one, which rolls the session back to the last slow fix.
+    private mutating func checkTransport(_ fix: GPSFix, speed: Double?, isAnchor: Bool) -> Bool {
+        guard let config = profile.transport else { return false }
+        // An anchor does not move the checkpoint: a vehicle leg can run through a GPS gap
+        // (a tunnel), and the rollback must still reach the stop before it.
+        let now = checkpointNow
+        if transportCheckpoint == nil || (speed.map { $0 < config.stoppedBelow } ?? false) {
+            transportCheckpoint = now
+        }
+        transportHistory.append(now)
+        let keep = fix.t - (config.lookback + config.after + config.maxGap)
+        if let firstKept = transportHistory.firstIndex(where: { $0.since >= keep }), firstKept > 0 {
+            transportHistory.removeFirst(firstKept)
+        }
+        transportResumeFixes.removeAll { $0 < keep }
+        guard let speed, speed > config.above else {
+            transportRunStart = nil
+            return false
+        }
+        // The hold only counts time it observed.
+        if isAnchor || transportRunLast.map({ fix.t - $0 > config.maxGap }) ?? true { transportRunStart = nil }
+        let runStart = transportRunStart ?? fix.t
+        transportRunStart = runStart
+        transportRunLast = fix.t
+        guard fix.t - runStart >= config.after else { return false }
+        startTransport(runStart: runStart, lookback: config.lookback)
+        return true
+    }
+
+    /// Rolls back to the last slow fix, or to `lookback` before the hold when that fix is
+    /// older (and never past the start of the current lap, so closed laps keep their
+    /// totals), and pauses until the vehicle stops.
+    private mutating func startTransport(runStart: Double, lookback: Double) {
+        var checkpoint =
+            transportCheckpoint
+            ?? Checkpoint(
+                since: lapStart.since, movingTime: lapStart.movingTime, distance: lapStart.distance,
+                underWayTime: lapStart.underWayTime, best2s: nil, best10s: nil, heartRateSum: 0, heartRateCount: 0,
+                heartRateMax: nil)
+        if checkpoint.since < runStart - lookback,
+            let bounded = transportHistory.first(where: { $0.since >= runStart - lookback })
+        {
+            checkpoint = bounded
+        }
+        transportHistory.removeAll(keepingCapacity: true)
+        let since = max(checkpoint.since, lapStart.since)
+        let target =
+            lapStart.since > checkpoint.since
+            ? (lapStart.movingTime, lapStart.distance, lapStart.underWayTime)
+            : (checkpoint.movingTime, checkpoint.distance, checkpoint.underWayTime)
+        // Whatever the mode now: a manual pause tapped in the vehicle before the leg was
+        // confirmed must not keep the driving counted before it.
+        let countedSince = movingTime > target.0 || distance > target.1
+        movingTime = target.0
+        distance = target.1
+        underWayTime = target.2
+        while let last = movementIntervals?.last, last.elapsedRange.upperBound > since {
+            movementIntervals?.removeLast()
+        }
+        if countedSince || mode == .moving {
+            // An auto-resume at or after the checkpoint was the vehicle setting off: the
+            // earlier pause simply continues. Otherwise the session pauses there.
+            if let last = generatedEvents.last, last.type == .resume, last.data?["auto"] == .bool(true),
+                last.t >= since
+            {
+                generatedEvents.removeLast()
+            } else {
+                generatedEvents.append(
+                    SessionEvent(t: since, type: .pause, data: ["auto": true, "transport": true]))
+            }
+        }
+        // A manual resume inside the rolled-back leg would reopen it for everything that
+        // reads pause and resume events (heart-rate zones, strokes): pause again at the
+        // fix after it, where the engine's own accounting restarted.
+        for resumed in transportResumeFixes where resumed > since {
+            generatedEvents.append(SessionEvent(t: resumed, type: .pause, data: ["auto": true, "transport": true]))
+        }
+        transportResumeFixes.removeAll(keepingCapacity: true)
+        if mode == .moving { mode = .autoPaused }
+        slow = nil
+        fast = nil
+        // Max speeds and heart rate leave out the whole leg, including the part before
+        // the speed limit was crossed.
+        best2s = checkpoint.best2s
+        best10s = checkpoint.best10s
+        heartRateSum = checkpoint.heartRateSum
+        heartRateCount = checkpoint.heartRateCount
+        heartRateMax = checkpoint.heartRateMax
+        transportSince = since
+        transportRunStart = nil
+    }
+
+    /// A fix while in a vehicle: nothing counts until one is slower than `stoppedBelow`.
+    private mutating func continueTransport(_ fix: GPSFix) {
+        guard let since = transportSince, let config = profile.transport else { return }
+        let speed = fix.speed.flatMap { $0.isFinite && $0 >= 0 ? $0 : nil }
+        guard let speed, speed < config.stoppedBelow else {
+            // Shown as the current speed, but never part of a max-speed window.
+            if speed != nil { appendRecent(fix) }
+            return
+        }
+        closedTransportIntervals.append(since...fix.t)
+        transportSince = nil
+        // Windows restart here, so none spans the vehicle leg.
+        recent = [fix]
+        if mode == .autoPaused, !profile.autoPause.enabled {
+            mode = .moving
+            generatedEvents.append(SessionEvent(t: fix.t, type: .resume, data: ["auto": true, "transport": true]))
+        }
+        slow = nil
+        fast = nil
+        transportCheckpoint = checkpointNow
     }
 
     private var currentSpeed: Double? {
@@ -446,6 +627,8 @@ public struct SessionEngine: LiveAnalyzer {
     private mutating func ingestHeartRate(_ sample: HRSample) {
         guard sample.bpm.isFinite, sample.bpm > 0 else { return }
         heartRate = sample
+        // Readings in a vehicle are not part of the workout's average or max.
+        guard transportSince == nil else { return }
         heartRateSum += sample.bpm
         heartRateCount += 1
         heartRateMax = max(heartRateMax ?? sample.bpm, sample.bpm)
@@ -464,7 +647,19 @@ public struct SessionEngine: LiveAnalyzer {
             sailingTracker?.breakRun()
             // At a cut boundary there is no pre-pause fix to disconnect in this span.
             if mode == .manuallyPaused, event.t != retainedSpanStart { intervalBroken = true }
+            if let since = transportSince {
+                // The user's resume ends a vehicle leg, as it ends any pause, so the events
+                // say what the engine counts. A vehicle still going is confirmed again from
+                // the next fix, which starts a new interval and a new checkpoint.
+                closedTransportIntervals.append(since...max(since, event.t))
+                transportSince = nil
+                transportRunStart = nil
+                transportCheckpoint = nil
+                recent.removeAll(keepingCapacity: true)
+                if event.t != retainedSpanStart { intervalBroken = true }
+            }
             if mode != .moving { mode = .moving }
+            if profile.transport != nil { awaitingResumeFix = true }
             slow = nil
             fast = nil
         case .lap:

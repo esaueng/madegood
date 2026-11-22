@@ -72,12 +72,16 @@ changes, which on a wrist are dominated by noise.
 
 - **Current speed:** the mean Doppler speed of the accepted fixes in the last 3 s.
   It is blank when the newest fix with a speed is more than 5 s old.
-- **Average speed:** distance divided by moving time.
+- **Average speed:** distance divided by moving time. `waterkit-replay` prints distance,
+  moving time and this average on its `Moving` line, as session detail shows them; its
+  `Distance` and `Avg speed` lines are diagnostics over every accurate fix, pauses and
+  vehicle legs included.
 - **Max speed (2 s, 10 s):** the best time-weighted mean of Doppler speed over a window
   of exactly that length, treating speed as linear between fixes. A window may not
   span a gap between fixes longer than itself. Windows end at each fix, live and after
   the session, and only GPS-filtered fixes count; `waterkit-replay` shows the same
-  values. A single fix is never a max speed.
+  values. A single fix is never a max speed. Pauses do not stop the windows, but no
+  window includes a vehicle leg (see "Transport").
 
 ## Moving time and auto-pause
 
@@ -102,6 +106,46 @@ are added. The engine records these as `pause` and `resume` events with
 A manual pause stops all accounting until a manual resume, and auto-resume does not
 end it. After a manual resume, accounting restarts from the next fix: the interval
 that spans the resume is not counted.
+
+**Transport (kayak, canoe, SUP).** A recording that keeps running after landing can
+include a drive: in one real session the car leg added 2.8 km and a 19 m/s (37 kn) max
+speed, and auto-resume restarted the session as soon as the car passed 0.8 m/s. Those
+fixes are accurate and agree with their positions, so GPS cleaning keeps them. Paddle
+sports therefore have a speed limit:
+
+| Setting | Default |
+|---|---|
+| A vehicle leg is confirmed when every fix stays above | 8 m/s (28.8 km/h, 15.6 kn) for 10 s |
+| The hold starts again after a GPS re-anchor or a gap between fixes longer than | 5 s |
+| It is dated back to, and ends at, a fix slower than | 0.8 m/s |
+| It is never dated back further before the hold started than | 60 s |
+
+No paddle craft holds 8 m/s for 10 s: the K1 200 m world record averages about 6 m/s and
+downwind surfski runs peak around 7–8 m/s for a few seconds on a wave. A vehicle leg
+starts from a standstill (the paddler has to get out of the boat), so a confirmed leg is
+dated back to the last fix below 0.8 m/s, not to where it crossed 8 m/s: the slow start
+of the drive is left out too, unless that fix is more than 60 s before the hold started
+(in the real session the car took 33 s); then the leg starts 60 s before the hold. A GPS
+re-anchor (a tunnel) does not move that fix, so the driving before the gap is left out
+too. It is never dated back past the start of the current lap. Moving time, distance, the
+max speeds and heart-rate average and max return to their values at that fix, and nothing
+counts until a fix is below 0.8 m/s again. With auto-pause on, the session then stays
+auto-paused until the normal resume rule applies; with it off, it resumes at that fix.
+The engine records the pause, and with auto-pause off the resume, as `pause` and `resume`
+events with `{"auto": true, "transport": true}`. An auto-resume at or after the
+dated-back start is removed instead of adding a pause. A manual resume ends the leg, like
+any pause, so the events always say what is counted (heart-rate zones and strokes read
+them); a vehicle still going is confirmed again from the first fix after the resume, and
+an auto pause is recorded there. A manual resume inside a leg that is then rolled back
+(paused and resumed before it was confirmed) gets an auto pause at the fix after it,
+where accounting restarted, so it does not reopen the leg. A manual pause does not stop
+the check: a leg confirmed while paused still leaves the max speeds and heart rate, and
+any distance and moving time counted since the dated-back start (a pause tapped in the
+vehicle before the leg was confirmed). Sailing, windsurfing and motorboating have no
+limit. A paddler who really holds 8 m/s for 10 s (a downwind foil, or a fast current over
+ground) loses at most the 60 s before the run, the run itself and everything until they
+next drop below 0.8 m/s. A slow drive that stays below 8 m/s for more than 60 s after its
+last stop keeps that slow part, with a max speed under 8 m/s.
 
 Hold timers only run on observed fixes. After a re-anchor (a long GPS gap or recovery
 from rejected fixes) they start again, so an unobserved gap can neither pause nor
@@ -162,7 +206,7 @@ blanks once the last cycle is older than min(4 s, 2.5 periods) plus one period. 
 the session, the rate over time uses up to four periods per point, and the average is
 strokes in counted periods over their total time.
 
-**Distance per stroke.** Distance (moving, as above) over stroke count. Shown in metres
+**Distance per stroke.** Distance (moving, as above) over the strokes in moving time. Shown in metres
 with one decimal, or feet with statute-mile units.
 
 **Sides (canoe, SUP).** Each cycle's mean gravity direction in the device frame. A cycle
@@ -173,8 +217,17 @@ balance is the share of strokes on side 0.
 
 **Pauses.** A manual pause stops stroke counting, like all other accounting: a stroke
 whose time (a cycle's peak, or kayak's inferred second stroke) falls in [pause, resume)
-does not count, whenever its cycle is confirmed, and no period spans a pause. Auto-pause (events with `{"auto": true}`) does not stop counting:
-paddling slowly below the auto-pause speed is still paddling.
+does not count, whenever its cycle is confirmed, and no period spans a pause. Live on the
+watch and iPhone, auto-pause (events with `{"auto": true}`) does not stop counting,
+because the pause is only confirmed 10 s after the boat slowed down and is then dated
+back. After the session (session detail and `waterkit-replay`), strokes and rates count
+only in moving time, like distance: a stroke in an auto-pause or a vehicle leg (see
+"Transport") does not count, and no period spans one. In a real kayak session the cycles
+found while auto-paused were getting in, a stop at the turn, carrying the boat and hand
+movements in a car: irregular, with a median period of 1.1 s against 2.3 s while
+paddling. They were 20 % of the count, and distance per stroke divided moving distance by
+strokes that were not all made while moving. Paddling below the pause speed (0.4 m/s for
+10 s) no longer counts after the session.
 
 **Clock.** Detection runs on device uptime, the motion sensor's own clock, live and after
 the session, so a wall-clock correction cannot reorder strokes, pauses or the rate's
@@ -195,7 +248,7 @@ selected recording. Each interval ends at its last counted stroke, which is also
 start boundary of the next interval. A nonempty remainder is shown as partial.
 Trimming restarts the count on the selected clock. A middle cut omits removed strokes
 and keeps the same counter across the gap. The count follows the stroke pause rules
-above, so a slow stroke can count even when GPS auto-pauses.
+above, so strokes in an auto-pause or a vehicle leg do not count.
 
 Moving time, distance and route highlights use the same observed steps as distance
 splits, clipped to the interval's elapsed bounds. Distance is interpolated linearly
@@ -210,7 +263,9 @@ summary.
 within ±3 %, rate within ±2 SPM) are checked in `StrokeDetectorTests` against
 `PaddleMotionSimulator`: synthetic wrist motion with noise, harmonics, per-cycle
 amplitude and period jitter, pauses, rate changes, side switches, sensor gaps and 50 or
-100 Hz sampling. Labeled real sessions still have to confirm them.
+100 Hz sampling. Labeled real sessions still have to confirm them: `FixtureAccuracyTests`
+scores any labeled paddling fixture on session detail's path (its selection, with strokes
+in moving time only), and none is in the fixture set yet.
 
 ## Sailing maneuvers
 
@@ -465,7 +520,8 @@ These are cues, not metrics, but they follow fixed rules:
 ## Heart rate
 
 Current heart rate is the latest reading. Average is the mean of the readings, and max
-the highest. Readings that are not positive and finite are ignored.
+the highest. Readings that are not positive and finite are ignored, and so are readings
+in a vehicle leg (see "Transport"), including those before it was confirmed.
 
 **Heart-rate zones** apply to all sports. The default maximum of 190 bpm is a starting
 point. Set your own maximum (60–250 bpm) and optionally change the four thresholds in
@@ -528,8 +584,9 @@ just started ringing.
 
 ## Session summary
 
-Track v1 stores the analysis as `summary`, with `analyzerVersion` (currently `1.1.0`,
-bumped whenever a definition on this page changes; 1.1.0 added the windsurf keys):
+Track v1 stores the analysis as `summary`, with `analyzerVersion` (currently `1.2.0`,
+bumped whenever a definition on this page changes; 1.1.0 added the windsurf keys, 1.2.0
+left vehicle legs out of paddle sessions):
 
 | Key | Meaning |
 |---|---|

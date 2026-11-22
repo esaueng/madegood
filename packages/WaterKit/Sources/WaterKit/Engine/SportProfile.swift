@@ -13,11 +13,13 @@ public struct SportProfile: Sendable, Hashable {
     public var tracksSailing: Bool
     /// Windsurfing planing threshold, m/s.
     public var planingSpeedThreshold: Double
+    /// Vehicle detection (docs/metrics.md "Transport"); nil turns it off.
+    public var transport: Transport.Config?
 
     public init(
         sport: Sport, autoPause: AutoPause.Config, autoLapDistance: Double? = nil, savesWorkoutByDefault: Bool = true,
         tracksSpeedCategories: Bool? = nil, tracksSailing: Bool? = nil,
-        planingSpeedThreshold: Double = SportSettings.defaultPlaningSpeedThreshold
+        planingSpeedThreshold: Double = SportSettings.defaultPlaningSpeedThreshold, transport: Transport.Config? = nil
     ) {
         self.sport = sport
         self.autoPause = autoPause
@@ -26,15 +28,17 @@ public struct SportProfile: Sendable, Hashable {
         self.tracksSpeedCategories = tracksSpeedCategories ?? (sport == .windsurfing)
         self.tracksSailing = tracksSailing ?? (sport == .sailing)
         self.planingSpeedThreshold = planingSpeedThreshold
+        self.transport = transport
     }
 
     /// Defaults from docs/PLAN.md §5: auto-pause is on for paddling and off for sailing,
     /// windsurfing and motorboating, where drifting or waiting for wind is part of the
-    /// session. Motorboat trips are not Health workouts unless the user opts in.
+    /// session. Motorboat trips are not Health workouts unless the user opts in. Paddle
+    /// sports leave out vehicle legs (`Transport`), whatever the auto-pause setting.
     public static func standard(for sport: Sport) -> SportProfile {
         switch sport {
         case .kayak, .canoe, .sup:
-            SportProfile(sport: sport, autoPause: AutoPause.Config(enabled: true))
+            SportProfile(sport: sport, autoPause: AutoPause.Config(enabled: true), transport: Transport.Config())
         case .sailing, .windsurfing:
             SportProfile(sport: sport, autoPause: AutoPause.Config(enabled: false))
         case .motorboating:

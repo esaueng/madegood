@@ -4,7 +4,7 @@ import Testing
 @testable import WaterKit
 
 @Suite struct FixtureAccuracyTests {
-    private struct Labels: Decodable {
+    struct Labels: Decodable {
         struct Truth: Decodable {
             var strokes: Int?
             var strokeRateSPM: Double?
@@ -66,13 +66,15 @@ import Testing
         return RawSession(meta: meta, gps: track.gps, hr: track.hr, events: track.events)
     }
 
-    private static func check(_ truth: Labels.Truth, session: RawSession, context: String) throws {
+    static func check(_ truth: Labels.Truth, session: RawSession, context: String) throws {
         if truth.strokes != nil || truth.strokeRateSPM != nil {
             try #require(
                 session.meta.sport.isPaddling && !session.motion.isEmpty,
                 "\(context): stroke labels need raw paddling motion")
-            let strokes = StrokeAnalysis(
-                detection: StrokeAnalysis.detect(session: session), sport: session.meta.sport, distance: nil)
+            // The same path as session detail: strokes in moving time (no manual or auto
+            // pause, no vehicle leg) over the recording's own selection.
+            let selection = try SessionSelection(session: session)
+            let strokes = StrokeAnalysis(session: session, selection: selection)
             if let count = truth.strokes {
                 #expect(
                     count >= 0 && abs(Double(strokes.strokeCount) - Double(count)) <= 0.03 * Double(count),
