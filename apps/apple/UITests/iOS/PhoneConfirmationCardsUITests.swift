@@ -42,6 +42,18 @@ final class PhoneConfirmationCardsUITests: XCTestCase {
                 "Delete this session?", confirm: "session.confirmDelete", backOut: "session.keep",
                 screenshot: "delete session", look: look, in: app)
             XCTAssertTrue(sailing.exists)
+            if look == .light {
+                // Swiping the card down backs out too, deletes nothing, and it opens again.
+                if !delete.exists { sailing.swipeLeft() }
+                XCTAssertTrue(delete.waitForExistence(timeout: 5))
+                delete.tap()
+                let heading = app.staticTexts["confirmation.title"]
+                XCTAssertTrue(heading.waitForExistence(timeout: 5))
+                Thread.sleep(forTimeInterval: 1)
+                app.swipeDown(velocity: .fast)
+                XCTAssertTrue(heading.waitForNonExistence(timeout: 5), "swiping down didn't close the card")
+                XCTAssertTrue(sailing.exists)
+            }
 
             // Deleted, it waits in Recently Deleted, where deleting for good asks again.
             if !delete.exists { sailing.swipeLeft() }

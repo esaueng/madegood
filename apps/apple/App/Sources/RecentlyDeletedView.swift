@@ -7,7 +7,8 @@ struct RecentlyDeletedView: View {
     let library: SessionLibrary
     @State private var chosen: SessionLibrary.DeletedItem?
     @State private var confirmDelete: SessionLibrary.DeletedItem?
-    @State private var confirmDeleteAll = false
+    /// The deleted sessions shown when Delete All was tapped: the ones the card deletes.
+    @State private var deletingAll: [SessionLibrary.DeletedItem]?
     @State private var operationError: String?
 
     var body: some View {
@@ -55,7 +56,7 @@ struct RecentlyDeletedView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         Button("Recover All", systemImage: "arrow.uturn.backward") { recoverAll() }
-                        Button("Delete All", systemImage: "trash", role: .destructive) { confirmDeleteAll = true }
+                        Button("Delete All", systemImage: "trash", role: .destructive) { deletingAll = library.deleted }
                     } label: {
                         Label("More", systemImage: "ellipsis")
                     }
@@ -81,14 +82,14 @@ struct RecentlyDeletedView: View {
                 ) { deletePermanently([item]) },
                 bottom: .backOut("Keep", identifier: "deleted.keep"))
         }
-        .confirmationCard(isPresented: $confirmDeleteAll) {
+        .confirmationCard(item: $deletingAll) { items in
             ConfirmationCard(
                 systemImage: "trash", tint: .red,
-                title: "Delete all \(library.deleted.count) sessions permanently?",
+                title: "Delete all \(items.count) sessions permanently?",
                 message: "They're removed from this iPhone, with their names, notes and trims. This can't be undone.",
                 top: ConfirmationChoice(
                     title: "Delete All", identifier: "deleted.confirmDeleteAll", style: .destructive
-                ) { deletePermanently(library.deleted) },
+                ) { deletePermanently(items) },
                 bottom: .backOut("Keep All", identifier: "deleted.keepAll"))
         }
         .alert(

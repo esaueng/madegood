@@ -21,7 +21,8 @@ struct SessionDetailView: View {
     @State private var rawExportProgress: Double?
     /// Why the last attempt to prepare the raw recording failed, shown on its row.
     @State private var rawExportError: String?
-    @State private var confirmDelete = false
+    /// The session as it was when Delete Session was tapped: what the card shows and deletes.
+    @State private var deleting: SessionLibrary.Item?
     @State private var panelDetent = PanelDetent.middle
     @State private var editingDetails = false
     /// Bumped when a file arrives from the watch, to reload a recording still arriving.
@@ -129,10 +130,12 @@ struct SessionDetailView: View {
         .sheet(item: $share) { file in
             ShareSheet(url: file.url) { ExportFiles.discard(file.url) }
         }
-        .confirmationCard(isPresented: $confirmDelete) {
-            ConfirmationCard.deleteSession(current) {
+        .confirmationCard(item: $deleting) { deleting in
+            ConfirmationCard.deleteSession(deleting) {
                 do {
-                    try library.delete(item)
+                    // The library's copy, not the one this screen opened with: a recording
+                    // that finished arriving since then has a newer revision.
+                    try library.delete(deleting)
                     dismiss()
                 } catch {
                     operationError = "Couldn't delete this session."
@@ -398,7 +401,7 @@ struct SessionDetailView: View {
             }
             // A divider, not a section: items in a menu section lose their identifiers.
             Divider()
-            Button("Delete Session", systemImage: "trash", role: .destructive) { confirmDelete = true }
+            Button("Delete Session", systemImage: "trash", role: .destructive) { deleting = current }
                 .accessibilityIdentifier("session.delete")
         } label: {
             Label("More", systemImage: "ellipsis")
