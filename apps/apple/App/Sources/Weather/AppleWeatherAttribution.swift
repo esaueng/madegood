@@ -105,6 +105,14 @@ struct AppleWeatherAttributionLink: View {
     let attribution: AppleWeatherAttribution
     @Environment(\.colorScheme) private var colorScheme
 
+    static let height: CGFloat = 12
+
+    /// The mark's drawn width (the light and dark marks share a shape).
+    static func width(of attribution: AppleWeatherAttribution) -> CGFloat {
+        guard let size = UIImage(data: attribution.darkMark)?.size, size.height > 0 else { return 0 }
+        return height * size.width / size.height
+    }
+
     var body: some View {
         let data = colorScheme == .dark ? attribution.darkMark : attribution.lightMark
         Link(destination: attribution.legalPageURL) {
@@ -112,7 +120,7 @@ struct AppleWeatherAttributionLink: View {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFit()
-                    .frame(height: 12)
+                    .frame(height: Self.height)
             }
         }
         .accessibilityLabel("Apple Weather data sources")

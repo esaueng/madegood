@@ -31,13 +31,24 @@ struct WeatherCard: View {
                 }
             case .loading, .ready:
                 if let now = weather.current {
-                    VStack(alignment: .trailing, spacing: 4) {
-                        ConditionsCard(weather: now, sports: sports)
-                        if let attribution = AppleWeatherAttribution.available {
-                            AppleWeatherAttributionLink(attribution: attribution)
-                                .padding(.trailing, 8)
+                    let attribution = AppleWeatherAttribution.available
+                    ConditionsCard(
+                        weather: now, sports: sports,
+                        markWidth: attribution.map(AppleWeatherAttributionLink.width(of:)) ?? 0)
+                        // Inside the card, so it scrolls with the weather it credits. Outside the
+                        // card's accessibility element, so VoiceOver still reaches the link.
+                        .overlay(alignment: .bottomTrailing) {
+                            if let attribution {
+                                AppleWeatherAttributionLink(attribution: attribution)
+                                    .environment(\.colorScheme, .dark)
+                                    // The same lift as the card's words, over a bright sea.
+                                    .shadow(color: .black.opacity(0.3), radius: 2, y: 1)
+                                    // Borderless, so only the mark opens the legal page, not the whole row.
+                                    .buttonStyle(.borderless)
+                                    .padding(.trailing, ConditionsCard.markInset)
+                                    .padding(.bottom, 8)
+                            }
                         }
-                    }
                 } else {
                     notice("Finding conditions where you are…", symbol: "location", action: nil, identifier: nil) {}
                 }
@@ -129,6 +140,12 @@ struct WeatherCard: View {
 private struct ConditionsCard: View {
     let weather: WeatherNow
     let sports: [Sport]
+    /// The width of the Apple Weather mark in the bottom-right corner (0 when none), which
+    /// the ratings stop short of.
+    let markWidth: CGFloat
+
+    /// The mark's distance from the card's right edge.
+    static let markInset: CGFloat = 12
 
     /// The wind in the unit of the first wind sport shown (knots by default), else the
     /// first sport's: a sailor reads wind in knots even when a kayak is on top.
@@ -174,7 +191,15 @@ private struct ConditionsCard: View {
                             .accessibilityIdentifier("weather.wind")
                     }
                 }
-                Spacer(minLength: 4)
+            }
+            .foregroundStyle(.white)
+            .shadow(color: .black.opacity(0.3), radius: 2, y: 1)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .containerRelativeFrame(.horizontal, alignment: .leading) { width, _ in width * 0.68 }
+            // The ratings (or a warning) along the bottom may run past the words' column,
+            // up to the Apple Weather mark.
+            Group {
                 if let warning = text.warning {
                     Label(warning, systemImage: text.warningSymbol)
                         .font(.caption.weight(.bold))
@@ -190,9 +215,10 @@ private struct ConditionsCard: View {
             }
             .foregroundStyle(.white)
             .shadow(color: .black.opacity(0.3), radius: 2, y: 1)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .containerRelativeFrame(.horizontal, alignment: .leading) { width, _ in width * 0.68 }
+            .padding(.leading, 12)
+            .padding(.trailing, Self.markInset + (markWidth > 0 ? markWidth + 8 : 0))
+            .padding(.bottom, 10)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
         }
         .frame(height: 112)
         // A fixed-height picture: its words stop growing at xxLarge (VoiceOver reads them all).
@@ -229,7 +255,8 @@ private struct ConditionsCard: View {
             }
             .font(.caption2.weight(.bold))
             .lineLimit(1)
-            .fixedSize()
+            // Shrinks rather than running under the Apple Weather mark.
+            .minimumScaleFactor(0.6)
             .padding(.horizontal, 7)
             .padding(.vertical, 4)
             .background(.black.opacity(0.32), in: .capsule)
