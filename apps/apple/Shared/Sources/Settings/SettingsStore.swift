@@ -107,4 +107,10 @@ final class SettingsStore {
         UserSettings.recordSession(sport, distance: distance, date: date)
         lastSessions[sport] = UserSettings.lastSession(sport)
     }
+
+    /// Drops the sport's saved last session, after the recording it described was deleted.
+    func forgetLastSession(_ sport: Sport) {
+        UserSettings.forgetLastSession(sport)
+        lastSessions[sport] = nil
+    }
 }

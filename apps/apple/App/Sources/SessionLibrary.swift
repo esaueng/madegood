@@ -235,6 +235,14 @@ final class SessionLibrary {
         }
         // Its prepared copies for sharing go with it.
         ZipExport.removePrepared(for: item.entry.folder)
+        // The start screen's card shows the sport's saved last session when it is newer
+        // than any summary here. When that session is this recording, it goes too (and
+        // the card shows the library's latest instead, also after a recovery).
+        if let sport = item.entry.meta?.sport, let saved = SettingsStore.shared.lastSessions[sport],
+            Self.lastSession(saved, describes: item.entry, among: items.map(\.entry))
+        {
+            SettingsStore.shared.forgetLastSession(sport)
+        }
         cache[item.entry.folder] = nil
         reload()
     }
@@ -290,6 +298,28 @@ final class SessionLibrary {
                 try details.get()
             }
             try store.remove(entry)
+        }
+    }
+
+    /// How long after a recording ends its saved last session may be dated: this device saves
+    /// it when the recording finishes, just after writing the end time.
+    static let lastSessionSaveTolerance: TimeInterval = 120
+
+    /// Whether the sport's saved last session is `entry`'s: dated between its start and just
+    /// after its end. A recording without an end time was never saved as a last session.
+    /// A later recording of the sport that started before the save is the one saved, so
+    /// back-to-back outings within the tolerance don't both match.
+    static func lastSession(
+        _ saved: UserSettings.LastSession, describes entry: RecordingStore.Entry, among entries: [RecordingStore.Entry] = []
+    ) -> Bool {
+        guard let meta = entry.meta, let endedAt = meta.endedAt else { return false }
+        let date = saved.date.timeIntervalSince1970
+        guard date >= meta.startedAt && date <= endedAt + lastSessionSaveTolerance else { return false }
+        return !entries.contains { other in
+            guard other.folder != entry.folder, let otherMeta = other.meta, otherMeta.sport == meta.sport else {
+                return false
+            }
+            return otherMeta.startedAt > meta.startedAt && otherMeta.startedAt <= date
         }
     }
 
