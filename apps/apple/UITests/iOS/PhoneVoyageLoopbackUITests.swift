@@ -43,7 +43,7 @@ final class PhoneVoyageLoopbackUITests: XCTestCase {
         let start = app.buttons["Start Sharing"]
         scrollTo(start, in: app)
         start.tap()
-        let consent = app.sheets.buttons["Start Sharing"]
+        let consent = app.buttons["voyageSharing.confirmStart"]
         XCTAssertTrue(consent.waitForExistence(timeout: 10))
         consent.tap()
 

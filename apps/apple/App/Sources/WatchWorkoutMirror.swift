@@ -112,11 +112,34 @@ final class WatchWorkoutMirror: NSObject, HKWorkoutSessionDelegate {
                     latitude: point.lat, longitude: point.lon, markedAt: .now, positionAt: .now, positionAge: 0)
             }
             state.connect(connection)
+            let sessionID = UUID()
             receive(
                 WorkoutMirrorSnapshot(
-                    sessionID: UUID(), sequence: 1, sport: .canoe, sentAt: .now, readings: readings,
+                    sessionID: sessionID, sequence: 1, sport: .canoe, sentAt: .now, readings: readings,
                     manOverboard: mark, manOverboardMarks: mark.map { [$0] } ?? [], manOverboardCleared: []),
                 from: connection)
+            // `-demoWatchMOBAfterPress`: the watch marks 5 s after a MOB press on the phone,
+            // so a test can see a new target arrive while the phone's Clear card is open.
+            guard ProcessInfo.processInfo.arguments.contains("-demoWatchMOBAfterPress") else { return }
+            let laterReadings = readings
+            Task { [weak self] in
+                while ManOverboard.shared.awaitingFixSince == nil {
+                    try? await Task.sleep(for: .milliseconds(250))
+                }
+                try? await Task.sleep(for: .seconds(5))
+                let point = Geo.destination(
+                    lat: DemoFeed.origin.lat, lon: DemoFeed.origin.lon, bearing: 0, distance: 150)
+                let mark = ManOverboard.Mark(
+                    latitude: point.lat, longitude: point.lon, markedAt: .now, positionAt: .now, positionAge: 0)
+                // `source` keeps the connection's identity alive until the mark is sent.
+                withExtendedLifetime(source) {
+                    self?.receive(
+                        WorkoutMirrorSnapshot(
+                            sessionID: sessionID, sequence: 2, sport: .canoe, sentAt: .now, readings: laterReadings,
+                            manOverboard: mark, manOverboardMarks: [mark], manOverboardCleared: []),
+                        from: connection)
+                }
+            }
         }
     #endif
 

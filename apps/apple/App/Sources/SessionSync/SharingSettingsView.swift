@@ -61,14 +61,13 @@ struct SharingSettingsView: View {
         .navigationBarTitleDisplayMode(.inline)
         .task { await load() }
         .refreshable { await load() }
-        .confirmationDialog(
-            "Turn off sharing?", isPresented: $confirmingOff, titleVisibility: .visible
-        ) {
-            Button("Turn Off Sharing", role: .destructive) { setEnabled(false) }
-                .accessibilityIdentifier("sharing.confirmOff")
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text(offWarning)
+        .confirmationCard(isPresented: $confirmingOff) {
+            ConfirmationCard(
+                systemImage: "eye.slash", tint: .red, title: "Turn off sharing?", message: offWarning,
+                top: ConfirmationChoice(
+                    title: "Turn Off Sharing", identifier: "sharing.confirmOff", style: .destructive
+                ) { setEnabled(false) },
+                bottom: .backOut("Keep Sharing", identifier: "sharing.keepOn"))
         }
     }
 

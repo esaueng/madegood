@@ -12,8 +12,7 @@ struct ManOverboardScreen: View {
     let sport: Sport
     /// The session's track, when there is one, drawn under the mark.
     var points: [SessionRecorder.TrackPoint] = []
-    @State private var confirmClear = false
-    /// The mark shown when Clear was tapped: the one the confirmation clears.
+    /// What Clear would remove when it was tapped: the one the confirmation card clears.
     @State private var clearing: ManOverboard.ClearTarget?
     @ScaledMetric(relativeTo: .largeTitle) private var arrowSize = 120.0
 
@@ -60,7 +59,6 @@ struct ManOverboardScreen: View {
                 }
                 Button(role: .destructive) {
                     clearing = manOverboard.clearTarget
-                    confirmClear = true
                 } label: {
                     // With only a press waiting, clearing cancels it.
                     Label(manOverboard.mark == nil ? "Cancel press" : "Clear mark", systemImage: "xmark.circle")
@@ -69,21 +67,37 @@ struct ManOverboardScreen: View {
                 .buttonStyle(.bordered)
                 .buttonBorderShape(.capsule)
                 .accessibilityIdentifier("mob.clear")
-                .confirmationDialog(
-                    "Clear the man-overboard mark?", isPresented: $confirmClear, titleVisibility: .visible
-                ) {
-                    Button("Clear mark", role: .destructive) { manOverboard.clear(confirmed: clearing) }
-                        .accessibilityIdentifier("mob.confirmClear")
-                } message: {
-                    Text(
-                        manOverboard.otherMarks.isEmpty
-                            ? "The way back to it will no longer be shown."
-                            : "The way back to it will no longer be shown. The next mark becomes the target.")
-                }
             }
             .padding()
         }
         .accessibilityIdentifier("mob.screen")
+        .confirmationCard(item: $clearing) { clearCard($0) }
+        // A new press or mark while the card is open changes what Clear would remove:
+        // close the card so the new guidance shows. Confirming would keep it anyway
+        // (`clear(confirmed:)`), but the card would describe the wrong thing.
+        .onChange(of: manOverboard.clearTarget) { _, target in
+            if let clearing, target != clearing { self.clearing = nil }
+        }
+    }
+
+    private func clearCard(_ target: ManOverboard.ClearTarget) -> ConfirmationCard<EmptyView> {
+        let confirm = { [manOverboard] in manOverboard.clear(confirmed: target) }
+        if case .waitingPress = target {
+            return ConfirmationCard(
+                systemImage: "xmark", tint: .red, title: "Cancel this MOB press?",
+                message: "It's still waiting for a position, so no mark has been set yet.",
+                top: ConfirmationChoice(
+                    title: "Cancel Press", identifier: "mob.confirmClear", style: .destructive, action: confirm),
+                bottom: .backOut("Keep Waiting", identifier: "mob.keepClear"))
+        }
+        return ConfirmationCard(
+            systemImage: "xmark", tint: .red, title: "Clear this MOB mark?",
+            message: manOverboard.otherMarks.isEmpty
+                ? "The arrow and map stop showing the way back to it."
+                : "The arrow and map stop showing the way back to it. The next mark becomes the target.",
+            top: ConfirmationChoice(
+                title: "Clear Mark", identifier: "mob.confirmClear", style: .destructive, action: confirm),
+            bottom: .backOut("Keep Mark", identifier: "mob.keepClear"))
     }
 
     @ViewBuilder

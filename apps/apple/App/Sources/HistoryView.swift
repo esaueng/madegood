@@ -15,12 +15,6 @@ struct HistoryView: View {
 
     private var isFiltered: Bool { sport != nil || dates != .all }
 
-    private func confirmingDelete(of item: SessionLibrary.Item) -> Binding<Bool> {
-        Binding(
-            get: { pendingDelete?.id == item.id },
-            set: { if !$0, pendingDelete?.id == item.id { pendingDelete = nil } })
-    }
-
     private func delete(_ item: SessionLibrary.Item) {
         do {
             try library.delete(item)
@@ -62,27 +56,12 @@ struct HistoryView: View {
                                 .navigationLinkIndicatorVisibility(.hidden)
                                 .accessibilityIdentifier("session.row")
                                 .cardRow()
-                                // Asks first, like the session's ⋯ menu: a recording can't be
-                                // brought back. No full swipe, so a long swipe only shows the button.
+                                // Asks first, like the session's ⋯ menu. No full swipe, so a
+                                // long swipe only shows the button.
                                 .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                                     Button("Delete", systemImage: "trash") { pendingDelete = item }
                                         .tint(.red)
                                         .accessibilityIdentifier("session.row.delete")
-                                }
-                                // On the row, so the popover points at the session it deletes.
-                                // Deletes the item as it was when Delete was tapped, so the
-                                // library's revision check refuses a recording that changed since
-                                // (a watch transfer that completed with the dialog open).
-                                .confirmationDialog(
-                                    "Delete this session?", isPresented: confirmingDelete(of: item),
-                                    titleVisibility: .visible, presenting: pendingDelete
-                                ) { pending in
-                                    Button("Delete", role: .destructive) { delete(pending) }
-                                } message: { _ in
-                                    // As the session detail's confirmation says it.
-                                    Text(
-                                        "It moves to Recently Deleted in History, where you can recover it for \(RecentlyDeleted.retentionDays) days before it's removed from this iPhone."
-                                    )
                                 }
                         }
                     } header: {
@@ -123,6 +102,12 @@ struct HistoryView: View {
                 HistoryDateRangePicker(range: dates.range(on: .now, calendar: calendar)) { start, end in
                     dates = .custom(start: start, end: end)
                 }
+            }
+            // Deletes the item as it was when Delete was tapped, so the library's revision
+            // check refuses a recording that changed since (a watch transfer that completed
+            // with the card open).
+            .confirmationCard(item: $pendingDelete) { pending in
+                ConfirmationCard.deleteSession(pending) { delete(pending) }
             }
             .alert("Couldn't delete the session.", isPresented: $deleteFailed) {
                 Button("OK") {}

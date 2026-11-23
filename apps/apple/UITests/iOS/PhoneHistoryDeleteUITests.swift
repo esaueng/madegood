@@ -21,22 +21,20 @@ final class PhoneHistoryDeleteUITests: XCTestCase {
         XCTAssertTrue(rowDelete.waitForExistence(timeout: 5))
         XCTAssertTrue(sailing.exists, "a swipe deleted the session")
 
-        // The button asks first, and Cancel keeps the session.
+        // The button asks first, naming the session, and Keep keeps it.
         rowDelete.tap()
-        // The confirmation's Delete, not the row's (which shares the label).
-        let confirm = app.buttons
-            .matching(NSPredicate(format: "label == 'Delete' AND identifier != 'session.row.delete'")).firstMatch
+        let confirm = app.buttons["session.confirmDelete"]
         XCTAssertTrue(confirm.waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["Delete this session?"].exists)
-        // Since #191 a deleted session waits in Recently Deleted; the dialog says so.
-        let recoverable = app.staticTexts.matching(
-            NSPredicate(format: "label BEGINSWITH %@", "It moves to Recently Deleted")
-        ).firstMatch
-        XCTAssertTrue(recoverable.exists)
+        // Since #191 a deleted session waits in Recently Deleted; the card says so.
+        XCTAssertEqual(app.staticTexts["confirmation.title"].label, "Delete this session?")
+        XCTAssertTrue(
+            app.staticTexts["confirmation.message"].label.hasPrefix("It moves to Recently Deleted"),
+            "the card should say where the session goes")
+        XCTAssertTrue(
+            element("session.deleteSummary", in: app).label.contains("Sailing"), "the card should name the session")
         attachScreenshot("history delete confirmation")
-        dismissConfirmation(in: app)
-        let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: confirm)
-        XCTAssertEqual(XCTWaiter().wait(for: [gone], timeout: 5), .completed, "the confirmation stayed open")
+        app.buttons["session.keep"].tap()
+        XCTAssertTrue(confirm.waitForNonExistence(timeout: 5), "the confirmation stayed open")
         XCTAssertTrue(sailing.exists)
 
         // Confirmed, it goes.
@@ -46,16 +44,5 @@ final class PhoneHistoryDeleteUITests: XCTestCase {
         XCTAssertTrue(confirm.waitForExistence(timeout: 5))
         confirm.tap()
         XCTAssertTrue(sailing.waitForNonExistence(timeout: 10), "the session wasn't deleted")
-    }
-
-    /// The confirmation is an action sheet or, where iOS anchors it, a popover.
-    @MainActor
-    private func dismissConfirmation(in app: XCUIApplication) {
-        let cancel = app.buttons["Cancel"]
-        if cancel.exists {
-            cancel.tap()
-        } else {
-            app.otherElements["PopoverDismissRegion"].firstMatch.tap()
-        }
     }
 }

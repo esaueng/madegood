@@ -115,7 +115,9 @@ final class PhoneAppStoreScreenshots: XCTestCase {
         let disarm = app.buttons["anchor.disarm"]
         scrollTo(disarm, in: app)
         disarm.tap()
-        app.buttons["anchor.confirmDisarm"].firstMatch.tap()
+        let confirmDisarm = app.buttons["anchor.confirmDisarm"]
+        XCTAssertTrue(confirmDisarm.waitForExistence(timeout: 5))
+        confirmDisarm.tap()
     }
 
     // MARK: Helpers

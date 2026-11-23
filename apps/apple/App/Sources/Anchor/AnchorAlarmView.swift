@@ -132,21 +132,27 @@ struct AnchorAlarmView: View {
         .sheet(isPresented: $choosingRadius) {
             AnchorRadiusPicker(radius: $radius, unit: UserSettings.display(for: .motorboating).distance)
         }
-        .confirmationDialog("Disarm the anchor alarm?", isPresented: $confirmDisarm, titleVisibility: .visible) {
-            Button("Disarm", role: .destructive) {
-                anchorWatch.disarm()
-                selectedPoint = nil
-                mapReset += 1
-            }
-            .accessibilityIdentifier("anchor.confirmDisarm")
-        } message: {
-            Text("Background anchor monitoring will stop.")
+        .confirmationCard(isPresented: $confirmDisarm) {
+            ConfirmationCard(
+                systemImage: "bell.slash", tint: .red, title: "Disarm the anchor alarm?",
+                message: "Background anchor monitoring stops, including with the screen locked.",
+                top: ConfirmationChoice(title: "Disarm", identifier: "anchor.confirmDisarm", style: .destructive) {
+                    anchorWatch.disarm()
+                    selectedPoint = nil
+                    mapReset += 1
+                },
+                bottom: .backOut("Keep Armed", identifier: "anchor.keepArmed"))
         }
-        .confirmationDialog("The boat is already outside the swing circle", isPresented: $confirmOutside) {
-            Button("Arm anyway", action: arm)
-            Button("Keep adjusting", role: .cancel) {}
-        } message: {
-            Text("The alarm can sound as soon as it confirms the boat is outside.")
+        // Arming here is the risky choice, so the safe one is the filled button on top.
+        .confirmationCard(isPresented: $confirmOutside) {
+            ConfirmationCard(
+                systemImage: "exclamationmark.triangle.fill", tint: .orange,
+                title: "The boat is already outside the circle",
+                message:
+                    "The alarm can sound as soon as it confirms the boat is outside. Move the anchor point or widen the radius first.",
+                top: ConfirmationChoice(title: "Keep Adjusting", identifier: "anchor.keepAdjusting", style: .prominent),
+                bottom: ConfirmationChoice(
+                    title: "Arm Anyway", identifier: "anchor.armAnyway", style: .caution, action: arm))
         }
     }
 
