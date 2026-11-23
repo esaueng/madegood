@@ -47,6 +47,29 @@ extension SessionSyncStatus {
     }
 }
 
+/// Settings' upload totals. A session deleted from the account never uploads again, so it is
+/// neither waiting nor a problem (simulator QA of #186 found it counted as waiting).
+struct SessionSyncCounts: Equatable {
+    var synced = 0
+    var waiting = 0
+    var problems = 0
+    var deletedFromCloud = 0
+
+    init(_ statuses: some Sequence<SessionSyncStatus>) {
+        for status in statuses {
+            if status == .synced {
+                synced += 1
+            } else if status == .failed(.deletedFromCloud) {
+                deletedFromCloud += 1
+            } else if status.isProblem {
+                problems += 1
+            } else {
+                waiting += 1
+            }
+        }
+    }
+}
+
 /// A compact cloud badge for a History row's sport icon; nothing while sync is off.
 struct SessionSyncBadge: View {
     @Environment(SessionSync.self) private var sync: SessionSync?
@@ -200,17 +223,19 @@ struct SessionSyncSection: View {
     @ViewBuilder
     private func summary(_ sync: SessionSync) -> some View {
         let statuses = Array(sync.outbox.statuses.values)
-        let synced = statuses.filter { $0 == .synced }.count
-        let waiting = statuses.count - synced - statuses.filter(\.isProblem).count
-        let problems = statuses.filter(\.isProblem).count
-        LabeledContent("Synced", value: synced.formatted())
+        let counts = SessionSyncCounts(statuses)
+        LabeledContent("Synced", value: counts.synced.formatted())
             .accessibilityIdentifier("sessionSync.syncedCount")
-        if waiting > 0 || sync.preparing {
-            LabeledContent("Waiting to upload", value: waiting.formatted())
+        if counts.waiting > 0 || sync.preparing {
+            LabeledContent("Waiting to upload", value: counts.waiting.formatted())
         }
-        if problems > 0 {
-            LabeledContent("Need attention", value: problems.formatted())
+        if counts.problems > 0 {
+            LabeledContent("Need attention", value: counts.problems.formatted())
                 .accessibilityIdentifier("sessionSync.problemCount")
+        }
+        if counts.deletedFromCloud > 0 {
+            LabeledContent("Deleted from your account", value: counts.deletedFromCloud.formatted())
+                .accessibilityIdentifier("sessionSync.deletedCount")
         }
         if sync.queueUnavailable {
             Text("The upload queue is unavailable.").foregroundStyle(.secondary)
