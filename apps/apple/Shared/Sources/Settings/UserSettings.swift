@@ -177,6 +177,11 @@ enum UserSettings {
         defaults.set(date.timeIntervalSince1970, forKey: Key.lastDate(sport))
     }
 
+    static func forgetLastSession(_ sport: Sport) {
+        defaults.removeObject(forKey: Key.lastDistance(sport))
+        defaults.removeObject(forKey: Key.lastDate(sport))
+    }
+
     /// Debug builds launched with `-resetSettings` start from defaults, so UI tests do not
     /// depend on what an earlier run changed.
     @MainActor
