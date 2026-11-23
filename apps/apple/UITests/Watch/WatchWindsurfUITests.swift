@@ -35,9 +35,7 @@ final class WatchWindsurfUITests: XCTestCase {
         XCTAssertTrue(app.otherElements["page.map"].waitForExistence(timeout: 10))
         goToPage(1, app)
         app.buttons["control.end"].tap()
-        let confirm = app.buttons.matching(
-            NSPredicate(format: "label == 'End' AND identifier != 'control.end'")
-        ).firstMatch
+        let confirm = app.buttons["control.endConfirm"]
         XCTAssertTrue(confirm.waitForExistence(timeout: 10))
         confirm.tap()
 

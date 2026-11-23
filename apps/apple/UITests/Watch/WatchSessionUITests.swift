@@ -75,9 +75,7 @@ final class WatchSessionUITests: XCTestCase {
         XCTAssertTrue(app.buttons["control.end"].waitForExistence(timeout: 10))
 
         app.buttons["control.end"].tap()
-        let confirm = app.buttons.matching(
-            NSPredicate(format: "label == 'End' AND identifier != 'control.end'")
-        ).firstMatch
+        let confirm = app.buttons["control.endConfirm"]
         XCTAssertTrue(confirm.waitForExistence(timeout: 10))
         confirm.tap()
         let ended = Date()
@@ -108,7 +106,7 @@ final class WatchSessionUITests: XCTestCase {
         XCTAssertTrue(clear.waitForExistence(timeout: 10))
         // One tap only asks: a stray press must not lose the way back.
         clear.tap()
-        let clearMark = app.buttons["Clear Mark"]
+        let clearMark = app.buttons["mob.clearConfirm"]
         XCTAssertTrue(clearMark.waitForExistence(timeout: 10))
         attachScreenshot("9 clear mark confirmation")
         clearMark.tap()
