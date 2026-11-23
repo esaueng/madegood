@@ -42,11 +42,6 @@ final class LocalWeather {
         expiresAt == nil ? nil : conditions?.weather
     }
 
-    /// True while the conditions card shows weather (and so needs Apple Weather attribution).
-    var showsConditions: Bool {
-        (status == .loading || status == .ready) && current != nil
-    }
-
     private init() {
         choice = defaults.object(forKey: UserSettings.Key.localWeather) as? Bool
         conditions = PhoneWeather.Conditions.load(from: .shared, now: .now)

@@ -244,7 +244,7 @@ private struct StartView: View {
         let latest = latest
         let sports = store.startList(extraUse: latest.mapValues { $0.startedAt.timeIntervalSince1970 })
         List {
-            StartHeader(showsWeatherAttribution: weather.isEnabled && weather.showsConditions)
+            StartHeader()
                 .listRowInsets(EdgeInsets(top: 0, leading: 4, bottom: 2, trailing: 0))
                 .listRowSeparator(.hidden)
                 .listRowBackground(Color.clear)
@@ -451,24 +451,7 @@ private struct StartView: View {
 
 /// The logo and a two-tone wordmark over today's date, in place of a plain large title.
 private struct StartHeader: View {
-    /// True while the conditions card shows weather, which needs the Apple Weather mark
-    /// beside it. It sits at the header's trailing edge, just above the card.
-    let showsWeatherAttribution: Bool
-
     var body: some View {
-        HStack(alignment: .lastTextBaseline, spacing: 10) {
-            brand
-            Spacer(minLength: 8)
-            if showsWeatherAttribution, let attribution = AppleWeatherAttribution.available {
-                AppleWeatherAttributionLink(attribution: attribution)
-                    // Borderless, so only the mark opens the legal page, not the whole row.
-                    .buttonStyle(.borderless)
-                    .padding(.trailing, 8)
-            }
-        }
-    }
-
-    private var brand: some View {
         HStack(spacing: 10) {
             LogoMark(size: 36)
             VStack(alignment: .leading, spacing: 0) {

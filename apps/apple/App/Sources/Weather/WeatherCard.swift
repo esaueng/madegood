@@ -30,9 +30,21 @@ struct WeatherCard: View {
                     Task { await weather.refresh(force: true) }
                 }
             case .loading, .ready:
-                // The Apple Weather mark sits in the start header, right above the card.
                 if let now = weather.current {
                     ConditionsCard(weather: now, sports: sports)
+                        // Inside the card, so it scrolls with the weather it credits.
+                        .overlay(alignment: .bottomTrailing) {
+                            if let attribution = AppleWeatherAttribution.available {
+                                AppleWeatherAttributionLink(attribution: attribution)
+                                    .environment(\.colorScheme, .dark)
+                                    // The same lift as the card's words, over a bright sea.
+                                    .shadow(color: .black.opacity(0.3), radius: 2, y: 1)
+                                    // Borderless, so only the mark opens the legal page, not the whole row.
+                                    .buttonStyle(.borderless)
+                                    .padding(.trailing, 12)
+                                    .padding(.bottom, 8)
+                            }
+                        }
                 } else {
                     notice("Finding conditions where you are…", symbol: "location", action: nil, identifier: nil) {}
                 }
