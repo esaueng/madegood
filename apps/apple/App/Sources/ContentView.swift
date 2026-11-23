@@ -1254,11 +1254,13 @@ private struct LiveControls: View {
         return VStack(alignment: .leading, spacing: 14) {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Paused").font(.title3.weight(.bold))
+                // Named, so it isn't read as a second elapsed time.
                 Text(
-                    "\(sport.displayName) · \(display.distance(metrics?.distance ?? 0)) · \(Formatting.elapsed(metrics?.movingTime ?? 0))"
+                    "\(sport.displayName) · \(display.distance(metrics?.distance ?? 0)) · \(Formatting.elapsed(metrics?.movingTime ?? 0)) moving"
                 )
                 .font(.subheadline.monospacedDigit())
                 .foregroundStyle(.secondary)
+                .accessibilityIdentifier("paused.summary")
             }
             // Side by side, or stacked when large text doesn't fit on one line.
             ViewThatFits(in: .horizontal) {
