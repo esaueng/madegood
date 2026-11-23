@@ -87,6 +87,7 @@ final class SessionOutbox {
     private let api: SessionAPI
     private let now: () -> Date
     private let networkAvailable: @MainActor (SessionNetworkPolicy) -> Bool
+    private let isOnPhone: @MainActor (UUID) -> Bool
     private var journal: Journal?
     private var active: (id: UUID, generation: UUID, step: SessionSyncStep)?
     @ObservationIgnored private var draining = false
@@ -94,15 +95,19 @@ final class SessionOutbox {
     /// `networkAvailable` reports whether the current network path can carry an upload
     /// under the policy (NWPathMonitor in the app). Connection errors count as offline only
     /// when it says no; otherwise they use up attempts like any transient failure.
+    /// `isOnPhone` reports whether a session's recording is still in History: one deleted
+    /// since it was queued is dropped before anything more of it is sent.
     init(
         root: URL, account: VoyageAccount, api: SessionAPI, now: @escaping () -> Date = { .now },
-        networkAvailable: @escaping @MainActor (SessionNetworkPolicy) -> Bool = { _ in true }
+        networkAvailable: @escaping @MainActor (SessionNetworkPolicy) -> Bool = { _ in true },
+        isOnPhone: @escaping @MainActor (UUID) -> Bool = { _ in true }
     ) {
         self.root = root
         self.account = account
         self.api = api
         self.now = now
         self.networkAvailable = networkAvailable
+        self.isOnPhone = isOnPhone
     }
 
     // MARK: Queue
@@ -269,6 +274,11 @@ final class SessionOutbox {
             guard let entry = journal.entries.first(where: isDue) else {
                 return journal.entries.filter { !$0.trackSent && $0.failure == nil }.compactMap(\.retryAt).min()
             }
+            // Deleted on the phone since it was queued, before the library's scan dropped it.
+            guard isOnPhone(entry.id) else {
+                try forget([entry.id], for: binding)
+                continue
+            }
             let step: SessionSyncStep = entry.metadataSent ? .track : .metadata
             active = (entry.id, entry.generation, step)
             var outcome: Result<Void, Error> = .success(())
@@ -380,7 +390,7 @@ final class SessionOutbox {
             let entry = journal.entries.first(where: { $0.id == parsed.session })
         else { return false }
         return entry.generation == parsed.generation && entry.metadataSent && !entry.trackSent
-            && entry.failure == nil
+            && entry.failure == nil && isOnPhone(parsed.session)
     }
 
     private func isDue(_ entry: Entry) -> Bool {

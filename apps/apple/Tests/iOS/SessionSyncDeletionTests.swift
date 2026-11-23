@@ -19,7 +19,9 @@ final class SessionSyncDeletionTests: XCTestCase {
         let suite = "SessionSyncDeletionTests-" + UUID().uuidString
         sync = SessionSync(
             apiRoot: URL(string: "https://synthetic.invalid/api")!, root: root, transport: transport,
-            store: MemoryCredentials(), preferences: UserDefaults(suiteName: suite)!)
+            store: MemoryCredentials(), preferences: UserDefaults(suiteName: suite)!,
+            // Its sessions are queued directly, with no recordings on disk.
+            isOnPhone: { _ in true })
         sync.launch()
         try await sync.account.signIn(identityToken: "synthetic-identity", displayName: nil)
         await sync.accountDidChange()

@@ -63,9 +63,16 @@ final class SessionSync {
 
     static let wifiOnlyKey = "sessionSync.wifiOnly"
 
+    /// Whether the session's recording is still in History (not deleted, nor in Recently
+    /// Deleted): its folder is named by its ID.
+    static func isInHistory(_ id: UUID) -> Bool {
+        FileManager.default.fileExists(atPath: RecordingStore.folder(for: id).path)
+    }
+
     init(
         apiRoot: URL, root: URL, transport: any SessionSyncTransport, store: any VoyageCredentialStore,
-        preferences: UserDefaults = .standard, isDemo: Bool = false
+        preferences: UserDefaults = .standard, isDemo: Bool = false,
+        isOnPhone: @escaping @MainActor (UUID) -> Bool = SessionSync.isInHistory
     ) {
         let network = NetworkState()
         // Consent is recorded before credentials change (write-ahead).
@@ -78,7 +85,8 @@ final class SessionSync {
         let api = SessionAPI(baseURL: apiRoot, transport: transport)
         self.api = api
         outbox = SessionOutbox(
-            root: root, account: account, api: api, networkAvailable: { network.canUpload(under: $0) })
+            root: root, account: account, api: api, networkAvailable: { network.canUpload(under: $0) },
+            isOnPhone: isOnPhone)
         self.network = network
         self.transport = transport
         self.preferences = preferences
