@@ -5,9 +5,10 @@ name: CI
 # branch protection can require: it passes when every job that ran passed and treats
 # skipped jobs as fine.
 #
-# Pull requests run only the fast gates. The slow or flaky macOS jobs (WaterKit tests on
-# macOS, iOS + watchOS UI tests) run after merge on main, or on demand with Run
-# workflow on a branch, and the UI tests do not gate `CI`.
+# Pull requests run only the fast gates, including the iPhone app's unit tests in the
+# Apple build job. The slow or flaky macOS jobs (WaterKit tests on macOS, iOS + watchOS
+# UI tests) run after merge on main, or on demand with Run workflow on a branch, and the
+# UI tests do not gate `CI`.
 
 on:
   pull_request:
@@ -133,7 +134,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.apple == 'true'
     runs-on: xcode-27
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
       TUIST_DISABLE_ANALYTICS: "1"
@@ -198,6 +199,29 @@ jobs:
       - name: Sync core tests
         run: swift test --package-path .
 
+      # The iPhone app's hosted unit tests (Tests/iOS): metrics, settings, transfers and
+      # the regression tests for app fixes. They need a booted simulator but no UI.
+      - name: Pick simulator for unit tests
+        id: simulator
+        run: |
+          udid=$(../../scripts/pick-simulator iOS iPhone)
+          echo "udid=$udid" >> "$GITHUB_OUTPUT"
+          xcrun simctl bootstatus "$udid" -b
+
+      - name: iPhone unit tests
+        timeout-minutes: 20
+        env:
+          SIMULATOR_UDID: ${{ steps.simulator.outputs.udid }}
+        run: |
+          set -o pipefail
+          xcodebuild test -workspace MadeGood.xcworkspace -scheme MadeGood \
+            -destination "id=$SIMULATOR_UDID" -only-testing:MadeGoodTests \
+            -parallel-testing-enabled NO \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" -resultBundlePath "$RUNNER_TEMP/UnitTests.xcresult" \
+            CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual \
+            2>&1 | tee "$RUNNER_TEMP/unit-tests.log" \
+            | grep --line-buffered -E '(error|warning):|Test Case .* failed|Executed|\*\* TEST'
+
       - name: Upload build logs
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -206,6 +230,8 @@ jobs:
           path: |
             ${{ runner.temp }}/xcodebuild.log
             ${{ runner.temp }}/MadeGood.xcresult
+            ${{ runner.temp }}/unit-tests.log
+            ${{ runner.temp }}/UnitTests.xcresult
           retention-days: 7
 
   # Each UI job publishes its own results. None gates `CI`.
