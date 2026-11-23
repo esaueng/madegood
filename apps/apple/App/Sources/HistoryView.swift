@@ -79,7 +79,10 @@ struct HistoryView: View {
                                 ) { pending in
                                     Button("Delete", role: .destructive) { delete(pending) }
                                 } message: { _ in
-                                    Text("The recording is removed from this iPhone.")
+                                    // As the session detail's confirmation says it.
+                                    Text(
+                                        "It moves to Recently Deleted in History, where you can recover it for \(RecentlyDeleted.retentionDays) days before it's removed from this iPhone."
+                                    )
                                 }
                         }
                     } header: {

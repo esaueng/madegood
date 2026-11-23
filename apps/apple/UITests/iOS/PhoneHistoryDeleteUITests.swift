@@ -28,6 +28,11 @@ final class PhoneHistoryDeleteUITests: XCTestCase {
             .matching(NSPredicate(format: "label == 'Delete' AND identifier != 'session.row.delete'")).firstMatch
         XCTAssertTrue(confirm.waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["Delete this session?"].exists)
+        // Since #191 a deleted session waits in Recently Deleted; the dialog says so.
+        let recoverable = app.staticTexts.matching(
+            NSPredicate(format: "label BEGINSWITH %@", "It moves to Recently Deleted")
+        ).firstMatch
+        XCTAssertTrue(recoverable.exists)
         attachScreenshot("history delete confirmation")
         dismissConfirmation(in: app)
         let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: confirm)
