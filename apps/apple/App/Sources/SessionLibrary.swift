@@ -41,7 +41,20 @@ final class SessionLibrary {
         }
     }
 
+    /// A session in Recently Deleted, with the name the user gave it.
+    struct DeletedItem: Identifiable, Hashable {
+        var id: String { entry.id }
+        var entry: RecentlyDeleted.Entry
+        var details = SessionDetails()
+
+        var title: String {
+            details.name.isEmpty ? entry.meta?.sport.displayName ?? "Incomplete recording" : details.name
+        }
+    }
+
     private(set) var items: [Item] = []
+    /// Deleted sessions that can still be recovered, most recently deleted first.
+    private(set) var deleted: [DeletedItem] = []
     /// Posted on the main actor after a trim is saved or removed.
     static let didChangeTrim = Notification.Name("SessionLibrary.didChangeTrim")
     enum SavedTrim: Hashable, Sendable {
@@ -127,6 +140,16 @@ final class SessionLibrary {
     private var inFlight: Set<Source> = []
 
     func reload() {
+        Self.purgeExpired()
+        deleted = RecentlyDeleted.shared.list().map { entry in
+            var item = DeletedItem(entry: entry)
+            if let sessionId = entry.meta?.sessionId,
+                case .success(let details?) = Self.loadDetails(sessionId: sessionId)
+            {
+                item.details = details
+            }
+            return item
+        }
         let entries = RecordingStore.list()
         let folders = Set(entries.map(\.folder))
         cache = cache.filter { folders.contains($0.key) }
@@ -191,24 +214,20 @@ final class SessionLibrary {
         }
     }
 
-    /// Deletes a recording, unless its files changed since `item` was read (a file arrived
-    /// from the watch): the user saw something else. The watch deletes its copy once the
-    /// phone holds all of it, so deleting a "Receiving…" row that just completed would lose
-    /// the recording on both devices.
+    /// Moves a recording to Recently Deleted, unless its files changed since `item` was read
+    /// (a file arrived from the watch): the user saw something else. The watch deletes its
+    /// copy once the phone holds all of it, so deleting a "Receiving…" row that just
+    /// completed would lose the recording on both devices once it expires. Its name, notes
+    /// and trim stay until it is deleted for good.
     func delete(_ item: Item) throws {
         // Under the transfer's lock, so a file from the watch can't be stored (and the
-        // recording acknowledged as complete) between this check and the delete.
-        let sessionId: UUID?
+        // recording acknowledged as complete) between this check and the move.
         do {
-            sessionId = try RecordingTransfer.storageLock.withLock { () throws -> UUID? in
+            try RecordingTransfer.storageLock.withLock {
                 guard RawSessionReader.revision(of: item.entry.folder) == item.entry.revision else {
                     throw EditError.recordingChanged
                 }
-                let sessionId =
-                    (try? RawSessionReader.readMeta(folder: item.entry.folder))?.sessionId
-                    ?? UUID(uuidString: item.entry.folder.lastPathComponent)
-                try RecordingStore.delete(item.entry)
-                return sessionId
+                try RecentlyDeleted.shared.moveIn(item.entry.folder)
             }
         } catch EditError.recordingChanged {
             reload()
@@ -216,15 +235,61 @@ final class SessionLibrary {
         }
         // Its prepared copies for sharing go with it.
         ZipExport.removePrepared(for: item.entry.folder)
-        defer {
-            cache[item.entry.folder] = nil
-            reload()
+        cache[item.entry.folder] = nil
+        reload()
+    }
+
+    /// Puts a deleted session back in History. Throws `RecentlyDeleted.RestoreError` when
+    /// History already has a recording with its ID (the watch sent it again).
+    func recover(_ item: DeletedItem) throws {
+        defer { reload() }
+        // Under the transfer's lock, so a file from the watch can't start the same folder.
+        try RecordingTransfer.storageLock.withLock {
+            try RecentlyDeleted.shared.restore(item.entry, to: RecordingStore.root)
         }
-        if let sessionId, !FileManager.default.fileExists(atPath: item.entry.folder.path) {
-            // Try both, so a failed trim removal doesn't leave the name and notes behind.
-            let details = Result { try Self.detailsStore.remove(sessionId: sessionId) }
-            try Self.trimStore.restoreOriginal(sessionId: sessionId)
-            try details.get()
+    }
+
+    /// Deletes a session from Recently Deleted for good, with its name, notes and trim.
+    func deletePermanently(_ item: DeletedItem) throws {
+        defer { reload() }
+        try Self.removePermanently(item.entry)
+    }
+
+    /// Removes deleted sessions whose 30 days are up. Safe off the main actor; the app
+    /// calls it at launch and on every reload.
+    nonisolated static func purgeExpired(now: Date = .now) {
+        let store = RecentlyDeleted.shared
+        store.removeAbandoned()
+        for entry in store.expired(now: now) {
+            do {
+                try removePermanently(entry)
+            } catch {
+                print("SessionLibrary: could not remove an expired deleted session: \(error)")
+            }
+        }
+    }
+
+    /// Removes the name, notes and trim unless another copy of the session (back in
+    /// History, or deleted again) still uses them, then the recording. In that order, so a
+    /// stop in between leaves the entry to retry, never files no entry points to.
+    private nonisolated static func removePermanently(_ entry: RecentlyDeleted.Entry) throws {
+        // Under the transfer's lock, as `updateDetails` and `recover` check History under it.
+        try RecordingTransfer.storageLock.withLock {
+            let store = RecentlyDeleted.shared
+            if let sessionId = entry.meta?.sessionId ?? UUID(uuidString: entry.folderName),
+                !RecordingStore.list().contains(where: {
+                    $0.meta?.sessionId == sessionId || $0.folder.lastPathComponent == entry.folderName
+                }),
+                !store.list().contains(where: {
+                    $0.id != entry.id && ($0.meta?.sessionId == sessionId || $0.folderName == entry.folderName)
+                })
+            {
+                // Try both, so a failed trim removal doesn't leave the name and notes behind.
+                let details = Result { try detailsStore.remove(sessionId: sessionId) }
+                try trimStore.restoreOriginal(sessionId: sessionId)
+                try details.get()
+            }
+            try store.remove(entry)
         }
     }
 

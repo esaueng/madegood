@@ -135,11 +135,13 @@ struct SessionDetailView: View {
                     try library.delete(item)
                     dismiss()
                 } catch {
-                    operationError = "Couldn't delete this session or its local trim."
+                    operationError = "Couldn't delete this session."
                 }
             }
         } message: {
-            Text("The recording is removed from this iPhone.")
+            Text(
+                "It moves to Recently Deleted in History, where you can recover it for \(RecentlyDeleted.retentionDays) days before it's removed from this iPhone."
+            )
         }
         .alert(
             "Session",
