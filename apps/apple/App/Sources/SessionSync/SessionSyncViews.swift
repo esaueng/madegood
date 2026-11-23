@@ -48,7 +48,8 @@ extension SessionSyncStatus {
 }
 
 /// Settings' upload totals. A session deleted from the account never uploads again, so it is
-/// neither waiting nor a problem (simulator QA of #186 found it counted as waiting).
+/// neither waiting nor a problem (simulator QA of #186 found it counted as waiting). It has no
+/// row: the outbox drops such entries on its next rescan, and its detail says so instead.
 struct SessionSyncCounts: Equatable {
     var synced = 0
     var waiting = 0
@@ -232,10 +233,6 @@ struct SessionSyncSection: View {
         if counts.problems > 0 {
             LabeledContent("Need attention", value: counts.problems.formatted())
                 .accessibilityIdentifier("sessionSync.problemCount")
-        }
-        if counts.deletedFromCloud > 0 {
-            LabeledContent("Deleted from your account", value: counts.deletedFromCloud.formatted())
-                .accessibilityIdentifier("sessionSync.deletedCount")
         }
         if sync.queueUnavailable {
             Text("The upload queue is unavailable.").foregroundStyle(.secondary)
