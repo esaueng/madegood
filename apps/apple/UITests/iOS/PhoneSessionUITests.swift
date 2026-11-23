@@ -53,6 +53,10 @@ final class PhoneSessionUITests: XCTestCase {
         XCTAssertEqual(pauseBadge.label, "Paused")
         XCTAssertTrue(app.buttons["control.save"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.buttons["control.lap"].exists)
+        // The pause card's time is moving time, and says so (simulator QA of #186).
+        let summary = app.staticTexts["paused.summary"]
+        XCTAssertTrue(summary.waitForExistence(timeout: 5))
+        XCTAssertTrue(summary.label.hasSuffix(" moving"), summary.label)
         attachScreenshot("3 paused")
         app.buttons["control.pause"].tap()
         XCTAssertTrue(pauseBadge.waitForNonExistence(timeout: 10))
