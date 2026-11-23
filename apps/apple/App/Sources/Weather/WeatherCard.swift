@@ -30,14 +30,9 @@ struct WeatherCard: View {
                     Task { await weather.refresh(force: true) }
                 }
             case .loading, .ready:
+                // The Apple Weather mark sits in the start header, right above the card.
                 if let now = weather.current {
-                    VStack(alignment: .trailing, spacing: 4) {
-                        ConditionsCard(weather: now, sports: sports)
-                        if let attribution = AppleWeatherAttribution.available {
-                            AppleWeatherAttributionLink(attribution: attribution)
-                                .padding(.trailing, 8)
-                        }
-                    }
+                    ConditionsCard(weather: now, sports: sports)
                 } else {
                     notice("Finding conditions where you are…", symbol: "location", action: nil, identifier: nil) {}
                 }
