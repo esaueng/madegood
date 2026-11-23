@@ -70,12 +70,15 @@ struct HistoryView: View {
                                         .accessibilityIdentifier("session.row.delete")
                                 }
                                 // On the row, so the popover points at the session it deletes.
+                                // Deletes the item as it was when Delete was tapped, so the
+                                // library's revision check refuses a recording that changed since
+                                // (a watch transfer that completed with the dialog open).
                                 .confirmationDialog(
                                     "Delete this session?", isPresented: confirmingDelete(of: item),
-                                    titleVisibility: .visible
-                                ) {
-                                    Button("Delete", role: .destructive) { delete(item) }
-                                } message: {
+                                    titleVisibility: .visible, presenting: pendingDelete
+                                ) { pending in
+                                    Button("Delete", role: .destructive) { delete(pending) }
+                                } message: { _ in
                                     Text("The recording is removed from this iPhone.")
                                 }
                         }
