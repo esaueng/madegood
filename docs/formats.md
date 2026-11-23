@@ -444,7 +444,25 @@ trims, outside the recording folders:
 The file stays on the device. It is not part of the raw recording, track v1, uploads,
 shared copies or raw-recording shares. A GPX export uses the name, when there is one,
 for its `<metadata>` and `<trk>` names in place of the sport's. Deleting a session
-removes its file.
+keeps its file while the session is in Recently Deleted; it is removed when the session
+is deleted for good.
+
+## Recently Deleted (iPhone)
+
+Deleting a session on the iPhone moves its recording folder to an app-owned
+`RecentlyDeleted` directory in Application Support (not Documents, so the Files app
+never lists it). Each deleted recording gets its own folder,
+`RecentlyDeleted/<random-uuid>/`, holding:
+
+- `info.json`: `{"version":1,"folder":"<recording folder name>","deletedAt":<seconds since 1970>}`,
+  written before the recording moves in.
+- `recording/`: the recording folder, moved whole and unchanged.
+
+Recovering moves `recording/` back to `Recordings/<folder>` unless History already has
+that folder. A recording is deleted for good 30 days after `deletedAt`, or sooner when
+the user chooses; its name, notes and trim go with it unless another copy of the
+session still uses them. A folder with an unknown `version` is left alone. Deleted
+recordings are not uploaded or exported.
 
 ---
 

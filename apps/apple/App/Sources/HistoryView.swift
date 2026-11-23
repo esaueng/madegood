@@ -60,6 +60,20 @@ struct HistoryView: View {
                         MonthHeader(title: month.title, items: month.items, display: display)
                     }
                 }
+                if !library.deleted.isEmpty {
+                    Section {
+                        NavigationLink {
+                            RecentlyDeletedView(library: library)
+                        } label: {
+                            LabeledContent {
+                                Text("\(library.deleted.count)")
+                            } label: {
+                                Label("Recently Deleted", systemImage: "trash")
+                            }
+                        }
+                        .accessibilityIdentifier("history.recentlyDeleted")
+                    }
+                }
             }
             .listSectionSpacing(8)
             .navigationTitle("History")
@@ -81,7 +95,7 @@ struct HistoryView: View {
                     dates = .custom(start: start, end: end)
                 }
             }
-            .alert("Couldn't delete the session or its local trim.", isPresented: $deleteFailed) {
+            .alert("Couldn't delete the session.", isPresented: $deleteFailed) {
                 Button("OK") {}
             }
             .refreshable { library.reload() }
