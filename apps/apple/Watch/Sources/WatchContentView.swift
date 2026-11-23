@@ -51,17 +51,7 @@ struct WatchContentView: View {
                 }
             }
         }
-        #if DEBUG
-            // UI tests can't press the Action button: `-uiTestActionButton` adds a stand-in.
-            .overlay(alignment: .topLeading) {
-                if UserDefaults.standard.bool(forKey: "uiTestActionButton") {
-                    Button("Action") { SessionController.shared.actionButtonPressed() }
-                        .accessibilityIdentifier("debug.actionButton")
-                        .font(.caption2)
-                        .buttonStyle(.plain)
-                }
-            }
-        #endif
+        .uiTestHooks()
         .sheet(item: $summary) { summary in
             SummaryView(summary: summary)
         }
@@ -76,6 +66,13 @@ struct WatchContentView: View {
                 reload()
             }
             reload()
+            #if DEBUG
+                // A press with no position to mark, for UI tests of a waiting press (with
+                // `-demoLocationIssue`, the demo gives no position outside a session).
+                if ProcessInfo.processInfo.arguments.contains("-uiTestManOverboardPress") {
+                    _ = SessionController.shared.markManOverboard()
+                }
+            #endif
         }
         .onReceive(NotificationCenter.default.publisher(for: RecordingTransfer.didDeliverRecording)) { _ in
             reload()
@@ -870,7 +867,14 @@ private struct MapPage: View {
 private struct ControlsPage: View {
     let recorder: SessionRecorder
     let showManOverboard: () -> Void
-    @State private var confirmEnd = false
+    @State private var confirmEnd: EndRequest?
+    @State private var endSpan: ClosedRange<CGFloat>?
+
+    private struct EndRequest: Identifiable {
+        /// Where End was: the confirmation puts Keep Going there.
+        let opener: ClosedRange<CGFloat>?
+        let id = UUID()
+    }
 
     var body: some View {
         Grid(horizontalSpacing: 6, verticalSpacing: 6) {
@@ -901,15 +905,23 @@ private struct ControlsPage: View {
                     recorder.mark()
                     WKInterfaceDevice.current().play(.click)
                 }
-                ControlButton(title: "End", symbol: "xmark", tint: .red) { confirmEnd = true }
+                ControlButton(title: "End", symbol: "xmark", tint: .red) { confirmEnd = EndRequest(opener: endSpan) }
+                    .reportsOpenerSpan($endSpan)
             }
         }
         // Lap and the right-hand column would otherwise sit under the page dots.
         .clearOfPageIndicator()
-        .confirmationDialog("End session?", isPresented: $confirmEnd) {
-            Button("End", role: .destructive) {
-                Task { await recorder.stop() }
-            }
+        .watchConfirmation(item: $confirmEnd) { request in
+            WatchConfirmation(
+                symbol: "stop.fill", title: "End session?", message: nil,
+                confirm: .init(title: "End", id: "control.endConfirm"),
+                keep: .init(title: "Keep Going", id: "control.endKeep"),
+                opener: request.opener,
+                onConfirm: {
+                    confirmEnd = nil
+                    Task { await recorder.stop() }
+                },
+                onKeep: { confirmEnd = nil })
         }
     }
 }
@@ -922,9 +934,17 @@ struct ManOverboardPage: View {
     let sport: Sport
     /// Shown outside a session: lets the user record again without clearing the mark.
     var newSession: (() -> AnyView)?
-    @State private var confirmClear = false
-    /// The mark (or waiting press) shown when Clear was tapped: what the confirmation clears.
-    @State private var clearing: ManOverboard.ClearTarget?
+    /// The mark (or waiting press) shown when Clear was tapped: what the confirmation
+    /// clears. Set while the confirmation is open.
+    @State private var clearing: Clearing?
+    @State private var clearSpan: ClosedRange<CGFloat>?
+
+    private struct Clearing: Identifiable {
+        let target: ManOverboard.ClearTarget
+        /// Where Clear was: the confirmation puts its safe choice there.
+        let opener: ClosedRange<CGFloat>?
+        let id = UUID()
+    }
 
     var body: some View {
         let display = UserSettings.display(for: sport)
@@ -984,20 +1004,47 @@ struct ManOverboardPage: View {
                             .accessibilityIdentifier("mob.newSession")
                     }
                     // A wet sleeve or a wave can press it: the mark is the way back, so ask.
-                    Button("Clear", role: .destructive) {
-                        clearing = manOverboard.clearTarget
-                        confirmClear = true
+                    Button(isWaitingPress(manOverboard.clearTarget) ? "Cancel Press" : "Clear", role: .destructive) {
+                        clearing = manOverboard.clearTarget.map { Clearing(target: $0, opener: clearSpan) }
                     }
                     .accessibilityIdentifier("mob.clear")
+                    .reportsOpenerSpan($clearSpan)
                 }
             }
         }
-        .confirmationDialog("Clear the man-overboard mark?", isPresented: $confirmClear) {
-            Button("Clear Mark", role: .destructive) { manOverboard.clear(confirmed: clearing) }
-                .accessibilityIdentifier("mob.clearConfirm")
-        } message: {
-            Text("The way back to it is gone once it's cleared.")
+        .watchConfirmation(item: $clearing) { clearing in
+            if isWaitingPress(clearing.target) {
+                WatchConfirmation(
+                    symbol: "location.slash", title: "Cancel this MOB press?",
+                    message: "No position yet, so no mark is set.",
+                    confirm: .init(title: "Cancel Press", id: "mob.clearConfirm"),
+                    keep: .init(title: "Keep Waiting", id: "mob.clearKeep"),
+                    opener: clearing.opener, onConfirm: confirmClearing, onKeep: { self.clearing = nil })
+            } else {
+                WatchConfirmation(
+                    symbol: "mappin.slash", title: "Clear this MOB mark?",
+                    message: "The arrow stops showing the way back to it."
+                        + (manOverboard.marks.count > 1 ? " The next mark becomes the target." : ""),
+                    confirm: .init(title: "Clear Mark", id: "mob.clearConfirm"),
+                    keep: .init(title: "Keep Mark", id: "mob.clearKeep"),
+                    opener: clearing.opener, onConfirm: confirmClearing, onKeep: { self.clearing = nil })
+            }
         }
+        // A new press or mark changes what Clear would remove: close the question rather
+        // than leave it over the new arrow, where confirming would do nothing.
+        .onChange(of: manOverboard.clearTarget) { _, target in
+            if let clearing, target != clearing.target { self.clearing = nil }
+        }
+    }
+
+    private func confirmClearing() {
+        let target = clearing?.target
+        clearing = nil
+        manOverboard.clear(confirmed: target)
+    }
+
+    private func isWaitingPress(_ target: ManOverboard.ClearTarget?) -> Bool {
+        if case .waitingPress = target { true } else { false }
     }
 }
 

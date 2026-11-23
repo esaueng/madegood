@@ -30,9 +30,7 @@ extension XCTestCase {
         let end = app.buttons["control.end"]
         XCTAssertTrue(end.waitForExistence(timeout: 10))
         end.tap()
-        let confirm = app.buttons.matching(
-            NSPredicate(format: "label == 'End' AND identifier != 'control.end'")
-        ).firstMatch
+        let confirm = app.buttons["control.endConfirm"]
         XCTAssertTrue(confirm.waitForExistence(timeout: 10))
         confirm.tap()
         let done = app.buttons["summary.done"]
@@ -45,7 +43,7 @@ extension XCTestCase {
         let clear = app.buttons["mob.clear"]
         XCTAssertTrue(clear.waitForExistence(timeout: 10), file: file, line: line)
         clear.tap()
-        let confirm = app.buttons["Clear Mark"]
+        let confirm = app.buttons["mob.clearConfirm"]
         XCTAssertTrue(confirm.waitForExistence(timeout: 10), file: file, line: line)
         confirm.tap()
     }
