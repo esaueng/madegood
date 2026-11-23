@@ -139,6 +139,11 @@ struct StartLinePanel: View {
 /// unknown (no GPS at the gun). Shown on the session screens until the boat is back
 /// behind the line, the user dismisses it, or it times out.
 struct OCSBanner: View {
+    /// Coral for a start over or near the line, gray when the start could not be checked.
+    static func fill(for check: StartCheck) -> Color {
+        check == .unknown ? StartLineBanner.gray : Theme.coral
+    }
+
     let warning: OCSWarning
     let display: LiveDisplay
     var compact = false
@@ -179,11 +184,9 @@ struct OCSBanner: View {
             .accessibilityLabel("Dismiss start warning")
             .accessibilityIdentifier("ocs.dismiss")
         }
-        .foregroundStyle(.white)
+        .foregroundStyle(StartLineBanner.ink)
         .padding(compact ? 8 : 12)
-        .background(
-            warning.check == .unknown ? Color.gray : Theme.coral, in: .rect(cornerRadius: compact ? 12 : 16)
-        )
+        .background(Self.fill(for: warning.check), in: .rect(cornerRadius: compact ? 12 : 16))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("ocs.banner")
     }
@@ -209,10 +212,17 @@ struct PingFailedBanner: View {
             .accessibilityLabel("Dismiss")
             .accessibilityIdentifier("pingFailed.dismiss")
         }
-        .foregroundStyle(.white)
+        .foregroundStyle(StartLineBanner.ink)
         .padding(compact ? 8 : 12)
-        .background(Color.gray, in: .rect(cornerRadius: compact ? 12 : 16))
+        .background(StartLineBanner.gray, in: .rect(cornerRadius: compact ? 12 : 16))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("pingFailed.banner")
     }
+}
+
+/// The start warnings' colors. Dark text: white on coral (2.8:1) and on gray fell short of
+/// the 4.5:1 that small text needs (simulator QA of #186).
+enum StartLineBanner {
+    static let ink = Color.black
+    static let gray = Color(white: 0.56)
 }
