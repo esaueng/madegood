@@ -868,11 +868,11 @@ private struct ControlsPage: View {
     let recorder: SessionRecorder
     let showManOverboard: () -> Void
     @State private var confirmEnd: EndRequest?
-    @State private var endY: CGFloat?
+    @State private var endSpan: ClosedRange<CGFloat>?
 
     private struct EndRequest: Identifiable {
         /// Where End was: the confirmation puts Keep Going there.
-        let fingerY: CGFloat?
+        let opener: ClosedRange<CGFloat>?
         let id = UUID()
     }
 
@@ -905,8 +905,8 @@ private struct ControlsPage: View {
                     recorder.mark()
                     WKInterfaceDevice.current().play(.click)
                 }
-                ControlButton(title: "End", symbol: "xmark", tint: .red) { confirmEnd = EndRequest(fingerY: endY) }
-                    .reportsFingerY($endY)
+                ControlButton(title: "End", symbol: "xmark", tint: .red) { confirmEnd = EndRequest(opener: endSpan) }
+                    .reportsOpenerSpan($endSpan)
             }
         }
         // Lap and the right-hand column would otherwise sit under the page dots.
@@ -916,7 +916,7 @@ private struct ControlsPage: View {
                 symbol: "stop.fill", title: "End session?", message: nil,
                 confirm: .init(title: "End", id: "control.endConfirm"),
                 keep: .init(title: "Keep Going", id: "control.endKeep"),
-                fingerY: request.fingerY,
+                opener: request.opener,
                 onConfirm: {
                     confirmEnd = nil
                     Task { await recorder.stop() }
@@ -937,12 +937,12 @@ struct ManOverboardPage: View {
     /// The mark (or waiting press) shown when Clear was tapped: what the confirmation
     /// clears. Set while the confirmation is open.
     @State private var clearing: Clearing?
-    @State private var clearY: CGFloat?
+    @State private var clearSpan: ClosedRange<CGFloat>?
 
     private struct Clearing: Identifiable {
         let target: ManOverboard.ClearTarget
         /// Where Clear was: the confirmation puts its safe choice there.
-        let fingerY: CGFloat?
+        let opener: ClosedRange<CGFloat>?
         let id = UUID()
     }
 
@@ -1005,10 +1005,10 @@ struct ManOverboardPage: View {
                     }
                     // A wet sleeve or a wave can press it: the mark is the way back, so ask.
                     Button(isWaitingPress(manOverboard.clearTarget) ? "Cancel Press" : "Clear", role: .destructive) {
-                        clearing = manOverboard.clearTarget.map { Clearing(target: $0, fingerY: clearY) }
+                        clearing = manOverboard.clearTarget.map { Clearing(target: $0, opener: clearSpan) }
                     }
                     .accessibilityIdentifier("mob.clear")
-                    .reportsFingerY($clearY)
+                    .reportsOpenerSpan($clearSpan)
                 }
             }
         }
@@ -1019,7 +1019,7 @@ struct ManOverboardPage: View {
                     message: "No position yet, so no mark is set.",
                     confirm: .init(title: "Cancel Press", id: "mob.clearConfirm"),
                     keep: .init(title: "Keep Waiting", id: "mob.clearKeep"),
-                    fingerY: clearing.fingerY, onConfirm: confirmClearing, onKeep: { self.clearing = nil })
+                    opener: clearing.opener, onConfirm: confirmClearing, onKeep: { self.clearing = nil })
             } else {
                 WatchConfirmation(
                     symbol: "mappin.slash", title: "Clear this MOB mark?",
@@ -1027,7 +1027,7 @@ struct ManOverboardPage: View {
                         + (manOverboard.marks.count > 1 ? " The next mark becomes the target." : ""),
                     confirm: .init(title: "Clear Mark", id: "mob.clearConfirm"),
                     keep: .init(title: "Keep Mark", id: "mob.clearKeep"),
-                    fingerY: clearing.fingerY, onConfirm: confirmClearing, onKeep: { self.clearing = nil })
+                    opener: clearing.opener, onConfirm: confirmClearing, onKeep: { self.clearing = nil })
             }
         }
         // A new press or mark changes what Clear would remove: close the question rather

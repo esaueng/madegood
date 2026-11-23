@@ -24,6 +24,7 @@ final class WatchConfirmationUITests: XCTestCase {
 
         // The safe choice covers the opening button; the destructive one is above it.
         scrollTo(clear, in: app)
+        let opener = clear.frame
         let finger = center(of: clear)
         clear.tap()
         let keep = app.buttons["mob.clearKeep"]
@@ -35,7 +36,7 @@ final class WatchConfirmationUITests: XCTestCase {
         XCTAssertEqual(keep.label, "Keep Mark")
         XCTAssertEqual(confirm.label, "Clear Mark")
         attachScreenshot("clear mark confirmation")
-        assertSafeUnderFinger(keep: keep, confirm: confirm, finger: finger)
+        assertSafeUnderFinger(keep: keep, confirm: confirm, opener: opener)
 
         // A second tap where Clear was answers "Keep Mark".
         app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: finger.x, dy: finger.y)).tap()
@@ -73,6 +74,7 @@ final class WatchConfirmationUITests: XCTestCase {
         let end = app.buttons["control.end"]
         XCTAssertTrue(end.waitForExistence(timeout: 10))
         scrollTo(end, in: app)
+        let opener = end.frame
         let finger = center(of: end)
         end.tap()
         let keep = app.buttons["control.endKeep"]
@@ -82,7 +84,7 @@ final class WatchConfirmationUITests: XCTestCase {
         XCTAssertEqual(keep.label, "Keep Going")
         XCTAssertEqual(confirm.label, "End")
         attachScreenshot("end session confirmation")
-        assertSafeUnderFinger(keep: keep, confirm: confirm, finger: finger)
+        assertSafeUnderFinger(keep: keep, confirm: confirm, opener: opener)
 
         app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: finger.x, dy: finger.y)).tap()
         XCTAssertTrue(keep.waitForNonExistence(timeout: 10))
@@ -102,6 +104,7 @@ final class WatchConfirmationUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["mob.waiting"].exists)
         XCTAssertEqual(clear.label, "Cancel Press")
         scrollTo(clear, in: app)
+        let opener = clear.frame
         let finger = center(of: clear)
         clear.tap()
         let keep = app.buttons["mob.clearKeep"]
@@ -112,7 +115,7 @@ final class WatchConfirmationUITests: XCTestCase {
         XCTAssertEqual(keep.label, "Keep Waiting")
         XCTAssertEqual(confirm.label, "Cancel Press")
         attachScreenshot("cancel press confirmation")
-        assertSafeUnderFinger(keep: keep, confirm: confirm, finger: finger)
+        assertSafeUnderFinger(keep: keep, confirm: confirm, opener: opener)
         keep.tap()
         XCTAssertTrue(keep.waitForNonExistence(timeout: 10))
         XCTAssertTrue(app.staticTexts["mob.waiting"].exists, "still waiting")
@@ -135,14 +138,16 @@ final class WatchConfirmationUITests: XCTestCase {
         let clear = app.buttons["mob.clear"]
         XCTAssertTrue(clear.waitForExistence(timeout: 10))
         scrollTo(clear, in: app)
+        let opener = clear.frame
         let finger = center(of: clear)
         clear.tap()
         let keep = app.buttons["mob.clearKeep"]
         XCTAssertTrue(keep.waitForExistence(timeout: 10))
-        // Too tall to fit around the finger: either Keep Mark is still under it, or nothing is.
+        // Too tall to fit around the finger: either Keep Mark is still under it, or nothing is,
+        // and Clear Mark is clear of every point of Clear.
         let confirm = app.buttons["mob.clearConfirm"]
-        XCTAssertFalse(confirm.frame.contains(finger), "Clear Mark \(confirm.frame) is under the finger at \(finger)")
-        XCTAssertTrue(keep.frame.contains(finger) || confirm.frame.minY > finger.y)
+        assertDestructiveClear(of: opener, confirm: confirm)
+        XCTAssertTrue(keep.frame.contains(finger) || confirm.frame.minY > opener.maxY)
         XCTAssertTrue(app.staticTexts["confirmation.title"].isHittable, "the title shows first")
         attachScreenshot("clear mark confirmation, largest text")
         scrollTo(keep, in: app)
@@ -155,11 +160,15 @@ final class WatchConfirmationUITests: XCTestCase {
         let end = app.buttons["control.end"]
         XCTAssertTrue(end.waitForExistence(timeout: 10))
         scrollTo(end, in: app)
+        let endOpener = end.frame
         end.tap()
         let endKeep = app.buttons["control.endKeep"]
         XCTAssertTrue(endKeep.waitForExistence(timeout: 10))
-        attachScreenshot("end session confirmation, largest text")
         let endConfirm = app.buttons["control.endConfirm"]
+        assertDestructiveClear(of: endOpener, confirm: endConfirm)
+        let endFinger = CGPoint(x: endOpener.midX, y: endOpener.midY)
+        XCTAssertTrue(endKeep.frame.contains(endFinger) || endConfirm.frame.minY > endOpener.maxY)
+        attachScreenshot("end session confirmation, largest text")
         scrollTo(endConfirm, in: app)
         endConfirm.tap()
         let done = app.buttons["summary.done"]
@@ -186,17 +195,28 @@ final class WatchConfirmationUITests: XCTestCase {
         CGPoint(x: element.frame.midX, y: element.frame.midY)
     }
 
-    /// The safe button covers where the opening button was, and the destructive one is
-    /// above it, clear of that point.
+    /// The safe button covers the opening button's center, and the destructive one is above
+    /// it, clear of every point of the opening button.
     private func assertSafeUnderFinger(
-        keep: XCUIElement, confirm: XCUIElement, finger: CGPoint, file: StaticString = #filePath, line: UInt = #line
+        keep: XCUIElement, confirm: XCUIElement, opener: CGRect, file: StaticString = #filePath, line: UInt = #line
     ) {
+        let finger = CGPoint(x: opener.midX, y: opener.midY)
         XCTAssertTrue(
             keep.frame.contains(finger), "safe button \(keep.frame) does not cover the opening button at \(finger)",
             file: file, line: line)
-        XCTAssertFalse(confirm.frame.contains(finger), file: file, line: line)
+        assertDestructiveClear(of: opener, confirm: confirm, file: file, line: line)
         XCTAssertLessThanOrEqual(confirm.frame.maxY, keep.frame.minY, "destructive above safe", file: file, line: line)
         XCTAssertTrue(keep.isHittable, file: file, line: line)
         XCTAssertTrue(confirm.isHittable, file: file, line: line)
+    }
+
+    /// No tap that could open the confirmation (anywhere on the opening button) can land on
+    /// its destructive button.
+    private func assertDestructiveClear(
+        of opener: CGRect, confirm: XCUIElement, file: StaticString = #filePath, line: UInt = #line
+    ) {
+        XCTAssertFalse(
+            confirm.frame.intersects(opener),
+            "destructive button \(confirm.frame) overlaps the opening button \(opener)", file: file, line: line)
     }
 }

@@ -16,9 +16,9 @@ struct WatchConfirmation: View {
     let message: String?
     let confirm: Choice
     let keep: Choice
-    /// Where the opening button's center was, in global coordinates (`.global`); nil puts
-    /// the buttons at the bottom.
-    let fingerY: CGFloat?
+    /// The opening button's top to bottom, in global coordinates (`.global`); nil puts the
+    /// buttons at the bottom.
+    let opener: ClosedRange<CGFloat>?
     let onConfirm: () -> Void
     let onKeep: () -> Void
 
@@ -30,7 +30,7 @@ struct WatchConfirmation: View {
             ScrollView {
                 FingerAnchoredLayout(
                     // The scroll content starts at the top of the screen, unscrolled.
-                    fingerY: fingerY.map { $0 - frame.minY },
+                    opener: opener.map { ($0.lowerBound - frame.minY)...($0.upperBound - frame.minY) },
                     height: proxy.size.height
                 ) {
                     // VoiceOver reads the title, the consequence, then the choices, wherever
@@ -100,23 +100,25 @@ struct WatchConfirmation: View {
 
 /// Lays out the title block, an optional message, the destructive button and the safe
 /// button (in that subview order), at least `height` tall. The safe button is centered on
-/// `fingerY` (from the top; shifted up from the bottom corners while it still covers it)
-/// with the destructive button above it, and the text above them, in the first arrangement
-/// that fits:
+/// the opening button (`opener`, from the top; shifted up from the bottom corners while it
+/// still covers its center, and up to its top when the opener is the taller), with the
+/// destructive button above it, clear of every point of the opener, and the text above
+/// them, in the first arrangement that fits:
 /// 1. the title block (with its symbol if there's room) and the message above the buttons;
 /// 2. the title above, the message below the buttons;
-/// 3. everything in reading order, with the buttons starting below `fingerY` so that only
-///    empty space is under the finger; the page scrolls to them.
-/// Without `fingerY`, the buttons sit at the bottom.
+/// 3. everything in reading order, with the buttons starting below the opener's bottom
+///    edge so that only empty space is anywhere a tap on the opener could land; the page
+///    scrolls to them.
+/// Without `opener`, the buttons sit at the bottom.
 private struct FingerAnchoredLayout: Layout {
-    let fingerY: CGFloat?
+    let opener: ClosedRange<CGFloat>?
     let height: CGFloat
     private let spacing: CGFloat = 6
     private let textSpacing: CGFloat = 4
     /// Kept clear at the top for the clock, and at the bottom for the screen's corners.
     private let topClearance: CGFloat = 32
     private let bottomClearance: CGFloat = 8
-    /// Kept between the finger and the destructive button when the safe one can't be there.
+    /// Kept between the opener and the destructive button when the safe one can't be there.
     private let fingerClearance: CGFloat = 12
 
     private struct Frames {
@@ -153,8 +155,11 @@ private struct FingerAnchoredLayout: Layout {
 
         let lowest = height - bottomClearance - pair
         var top = lowest
-        if let fingerY {
-            top = fingerY - keep / 2 - spacing - confirm
+        if let opener {
+            // Keep's top no lower than the opener's, so the destructive button above it
+            // never overlaps any part of the opener, however tall the opener is.
+            let middle = (opener.lowerBound + opener.upperBound) / 2
+            top = min(middle - keep / 2, opener.lowerBound) - spacing - confirm
             top -= min(max(0, top - lowest), keep / 2 - 6)
         }
         let room = top - spacing - topClearance
@@ -185,7 +190,7 @@ private struct FingerAnchoredLayout: Layout {
         let titleHeight = title.sizeThatFits(free).height
         let messageTop = topClearance + titleHeight + textSpacing
         let textBottom = topClearance + titleHeight + messageBlock
-        let pairTop = max(textBottom + spacing, (fingerY ?? 0) + fingerClearance)
+        let pairTop = max(textBottom + spacing, (opener?.upperBound ?? 0) + fingerClearance)
         return result(
             [topClearance] + (message == nil ? [] : [messageTop]), titleProposal: nil, pairTop: pairTop, bottom: 0)
     }
@@ -198,9 +203,14 @@ extension View {
             .frame(maxWidth: .infinity, minHeight: 44)
     }
 
-    /// Reports where this view's center is, in global coordinates, for `WatchConfirmation`.
-    func reportsFingerY(_ fingerY: Binding<CGFloat?>) -> some View {
-        onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).midY } action: { fingerY.wrappedValue = $0 }
+    /// Reports this view's top to bottom, in global coordinates, for `WatchConfirmation`.
+    func reportsOpenerSpan(_ span: Binding<ClosedRange<CGFloat>?>) -> some View {
+        onGeometryChange(for: ClosedRange<CGFloat>.self) {
+            let frame = $0.frame(in: .global)
+            return frame.minY...frame.maxY
+        } action: {
+            span.wrappedValue = $0
+        }
     }
 
     /// Presents `content` full screen while `item` is set. It also backs out (the safe
