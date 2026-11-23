@@ -10,8 +10,24 @@ struct HistoryView: View {
     @State private var dates: HistoryDates = .all
     @State private var choosingDates = false
     @State private var deleteFailed = false
+    /// The session a swipe asked to delete, until the confirmation is answered.
+    @State private var pendingDelete: SessionLibrary.Item?
 
     private var isFiltered: Bool { sport != nil || dates != .all }
+
+    private func confirmingDelete(of item: SessionLibrary.Item) -> Binding<Bool> {
+        Binding(
+            get: { pendingDelete?.id == item.id },
+            set: { if !$0, pendingDelete?.id == item.id { pendingDelete = nil } })
+    }
+
+    private func delete(_ item: SessionLibrary.Item) {
+        do {
+            try library.delete(item)
+        } catch {
+            deleteFailed = true
+        }
+    }
 
     var body: some View {
         let shown = filteredItems(on: .now)
@@ -46,15 +62,22 @@ struct HistoryView: View {
                                 .navigationLinkIndicatorVisibility(.hidden)
                                 .accessibilityIdentifier("session.row")
                                 .cardRow()
-                        }
-                        .onDelete { offsets in
-                            for index in offsets {
-                                do {
-                                    try library.delete(month.items[index])
-                                } catch {
-                                    deleteFailed = true
+                                // Asks first, like the session's ⋯ menu: a recording can't be
+                                // brought back. No full swipe, so a long swipe only shows the button.
+                                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                    Button("Delete", systemImage: "trash") { pendingDelete = item }
+                                        .tint(.red)
+                                        .accessibilityIdentifier("session.row.delete")
                                 }
-                            }
+                                // On the row, so the popover points at the session it deletes.
+                                .confirmationDialog(
+                                    "Delete this session?", isPresented: confirmingDelete(of: item),
+                                    titleVisibility: .visible
+                                ) {
+                                    Button("Delete", role: .destructive) { delete(item) }
+                                } message: {
+                                    Text("The recording is removed from this iPhone.")
+                                }
                         }
                     } header: {
                         MonthHeader(title: month.title, items: month.items, display: display)
