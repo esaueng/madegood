@@ -17,6 +17,11 @@ import { logFailure } from "./logging";
 import { deletePrefix, userPrefix } from "./storage";
 import { type ZipEntry, zipStream } from "./zip";
 
+/** wrangler.jsonc `queues.consumers`: account exports have their own queue (batch size 1).
+ * Kept out of the Worker's entry module: the runtime treats each named export there as an
+ * entrypoint and refuses to start when one is not a function, class or handler object. */
+export const EXPORTS_QUEUE = "madegood-exports";
+
 // Account export as a background job (docs/self-hosting.md, "Account export").
 //
 // POST /me/exports freezes a snapshot: the user's sessions (id, upload revision, track key

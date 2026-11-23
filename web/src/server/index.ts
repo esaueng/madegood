@@ -1,7 +1,7 @@
 import { drizzle } from "drizzle-orm/d1";
 import { createApp } from "./app";
 import { sweepAccountDeletions } from "./lib/account-deletion";
-import { handleExportBatch, sweepExports } from "./lib/export-job";
+import { EXPORTS_QUEUE, handleExportBatch, sweepExports } from "./lib/export-job";
 import { logFailure } from "./lib/logging";
 import { handlePostprocessBatch, sweepPendingZoneChanges } from "./lib/postprocess";
 import { collectR2Garbage, UPLOAD_GRACE_MS } from "./lib/r2-garbage";
@@ -9,9 +9,6 @@ import { collectR2Garbage, UPLOAD_GRACE_MS } from "./lib/r2-garbage";
 export { VoyageLive } from "./live/voyage-live";
 
 const app = createApp();
-
-/** wrangler.jsonc `queues.consumers`: account exports have their own queue (batch size 1). */
-export const EXPORTS_QUEUE = "madegood-exports";
 
 /** Page requests the Worker sees (/s/*, /u/*, /v/*) and the web sign-in entry point on another
  * host move to CANONICAL_ORIGIN, so Apple gets the registered return URL and cookies land on
