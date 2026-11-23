@@ -6,6 +6,7 @@ import XCTest
 
 /// Simulator QA of #186: white text on the start warnings measured 2.6–2.8:1. Small text
 /// needs 4.5:1 (WCAG 2.1 AA).
+@MainActor
 final class StartLineBannerContrastTests: XCTestCase {
     private func luminance(_ color: Color) -> Double {
         // Resolved components are linear, as relative luminance wants them.
