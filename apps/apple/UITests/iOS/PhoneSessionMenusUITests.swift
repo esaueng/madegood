@@ -38,15 +38,23 @@ final class PhoneSessionMenusUITests: XCTestCase {
         XCTAssertTrue(delete.exists)
         attachScreenshot("more menu")
         delete.tap()
-        let confirm = app.buttons["Delete"]
+        let confirm = app.buttons["session.confirmDelete"]
         XCTAssertTrue(confirm.waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["Delete this session?"].exists)
-        // Keep the session: the confirmation is a popover, so a tap outside cancels it, and
-        // the detail is still open.
-        app.otherElements["PopoverDismissRegion"].firstMatch.tap()
-        let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: confirm)
-        XCTAssertEqual(XCTWaiter().wait(for: [gone], timeout: 5), .completed, "the confirmation stayed open")
+        XCTAssertEqual(app.staticTexts["confirmation.title"].label, "Delete this session?")
+        XCTAssertTrue(element("session.deleteSummary", in: app).exists)
+        // Keep backs out: the card closes and the detail is still open.
+        app.buttons["session.keep"].tap()
+        XCTAssertTrue(confirm.waitForNonExistence(timeout: 5), "the confirmation stayed open")
         XCTAssertTrue(app.buttons["session.panel.handle"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.navigationBars["Sailing"].exists)
+
+        // Confirming deletes it and returns to History.
+        openSessionMenu("session.more", in: app)
+        XCTAssertTrue(delete.waitForExistence(timeout: 5))
+        delete.tap()
+        XCTAssertTrue(confirm.waitForExistence(timeout: 5))
+        confirm.tap()
+        XCTAssertTrue(app.navigationBars["History"].waitForExistence(timeout: 10))
+        XCTAssertTrue(sailing.waitForNonExistence(timeout: 10))
     }
 }

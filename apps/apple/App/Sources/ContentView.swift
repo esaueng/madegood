@@ -69,6 +69,12 @@ struct ContentView: View {
             .onChange(of: controller.recorder.isRecording) { _, isRecording in
                 if isRecording { WatchWorkoutMirror.shared.seedDemoIfRequested() }
             }
+            // A watch session from launch, with no phone recording (so no recent position).
+            .onAppear {
+                if ProcessInfo.processInfo.arguments.contains("-demoWatchMOBAfterPress") {
+                    WatchWorkoutMirror.shared.seedDemoIfRequested()
+                }
+            }
         #endif
     }
 

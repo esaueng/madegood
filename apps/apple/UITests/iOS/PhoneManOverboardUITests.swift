@@ -245,6 +245,43 @@ final class PhoneManOverboardUITests: XCTestCase {
         XCTAssertTrue(app.buttons["sport.kayak"].waitForExistence(timeout: 10))
     }
 
+    /// A new target while the Clear card is open closes the card, so the new guidance shows
+    /// and the card can't describe the wrong thing. Here a press waits for a position (no
+    /// location) when a mark arrives and becomes the target.
+    func testClearCardClosesWhenTheTargetChanges() {
+        // The setting as an argument: the demo watch session covers the tabs from launch.
+        let app = launchDemoApp(extraArguments: [
+            "-app.showManOverboardButton", "1", "-demoWatchMirror", "-demoWatchMOBAfterPress",
+            "-demoLocationIssue", "denied", "-app.appearance", "dark",
+        ])
+        // The demo watch session starts at launch here, with no phone recording.
+        XCTAssertTrue(element("status.watchWorkout", in: app).waitForExistence(timeout: 15))
+        let mob = element("control.mob", in: app)
+        XCTAssertTrue(mob.waitForExistence(timeout: 5))
+        mob.press(forDuration: 1.2)
+        XCTAssertTrue(app.staticTexts["mob.pending"].waitForExistence(timeout: 5))
+
+        let clear = app.buttons["mob.clear"]
+        if !clear.isHittable { scrollTo(clear, in: app) }
+        XCTAssertEqual(clear.label, "Cancel press")
+        clear.tap()
+        let title = app.staticTexts["confirmation.title"]
+        XCTAssertTrue(title.waitForExistence(timeout: 5))
+        XCTAssertEqual(title.label, "Cancel this MOB press?")
+        attachScreenshot("15 cancel press card dark")
+
+        // The watch marks 5 s after the press and becomes the target: the card closes by
+        // itself, and Clear now offers to clear the watch's mark.
+        XCTAssertTrue(title.waitForNonExistence(timeout: 15), "the card stayed open for a new target")
+        let origin = app.staticTexts["mob.origin"]
+        XCTAssertTrue(origin.waitForExistence(timeout: 5))
+        XCTAssertTrue(origin.label.hasPrefix("Marked on Apple Watch"), origin.label)
+        XCTAssertEqual(clear.label, "Clear mark")
+        // The phone's press still waits for its own position.
+        XCTAssertTrue(app.staticTexts["mob.pending"].exists)
+        attachScreenshot("16 watch mark replaced the card")
+    }
+
     private func openButtonSetting(_ app: XCUIApplication) -> XCUIElement {
         let settings = app.tabBars.buttons["Settings"]
         XCTAssertTrue(settings.waitForExistence(timeout: 15))
@@ -279,9 +316,10 @@ final class PhoneManOverboardUITests: XCTestCase {
         let clear = app.buttons["mob.clear"]
         if !clear.isHittable { scrollTo(clear, in: app, file: file, line: line) }
         clear.tap()
-        // SwiftUI exposes the dialog's button twice (nested); either one confirms.
-        let confirm = app.buttons.matching(identifier: "mob.confirmClear").firstMatch
+        let confirm = app.buttons["mob.confirmClear"]
         XCTAssertTrue(confirm.waitForExistence(timeout: 5), file: file, line: line)
+        // At the largest text sizes the card scrolls.
+        if !confirm.isHittable { scrollTo(confirm, in: app, file: file, line: line) }
         confirm.tap()
     }
 }

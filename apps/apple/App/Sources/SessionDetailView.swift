@@ -129,8 +129,8 @@ struct SessionDetailView: View {
         .sheet(item: $share) { file in
             ShareSheet(url: file.url) { ExportFiles.discard(file.url) }
         }
-        .confirmationDialog("Delete this session?", isPresented: $confirmDelete, titleVisibility: .visible) {
-            Button("Delete", role: .destructive) {
+        .confirmationCard(isPresented: $confirmDelete) {
+            ConfirmationCard.deleteSession(current) {
                 do {
                     try library.delete(item)
                     dismiss()
@@ -138,10 +138,6 @@ struct SessionDetailView: View {
                     operationError = "Couldn't delete this session."
                 }
             }
-        } message: {
-            Text(
-                "It moves to Recently Deleted in History, where you can recover it for \(RecentlyDeleted.retentionDays) days before it's removed from this iPhone."
-            )
         }
         .alert(
             "Session",

@@ -30,6 +30,7 @@ struct RecentlyDeletedView: View {
                             // Not a destructive role: that removes the row before the user confirms.
                             Button("Delete", systemImage: "trash") { confirmDelete = item }
                                 .tint(.red)
+                                .accessibilityIdentifier("deleted.row.delete")
                         }
                     }
                 } footer: {
@@ -71,22 +72,24 @@ struct RecentlyDeletedView: View {
         } message: { item in
             Text(Self.remaining(item))
         }
-        .confirmationDialog(
-            "Delete this session permanently?",
-            isPresented: Binding(get: { confirmDelete != nil }, set: { if !$0 { confirmDelete = nil } }),
-            titleVisibility: .visible, presenting: confirmDelete
-        ) { item in
-            Button("Delete Permanently", role: .destructive) { deletePermanently([item]) }
-        } message: { _ in
-            Text("It's removed from this iPhone, with its name, notes and trim. This can't be undone.")
+        .confirmationCard(item: $confirmDelete) { item in
+            ConfirmationCard(
+                systemImage: "trash", tint: .red, title: "Delete this session permanently?",
+                message: "It's removed from this iPhone, with its name, notes and trim. This can't be undone.",
+                top: ConfirmationChoice(
+                    title: "Delete Permanently", identifier: "deleted.confirmDelete", style: .destructive
+                ) { deletePermanently([item]) },
+                bottom: .backOut("Keep", identifier: "deleted.keep"))
         }
-        .confirmationDialog(
-            "Delete all \(library.deleted.count) sessions permanently?", isPresented: $confirmDeleteAll,
-            titleVisibility: .visible
-        ) {
-            Button("Delete All", role: .destructive) { deletePermanently(library.deleted) }
-        } message: {
-            Text("They're removed from this iPhone, with their names, notes and trims. This can't be undone.")
+        .confirmationCard(isPresented: $confirmDeleteAll) {
+            ConfirmationCard(
+                systemImage: "trash", tint: .red,
+                title: "Delete all \(library.deleted.count) sessions permanently?",
+                message: "They're removed from this iPhone, with their names, notes and trims. This can't be undone.",
+                top: ConfirmationChoice(
+                    title: "Delete All", identifier: "deleted.confirmDeleteAll", style: .destructive
+                ) { deletePermanently(library.deleted) },
+                bottom: .backOut("Keep All", identifier: "deleted.keepAll"))
         }
         .alert(
             "Recently Deleted",

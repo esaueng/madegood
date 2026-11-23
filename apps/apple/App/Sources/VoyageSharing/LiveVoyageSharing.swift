@@ -94,8 +94,8 @@ private struct LiveVoyageControls: View {
     @Environment(\.scenePhase) private var phase
     @State private var delay = 3_600
     @State private var duration = 86_400
-    @State private var confirming = false
-    @State private var replacing = false
+    /// Whether the open confirmation replaces a link; nil while none is open.
+    @State private var confirming: Bool?
 
     var body: some View {
         Section {
@@ -146,8 +146,7 @@ private struct LiveVoyageControls: View {
             }
             if session.sharing == .off || session.sharing == .on || session.sharing == .paused {
                 Button(session.mayHaveLink ? "Replace Link" : "Start Sharing") {
-                    replacing = session.mayHaveLink
-                    confirming = true
+                    confirming = session.mayHaveLink
                 }
             }
             if session.mayHaveLink {
@@ -170,18 +169,22 @@ private struct LiveVoyageControls: View {
         .onChange(of: session.serverDelay, initial: true) { _, current in
             if session.sharing == .on, let current { delay = current }
         }
-        .confirmationDialog(
-            replacing ? "Replace this voyage’s link?" : "Share this voyage’s position?",
-            isPresented: $confirming
-        ) {
-            Button(replacing ? "Replace Link" : "Start Sharing") {
-                guard replacing == session.mayHaveLink else { return }
-                Task { await session.start(voyage: voyage, delay: delay, duration: duration, replacing: replacing) }
-            }
-        } message: {
-            Text(
-                "Only positions recorded after this link is issued can appear. Replacing a link disables the previous link."
-            )
+        .confirmationCard(item: $confirming) { replacing in
+            ConfirmationCard(
+                systemImage: replacing ? "link" : "square.and.arrow.up", tint: .accentColor,
+                title: replacing ? "Replace this voyage’s link?" : "Share this voyage’s position?",
+                message:
+                    "Only positions recorded after this link is issued can appear, as your delay and server privacy settings allow."
+                    + (replacing ? " Replacing a link disables the previous link." : ""),
+                top: ConfirmationChoice(
+                    title: replacing ? "Replace Link" : "Start Sharing", identifier: "voyageSharing.confirmStart",
+                    style: .prominent
+                ) {
+                    // The link changed while the card was open: what it described no longer applies.
+                    guard replacing == session.mayHaveLink else { return }
+                    Task { await session.start(voyage: voyage, delay: delay, duration: duration, replacing: replacing) }
+                },
+                bottom: .backOut("Cancel", identifier: "voyageSharing.cancelStart"))
         }
 
         if session.mayHaveLink {

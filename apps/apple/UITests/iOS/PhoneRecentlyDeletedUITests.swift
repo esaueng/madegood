@@ -60,7 +60,7 @@ final class PhoneRecentlyDeletedUITests: XCTestCase {
         XCTAssertTrue(
             app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "It moves to Recently Deleted"))
                 .firstMatch.waitForExistence(timeout: 5))
-        app.buttons["Delete"].tap()
+        app.buttons["session.confirmDelete"].tap()
         XCTAssertTrue(app.buttons["history.statistics"].waitForExistence(timeout: 10))
     }
 
