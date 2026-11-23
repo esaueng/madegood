@@ -31,6 +31,7 @@ Run the checks for every area you touch before you push.
 | Label strokes | `scripts/label-strokes draft <recording> <out>`, then `score <recording> <labels.json>` (see fixtures/README.md) |
 | Apple project | `mise install` (pins Tuist), then `cd apps/apple && tuist install && tuist generate --no-open` |
 | Apple build | see the `apple` job in `.github/workflows/ci.yml` for the exact `xcodebuild` lines |
+| Apple unit tests | in `apps/apple`: `xcodebuild test -workspace MadeGood.xcworkspace -scheme MadeGood -only-testing:MadeGoodTests -destination 'platform=iOS Simulator,name=<iPhone>'` (CI runs them on every pull request that touches `apps/apple`) |
 | Apple UI tests | in `apps/apple`: `xcodebuild test -workspace MadeGood.xcworkspace -scheme MadeGoodWatch -destination 'platform=watchOS Simulator,name=<watch>'`, and `-scheme MadeGood -only-testing:MadeGoodUITests` with an iPhone simulator. They launch the apps with `-demoSession` (a synthetic route, no permissions); export screenshots with `xcrun xcresulttool export attachments` |
 | Web install | `pnpm install` |
 | Web lint/format | `pnpm check` (Biome) |
