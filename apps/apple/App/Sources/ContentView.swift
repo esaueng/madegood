@@ -1297,9 +1297,8 @@ private struct LiveTrackMap: View {
             UserAnnotation()
         }
         .mapStyle(.standard(pointsOfInterest: .excludingAll))
-        .overlay(alignment: .bottomLeading) {
-            if manOverboard != nil { NotForNavigationLabel() }
-        }
+        // Every map with a route or a mark is labeled (AGENTS.md, "Labels").
+        .overlay(alignment: .bottomLeading) { NotForNavigationLabel() }
     }
 }
 

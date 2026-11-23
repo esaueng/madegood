@@ -32,6 +32,8 @@ final class PhoneSessionUITests: XCTestCase {
         XCTAssertEqual(time.frame.minY, heartRate.frame.minY, accuracy: 2)
         XCTAssertLessThan(heartRate.frame.maxY, lap.frame.minY)
         XCTAssertEqual(element("recordingBadge", in: app).label, "Recording")
+        // The live route is labeled without a man-overboard mark (simulator QA of #186).
+        XCTAssertTrue(app.staticTexts["label.notForNavigation"].waitForExistence(timeout: 5))
         attachScreenshot("2 recording")
 
         // The Live Activity: leave the app and look at the Dynamic Island and Lock Screen.
