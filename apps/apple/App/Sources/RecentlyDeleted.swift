@@ -54,11 +54,15 @@ struct RecentlyDeleted: Sendable {
         let support =
             DemoOffWater.storage
             ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        let directory = support.appendingPathComponent("RecentlyDeleted", isDirectory: true)
-        if let namespace = RecordingStore.demoNamespace {
-            return RecentlyDeleted(directory: directory.appendingPathComponent(namespace.uuidString, isDirectory: true))
-        }
-        return RecentlyDeleted(directory: directory)
+        return RecentlyDeleted(directory: directory(in: support, demoNamespace: RecordingStore.demoNamespace))
+    }
+
+    /// Demo libraries sit beside the app's directory, never inside it: its scan would take
+    /// a namespace folder for an abandoned entry and remove it.
+    static func directory(in support: URL, demoNamespace: UUID?) -> URL {
+        guard let demoNamespace else { return support.appendingPathComponent("RecentlyDeleted", isDirectory: true) }
+        return support.appendingPathComponent("RecentlyDeletedDemo", isDirectory: true)
+            .appendingPathComponent(demoNamespace.uuidString, isDirectory: true)
     }
 
     /// The deleted recordings, most recently deleted first. Folders this build can't read

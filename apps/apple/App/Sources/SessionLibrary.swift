@@ -269,24 +269,27 @@ final class SessionLibrary {
         }
     }
 
-    /// Removes the recording, then its name, notes and trim unless another copy of the
-    /// session (back in History, or deleted again) still uses them.
+    /// Removes the name, notes and trim unless another copy of the session (back in
+    /// History, or deleted again) still uses them, then the recording. In that order, so a
+    /// stop in between leaves the entry to retry, never files no entry points to.
     private nonisolated static func removePermanently(_ entry: RecentlyDeleted.Entry) throws {
         // Under the transfer's lock, as `updateDetails` and `recover` check History under it.
         try RecordingTransfer.storageLock.withLock {
             let store = RecentlyDeleted.shared
-            try store.remove(entry)
-            guard
-                let sessionId = entry.meta?.sessionId ?? UUID(uuidString: entry.folderName),
+            if let sessionId = entry.meta?.sessionId ?? UUID(uuidString: entry.folderName),
                 !RecordingStore.list().contains(where: {
                     $0.meta?.sessionId == sessionId || $0.folder.lastPathComponent == entry.folderName
                 }),
-                !store.list().contains(where: { $0.meta?.sessionId == sessionId || $0.folderName == entry.folderName })
-            else { return }
-            // Try both, so a failed trim removal doesn't leave the name and notes behind.
-            let details = Result { try detailsStore.remove(sessionId: sessionId) }
-            try trimStore.restoreOriginal(sessionId: sessionId)
-            try details.get()
+                !store.list().contains(where: {
+                    $0.id != entry.id && ($0.meta?.sessionId == sessionId || $0.folderName == entry.folderName)
+                })
+            {
+                // Try both, so a failed trim removal doesn't leave the name and notes behind.
+                let details = Result { try detailsStore.remove(sessionId: sessionId) }
+                try trimStore.restoreOriginal(sessionId: sessionId)
+                try details.get()
+            }
+            try store.remove(entry)
         }
     }
 

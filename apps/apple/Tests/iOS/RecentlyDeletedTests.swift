@@ -117,6 +117,19 @@ final class RecentlyDeletedTests: XCTestCase {
         XCTAssertEqual(store.expired(now: .distantFuture), [kept], "a newer app's folder never expires here")
     }
 
+    /// Review finding: a demo library's trash inside the app's own was cleared by the app's
+    /// scan as abandoned, with every recording in it.
+    func testTheAppsScanNeverReachesADemoLibrarysDeletedRecordings() throws {
+        let app = RecentlyDeleted(directory: RecentlyDeleted.directory(in: root, demoNamespace: nil))
+        let demo = RecentlyDeleted(directory: RecentlyDeleted.directory(in: root, demoNamespace: UUID()))
+        let entry = try demo.moveIn(try recording(), now: now)
+
+        app.removeAbandoned()
+
+        XCTAssertEqual(demo.list(), [entry])
+        XCTAssertEqual(app.list(), [])
+    }
+
     func testAFailedMoveLeavesNothingBehind() throws {
         let missing = history.appendingPathComponent("missing", isDirectory: true)
         XCTAssertThrowsError(try store.moveIn(missing, now: now))
