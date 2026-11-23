@@ -87,22 +87,29 @@ final class SessionOutbox {
     private let api: SessionAPI
     private let now: () -> Date
     private let networkAvailable: @MainActor (SessionNetworkPolicy) -> Bool
+    private let isOnPhone: @MainActor (UUID) -> Bool
     private var journal: Journal?
     private var active: (id: UUID, generation: UUID, step: SessionSyncStep)?
     @ObservationIgnored private var draining = false
+    /// Set when a drain drops a session deleted on the phone; see `takeDroppedDeleted`.
+    @ObservationIgnored private var droppedDeleted = false
 
     /// `networkAvailable` reports whether the current network path can carry an upload
     /// under the policy (NWPathMonitor in the app). Connection errors count as offline only
     /// when it says no; otherwise they use up attempts like any transient failure.
+    /// `isOnPhone` reports whether a session's recording is still in History: one deleted
+    /// since it was queued is dropped before anything more of it is sent.
     init(
         root: URL, account: VoyageAccount, api: SessionAPI, now: @escaping () -> Date = { .now },
-        networkAvailable: @escaping @MainActor (SessionNetworkPolicy) -> Bool = { _ in true }
+        networkAvailable: @escaping @MainActor (SessionNetworkPolicy) -> Bool = { _ in true },
+        isOnPhone: @escaping @MainActor (UUID) -> Bool = { _ in true }
     ) {
         self.root = root
         self.account = account
         self.api = api
         self.now = now
         self.networkAvailable = networkAvailable
+        self.isOnPhone = isOnPhone
     }
 
     // MARK: Queue
@@ -175,7 +182,8 @@ final class SessionOutbox {
             throw error
         }
         if let previous {
-            try? FileManager.default.removeItem(at: trackURL(previous.id, generation: previous.generation, for: binding))
+            try? FileManager.default.removeItem(
+                at: trackURL(previous.id, generation: previous.generation, for: binding))
         }
         return wasActive
     }
@@ -208,7 +216,8 @@ final class SessionOutbox {
         let files =
             (try? FileManager.default.contentsOfDirectory(at: directory(for: binding), includingPropertiesForKeys: nil))
             ?? []
-        for file in files where file.lastPathComponent.hasSuffix(".track.json.gz") && !keep.contains(file.lastPathComponent) {
+        for file in files
+        where file.lastPathComponent.hasSuffix(".track.json.gz") && !keep.contains(file.lastPathComponent) {
             try? FileManager.default.removeItem(at: file)
         }
     }
@@ -256,6 +265,16 @@ final class SessionOutbox {
 
     // MARK: Draining
 
+    private struct DeletedOnPhone: Error {}
+
+    /// Whether a drain dropped a session deleted on the phone since the last call. The
+    /// caller then reconciles background uploads: one a previous process left running for
+    /// it must be cancelled, and the library's scan will find nothing left to drop.
+    func takeDroppedDeleted() -> Bool {
+        defer { droppedDeleted = false }
+        return droppedDeleted
+    }
+
     /// Uploads every due session in queue order and returns the next retry time, if any.
     func drain(for binding: VoyageAccountBinding, policy: SessionNetworkPolicy) async throws -> Date? {
         guard !draining else { return nil }
@@ -274,6 +293,10 @@ final class SessionOutbox {
             var outcome: Result<Void, Error> = .success(())
             do {
                 try await account.authorized(for: binding) { bearer in
+                    // Checked on every attempt, including the one after a token refresh:
+                    // deleted on the phone since it was queued, before the library's scan
+                    // dropped it.
+                    guard isOnPhone(entry.id) else { throw DeletedOnPhone() }
                     switch step {
                     case .metadata:
                         try await api.putSession(
@@ -287,6 +310,11 @@ final class SessionOutbox {
                             bearer: bearer, policy: policy)
                     }
                 }
+            } catch is DeletedOnPhone {
+                try forget([entry.id], for: binding)
+                droppedDeleted = true
+                active = nil
+                continue
             } catch {
                 // Signed out, or the account changed: the journal belongs to that sign-in.
                 if error is VoyageAccountError { return nil }
@@ -380,7 +408,7 @@ final class SessionOutbox {
             let entry = journal.entries.first(where: { $0.id == parsed.session })
         else { return false }
         return entry.generation == parsed.generation && entry.metadataSent && !entry.trackSent
-            && entry.failure == nil
+            && entry.failure == nil && isOnPhone(parsed.session)
     }
 
     private func isDue(_ entry: Entry) -> Bool {
@@ -499,7 +527,8 @@ final class SessionOutbox {
         let keep = binding?.signInID.uuidString.lowercased()
         let folders = (try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? []
         // Only sign-in folders (UUIDs); other files in the root (the consent record) stay.
-        for folder in folders where UUID(uuidString: folder.lastPathComponent) != nil && folder.lastPathComponent != keep {
+        for folder in folders
+        where UUID(uuidString: folder.lastPathComponent) != nil && folder.lastPathComponent != keep {
             try? FileManager.default.removeItem(at: folder)
         }
         if binding == nil { journal = nil }

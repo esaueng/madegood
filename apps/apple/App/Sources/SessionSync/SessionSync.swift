@@ -63,9 +63,17 @@ final class SessionSync {
 
     static let wifiOnlyKey = "sessionSync.wifiOnly"
 
+    /// Whether History has a finished recording of the session, as the scan that queues it
+    /// requires: not deleted, nor in Recently Deleted. By its metadata, not its folder name,
+    /// which the Files app can change.
+    static func isInHistory(_ id: UUID) -> Bool {
+        RecordingStore.list().contains { $0.meta?.sessionId == id && $0.meta?.endedAt != nil }
+    }
+
     init(
         apiRoot: URL, root: URL, transport: any SessionSyncTransport, store: any VoyageCredentialStore,
-        preferences: UserDefaults = .standard, isDemo: Bool = false
+        preferences: UserDefaults = .standard, isDemo: Bool = false,
+        isOnPhone: @escaping @MainActor (UUID) -> Bool = SessionSync.isInHistory
     ) {
         let network = NetworkState()
         // Consent is recorded before credentials change (write-ahead).
@@ -78,7 +86,8 @@ final class SessionSync {
         let api = SessionAPI(baseURL: apiRoot, transport: transport)
         self.api = api
         outbox = SessionOutbox(
-            root: root, account: account, api: api, networkAvailable: { network.canUpload(under: $0) })
+            root: root, account: account, api: api, networkAvailable: { network.canUpload(under: $0) },
+            isOnPhone: isOnPhone)
         self.network = network
         self.transport = transport
         self.preferences = preferences
@@ -293,7 +302,14 @@ final class SessionSync {
             await reconciled?.value
             guard !Task.isCancelled else { return }
             do {
-                let retryAt = try await outbox.drain(for: binding, policy: policy)
+                let retryAt: Date?
+                do {
+                    retryAt = try await outbox.drain(for: binding, policy: policy)
+                } catch {
+                    if outbox.takeDroppedDeleted() { await reconcileUploads() }
+                    throw error
+                }
+                if outbox.takeDroppedDeleted() { await reconcileUploads() }
                 // Deleted on the server: never queued for this account again.
                 let deleted = outbox.deletedFromCloudIDs
                 if account.binding == binding { try? ledger.update { $0.markDeleted(deleted, for: binding) } }
@@ -352,7 +368,7 @@ final class SessionSync {
         earlierSessions = earlier
         do {
             // Deleted recordings, and any the account may not receive, leave the queue.
-            try forgetAndCancel(outbox.queuedIDs.subtracting(allowed), for: binding)
+            try await forgetAndCancel(outbox.queuedIDs.subtracting(allowed), for: binding)
         } catch {
             queueUnavailable = true
             return
@@ -395,12 +411,18 @@ final class SessionSync {
                 continue
             }
         }
-        try? forgetAndCancel(held, for: binding)
+        try? await forgetAndCancel(held, for: binding)
     }
 
-    private func forgetAndCancel(_ ids: Set<UUID>, for binding: VoyageAccountBinding) throws {
-        guard !ids.isEmpty else { return }
-        if try outbox.forget(ids, for: binding) { worker?.cancel() }
+    /// Drops unsynced sessions and stops every upload of them: this process's drain, and a
+    /// background track upload a previous process left running (kept at launch while the
+    /// session was still queued).
+    private func forgetAndCancel(_ ids: Set<UUID>, for binding: VoyageAccountBinding) async throws {
+        // Synced sessions stay in the journal and have nothing to stop.
+        let queued = ids.intersection(outbox.queuedIDs).filter { outbox.status(for: $0) != .synced }
+        guard !queued.isEmpty else { return }
+        if try outbox.forget(queued, for: binding) { worker?.cancel() }
+        await reconcileUploads()
     }
 
     private struct Prepared: Sendable {

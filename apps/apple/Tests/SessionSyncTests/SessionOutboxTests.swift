@@ -684,6 +684,73 @@ struct SessionOutboxTests {
                 == .deletedFromCloud)
     }
 
+    /// A session deleted on the phone while still queued (before the library's scan drops
+    /// it) is never sent: the drain checks the recording is still in History first.
+    @Test func aSessionDeletedOnThePhoneIsNotSentFromTheQueue() async throws {
+        let rig = try Rig()
+        defer { rig.cleanUp() }
+        let binding = try await rig.signIn()
+        let (kept, keptBytes) = try rig.session()
+        let (deleted, deletedBytes) = try rig.session()
+        let outbox = rig.outbox()
+        try outbox.enqueue(deleted, for: binding) { deletedBytes }
+        try outbox.enqueue(kept, for: binding) { keptBytes }
+        rig.deletedOnPhone = [deleted.sessionID]
+
+        #expect(try await outbox.drain(for: binding, policy: .init()) == nil)
+        #expect(rig.transport.calls.map(\.step) == ["apple", "metadata", "track"])
+        #expect(rig.transport.uploaded == [keptBytes])
+        #expect(outbox.queuedIDs == [kept.sessionID])
+        #expect(outbox.status(for: deleted.sessionID) == nil)
+    }
+
+    /// Deleted between its metadata and its track: the track is not sent, and a background
+    /// upload of it is cancelled.
+    @Test func aSessionDeletedMidUploadSendsNoTrack() async throws {
+        let rig = try Rig()
+        defer { rig.cleanUp() }
+        let binding = try await rig.signIn()
+        let (snapshot, bytes) = try rig.session()
+        let outbox = rig.outbox()
+        try outbox.enqueue(snapshot, for: binding) { bytes }
+        rig.transport.trackResults = [.success(503)]
+        let retryAt = try #require(try await outbox.drain(for: binding, policy: .init()))
+        let description = try #require(rig.transport.calls.last?.taskDescription)
+        func keep() -> Bool {
+            outbox.shouldKeepUpload(
+                taskDescription: description, allowsCellular: true, binding: binding, syncEnabled: true,
+                policy: .init())
+        }
+        #expect(keep())
+
+        rig.deletedOnPhone = [snapshot.sessionID]
+        #expect(!keep(), "a running background upload of it is cancelled")
+        rig.now = retryAt
+        #expect(try await outbox.drain(for: binding, policy: .init()) == nil)
+        #expect(rig.transport.calls.map(\.step) == ["apple", "metadata", "track"])
+        #expect(outbox.queuedIDs.isEmpty)
+    }
+
+    /// Review finding: deleted while a refused token is refreshed, the step is not sent
+    /// again with the new token.
+    @Test func aSessionDeletedDuringATokenRefreshIsNotRetried() async throws {
+        let rig = try Rig()
+        defer { rig.cleanUp() }
+        let binding = try await rig.signIn()
+        let (snapshot, bytes) = try rig.session()
+        let outbox = rig.outbox()
+        try outbox.enqueue(snapshot, for: binding) { bytes }
+        rig.transport.metadataStatuses = [401]
+        rig.transport.refresh = {
+            Data(#"{"accessToken":"synthetic-access-2","refreshToken":"synthetic-refresh-2"}"#.utf8)
+        }
+        rig.deleteAllAfterChecks = 1
+
+        #expect(try await outbox.drain(for: binding, policy: .init()) == nil)
+        #expect(rig.transport.calls.map(\.step) == ["apple", "metadata", "refresh"])
+        #expect(outbox.queuedIDs.isEmpty)
+    }
+
     @Test func aStaleTrackRevisionResendsTheMetadata() async throws {
         let rig = try Rig()
         defer { rig.cleanUp() }
@@ -832,6 +899,11 @@ private final class Rig {
     let account: VoyageAccount
     var now = Date(timeIntervalSince1970: 1_700_000_000.125)
     var networkUp = true
+    /// Sessions whose recordings the user deleted on the phone.
+    var deletedOnPhone: Set<UUID> = []
+    /// Deletes every session on the phone after this many checks.
+    var deleteAllAfterChecks: Int?
+    private var checks = 0
 
     init() throws {
         root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
@@ -850,7 +922,13 @@ private final class Rig {
     func outbox(account: VoyageAccount? = nil) -> SessionOutbox {
         SessionOutbox(
             root: root.appending(path: "queue"), account: account ?? self.account, api: api, now: { self.now },
-            networkAvailable: { _ in self.networkUp })
+            networkAvailable: { _ in self.networkUp }, isOnPhone: { self.isOnPhone($0) })
+    }
+
+    private func isOnPhone(_ id: UUID) -> Bool {
+        checks += 1
+        if let limit = deleteAllAfterChecks, checks > limit { return false }
+        return !deletedOnPhone.contains(id)
     }
 
     /// A synthetic finished kayak session at a fake origin; `fixes` stands in for a trim.
