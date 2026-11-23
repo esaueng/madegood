@@ -302,7 +302,14 @@ final class SessionSync {
             await reconciled?.value
             guard !Task.isCancelled else { return }
             do {
-                let retryAt = try await outbox.drain(for: binding, policy: policy)
+                let retryAt: Date?
+                do {
+                    retryAt = try await outbox.drain(for: binding, policy: policy)
+                } catch {
+                    if outbox.takeDroppedDeleted() { await reconcileUploads() }
+                    throw error
+                }
+                if outbox.takeDroppedDeleted() { await reconcileUploads() }
                 // Deleted on the server: never queued for this account again.
                 let deleted = outbox.deletedFromCloudIDs
                 if account.binding == binding { try? ledger.update { $0.markDeleted(deleted, for: binding) } }

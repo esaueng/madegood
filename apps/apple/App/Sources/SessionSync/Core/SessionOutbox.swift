@@ -91,6 +91,8 @@ final class SessionOutbox {
     private var journal: Journal?
     private var active: (id: UUID, generation: UUID, step: SessionSyncStep)?
     @ObservationIgnored private var draining = false
+    /// Set when a drain drops a session deleted on the phone; see `takeDroppedDeleted`.
+    @ObservationIgnored private var droppedDeleted = false
 
     /// `networkAvailable` reports whether the current network path can carry an upload
     /// under the policy (NWPathMonitor in the app). Connection errors count as offline only
@@ -180,7 +182,8 @@ final class SessionOutbox {
             throw error
         }
         if let previous {
-            try? FileManager.default.removeItem(at: trackURL(previous.id, generation: previous.generation, for: binding))
+            try? FileManager.default.removeItem(
+                at: trackURL(previous.id, generation: previous.generation, for: binding))
         }
         return wasActive
     }
@@ -213,7 +216,8 @@ final class SessionOutbox {
         let files =
             (try? FileManager.default.contentsOfDirectory(at: directory(for: binding), includingPropertiesForKeys: nil))
             ?? []
-        for file in files where file.lastPathComponent.hasSuffix(".track.json.gz") && !keep.contains(file.lastPathComponent) {
+        for file in files
+        where file.lastPathComponent.hasSuffix(".track.json.gz") && !keep.contains(file.lastPathComponent) {
             try? FileManager.default.removeItem(at: file)
         }
     }
@@ -263,6 +267,14 @@ final class SessionOutbox {
 
     private struct DeletedOnPhone: Error {}
 
+    /// Whether a drain dropped a session deleted on the phone since the last call. The
+    /// caller then reconciles background uploads: one a previous process left running for
+    /// it must be cancelled, and the library's scan will find nothing left to drop.
+    func takeDroppedDeleted() -> Bool {
+        defer { droppedDeleted = false }
+        return droppedDeleted
+    }
+
     /// Uploads every due session in queue order and returns the next retry time, if any.
     func drain(for binding: VoyageAccountBinding, policy: SessionNetworkPolicy) async throws -> Date? {
         guard !draining else { return nil }
@@ -300,6 +312,7 @@ final class SessionOutbox {
                 }
             } catch is DeletedOnPhone {
                 try forget([entry.id], for: binding)
+                droppedDeleted = true
                 active = nil
                 continue
             } catch {
@@ -514,7 +527,8 @@ final class SessionOutbox {
         let keep = binding?.signInID.uuidString.lowercased()
         let folders = (try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? []
         // Only sign-in folders (UUIDs); other files in the root (the consent record) stay.
-        for folder in folders where UUID(uuidString: folder.lastPathComponent) != nil && folder.lastPathComponent != keep {
+        for folder in folders
+        where UUID(uuidString: folder.lastPathComponent) != nil && folder.lastPathComponent != keep {
             try? FileManager.default.removeItem(at: folder)
         }
         if binding == nil { journal = nil }

@@ -11,6 +11,7 @@ final class SessionSyncDeletionTests: XCTestCase {
     private var root: URL!
     private var transport: GatedTransport!
     private var sync: SessionSync!
+    private var deletedOnPhone: Set<UUID> = []
 
     override func setUp() async throws {
         root = FileManager.default.temporaryDirectory.appendingPathComponent("SessionSyncDeletion-" + UUID().uuidString)
@@ -21,7 +22,7 @@ final class SessionSyncDeletionTests: XCTestCase {
             apiRoot: URL(string: "https://synthetic.invalid/api")!, root: root, transport: transport,
             store: MemoryCredentials(), preferences: UserDefaults(suiteName: suite)!,
             // Its sessions are queued directly, with no recordings on disk.
-            isOnPhone: { _ in true })
+            isOnPhone: { [unowned self] in !deletedOnPhone.contains($0) })
         sync.launch()
         try await sync.account.signIn(identityToken: "synthetic-identity", displayName: nil)
         await sync.accountDidChange()
@@ -45,16 +46,20 @@ final class SessionSyncDeletionTests: XCTestCase {
     }
 
     /// Queues one synthetic session directly (the test host's library is not used).
-    private func queueSession() throws {
+    @discardableResult
+    private func queueSession() throws -> UUID {
         let binding = try XCTUnwrap(sync.account.binding)
         let start = Date(timeIntervalSince1970: 946_720_800)
         let track = Track(
             sessionId: UUID(), sport: .kayak, startedAt: start,
             gps: [GPSFix(t: 0, latitude: 0, longitude: 0), GPSFix(t: 1, latitude: 0, longitude: 0.00001)])
         let bytes = try TrackCodec.encode(track)
-        _ = try sync.outbox.enqueue(SessionUploadSnapshot(track: track, endedAt: start.addingTimeInterval(60)), for: binding) {
+        _ = try sync.outbox.enqueue(
+            SessionUploadSnapshot(track: track, endedAt: start.addingTimeInterval(60)), for: binding
+        ) {
             bytes
         }
+        return track.sessionId
     }
 
     func testNothingUploadsWhileTheAccountIsBeingDeleted() async throws {
@@ -86,6 +91,29 @@ final class SessionSyncDeletionTests: XCTestCase {
         XCTAssertEqual(transport.calls.filter { $0 == "PUT" }.count, 1, "only the drain that was already running")
     }
 
+    /// Re-check finding: the drain notices the deletion before the library's scan does (a
+    /// retry), so the scan has nothing left to drop. The drain itself must reconcile, or a
+    /// background track upload left running for the session could finish.
+    func testADrainThatDropsADeletedSessionCancelsItsBackgroundTrackUpload() async throws {
+        let id = try queueSession()
+        transport.metadataOK = true
+        transport.trackStatus = 503
+        sync.kick()
+        let description = try await waitFor { self.transport.trackDescription }
+        XCTAssertTrue(description.contains(id.uuidString.lowercased()))
+        try await waitUntil {
+            self.sync.outbox.status(for: id).map { if case .retrying = $0 { true } else { false } } ?? false
+        }
+        transport.trackKept = nil
+
+        deletedOnPhone = [id]
+        sync.retry()
+        try await waitUntil { self.sync.outbox.queuedIDs.isEmpty }
+        try await waitUntil { self.transport.trackKept != nil }
+        XCTAssertEqual(transport.trackKept, false, "the upload of the deleted session is cancelled")
+        XCTAssertEqual(transport.calls.filter { $0 == "track" }.count, 1, "the track is not sent again")
+    }
+
     /// Review finding: a queued session whose recording left History is dropped by the
     /// scan, and background uploads are reconciled again, so a track upload a previous
     /// process left running for it is cancelled rather than left to finish.
@@ -99,6 +127,15 @@ final class SessionSyncDeletionTests: XCTestCase {
         try await waitUntil { self.sync.outbox.queuedIDs.isEmpty && !self.sync.preparing }
         XCTAssertGreaterThan(transport.reconciles, before)
         XCTAssertFalse(transport.calls.contains("PUT"))
+    }
+
+    private func waitFor<T>(timeout: TimeInterval = 5, _ value: @escaping () -> T?) async throws -> T {
+        var result: T?
+        try await waitUntil(timeout: timeout) {
+            result = value()
+            return result != nil
+        }
+        return try XCTUnwrap(result)
     }
 
     func testAFailedDeletionTurnsSyncBackOn() async throws {
@@ -135,6 +172,13 @@ private final class GatedTransport: SessionSyncTransport {
     var holdDelete = false
     var cancelledAllUploads = false
     var reconciles = 0
+    /// Answers session metadata PUTs with a valid 201 instead of a 500.
+    var metadataOK = false
+    var trackStatus = 204
+    /// The last track upload's task description, offered to every reconcile.
+    var trackDescription: String?
+    /// Whether the last reconcile kept that upload.
+    var trackKept: Bool?
     private var deleteGate: CheckedContinuation<Int, Never>?
 
     func releaseDelete(status: Int) {
@@ -158,6 +202,18 @@ private final class GatedTransport: SessionSyncTransport {
             let status = holdDelete ? await withCheckedContinuation { deleteGate = $0 } : 202
             return (Data(#"{"error":"unavailable"}"#.utf8), response(request, status))
         }
+        if request.httpMethod == "PUT", metadataOK {
+            calls.append("PUT")
+            let id = request.url!.lastPathComponent
+            let body = """
+                {"id": "\(id)", "sport": "kayak", "title": null, "notes": null, "visibility": "private",
+                "owner": null, "startedAt": "2023-11-14T21:13:20.125Z", "endedAt": null, "durationS": null,
+                "movingS": null, "distanceM": null, "maxSpeedMps": null, "avgSpeedMps": null, "summary": null,
+                "analyzerVersion": null, "hasTrack": false, "isOwner": true,
+                "createdAt": "2023-11-14T22:13:20.125Z", "updatedAt": "2023-11-14T22:13:20.125Z"}
+                """
+            return (Data(body.utf8), response(request, 201))
+        }
         if request.httpMethod == "PUT" {
             calls.append("PUT")
             if holdUploads {
@@ -172,7 +228,8 @@ private final class GatedTransport: SessionSyncTransport {
 
     func upload(_ request: URLRequest, file: URL, taskDescription: String) async throws -> HTTPURLResponse {
         calls.append("track")
-        return response(request, 204)
+        trackDescription = taskDescription
+        return response(request, trackStatus)
     }
 
     func upload(_ request: URLRequest, file: URL, key: VoyageUploadKey) async throws -> HTTPURLResponse {
@@ -183,6 +240,7 @@ private final class GatedTransport: SessionSyncTransport {
     func activate(onCompletion: @escaping @MainActor (String, Int?) -> Void) {}
     func reconcileUploads(keep: (String?, URLRequest?) -> Bool) async {
         reconciles += 1
+        if let trackDescription { trackKept = keep(trackDescription, nil) }
         // A background upload the deletion must cancel.
         if !keep("synthetic/upload", nil) { cancelledAllUploads = true }
     }
