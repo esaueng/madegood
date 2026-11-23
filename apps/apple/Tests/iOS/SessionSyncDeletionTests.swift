@@ -86,6 +86,21 @@ final class SessionSyncDeletionTests: XCTestCase {
         XCTAssertEqual(transport.calls.filter { $0 == "PUT" }.count, 1, "only the drain that was already running")
     }
 
+    /// Review finding: a queued session whose recording left History is dropped by the
+    /// scan, and background uploads are reconciled again, so a track upload a previous
+    /// process left running for it is cancelled rather than left to finish.
+    func testDroppingADeletedSessionReconcilesBackgroundUploads() async throws {
+        try queueSession()
+        XCTAssertFalse(sync.outbox.queuedIDs.isEmpty)
+        let before = transport.reconciles
+
+        // The test host's History has no recording of it.
+        sync.recordingsChanged()
+        try await waitUntil { self.sync.outbox.queuedIDs.isEmpty && !self.sync.preparing }
+        XCTAssertGreaterThan(transport.reconciles, before)
+        XCTAssertFalse(transport.calls.contains("PUT"))
+    }
+
     func testAFailedDeletionTurnsSyncBackOn() async throws {
         transport.holdDelete = true
         let deletion = Task { try await sync.deleteAccount() }
@@ -119,6 +134,7 @@ private final class GatedTransport: SessionSyncTransport {
     var holdUploads = false
     var holdDelete = false
     var cancelledAllUploads = false
+    var reconciles = 0
     private var deleteGate: CheckedContinuation<Int, Never>?
 
     func releaseDelete(status: Int) {
@@ -166,6 +182,7 @@ private final class GatedTransport: SessionSyncTransport {
     func cancelStaleUploads(currentSignIn: () -> UUID?) async {}
     func activate(onCompletion: @escaping @MainActor (String, Int?) -> Void) {}
     func reconcileUploads(keep: (String?, URLRequest?) -> Bool) async {
+        reconciles += 1
         // A background upload the deletion must cancel.
         if !keep("synthetic/upload", nil) { cancelledAllUploads = true }
     }

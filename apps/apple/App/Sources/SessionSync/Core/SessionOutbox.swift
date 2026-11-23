@@ -261,6 +261,8 @@ final class SessionOutbox {
 
     // MARK: Draining
 
+    private struct DeletedOnPhone: Error {}
+
     /// Uploads every due session in queue order and returns the next retry time, if any.
     func drain(for binding: VoyageAccountBinding, policy: SessionNetworkPolicy) async throws -> Date? {
         guard !draining else { return nil }
@@ -274,16 +276,15 @@ final class SessionOutbox {
             guard let entry = journal.entries.first(where: isDue) else {
                 return journal.entries.filter { !$0.trackSent && $0.failure == nil }.compactMap(\.retryAt).min()
             }
-            // Deleted on the phone since it was queued, before the library's scan dropped it.
-            guard isOnPhone(entry.id) else {
-                try forget([entry.id], for: binding)
-                continue
-            }
             let step: SessionSyncStep = entry.metadataSent ? .track : .metadata
             active = (entry.id, entry.generation, step)
             var outcome: Result<Void, Error> = .success(())
             do {
                 try await account.authorized(for: binding) { bearer in
+                    // Checked on every attempt, including the one after a token refresh:
+                    // deleted on the phone since it was queued, before the library's scan
+                    // dropped it.
+                    guard isOnPhone(entry.id) else { throw DeletedOnPhone() }
                     switch step {
                     case .metadata:
                         try await api.putSession(
@@ -297,6 +298,10 @@ final class SessionOutbox {
                             bearer: bearer, policy: policy)
                     }
                 }
+            } catch is DeletedOnPhone {
+                try forget([entry.id], for: binding)
+                active = nil
+                continue
             } catch {
                 // Signed out, or the account changed: the journal belongs to that sign-in.
                 if error is VoyageAccountError { return nil }

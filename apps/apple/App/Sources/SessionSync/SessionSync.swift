@@ -63,10 +63,11 @@ final class SessionSync {
 
     static let wifiOnlyKey = "sessionSync.wifiOnly"
 
-    /// Whether the session's recording is still in History (not deleted, nor in Recently
-    /// Deleted): its folder is named by its ID.
+    /// Whether History has a finished recording of the session, as the scan that queues it
+    /// requires: not deleted, nor in Recently Deleted. By its metadata, not its folder name,
+    /// which the Files app can change.
     static func isInHistory(_ id: UUID) -> Bool {
-        FileManager.default.fileExists(atPath: RecordingStore.folder(for: id).path)
+        RecordingStore.list().contains { $0.meta?.sessionId == id && $0.meta?.endedAt != nil }
     }
 
     init(
@@ -360,7 +361,7 @@ final class SessionSync {
         earlierSessions = earlier
         do {
             // Deleted recordings, and any the account may not receive, leave the queue.
-            try forgetAndCancel(outbox.queuedIDs.subtracting(allowed), for: binding)
+            try await forgetAndCancel(outbox.queuedIDs.subtracting(allowed), for: binding)
         } catch {
             queueUnavailable = true
             return
@@ -403,12 +404,18 @@ final class SessionSync {
                 continue
             }
         }
-        try? forgetAndCancel(held, for: binding)
+        try? await forgetAndCancel(held, for: binding)
     }
 
-    private func forgetAndCancel(_ ids: Set<UUID>, for binding: VoyageAccountBinding) throws {
-        guard !ids.isEmpty else { return }
-        if try outbox.forget(ids, for: binding) { worker?.cancel() }
+    /// Drops unsynced sessions and stops every upload of them: this process's drain, and a
+    /// background track upload a previous process left running (kept at launch while the
+    /// session was still queued).
+    private func forgetAndCancel(_ ids: Set<UUID>, for binding: VoyageAccountBinding) async throws {
+        // Synced sessions stay in the journal and have nothing to stop.
+        let queued = ids.intersection(outbox.queuedIDs).filter { outbox.status(for: $0) != .synced }
+        guard !queued.isEmpty else { return }
+        if try outbox.forget(queued, for: binding) { worker?.cancel() }
+        await reconcileUploads()
     }
 
     private struct Prepared: Sendable {
