@@ -7,6 +7,10 @@ import WaterKit
 /// breeze, reefed when it's strong, furled when it's too much. Kept to a few bold shapes
 /// so it reads at card size. Still with Reduce Motion. Decorative: the card around it
 /// carries the words.
+///
+/// Everything moves with the wind (clouds, rain, snow, streaks, waves, whitecaps), and the
+/// boat runs before it: bow downwind, heeled downwind, wake trailing upwind, pennant
+/// streaming ahead. See ``SceneWind``.
 struct WeatherScene: View {
     let weather: WeatherNow
     let outlook: WaterOutlook
@@ -39,8 +43,9 @@ private struct SceneDrawing {
     private var mood: WaterOutlook.Mood { outlook.mood }
     /// 0 calm … 1 at 14 m/s, a bit more beyond.
     private var windiness: Double { min(weather.windSpeed / 14, 1.3) }
+    private var wind: SceneWind { SceneWind(windFrom: weather.windFrom) }
     /// +1 when the wind blows left to right on screen (from the west), −1 the other way.
-    private var windSign: Double { sin(weather.windFrom * .pi / 180) > 0.2 ? -1 : 1 }
+    private var windSign: Double { wind.sign }
     private var stormy: Bool { sky == .thunderstorm }
     private var wet: Bool { [.rain, .drizzle, .thunderstorm, .snow].contains(sky) }
 
@@ -481,18 +486,19 @@ private struct SceneDrawing {
     private var boatScale: Double { h * 0.42 }
     private var boatX: Double { w * 0.78 }
 
-    /// Where the boat floats this frame: its waterline and its angle. It rides the swell
-    /// averaged over the hull (bow, middle, stern), so the short ripples don't jostle it,
-    /// and rocks slowly and only a little on top of its heel.
+    /// Where the boat floats this frame: its waterline and its on-screen angle (clockwise
+    /// positive). It rides the swell averaged over the hull (both ends and the middle), so
+    /// the short ripples don't jostle it, and rocks slowly and only a little on top of its
+    /// heel.
     private func boatPose() -> (waterline: Double, y: Double, angle: Double) {
         let s = boatScale
         let x = boatX
-        let bow = waveY(x - s * 0.45, layer: 0)
-        let stern = waveY(x + s * 0.45, layer: 0)
-        let swell = (bow + 2 * waveY(x, layer: 0) + stern) / 4
+        let left = waveY(x - s * 0.45, layer: 0)
+        let right = waveY(x + s * 0.45, layer: 0)
+        let swell = (left + 2 * waveY(x, layer: 0) + right) / 4
         // Follow most of the swell's rise and fall, less of it as the sea builds.
         let waterline = horizon + (swell - horizon) * 0.7 / (1 + 0.6 * windiness)
-        let pitch = atan((stern - bow) / (s * 0.9)) * 0.35 / (1 + windiness)
+        let pitch = atan((right - left) / (s * 0.9)) * 0.35 / (1 + windiness)
         let rock: Double
         switch rig {
         case .furled: rock = sin(t * 0.8) * 0.035
@@ -501,7 +507,7 @@ private struct SceneDrawing {
         case .drawing, .powered: rock = sin(t * 0.9) * 0.02
         }
         let bob = rig == .slack ? sin(t * 0.7) * 0.5 : 0
-        return (waterline, waterline + s * 0.06 + bob, pitch + windSign * heel + rock)
+        return (waterline, waterline + s * 0.06 + bob, pitch + wind.heelTurn * heel + rock)
     }
 
     private func drawBoat(_ context: inout GraphicsContext) {
@@ -513,14 +519,14 @@ private struct SceneDrawing {
         if rig == .slack { drawReflection(&context, x: x, y: pose.waterline, s: s) }
 
         var boat = context
-        boat.translateBy(x: x, y: pose.y)
-        boat.rotate(by: .radians(pose.angle))
+        boat.concatenate(wind.boatTransform(at: CGPoint(x: x, y: pose.y), angle: pose.angle))
         if sky == .fog { boat.opacity = 0.7 }
         drawBoatShape(&boat, s: s)
     }
 
     /// Mast, boom, sails for the rig, pennant and hull, in the boat's own frame (origin at
-    /// the waterline amidships, bow to the left).
+    /// the waterline amidships, bow to the left); ``SceneWind/boatTransform(at:angle:)``
+    /// turns it to face downwind.
     private func drawBoatShape(_ boat: inout GraphicsContext, s: Double) {
         let wood = rgb(0.32, 0.26, 0.22)
         let sailColor = Theme.pearl
@@ -629,29 +635,30 @@ private struct SceneDrawing {
     private func drawPennant(_ context: inout GraphicsContext, masthead: CGPoint, s: Double) {
         let strength = min(weather.windSpeed / 10, 1)
         let length = s * 0.2
-        // 0 straight down … π/2 straight out downwind.
+        // 0 straight down … π/2 straight out downwind. The boat runs before the wind, so
+        // downwind is always toward the bow: −x in the boat's frame.
         let lift = (0.15 + strength * 1.42)
         let flapRate = 2 + strength * 7
         let flap = sin(t * flapRate) * (0.08 + (1 - strength) * 0.06)
         let a = lift + flap
-        let tip = CGPoint(x: masthead.x + windSign * sin(a) * length, y: masthead.y + cos(a) * length)
+        let tip = CGPoint(x: masthead.x - sin(a) * length, y: masthead.y + cos(a) * length)
         let mid = CGPoint(
-            x: masthead.x + windSign * sin(a + flap) * length * 0.5,
+            x: masthead.x - sin(a + flap) * length * 0.5,
             y: masthead.y + cos(a + flap) * length * 0.5 - s * 0.02)
         var pennant = Path()
         pennant.move(to: masthead)
         pennant.addQuadCurve(to: tip, control: mid)
         let back = CGPoint(
-            x: masthead.x + windSign * sin(a) * s * 0.02, y: masthead.y + s * 0.07 * (1 - strength * 0.4))
+            x: masthead.x - sin(a) * s * 0.02, y: masthead.y + s * 0.07 * (1 - strength * 0.4))
         pennant.addQuadCurve(to: back, control: CGPoint(x: (tip.x + back.x) / 2, y: (tip.y + back.y) / 2 + s * 0.02))
         pennant.closeSubpath()
         context.fill(pennant, with: .color(Theme.coral))
     }
 
-    /// A wake fading out behind the stern, longer the harder it sails.
+    /// A wake fading out behind the stern, upwind, longer the harder it sails.
     private func drawWake(_ context: inout GraphicsContext, x: Double, y: Double, s: Double) {
-        let length = s * (rig == .reefed ? 1.4 : 1)
-        let start = x + s * 0.45
+        let length = s * (rig == .reefed ? 1.4 : 1) * wind.wakeDirection
+        let start = x + s * 0.45 * wind.wakeDirection
         // Starts at the hull's waterline and settles onto the wave surface as it trails, so
         // it stays attached to the stern while the boat rides the damped swell.
         var wake = Path()
@@ -675,7 +682,7 @@ private struct SceneDrawing {
         var mirror = context
         mirror.clip(to: Path(CGRect(x: 0, y: y + 1, width: w, height: h - y)))
         mirror.translateBy(x: x, y: y + s * 0.12)
-        mirror.scaleBy(x: 1, y: -0.55)
+        mirror.scaleBy(x: wind.hullScale, y: -0.55)
         mirror.opacity = 0.22
         drawBoatShape(&mirror, s: s)
     }
@@ -699,5 +706,39 @@ private struct SceneDrawing {
         x = x &* 0xc4ceb9fe1a85ec53
         x ^= x >> 33
         return Double(x % 10_000) / 10_000
+    }
+}
+
+/// How the scene's wind runs across the card, and how the boat sits in it. The card is
+/// a side view looking north, so a west wind blows left to right. The boat is drawn in
+/// profile, where the wind runs along its length, so it can only be shown running before
+/// the wind: its bow points downwind, it leans downwind, its wake trails upwind and its
+/// pennant streams ahead. Pointing it the other way would put it head to wind, where it
+/// can't sail.
+struct SceneWind: Equatable {
+    /// +1 when the wind blows left to right on screen (from the west), −1 the other way.
+    /// Winds from near north or south, with little sideways push, blow left to right.
+    let sign: Double
+
+    init(windFrom degrees: Double) {
+        sign = sin(degrees * .pi / 180) > 0.2 ? -1 : 1
+    }
+
+    /// The bow's direction on screen: +1 right, −1 left. Always downwind.
+    var bowDirection: Double { sign }
+    /// The wake trails from the stern, upwind.
+    var wakeDirection: Double { -sign }
+    /// The sign of the heel's on-screen turn (clockwise positive), so the mast leans downwind.
+    var heelTurn: Double { sign }
+    /// The x scale that turns the boat's own frame (drawn bow to the left) to face downwind.
+    var hullScale: Double { -sign }
+
+    /// From the boat's own frame (origin at the waterline amidships, bow to the left, y
+    /// down) to the screen: faced downwind, turned by `angle` (clockwise positive), and
+    /// placed at `origin`.
+    func boatTransform(at origin: CGPoint, angle: Double) -> CGAffineTransform {
+        CGAffineTransform(scaleX: hullScale, y: 1)
+            .concatenating(CGAffineTransform(rotationAngle: angle))
+            .concatenating(CGAffineTransform(translationX: origin.x, y: origin.y))
     }
 }
