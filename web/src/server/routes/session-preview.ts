@@ -6,6 +6,7 @@ import { publicProfileLookup } from "../auth/users";
 import { sessionColumns, sessions, users } from "../db/schema";
 import { logFailure } from "../lib/logging";
 import { ogImage, ogInfo } from "../lib/og-image";
+import { sharingAvailable } from "../lib/sharing-available";
 import {
   BRAND_CARD_ALT,
   CARD_HEIGHT,
@@ -210,7 +211,13 @@ async function previewPage(
 
 export const sessionPreviewPage = new Hono<AppEnv>()
   .get("/s/:id", (c) =>
-    previewPage(c.env, c.req.raw, () => sessionPreview(c.env.DB, c.req.param("id")), GENERIC),
+    previewPage(
+      c.env,
+      c.req.raw,
+      // Nothing is shared while sharing is unavailable (lib/sharing-available.ts).
+      async () => (sharingAvailable(c.env) ? sessionPreview(c.env.DB, c.req.param("id")) : GENERIC),
+      GENERIC,
+    ),
   )
   // The route image the tags point to. Anything without one (private, deleted, unknown,
   // not yet processed) redirects to the brand card, so the answer never tells which.
@@ -221,7 +228,7 @@ export const sessionPreviewPage = new Hono<AppEnv>()
         status: 302,
         headers: { location: BRAND_IMAGE.path, "cache-control": "no-store" },
       });
-    if (!UUID.test(id)) return fallback();
+    if (!UUID.test(id) || !sharingAvailable(c.env)) return fallback();
     const image = await ogImage(c.env, id, c.req.raw, (work) =>
       c.executionCtx.waitUntil(work),
     ).catch((err) => {
@@ -238,7 +245,10 @@ export const profilePreviewPage = new Hono<AppEnv>()
     previewPage(
       c.env,
       c.req.raw,
-      () => profilePreview(c.env.DB, c.req.param("profileKey")),
+      async () =>
+        sharingAvailable(c.env)
+          ? profilePreview(c.env.DB, c.req.param("profileKey"))
+          : GENERIC_PROFILE,
       GENERIC_PROFILE,
     ),
   )

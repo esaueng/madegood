@@ -15,6 +15,7 @@ import { sessions, users, voyageLiveRegistry } from "../db/schema";
 import { requestAccountDeletion, runScheduledDeletion } from "../lib/account-deletion";
 import { apiError, errorResponse } from "../lib/errors";
 import { createRouter } from "../lib/router";
+import { sharingAvailable } from "../lib/sharing-available";
 import { TRACK_SPORTS } from "../lib/track";
 
 const security = [{ bearerAuth: [] }];
@@ -70,7 +71,8 @@ const UpdateMeRequest = z
           "false stops all sharing at once: every session becomes private, the default " +
           "visibility becomes private, the public profile is turned off (its link revoked), " +
           "live voyage links stop working, and nothing can be shared again until it is set " +
-          "back to true. Setting it to true shares nothing by itself.",
+          "back to true. Setting it to true shares nothing by itself, and is refused while " +
+          "sharing is unavailable on this server (GET /config `sharing`).",
       }),
     publicProfileDisplayName: z.string().max(50).nullable().optional().openapi({
       description: "The user-entered name for the public profile. Blank or null clears it.",
@@ -104,7 +106,8 @@ const patchRoute = createRoute({
     401: errorResponse("Missing or invalid access token, or the account no longer exists."),
     409: errorResponse(
       "The account differs, the handle or profile username is unavailable, or the request " +
-        "would share while sharing is turned off (`sharing_disabled`).",
+        "would share while sharing is turned off for the account or unavailable on this " +
+        "server (`sharing_disabled`).",
     ),
   },
 });
@@ -217,6 +220,11 @@ me.openapi(patchRoute, async (c) => {
     body.publicProfileEnabled === true;
   const stopSharing = body.sharingEnabled === false;
   if (stopSharing && shares) return sharingDisabled(c);
+  // While sharing is unavailable no account can turn its switch on, so nothing else can
+  // share either (lib/sharing-available.ts).
+  if (!sharingAvailable(c.env) && (shares || body.sharingEnabled === true)) {
+    return apiError(c, 409, "sharing_disabled", "Sharing is not available.");
+  }
   if (body.sharingEnabled !== undefined) changes.sharingEnabled = body.sharingEnabled;
   if (stopSharing) changes.defaultVisibility = "private";
   if (body.handle !== undefined) {

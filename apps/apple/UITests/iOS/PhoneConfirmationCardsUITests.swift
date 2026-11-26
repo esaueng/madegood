@@ -196,7 +196,9 @@ final class PhoneConfirmationCardsUITests: XCTestCase {
         return status.label
     }
 
-    func testTurnOffSharingCard() {
+    func testTurnOffSharingCard() throws {
+        // Settings hides the Sharing screen while sharing is unavailable (SessionSharing.isAvailable).
+        try XCTSkipIf(true, "Sharing is unavailable for now.")
         for look in Look.allCases {
             let app = launchDemoHistory(extraArguments: ["-demoSessionSync"] + look.arguments)
             app.tabBars.buttons["Settings"].tap()

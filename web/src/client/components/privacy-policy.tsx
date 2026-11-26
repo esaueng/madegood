@@ -240,6 +240,14 @@ export function PrivacyPolicy() {
 
       <Section id="sharing" title="Sharing">
         <p>
+          <strong>Sharing is unavailable for now.</strong> Every session is private: only you can
+          see it, on this website and in the iPhone app. Nothing can be made unlisted or public, and
+          public profiles cannot be enabled. When sharing was switched off, every unlisted or public
+          session became private and every public profile was turned off, so their links and
+          previews stopped working for others. The rest of this section describes how sharing works
+          when it is available.
+        </p>
+        <p>
           A new upload takes your account's <strong>Visibility of new sessions</strong> setting,
           which is Private unless you change it in{" "}
           <Link to="/settings" className={link}>

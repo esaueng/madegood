@@ -1,6 +1,13 @@
 import SwiftUI
 import WaterKit
 
+/// Sharing is unavailable for now: the server keeps every session private
+/// (web/src/server/lib/sharing-available.ts), so Settings hides the Sharing screen. Turn
+/// this back on only with the server's switch.
+enum SessionSharing {
+    static let isAvailable = false
+}
+
 /// Settings → Account → Sharing: the account-wide sharing switch and every session others
 /// can see, each with Make Private. Turning sharing off makes every session private on the
 /// server at once and keeps new uploads private until it is turned back on.

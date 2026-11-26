@@ -145,7 +145,8 @@ export async function replaceSessionMetadata(
 }
 
 /**
- * Creates the session with the account's default visibility, in one statement that also
+ * Creates the session with the account's default visibility (private while the account's
+ * sharing switch is off), in one statement that also
  * requires the account to be active (INSERT ... SELECT FROM users). Returns null when the
  * ID is taken or the account is gone or being deleted.
  */
@@ -159,7 +160,8 @@ export async function insertSession(
       `INSERT INTO sessions (id, user_id, visibility, upload_revision, sport, started_at,
          ended_at, duration_s, moving_s, distance_m, max_speed_mps, avg_speed_mps,
          summary_json, analyzer_version)
-       SELECT ?, id, default_visibility, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+       SELECT ?, id, CASE WHEN sharing_enabled = 1 THEN default_visibility ELSE 'private' END,
+         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
        FROM users WHERE id = ? AND deleted_at IS NULL
        ON CONFLICT (id) DO NOTHING`,
     )

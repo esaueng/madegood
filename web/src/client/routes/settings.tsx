@@ -24,6 +24,7 @@ import {
 import { meQueryKey, useDeleteAccount, useMe } from "@/lib/auth";
 import { formatDate, sessionTitle } from "@/lib/format";
 import { profileSettingsChanges } from "@/lib/profile-settings";
+import { useSharingAvailable } from "@/lib/site-config";
 
 const ZoneMap = lazy(() => import("@/components/zone-map"));
 
@@ -74,6 +75,7 @@ type SettingsSave = ReturnType<typeof useSaveSettings>;
 function Settings() {
   const { data: me, isPending, isFetching, isError } = useMe({ staleTime: 0 });
   const save = useSaveSettings(me?.id);
+  const sharing = useSharingAvailable();
   const [deleted, setDeleted] = useState(false);
   if (deleted) {
     return (
@@ -101,9 +103,9 @@ function Settings() {
   return (
     <div className="grid gap-10 py-6">
       <h1 className="text-2xl font-semibold">Settings</h1>
-      <Sharing me={me} save={save} />
-      <PublicProfile me={me} save={save} showLink={!isFetching && !isError} />
-      <Preferences me={me} save={save} />
+      {sharing && <Sharing me={me} save={save} />}
+      {sharing && <PublicProfile me={me} save={save} showLink={!isFetching && !isError} />}
+      <Preferences me={me} save={save} sharing={sharing} />
       <section>
         <h2 className="text-lg font-semibold">Heart rate zones</h2>
         <p className="mt-1 max-w-prose text-sm text-muted-foreground">
@@ -366,7 +368,7 @@ function SharedRow({
   );
 }
 
-function Preferences({ me, save }: { me: Me; save: SettingsSave }) {
+function Preferences({ me, save, sharing }: { me: Me; save: SettingsSave; sharing: boolean }) {
   return (
     <section className="grid gap-4 sm:max-w-md">
       <label className="grid gap-1 text-sm">
@@ -384,26 +386,28 @@ function Preferences({ me, save }: { me: Me; save: SettingsSave }) {
           ))}
         </select>
       </label>
-      <label className="grid gap-1 text-sm">
-        <span className="font-medium">Visibility of new sessions</span>
-        <select
-          className="h-9 rounded-md border bg-background px-2"
-          value={me.defaultVisibility}
-          disabled={save.isPending}
-          onChange={(e) => save.mutate({ defaultVisibility: e.target.value as Visibility })}
-        >
-          {(Object.keys(VISIBILITY) as Visibility[]).map((v) => (
-            <option key={v} value={v} disabled={!me.sharingEnabled && v !== "private"}>
-              {VISIBILITY[v].label}: {VISIBILITY[v].hint}
-            </option>
-          ))}
-        </select>
-        {!me.sharingEnabled && (
-          <span className="text-muted-foreground">
-            Sharing is off, so new sessions stay private.
-          </span>
-        )}
-      </label>
+      {sharing && (
+        <label className="grid gap-1 text-sm">
+          <span className="font-medium">Visibility of new sessions</span>
+          <select
+            className="h-9 rounded-md border bg-background px-2"
+            value={me.defaultVisibility}
+            disabled={save.isPending}
+            onChange={(e) => save.mutate({ defaultVisibility: e.target.value as Visibility })}
+          >
+            {(Object.keys(VISIBILITY) as Visibility[]).map((v) => (
+              <option key={v} value={v} disabled={!me.sharingEnabled && v !== "private"}>
+                {VISIBILITY[v].label}: {VISIBILITY[v].hint}
+              </option>
+            ))}
+          </select>
+          {!me.sharingEnabled && (
+            <span className="text-muted-foreground">
+              Sharing is off, so new sessions stay private.
+            </span>
+          )}
+        </label>
+      )}
       {save.isError &&
         (save.variables?.units !== undefined ||
           save.variables?.defaultVisibility !== undefined) && (

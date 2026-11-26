@@ -23,6 +23,7 @@ import {
   storeTrack,
   UPLOAD_REVISION_HEADER,
 } from "../lib/session-upload";
+import { sharingAvailable } from "../lib/sharing-available";
 import { deletePrefix, userPrefix } from "../lib/storage";
 import {
   checkTrack,
@@ -425,12 +426,20 @@ const notFound = (c: Context) => apiError(c, 404, "not_found", "No such session.
 const unknownUser = (c: Context) =>
   apiError(c, 401, "unauthorized", "The account no longer exists.");
 
-/** Read the session and its owner's sharing state in the same D1 snapshot. */
-async function findReadableSession(db: ReturnType<typeof drizzle>, id: string) {
+/**
+ * Read the session and its owner's sharing state in the same D1 snapshot. While sharing is
+ * unavailable on this server (lib/sharing-available.ts), every owner's switch reads as off,
+ * so nobody else can see the session, whatever the row says.
+ */
+async function findReadableSession(
+  db: ReturnType<typeof drizzle>,
+  id: string,
+  available: boolean,
+): Promise<ReadableSession | undefined> {
   const [row] = await selectReadableSessions(db).where(
     and(eq(sessions.id, id), isNull(sessions.deletedAt)),
   );
-  return row;
+  return row && { ...row, sharingEnabled: row.sharingEnabled && available };
 }
 
 /** Both owners and other viewers use the public track for wind. */
@@ -795,7 +804,7 @@ sessionRoutes.openapi(getRoute, async (c) => {
   const { id } = c.req.valid("param");
   const viewerId = c.var.viewerId;
   const db = drizzle(c.env.DB);
-  const row = await findReadableSession(db, id);
+  const row = await findReadableSession(db, id, sharingAvailable(c.env));
   if (!row || !canView(row, viewerId)) return notFound(c);
   c.header("Cache-Control", "private, no-store");
 
@@ -811,12 +820,12 @@ sessionRoutes.openapi(getRoute, async (c) => {
     current.session.processedEtag === row.session.processedEtag &&
     sharedWindRequest(current, now)?.href === url.href;
   const wind = await cachedWind(c.env, credentials, url, async () => {
-    const current = await findReadableSession(db, id);
+    const current = await findReadableSession(db, id, sharingAvailable(c.env));
     return current !== undefined && matches(current);
   });
 
   // The session, track or privacy zones can change while the cache or Apple answers.
-  const current = await findReadableSession(db, id);
+  const current = await findReadableSession(db, id, sharingAvailable(c.env));
   if (!current || !canView(current, viewerId)) return notFound(c);
   return c.json(toSessionBody(current, viewerId, matches(current) ? wind : null), 200);
 });
@@ -953,7 +962,7 @@ sessionRoutes.openapi(getTrackRoute, async (c) => {
   const { id } = c.req.valid("param");
   const viewerId = c.var.viewerId;
   const db = drizzle(c.env.DB);
-  const row = await findReadableSession(db, id);
+  const row = await findReadableSession(db, id, sharingAvailable(c.env));
   if (!row || !canView(row, viewerId)) return notFound(c);
   const session = row.session;
 
@@ -989,7 +998,7 @@ sessionRoutes.openapi(getTrackRoute, async (c) => {
     ).arrayBuffer();
     // Deletion can remove the zones, and the owner can make the session private or turn
     // sharing off, after this request obtained the R2 object. Recheck before sending.
-    const current = await findReadableSession(db, id);
+    const current = await findReadableSession(db, id, sharingAvailable(c.env));
     if (
       !current ||
       !canView(current, viewerId) ||

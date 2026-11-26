@@ -20,6 +20,8 @@ interface WorkerSecrets extends WeatherKitSecrets {
 interface DashboardVars {
   /** Public Apple download link, set on the Worker in the Cloudflare dashboard. */
   DOWNLOAD_URL?: string;
+  /** `on` makes sharing available (lib/sharing-available.ts). Unset keeps it off. */
+  SHARING?: string;
 }
 
 interface Env extends WorkerSecrets, DashboardVars {}

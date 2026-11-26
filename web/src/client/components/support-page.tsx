@@ -129,11 +129,11 @@ export function SupportPage() {
               iPhone, where the export controls are.
             </p>
             <p>
-              An account is optional. It lets you sync sessions to this website to browse, replay
-              and share them. You sign in with Apple: in the iPhone app under{" "}
-              <Path>Settings → Account</Path>, then turn on <Path>Sync sessions</Path>. MadeGood
-              asks Apple for your name only, never your email address, and you can choose not to
-              share it. Sessions recorded before you signed in upload only if you choose.
+              An account is optional. It lets you sync sessions to this website to browse and replay
+              them. You sign in with Apple: in the iPhone app under <Path>Settings → Account</Path>,
+              then turn on <Path>Sync sessions</Path>. MadeGood asks Apple for your name only, never
+              your email address, and you can choose not to share it. Sessions recorded before you
+              signed in upload only if you choose.
             </p>
           </Question>
 
@@ -179,39 +179,11 @@ export function SupportPage() {
             <p>Exports contain precise locations and times, so share them with care.</p>
           </Question>
 
-          <Question id="sharing" title="How do sharing, public profiles and privacy zones work?">
+          <Question id="sharing" title="Can I share a session?">
             <p>
-              Sessions are private unless you choose otherwise. To share one, sign in on this
-              website, open the session and set its <Path>Visibility</Path>: <em>Unlisted</em>{" "}
-              (anyone with the link) or <em>Public</em> (anyone). Others see the track, statistics,
-              title and notes, never your heart rate. Settings sets the visibility new sessions get
-              when they upload: it starts as private, and if you change it to Unlisted or Public,
-              new sessions are shared that way automatically.
-            </p>
-            <p>
-              Settings lists every session you share, each with <em>Make private</em>, on the
-              website and in the iPhone app (Settings → Sharing). Turn off <em>Allow sharing</em>{" "}
-              there to stop sharing everything at once: every session becomes private, its links
-              stop working, your public profile turns off, and new sessions stay private until you
-              turn sharing back on.
-            </p>
-            <p>
-              Your public profile is off by default. To publish it, open Settings and select
-              <strong> Enable public profile</strong>. Once you have a public session, the profile
-              shows your display name and public sessions. The link uses a random ID unless you
-              choose a custom URL username. Turn the profile off at any time to hide its link and
-              page. Each session keeps its own visibility.
-            </p>
-            <p>
-              Privacy zones hide the parts of your track near places such as home or your usual
-              launch spot. They don't change a session's title or notes, so leave places out of
-              those if you share it. In{" "}
-              <Link to="/settings" className={`${link} ${focusRing}`}>
-                Settings
-              </Link>{" "}
-              on this website, click the map to place a zone and choose its size. Everyone else sees
-              your shared sessions with those areas cut out, including sessions shared before you
-              added the zone. You always see your whole track.
+              Not for now. Sharing is unavailable, so every synced session is private: only you can
+              see it, on this website and in the iPhone app. To give someone a session, export it
+              from the iPhone as GPX (see above) and send the file yourself.
             </p>
           </Question>
 

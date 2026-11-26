@@ -25,6 +25,7 @@ import {
   speedUnit,
   toSpeed,
 } from "@/lib/format";
+import { useSharingAvailable } from "@/lib/site-config";
 import {
   fetchTrack,
   heartRateAt,
@@ -151,6 +152,7 @@ function Header({ session, showProfile }: { session: Session; showProfile: boole
   const current = VISIBILITY[session.visibility];
   const owner = showProfile && session.visibility === "public" ? session.owner : null;
   const sharingOff = useMe().data?.sharingEnabled === false;
+  const sharing = useSharingAvailable();
   return (
     <header className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
       <div className="min-w-0">
@@ -171,7 +173,7 @@ function Header({ session, showProfile }: { session: Session; showProfile: boole
           )}
         </p>
       </div>
-      {session.isOwner ? (
+      {session.isOwner && sharing ? (
         <label className="flex shrink-0 items-center gap-2 text-sm">
           <span className="text-muted-foreground">Visibility</span>
           <select

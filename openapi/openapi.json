@@ -280,7 +280,7 @@
           },
           "sharingEnabled": {
             "type": "boolean",
-            "description": "false stops all sharing at once: every session becomes private, the default visibility becomes private, the public profile is turned off (its link revoked), live voyage links stop working, and nothing can be shared again until it is set back to true. Setting it to true shares nothing by itself."
+            "description": "false stops all sharing at once: every session becomes private, the default visibility becomes private, the public profile is turned off (its link revoked), live voyage links stop working, and nothing can be shared again until it is set back to true. Setting it to true shares nothing by itself, and is refused while sharing is unavailable on this server (GET /config `sharing`)."
           },
           "publicProfileDisplayName": {
             "type": [
@@ -1766,10 +1766,15 @@
                         "url",
                         "store"
                       ]
+                    },
+                    "sharing": {
+                      "type": "boolean",
+                      "description": "Whether sharing is available on this server. While false, nothing can be made unlisted or public and the public profile cannot be enabled."
                     }
                   },
                   "required": [
-                    "download"
+                    "download",
+                    "sharing"
                   ]
                 }
               }
@@ -2012,7 +2017,7 @@
             }
           },
           "409": {
-            "description": "The account differs, the handle or profile username is unavailable, or the request would share while sharing is turned off (`sharing_disabled`).",
+            "description": "The account differs, the handle or profile username is unavailable, or the request would share while sharing is turned off for the account or unavailable on this server (`sharing_disabled`).",
             "content": {
               "application/json": {
                 "schema": {

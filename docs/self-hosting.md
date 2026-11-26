@@ -104,6 +104,7 @@ Secrets are set with `wrangler secret put`, and locally in `web/.dev.vars` (giti
 | `APPLE_AUDIENCES` | var in `wrangler.jsonc` | Comma-separated Sign in with Apple audiences for the apps: your iOS bundle ID, `<prefix>`. |
 | `APPLE_WEB_CLIENT_ID` | var in `wrangler.jsonc` | Your Sign in with Apple **Services ID** for the website. Empty turns web sign-in off. |
 | `APP_VERSION` | var in `wrangler.jsonc` | Shown by `GET /api/health` and in the site footer. |
+| `SHARING` | dashboard or `.dev.vars` | `on` makes sharing available: unlisted and public sessions, public profiles and live voyage links. Unset (the default, and production today) keeps every session private and hides sharing on the website and iPhone. Migration `0018_sharing_unavailable` made everything private once; switching it off again after turning it on needs another such migration (`web/src/server/lib/sharing-available.ts`). The iPhone hides its Sharing screen separately (`SessionSharing.isAvailable`). |
 | `VOYAGE_LIVE_LOCAL`, `VOYAGE_PRIVATE_LOCAL` | `.dev.vars` only | `1` turns on the Voyage prototypes for local development and tests. Leave unset when deployed. |
 
 ```sh

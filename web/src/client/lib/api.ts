@@ -187,7 +187,13 @@ export async function fetchHealth(): Promise<Health> {
 
 export type DownloadLink = { url: string; store: "testflight" | "app-store" };
 
-export async function fetchSiteConfig(): Promise<{ download: DownloadLink | null }> {
+export type SiteConfig = {
+  download: DownloadLink | null;
+  /** Whether sharing is available on this server; while false, everything stays private. */
+  sharing: boolean;
+};
+
+export async function fetchSiteConfig(): Promise<SiteConfig> {
   const response = await fetch("/api/config");
   if (!response.ok) throw await failure(response);
   return response.json();

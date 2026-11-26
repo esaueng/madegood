@@ -6,6 +6,7 @@ import { pendingR2Deletes, type User, users } from "../db/schema";
 import { purgeAccountVoyages } from "../live/registry";
 import { logFailure } from "./logging";
 import { collectR2Garbage, recordSessionTrackKeys, UPLOAD_GRACE_MS } from "./r2-garbage";
+import { sharingAvailable } from "./sharing-available";
 import { deletePrefix, userPrefix } from "./storage";
 
 // Account deletion (DELETE /api/me) as a durable job.
@@ -38,7 +39,7 @@ export const DELETION_ALERT_ATTEMPTS = 8;
 export const deletionBackoffMs = (attempts: number) =>
   Math.min(60_000 * 2 ** Math.max(0, attempts - 1), 6 * 3600 * 1000);
 
-type DeletionEnv = Pick<Env, "DB" | "TRACKS"> & Partial<Pick<Env, "VOYAGE_LIVE">>;
+type DeletionEnv = Pick<Env, "DB" | "TRACKS"> & Partial<Pick<Env, "VOYAGE_LIVE" | "SHARING">>;
 
 /**
  * Marks the account deleting and revokes its sign-ins. Returns false when the account is
@@ -226,7 +227,9 @@ export async function signInAppleSubject<T>(
   const db = drizzle(env.DB);
   for (let attempt = 0; ; attempt += 1) {
     try {
-      const { user } = await findOrCreateUser(db, sub, displayName);
+      const { user } = await findOrCreateUser(db, sub, displayName, {
+        sharingEnabled: sharingAvailable(env),
+      });
       return { user, tokens: await issue(user) };
     } catch (error) {
       if (error instanceof AccountDeleting && attempt === 0 && (await finishIfDue(env, error))) {

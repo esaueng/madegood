@@ -20,7 +20,7 @@ get a rejection.
 | 5 | ~~TestFlight builds have no sync.~~ Done: the owner set the `MADEGOOD_API_URL` repository secret to `https://madegood.app/api`, which the TestFlight workflow writes into the archive (`.github/workflows/testflight.yml`, [releasing.md](releasing.md)). The checked-in `MadeGood.xcconfig` value stays empty, so local builds still show "Account sync isn't set up in this build." Check that Settings → Account offers Sign in with Apple in the archive you submit. | The listing, review notes and label below describe a build with sync configured. |
 | 6 | ~~Health permission strings.~~ Done: the Health, motion and location strings in `Project.swift` now say what the app does (saves workouts with route and heart rate; motion counts paddle strokes). | Reviewers check that purpose strings describe what the app actually does (5.1.1(i)). |
 | 7 | ~~No full data export.~~ Done (#79): the website's Settings → Export your data starts a background export (`POST /api/me/exports`; status and parts from `GET /api/me/exports/{id}`), and iPhone Settings → Your Data → Export All Recordings zips the recordings on the phone. | Not an App Store requirement; the privacy policy describes it. |
-| 8 | ~~Listing copy predates #77–#102.~~ Done: [Listing](#listing) has the final name, subtitle, promotional text, description, keywords, URLs and What's New, with character counts. It covers the start line (#77), iPhone man-overboard (#81), public profiles and route previews (#95, #96), heart-rate zones (#97), windsurf planing and gybes (#100), the anchor alarm (#101) and stroke intervals (#102), and leaves out Voyages. | Metadata must describe what the build does (2.3.1). |
+| 8 | ~~Listing copy predates #77–#102.~~ Done: [Listing](#listing) has the final name, subtitle, promotional text, description, keywords, URLs and What's New, with character counts. It covers the start line (#77), iPhone man-overboard (#81), public profiles and route previews (#95, #96; removed again with sharing, item 17), heart-rate zones (#97), windsurf planing and gybes (#100), the anchor alarm (#101) and stroke intervals (#102), and leaves out Voyages. | Metadata must describe what the build does (2.3.1). |
 | 9 | ~~Purpose strings predate the start line, iPhone man-overboard and the anchor alarm.~~ Done: both location strings in `Project.swift` name start-line pings and man-overboard marks, and the iPhone one names the anchor alarm; the AlarmKit string names the GPS backup alarm; the Health read string names heart-rate zones; the motion string says the samples stay on the device. | 5.1.1(i), as item 6. |
 | 10 | ~~Label and policy predate public profiles, route images and rate limiting.~~ Done: the label section below covers the public profile (#95), route preview images (#96), rate limiting (#98) and the anchor alarm, and `/privacy` describes all four. | The label and the policy must match what the service processes. |
 | 11 | ~~No support page.~~ Done (#136): https://madegood.app/support has the contact address support@madegood.app (forwarding tested by the owner), GitHub issues, common questions and the navigation notice. It is the Support URL below. | App Store Connect requires a Support URL that leads to a way to contact the developer. |
@@ -29,6 +29,7 @@ get a rejection.
 | 14 | **App Review needs a screen recording of a real session.** The demo modes (`-demoSession`, `-demoOCS`, `-demoOffWater`) are Debug-only (`DemoFeed.isEnabled` is `false` in Release), and tacks, gybes, planing, strokes and the start line's time to burn and line bias cannot be shown on land. Record a real session on the water with the Release build and attach it in App Store Connect → App Review Information → Attachment (or link it in the notes). Don't show the precise location of a home or other private place. | Without it, a reviewer can check only speed and distance (2.1, completeness). |
 | 15 | **Confirm Cloudflare's production settings (owner, in the dashboard).** #135 turned off persisted Workers observability and Logpush in `wrangler.jsonc`, but nobody has checked the production account and zone. Check: (a) the zone's plan and Security Analytics / Security Events retention (31 days on Free, Pro and Business, 90 days for Security Analytics on Enterprise); (b) that no zone-level HTTP request logging, Logpush or Instant Logs job is configured; (c) that Workers Logs and traces are off for the `madegood` Worker; (d) who has dashboard access to the zone. Then confirm the Coarse Location row and the Diagnostics answer below, and the 31-day figure in `/privacy`. | The label and the policy's IP section depend on what the zone actually retains. |
 | 16 | **WeatherKit server key and the 4 Worker secrets set (owner).** #140 reads the WeatherKit key from four Worker secrets: `WEATHERKIT_PRIVATE_KEY`, `WEATHERKIT_KEY_ID`, `WEATHERKIT_TEAM_ID` and `WEATHERKIT_SERVICE_ID`. Create the WeatherKit key in the Apple Developer account and set them with `wrangler secret put` in production. Never commit them ([self-hosting.md](self-hosting.md)). | Without them, shared sessions get no wind; the policy describes the WeatherKit path. |
+| 17 | ~~Session sharing and the public web views of sessions and profiles.~~ Off for now: the server keeps every session private (`SHARING` unset, `web/src/server/lib/sharing-available.ts`), migration `0018_sharing_unavailable` made every unlisted or public session private and turned every public profile off, and neither the website nor the iPhone (`SessionSharing.isAvailable`) shows sharing controls. Nothing a user records is shown to anyone else, so the label has no **Data shared publicly** entry and the listing must not mention sharing. Live voyage sharing was already Debug-only (item 12). | Keeps the app out of location sharing with other people, and the metadata must describe what the build does (2.3.1). |
 
 ## Privacy nutrition label
 
@@ -83,15 +84,15 @@ rotated or signed out). Sessions upload only after the user also turns on **Sync
 sessions**, which is off after every new sign-in (`SessionSyncConsent`). The iPhone does
 not fetch or show the account's Visibility of new sessions; the server applies it at
 upload (`web/src/server/lib/session-upload.ts`), and a static note under **Sync
-sessions** says so: "New uploads use your account's Visibility of new sessions, which
-you set in Settings on madegood.app. If it's Unlisted or Public, new sessions are shared
-that way automatically." Proposed answers, with the
+sessions** says so. While sharing is unavailable (item 17) that default is always private
+and the note reads: "Uploaded sessions are private: only you can see them, here and on
+madegood.app." Proposed answers, with the
 stage at which each type is collected:
 
 | App Store category | Data type | Collected | Linked to the user | Used for tracking | Purpose | What it is in the code |
 |---|---|---|---|---|---|---|
-| Identifiers | User ID | Yes, at sign-in | Yes | No | App Functionality | Apple's stable user identifier (`apple_sub`), the account ID and handle. Enabled profiles can expose an independent random ID and an optional URL username |
-| Contact Info | Name | Yes, at sign-in or in profile settings, optional | Yes | No | App Functionality | The account name Apple shares if the user allows it, plus a separate name the user can enter for their public profile. The chosen profile name is public while the profile is enabled and the account has a public session. Email is not requested (`requestedScopes = [.fullName]`) |
+| Identifiers | User ID | Yes, at sign-in | Yes | No | App Functionality | Apple's stable user identifier (`apple_sub`), the account ID and handle. Enabled profiles can expose an independent random ID and an optional URL username; no profile can be enabled while sharing is unavailable (item 17) |
+| Contact Info | Name | Yes, at sign-in or in profile settings, optional | Yes | No | App Functionality | The account name Apple shares if the user allows it, plus a separate name the user can enter for their public profile. The chosen profile name is public only while the profile is enabled and the account has a public session, which cannot happen while sharing is unavailable (item 17). Email is not requested (`requestedScopes = [.fullName]`) |
 | Location | Precise location | Yes: tracks with Sync sessions on; privacy zones whenever added on the website | Yes | No | App Functionality | The session's GPS track (track v1 in R2), its bounding box and start geohash (D1), uploaded from the iPhone only with Sync sessions on. Separately, privacy zone centers (`privacy-zones.ts`), which a signed-in user saves on the website, from the map or the browser's location, whether or not iPhone sync is on. Covers the rounded server wind lookup below |
 | Location | Coarse location | Yes, from the first sign-in attempt (any API request) | Yes | No | App Functionality | The client IP address, and the country Cloudflare shows for it, in sampled request records that zone Security Analytics keeps up to 31 days, used only for security (below) |
 | Health & Fitness | Health | Yes, with Sync sessions on | Yes | No | App Functionality | Heart rate samples in the track, average and max heart rate in the summary |
@@ -202,7 +203,9 @@ logs. A refused request gets HTTP 429 with `Retry-After: 60`. No row of its own:
 limiter's counter is not readable by the developer, and the IP's retained copy is
 already declared under Coarse Location above.
 
-**Data shared publicly.** A new upload takes the account's **Visibility of new
+**Data shared publicly: none while sharing is unavailable** (item 17). Every session is
+private and no account can turn sharing on. The rest of this paragraph and the next
+describe sharing for when it returns. A new upload takes the account's **Visibility of new
 sessions** setting (`users.default_visibility`, applied on insert in
 `session-upload.ts`). That setting is Private unless the user changes it in the
 website's Settings, where Unlisted or Public make future uploads shared without a
@@ -432,7 +435,7 @@ needed: nothing uses those APIs.
 Paste the quoted block into App Store Connect → App Review Information → Notes. It
 describes a Release archive with sync configured (item 5) and Voyages hidden (item 12).
 Attach the screen recording of a real session (item 14). App Store Connect allows 4,000 bytes;
-as plain text (bold markers removed, one line per paragraph) the note is 3,886 UTF-8
+as plain text (bold markers removed, one line per paragraph) the note is 3,877 UTF-8
 bytes.
 
 > MadeGood records sailing, windsurfing, kayak, canoe, SUP and motorboat sessions on
@@ -485,7 +488,7 @@ bytes.
 > **Sign in, sync and account deletion.** In Settings → Account, tap Sign in with
 > Apple. This creates the account (Apple's user ID and, if shared, your name) but
 > uploads no sessions. Turn on **Sync sessions**. New uploads take the account's
-> Visibility of new sessions, set on the website (Private for a new account). Sessions recorded more than
+> Uploaded sessions are private; sharing is not available in this version. Sessions recorded more than
 > ten minutes after signing in upload automatically. One recorded sooner, or before
 > sign-in, waits: tap Upload Earlier Sessions. View it at https://madegood.app, signed
 > in with the same Apple ID. Settings → Account → Delete Account deletes the account and
@@ -523,7 +526,7 @@ Final copy for App Store Connect. Counts are characters as App Store Connect cou
 |---|---|---|---|
 | Name | 30 | 30 | MadeGood: Sail & Kayak Tracker |
 | Subtitle | 30 | 30 | Windsurf, SUP, Canoe & Boating |
-| Promotional text | 170 | 154 | Record sailing, windsurfing, paddling and motorboat sessions on Apple Watch and iPhone. No account needed, and sessions are private unless you share them. |
+| Promotional text | 170 | 138 | Record sailing, windsurfing, paddling and motorboat sessions on Apple Watch and iPhone. No account needed, and your sessions stay private. |
 | Keywords | 100 | 98 | `paddle,paddleboard,dinghy,regatta,race,GPS,speed,speedsurf,anchor,motorboat,tack,gybe,VMG,nautical` |
 | Support URL | — | — | https://madegood.app/support (item 11) |
 | Marketing URL | — | — | https://madegood.app |
@@ -540,8 +543,9 @@ Final copy for App Store Connect. Counts are characters as App Store Connect cou
   it may not appear for 1.0. Keep the text for a 1.0.x release note if so.
 - **Promotional text** can change without a new build, so it stays general; use it
   later for news.
-- **Description:** 3,060 of 4,000 characters. It claims only what this build does,
-  says "Not for navigation", says the account is optional, and leaves out Voyages.
+- **Description:** 2,800 of 4,000 characters. It claims only what this build does,
+  says "Not for navigation", says the account is optional, and leaves out Voyages and
+  sharing (item 17).
 
 ```text
 MadeGood records your time on the water with Apple Watch, iPhone, or both. Start a session, put the phone in a dry bag or the watch on your wrist, and review your track, speed and sport-specific numbers afterwards. You don't need an account: sessions are recorded and stored on your devices.
@@ -580,10 +584,10 @@ APPLE HEALTH
 Save sessions to Apple Health as workouts with the route and heart rate. You choose per sport.
 
 OPTIONAL ACCOUNT
-Sign in with Apple and turn on Sync sessions to upload them to madegood.app, where you can browse, replay and share them. Uploads are private unless you share them, one by one or with a default you set. An unlisted session is visible to anyone with its link; a public one appears on your public profile if you enable it in website Settings. Privacy zones cut places you choose, like home, out of shared tracks. Shared links preview with a route image. You can export everything in your account and delete the account from the app or the website.
+Sign in with Apple and turn on Sync sessions to upload them to madegood.app, where you can browse and replay them. Uploaded sessions are private: only you can see them. You can export everything in your account and delete the account from the app or the website.
 
 PRIVACY
-No ads, no analytics, no tracking. Without an account, your sessions stay on your devices unless you share or export them.
+No ads, no analytics, no tracking. Without an account, your sessions stay on your devices unless you export them.
 
 NOT FOR NAVIGATION
 Maps, the start line, man-overboard and the anchor alarm are aids. They depend on GPS and on the app running, and they don't replace a lookout, charts or proper seamanship. Speeds are personal records, not certified measurements.
@@ -596,9 +600,9 @@ Requires iOS 26. The Apple Watch app requires watchOS 26.
 
 - **Category:** Sports (primary), Health & Fitness (secondary). Confirm.
 - **Age rating:** 4+ (no objectionable content; no unrestricted web access; no
-  user-to-user communication). Shared sessions show user-written titles and notes on the
-  website, not in the app. Confirm the user-generated content answer in
-  the current questionnaire.
+  user-to-user communication). Nothing a user writes is shown to anyone else while sharing
+  is unavailable (item 17). Confirm the user-generated content answer in the current
+  questionnaire.
 - **Export compliance:** `ITSAppUsesNonExemptEncryption = false` is set (HTTPS only).
 - **Screenshots:** `scripts/app-store-screenshots` (after generating the Xcode project)
   runs the `PhoneAppStoreScreenshots` and `WatchAppStoreScreenshots` UI test classes on

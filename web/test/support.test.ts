@@ -45,12 +45,13 @@ describe("/support", () => {
     expect(questionId("")).toBe("");
   });
 
-  it("does not promise private-forever sessions or export on the watch", async () => {
-    // Regression (PR #136 review): new uploads take the account's default visibility,
-    // and export controls are on the iPhone.
+  it("says sharing is unavailable and does not promise export on the watch", async () => {
+    // Regression (PR #136 review): export controls are on the iPhone. Sharing is unavailable
+    // for now (src/server/lib/sharing-available.ts), so nothing points to sharing controls.
     const html = await renderSupport();
-    expect(html).not.toContain("Every session is private until you change it");
-    expect(html).toContain("shared that way automatically");
+    expect(html).toContain("Sharing is unavailable, so every synced session is private");
+    expect(html).not.toContain("Allow sharing");
+    expect(html).not.toContain("Enable public profile");
     expect(html).not.toContain("export sessions on your iPhone and Apple Watch");
   });
 });

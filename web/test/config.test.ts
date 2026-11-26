@@ -9,7 +9,7 @@ describe("GET /api/config", () => {
     const response = await exports.default.fetch("https://madegood.test/api/config");
     expect(response.status).toBe(200);
     expect(response.headers.get("cache-control")).toBe("no-store");
-    expect(await response.json()).toEqual({ download: null });
+    expect(await response.json()).toEqual({ download: null, sharing: true });
   });
 
   it.each([
@@ -18,7 +18,7 @@ describe("GET /api/config", () => {
   ])("serves the configured link %s for %s", async (url, store) => {
     const response = await app.request("/api/config", {}, { ...env, DOWNLOAD_URL: url });
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ download: { url, store } });
+    expect(await response.json()).toEqual({ download: { url, store }, sharing: true });
   });
 
   it.each([
@@ -33,6 +33,6 @@ describe("GET /api/config", () => {
   ])("returns no download link for %j", async (value) => {
     const response = await app.request("/api/config", {}, { ...env, DOWNLOAD_URL: value });
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ download: null });
+    expect(await response.json()).toEqual({ download: null, sharing: true });
   });
 });
