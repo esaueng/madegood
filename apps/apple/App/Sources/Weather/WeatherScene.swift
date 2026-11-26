@@ -533,13 +533,8 @@ private struct SceneDrawing {
             main.addLine(to: CGPoint(x: s * 0.03, y: -s * 0.18))
             main.closeSubpath()
             boat.fill(main, with: .color(sailColor.opacity(0.92)))
-            var jib = Path()
-            jib.move(to: CGPoint(x: -s * 0.03, y: -s * 0.9))
-            jib.addQuadCurve(
-                to: CGPoint(x: -s * 0.34 - stir, y: -s * 0.14), control: CGPoint(x: -s * 0.08, y: -s * 0.4))
-            jib.addLine(to: CGPoint(x: -s * 0.03, y: -s * 0.14))
-            jib.closeSubpath()
-            boat.fill(jib, with: .color(rgb(0.9, 0.93, 0.92).opacity(0.92)))
+            // The jib's leech sags in toward the forestay.
+            boat.fill(jib(s: s, furl: 0, roach: -0.07 - stir / s), with: .color(rgb(0.9, 0.93, 0.92).opacity(0.92)))
 
         case .drawing, .powered, .reefed:
             // Taut sails: the more wind, the deeper the curve.
@@ -567,15 +562,10 @@ private struct SceneDrawing {
                         cornerRadius: s * 0.035),
                     with: .color(sailColor.opacity(0.85)))
             }
-            var jib = Path()
-            let jibHead = rig == .reefed ? -s * 0.6 : -s * 0.92
-            jib.move(to: CGPoint(x: -s * 0.03, y: jibHead))
-            jib.addQuadCurve(
-                to: CGPoint(x: -s * 0.4, y: -s * 0.14),
-                control: CGPoint(x: -s * (0.12 + belly), y: jibHead * 0.45))
-            jib.addLine(to: CGPoint(x: -s * 0.03, y: -s * 0.14))
-            jib.closeSubpath()
-            boat.fill(jib, with: .color(rgb(0.9, 0.93, 0.92)))
+            // Partly rolled away when reefed; the leech fills out aft with the wind.
+            let jibSail = jib(s: s, furl: rig == .reefed ? 0.35 : 0, roach: belly * 0.35 + flutter / s)
+            boat.fill(jibSail, with: .color(rgb(0.9, 0.93, 0.92)))
+            boat.stroke(jibSail, with: .color(.black.opacity(0.12)), lineWidth: 0.8)
 
         case .furled:
             // Sails stowed: the main lashed to the boom, the jib taken down.
@@ -586,6 +576,13 @@ private struct SceneDrawing {
                 with: .color(sailColor))
         }
 
+        // Forestay, from just under the masthead down to the stemhead.
+        boat.stroke(
+            Path {
+                $0.move(to: forestayTop(s)); $0.addLine(to: stemhead(s))
+            },
+            with: .color(wood.opacity(0.7)), style: StrokeStyle(lineWidth: 0.9, lineCap: .round))
+
         // Boom.
         boat.stroke(
             Path {
@@ -595,13 +592,15 @@ private struct SceneDrawing {
 
         drawPennant(&boat, masthead: masthead, s: s)
 
-        // Hull.
+        // Hull: a raked, pointed bow (left) and a near-upright transom stern (right), so
+        // the way it's heading reads at a glance.
         var hull = Path()
-        hull.move(to: CGPoint(x: -s * 0.56, y: -s * 0.1))
-        hull.addLine(to: CGPoint(x: s * 0.58, y: -s * 0.1))
-        hull.addQuadCurve(to: CGPoint(x: s * 0.36, y: s * 0.17), control: CGPoint(x: s * 0.52, y: s * 0.12))
-        hull.addLine(to: CGPoint(x: -s * 0.34, y: s * 0.17))
-        hull.addQuadCurve(to: CGPoint(x: -s * 0.56, y: -s * 0.1), control: CGPoint(x: -s * 0.52, y: s * 0.12))
+        hull.move(to: stemhead(s))
+        hull.addLine(to: CGPoint(x: s * 0.54, y: -s * 0.1))
+        hull.addLine(to: CGPoint(x: s * 0.47, y: s * 0.1))
+        hull.addQuadCurve(to: CGPoint(x: s * 0.3, y: s * 0.17), control: CGPoint(x: s * 0.45, y: s * 0.17))
+        hull.addLine(to: CGPoint(x: -s * 0.22, y: s * 0.17))
+        hull.addQuadCurve(to: stemhead(s), control: CGPoint(x: -s * 0.52, y: s * 0.14))
         hull.closeSubpath()
         boat.fill(
             hull,
@@ -609,8 +608,33 @@ private struct SceneDrawing {
                 Gradient(colors: [Theme.coral, rgb(0.82, 0.4, 0.28)]), startPoint: CGPoint(x: 0, y: -s * 0.1),
                 endPoint: CGPoint(x: 0, y: s * 0.17)))
         boat.fill(
-            Path(CGRect(x: -s * 0.56, y: -s * 0.12, width: s * 1.14, height: s * 0.035)),
+            Path(CGRect(x: -s * 0.6, y: -s * 0.12, width: s * 1.14, height: s * 0.035)),
             with: .color(Theme.pearl.opacity(0.9)))
+    }
+
+    /// Where the forestay meets the mast, in the boat's frame.
+    private func forestayTop(_ s: Double) -> CGPoint { CGPoint(x: 0, y: -s * 0.92) }
+    /// The tip of the bow, where the forestay comes down to the deck.
+    private func stemhead(_ s: Double) -> CGPoint { CGPoint(x: -s * 0.64, y: -s * 0.1) }
+
+    /// The jib, set on the forestay ahead of the mast: its luff runs straight down the
+    /// forestay to the bow, its foot back toward the mast, and its leech curves up to the
+    /// head. `furl` (0…1) rolls it away down the forestay; `roach` bows the leech out aft
+    /// (positive, full of wind) or sags it in (negative), as a fraction of `s`.
+    private func jib(s: Double, furl: Double, roach: Double) -> Path {
+        let top = forestayTop(s)
+        let tack = CGPoint(x: -s * 0.58, y: -s * 0.13)
+        let fullClew = CGPoint(x: -s * 0.07, y: -s * 0.18)
+        let head = CGPoint(x: top.x + (tack.x - top.x) * furl, y: top.y + (tack.y - top.y) * furl + s * 0.04)
+        let clew = CGPoint(x: tack.x + (fullClew.x - tack.x) * (1 - furl * 0.5), y: fullClew.y)
+        var path = Path()
+        path.move(to: head)
+        path.addLine(to: tack)
+        path.addLine(to: clew)
+        path.addQuadCurve(
+            to: head, control: CGPoint(x: (clew.x + head.x) / 2 + roach * s, y: (clew.y + head.y) / 2))
+        path.closeSubpath()
+        return path
     }
 
     /// The masthead pennant: hangs down in a calm, lifts in a breeze, streams straight
