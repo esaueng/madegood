@@ -36,6 +36,14 @@ function hrefsOf(node: ReactNode): string[] {
 
 // Review of #133 at 6250414: the policy must match what the service does.
 describe("/privacy", () => {
+  it("says sharing is unavailable for now and what happened to shared sessions", async () => {
+    const text = await renderPolicy();
+    expect(text).toContain("Sharing is unavailable for now. Every session is private");
+    expect(text).toContain(
+      "every unlisted or public session became private and every public profile was turned off",
+    );
+  });
+
   it("says Cloudflare keeps sampled request records with the IP for up to 31 days", async () => {
     const text = await renderPolicy();
     expect(text).toContain("Cloudflare processes your IP address");

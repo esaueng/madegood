@@ -20,13 +20,12 @@ final class PhoneSessionSyncUITests: XCTestCase {
         let enable = app.switches["sessionSync.enabled"]
         scrollFullyIntoView(enable, in: app)
         XCTAssertEqual(enable.value as? String, "0")
-        // Under the switch: where new uploads take their visibility from (#133).
+        // Under the switch: who can see uploads (#133).
         let notice = element("sessionSync.visibilityNotice", in: app)
         XCTAssertTrue(notice.exists)
-        XCTAssertEqual(
-            notice.label,
-            "New uploads use your account’s Visibility of new sessions, which you set in Settings on madegood.app. If it’s Unlisted or Public, new sessions are shared that way automatically. Turn sharing off under Sharing to keep everything private."
-        )
+        // Sharing is unavailable for now (SessionSharing.isAvailable): everything stays private.
+        XCTAssertEqual(notice.label, "Uploaded sessions are private: only you can see them, here and on madegood.app.")
+        XCTAssertFalse(app.buttons["sessionSync.sharing"].exists)
         setSwitch(enable, on: true, in: app)
         // Turning sync on reveals the row below it, which can start under the tab bar.
         let wifiOnly = app.switches["sessionSync.wifiOnly"]
@@ -139,7 +138,9 @@ final class PhoneSessionSyncUITests: XCTestCase {
     /// Settings → Sharing: the shared sessions with Make Private, then the switch turns all
     /// sharing off after a confirmation.
     @MainActor
-    func testSharingListsSharedSessionsAndTurnsSharingOff() {
+    func testSharingListsSharedSessionsAndTurnsSharingOff() throws {
+        // Settings hides the Sharing screen while sharing is unavailable (SessionSharing.isAvailable).
+        try XCTSkipIf(true, "Sharing is unavailable for now.")
         continueAfterFailure = false
         let app = launchDemoHistory(extraArguments: ["-demoSessionSync"])
         app.tabBars.buttons["Settings"].tap()

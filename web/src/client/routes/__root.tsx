@@ -73,7 +73,7 @@ const PAGE_META: Record<string, { title: string; description: string }> = {
   "/support": {
     title: "Support · MadeGood",
     description:
-      "Help with MadeGood on iPhone and Apple Watch: contact, syncing from the watch, accounts, data export and deletion, sharing and permissions.",
+      "Help with MadeGood on iPhone and Apple Watch: contact, syncing from the watch, accounts, data export and deletion, and permissions.",
   },
 };
 

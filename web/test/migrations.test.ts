@@ -2,6 +2,9 @@ import { applyD1Migrations } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
+/** Sharing became unavailable here (src/server/lib/sharing-available.ts). */
+const UNSHARE = "0018_sharing_unavailable.sql";
+
 const insertUser = (id: string, sub: string, handle: string) =>
   env.DB.prepare("insert into users (id, apple_sub, handle) values (?, ?, ?)")
     .bind(id, sub, handle)
@@ -83,7 +86,10 @@ describe("D1 migrations: sessions, tokens, privacy zones", () => {
         VALUES ('s50', 'u50', 'kayak', 1, 'public', '{"source":"open-meteo-archive"}'),
                ('s51', 'u50', 'kayak', 1, 'private', NULL)`),
     ]);
-    await applyD1Migrations(db, env.TEST_MIGRATIONS);
+    await applyD1Migrations(
+      db,
+      env.TEST_MIGRATIONS.filter((migration) => migration.name < UNSHARE),
+    );
     // The previous queue consumer may still finish a pending wind update during deployment.
     await db.prepare("UPDATE sessions SET wind_json = '{}' WHERE id = 's51'").run();
     const { results } = await db
@@ -104,6 +110,70 @@ describe("D1 migrations: sessions, tokens, privacy zones", () => {
       public_profile_username: null,
       public_profile_display_name: null,
     });
+  });
+
+  // Runs after the test above, which leaves TEST_MIGRATION_DB just before this migration.
+  it("makes every account, session and live voyage link private when sharing goes away", async () => {
+    const db = env.TEST_MIGRATION_DB;
+    await applyD1Migrations(
+      db,
+      env.TEST_MIGRATIONS.filter((migration) => migration.name < UNSHARE),
+    );
+    await db.batch([
+      db.prepare(`INSERT INTO users (id, apple_sub, handle, default_visibility, public_profile_id,
+          public_profile_username, public_profile_display_name)
+        VALUES ('u60', 'sub-60', 'unshare-owner', 'public', 'profile-60', 'skipper60', 'Skipper'),
+               ('u61', 'sub-61', 'unshare-off', 'private', NULL, NULL, NULL)`),
+      db.prepare("UPDATE users SET sharing_enabled = 0 WHERE id = 'u61'"),
+      db.prepare(`INSERT INTO sessions (id, user_id, sport, started_at, visibility, updated_at)
+        VALUES ('s60', 'u60', 'kayak', 1, 'public', 5),
+               ('s61', 'u60', 'kayak', 1, 'unlisted', 5),
+               ('s62', 'u60', 'kayak', 1, 'private', 5)`),
+      db.prepare(`INSERT INTO voyage_live_registry (user_id, voyage_id, generation, slug_hash)
+        VALUES ('u60', 'v60', 2, 'slug-hash-60')`),
+    ]);
+    await applyD1Migrations(db, env.TEST_MIGRATIONS);
+
+    const { results: accounts } = await db
+      .prepare(`SELECT id, sharing_enabled, default_visibility, public_profile_id,
+          public_profile_username, public_profile_display_name
+        FROM users WHERE id IN ('u60', 'u61') ORDER BY id`)
+      .all();
+    expect(accounts).toEqual([
+      // The profile's link is revoked; the chosen name and username stay for later.
+      {
+        id: "u60",
+        sharing_enabled: 0,
+        default_visibility: "private",
+        public_profile_id: null,
+        public_profile_username: "skipper60",
+        public_profile_display_name: "Skipper",
+      },
+      {
+        id: "u61",
+        sharing_enabled: 0,
+        default_visibility: "private",
+        public_profile_id: null,
+        public_profile_username: null,
+        public_profile_display_name: null,
+      },
+    ]);
+    const { results: sessions } = await db
+      .prepare(
+        "SELECT id, visibility, updated_at > 5 AS changed FROM sessions WHERE user_id = 'u60' ORDER BY id",
+      )
+      .all();
+    // Changed rows get a new updated_at so clients see the change; private ones are untouched.
+    expect(sessions).toEqual([
+      { id: "s60", visibility: "private", changed: 1 },
+      { id: "s61", visibility: "private", changed: 1 },
+      { id: "s62", visibility: "private", changed: 0 },
+    ]);
+    expect(
+      await db
+        .prepare("SELECT generation, slug_hash FROM voyage_live_registry WHERE voyage_id = 'v60'")
+        .first(),
+    ).toEqual({ generation: 2, slug_hash: null });
   });
 
   it("reject a session for an unknown user and a reused token hash", async () => {

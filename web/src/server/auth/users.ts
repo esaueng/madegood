@@ -142,6 +142,8 @@ export async function findOrCreateUser(
   db: Db,
   appleSub: string,
   displayName: string | null,
+  /** A new account's sharing switch; false while sharing is unavailable (lib/sharing-available.ts). */
+  { sharingEnabled }: { sharingEnabled: boolean },
 ): Promise<{ user: User; created: boolean }> {
   const [existing] = await db.select().from(users).where(eq(users.appleSub, appleSub));
   if (existing?.deletedAt != null) throw new AccountDeleting(existing.id, existing.deletedAt);
@@ -168,7 +170,7 @@ export async function findOrCreateUser(
     try {
       const [user] = await db
         .insert(users)
-        .values({ id: crypto.randomUUID(), appleSub, handle, displayName })
+        .values({ id: crypto.randomUUID(), appleSub, handle, displayName, sharingEnabled })
         .returning();
       if (user) return { user, created: true };
     } catch (err) {

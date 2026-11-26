@@ -33,6 +33,9 @@ export default defineConfig(async () => {
             WEATHERKIT_SERVICE_ID: "test.weatherkit",
             VOYAGE_LIVE_LOCAL: "1",
             VOYAGE_PRIVATE_LOCAL: "1",
+            // Production leaves sharing off (lib/sharing-available.ts). The sharing tests need it
+            // on; test/sharing-unavailable.test.ts covers it off.
+            SHARING: "on",
             // The website's Sign in with Apple Services ID (a placeholder).
             APPLE_WEB_CLIENT_ID: "app.madegood.web",
             // Tests run on their own origin; the production canonical address would redirect them.

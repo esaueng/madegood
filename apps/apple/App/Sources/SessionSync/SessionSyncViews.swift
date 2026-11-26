@@ -146,8 +146,9 @@ struct SessionSyncSection: View {
         }
     }
 
-    static let visibilityExplanation =
-        "New uploads use your account’s Visibility of new sessions, which you set in Settings on madegood.app. If it’s Unlisted or Public, new sessions are shared that way automatically. Turn sharing off under Sharing to keep everything private."
+    static let visibilityExplanation = SessionSharing.isAvailable
+        ? "New uploads use your account’s Visibility of new sessions, which you set in Settings on madegood.app. If it’s Unlisted or Public, new sessions are shared that way automatically. Turn sharing off under Sharing to keep everything private."
+        : "Uploaded sessions are private: only you can see them, here and on madegood.app."
 
     static let deletionWarning =
         "This deletes every session you have uploaded, your privacy zones, your settings and your sign-in from MadeGood’s servers. Recordings on this iPhone and your Apple Watch stay on your devices, and workouts in Apple Health are not affected. This can’t be undone."
@@ -161,7 +162,8 @@ struct SessionSyncSection: View {
             Toggle("Sync sessions", isOn: $sync.isEnabled)
                 .accessibilityIdentifier("sessionSync.enabled")
             // Static and always true: the server applies the account's default at upload, and
-            // this iPhone doesn't read it (#133).
+            // this iPhone doesn't read it (#133). While sharing is unavailable that default is
+            // always private.
             Text(Self.visibilityExplanation)
                 .font(.footnote)
                 .foregroundStyle(.secondary)
@@ -181,12 +183,14 @@ struct SessionSyncSection: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            NavigationLink {
-                SharingSettingsView(sync: sync)
-            } label: {
-                Label("Sharing", systemImage: "person.2")
+            if SessionSharing.isAvailable {
+                NavigationLink {
+                    SharingSettingsView(sync: sync)
+                } label: {
+                    Label("Sharing", systemImage: "person.2")
+                }
+                .accessibilityIdentifier("sessionSync.sharing")
             }
-            .accessibilityIdentifier("sessionSync.sharing")
             Button("Sign Out", role: .destructive) {
                 perform(failure: "Couldn’t clear the saved sign-in. Try again.") { try await sync.signOut() }
             }

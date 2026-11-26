@@ -49,8 +49,8 @@ where you actually went over the ground, not where you were pointed.
 - Live position sharing on the web for people ashore.
 - Boat instruments over NMEA 0183 or Signal K.
 
-**Website** (planned for madegood.app): browse, replay, and share sessions.
-Sessions are private unless you share them.
+**Website** (madegood.app): browse and replay your sessions. Sessions are private;
+sharing is unavailable for now.
 
 See [docs/PLAN.md](docs/PLAN.md) for the full scope, the accuracy targets, and the
 roadmap.

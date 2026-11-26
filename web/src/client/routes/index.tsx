@@ -11,7 +11,8 @@ import {
   Watch,
 } from "lucide-react";
 import { buttonVariants } from "@/components/ui/button";
-import { type DownloadLink, fetchHealth, fetchSiteConfig } from "@/lib/api";
+import { type DownloadLink, fetchHealth } from "@/lib/api";
+import { useSiteConfig } from "@/lib/site-config";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/")({
@@ -64,12 +65,12 @@ const features = [
   {
     icon: Lock,
     title: "Private by default",
-    body: "No account needed: you can record and review sessions on your devices without a connection. Sync is optional, sessions stay private until you share them, and privacy zones hide places you choose, like home, from shared tracks.",
+    body: "No account needed: you can record and review sessions on your devices without a connection. Sync is optional, and synced sessions are private: only you can see them.",
   },
   {
     icon: MapIcon,
-    title: "Replay and share",
-    body: "Sign in on the web to browse, replay, and share your sessions. Shared links show a preview. On the iPhone, export any session as GPX.",
+    title: "Replay on the web",
+    body: "Sign in on the web to browse and replay your sessions. On the iPhone, export any session as GPX.",
   },
   {
     icon: Code,
@@ -115,7 +116,7 @@ const watchShots = [
 ];
 
 function Home() {
-  const { data, isPending } = useQuery({ queryKey: ["site-config"], queryFn: fetchSiteConfig });
+  const { data, isPending } = useSiteConfig();
   const download = isPending ? undefined : (data?.download ?? null);
 
   return (
@@ -127,7 +128,7 @@ function Home() {
         <p className="mt-4 max-w-xl text-lg text-muted-foreground">
           MadeGood records sailing, windsurfing, paddling, and motorboating sessions on Apple Watch
           and iPhone, and turns them into numbers that fit your sport. It is free and open source,
-          and your sessions are private unless you share them.
+          and your sessions are private.
         </p>
         <div className="mt-8 flex flex-wrap gap-3">
           <DownloadButton download={download} />
@@ -197,8 +198,7 @@ function Home() {
           ))}
         </ul>
         <p className="mt-6 text-sm text-muted-foreground">
-          Coming later: Voyages, a passage log for longer trips with routes, live position sharing,
-          and boat instruments.
+          Coming later: Voyages, a passage log for longer trips with routes and boat instruments.
         </p>
       </section>
 

@@ -29,6 +29,7 @@ get a rejection.
 | 14 | **App Review needs a screen recording of a real session.** The demo modes (`-demoSession`, `-demoOCS`, `-demoOffWater`) are Debug-only (`DemoFeed.isEnabled` is `false` in Release), and tacks, gybes, planing, strokes and the start line's time to burn and line bias cannot be shown on land. Record a real session on the water with the Release build and attach it in App Store Connect → App Review Information → Attachment (or link it in the notes). Don't show the precise location of a home or other private place. | Without it, a reviewer can check only speed and distance (2.1, completeness). |
 | 15 | **Confirm Cloudflare's production settings (owner, in the dashboard).** #135 turned off persisted Workers observability and Logpush in `wrangler.jsonc`, but nobody has checked the production account and zone. Check: (a) the zone's plan and Security Analytics / Security Events retention (31 days on Free, Pro and Business, 90 days for Security Analytics on Enterprise); (b) that no zone-level HTTP request logging, Logpush or Instant Logs job is configured; (c) that Workers Logs and traces are off for the `madegood` Worker; (d) who has dashboard access to the zone. Then confirm the Coarse Location row and the Diagnostics answer below, and the 31-day figure in `/privacy`. | The label and the policy's IP section depend on what the zone actually retains. |
 | 16 | **WeatherKit server key and the 4 Worker secrets set (owner).** #140 reads the WeatherKit key from four Worker secrets: `WEATHERKIT_PRIVATE_KEY`, `WEATHERKIT_KEY_ID`, `WEATHERKIT_TEAM_ID` and `WEATHERKIT_SERVICE_ID`. Create the WeatherKit key in the Apple Developer account and set them with `wrangler secret put` in production. Never commit them ([self-hosting.md](self-hosting.md)). | Without them, shared sessions get no wind; the policy describes the WeatherKit path. |
+| 17 | ~~Session sharing and the public web views of sessions and profiles.~~ Off for now: the server keeps every session private (`SHARING` unset, `web/src/server/lib/sharing-available.ts`), migration `0018_sharing_unavailable` made every unlisted or public session private and turned every public profile off, and neither the website nor the iPhone (`SessionSharing.isAvailable`) shows sharing controls. Nothing a user records is shown to anyone else, so the label has no **Data shared publicly** entry and the listing must not mention sharing. Live voyage sharing was already Debug-only (item 12). | Keeps the app out of location sharing with other people, and the metadata must describe what the build does (2.3.1). |
 
 ## Privacy nutrition label
 
@@ -83,9 +84,9 @@ rotated or signed out). Sessions upload only after the user also turns on **Sync
 sessions**, which is off after every new sign-in (`SessionSyncConsent`). The iPhone does
 not fetch or show the account's Visibility of new sessions; the server applies it at
 upload (`web/src/server/lib/session-upload.ts`), and a static note under **Sync
-sessions** says so: "New uploads use your account's Visibility of new sessions, which
-you set in Settings on madegood.app. If it's Unlisted or Public, new sessions are shared
-that way automatically." Proposed answers, with the
+sessions** says so. While sharing is unavailable (item 17) that default is always private
+and the note reads: "Uploaded sessions are private: only you can see them, here and on
+madegood.app." Proposed answers, with the
 stage at which each type is collected:
 
 | App Store category | Data type | Collected | Linked to the user | Used for tracking | Purpose | What it is in the code |
@@ -202,7 +203,9 @@ logs. A refused request gets HTTP 429 with `Retry-After: 60`. No row of its own:
 limiter's counter is not readable by the developer, and the IP's retained copy is
 already declared under Coarse Location above.
 
-**Data shared publicly.** A new upload takes the account's **Visibility of new
+**Data shared publicly: none while sharing is unavailable** (item 17). Every session is
+private and no account can turn sharing on. The rest of this paragraph and the next
+describe sharing for when it returns. A new upload takes the account's **Visibility of new
 sessions** setting (`users.default_visibility`, applied on insert in
 `session-upload.ts`). That setting is Private unless the user changes it in the
 website's Settings, where Unlisted or Public make future uploads shared without a
