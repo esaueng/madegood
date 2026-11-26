@@ -625,7 +625,9 @@ private struct SceneDrawing {
         let top = forestayTop(s)
         let stem = stemhead(s)
         // Head and tack both sit on the forestay, so the luff runs along it.
-        func onStay(_ f: Double) -> CGPoint { CGPoint(x: top.x + (stem.x - top.x) * f, y: top.y + (stem.y - top.y) * f) }
+        func onStay(_ f: Double) -> CGPoint {
+            CGPoint(x: top.x + (stem.x - top.x) * f, y: top.y + (stem.y - top.y) * f)
+        }
         let tack = onStay(0.9)
         let head = onStay(0.04 + furl)
         let fullClew = CGPoint(x: -s * 0.07, y: -s * 0.18)
