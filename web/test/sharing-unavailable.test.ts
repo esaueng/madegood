@@ -2,7 +2,7 @@ import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test"
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { createApp } from "../src/server/app";
-import { bearer, identityToken, type SignIn } from "./apple";
+import { api, bearer, identityToken, type SignIn, signIn as signInWhileOn } from "./apple";
 
 // Sharing unavailable (lib/sharing-available.ts): the production default, with SHARING unset.
 // vitest.config.ts turns it on for the other tests. Synthetic data only (AGENTS.md).
@@ -103,5 +103,48 @@ describe("sharing unavailable", () => {
     expect((await request(`/sessions/${id}`)).status).toBe(404);
     const own = await request(`/sessions/${id}`, { headers: bearer(owner.accessToken) });
     expect(await own.json()).toMatchObject({ visibility: "private" });
+  });
+
+  // Review of this change: the migration runs before the new Worker serves traffic, so an
+  // old Worker can still turn an account's switch back on and share. Readers ignore that.
+  it("shows nobody else what an account shared while sharing was on", async () => {
+    const owner = await signInWhileOn();
+    const id = crypto.randomUUID();
+    const meta = { sport: "kayak", startedAt: "2000-01-02T10:00:00.000Z", distanceM: 1000 };
+    const json = (method: string, body: unknown) => ({
+      method,
+      headers: { ...bearer(owner.accessToken), "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    expect((await api(`/sessions/${id}`, json("PUT", meta))).status).toBe(201);
+    expect((await api(`/sessions/${id}`, json("PATCH", { visibility: "public" }))).status).toBe(
+      200,
+    );
+    const profile = await api("/me", json("PATCH", { publicProfileEnabled: true }));
+    const { publicProfileKey } = (await profile.json()) as { publicProfileKey: string };
+    // Shared while sharing is on.
+    expect((await api(`/sessions/${id}`)).status).toBe(200);
+    expect((await api(`/users/${publicProfileKey}`)).status).toBe(200);
+
+    // The same rows with sharing unavailable.
+    expect((await request(`/sessions/${id}`)).status).toBe(404);
+    expect((await request(`/sessions/${id}/track`)).status).toBe(404);
+    expect((await request(`/users/${publicProfileKey}`)).status).toBe(404);
+    const own = await request(`/sessions/${id}`, { headers: bearer(owner.accessToken) });
+    expect(own.status).toBe(200);
+    expect(await own.json()).toMatchObject({ visibility: "public", wind: null });
+  });
+
+  it("uploads new sessions as private while the account's switch is off", async () => {
+    const owner = await signIn();
+    // A non-private default left behind by an old Worker during the deploy.
+    await env.DB.prepare("UPDATE users SET default_visibility = 'public' WHERE id = ?")
+      .bind(owner.user.id)
+      .run();
+    const id = crypto.randomUUID();
+    const meta = { sport: "kayak", startedAt: "2000-01-03T10:00:00.000Z", distanceM: 1000 };
+    const put = await send(`/sessions/${id}`, "PUT", meta, owner.accessToken);
+    expect(put.status).toBe(201);
+    expect(await put.json()).toMatchObject({ visibility: "private" });
   });
 });

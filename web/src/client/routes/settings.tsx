@@ -113,8 +113,7 @@ function Settings() {
           Heart Rate Zones. These settings apply to all sports and sync to your Apple Watch.
         </p>
       </section>
-      {/* Zones only shape what others see of a shared session. */}
-      {sharing && <Zones />}
+      <Zones />
       <ExportData />
       <DeleteAccount me={me} onDeleted={() => setDeleted(true)} />
     </div>

@@ -339,6 +339,7 @@ describe("GET /api/users/:profileKey", () => {
         TRACKS: env.TRACKS,
         JWT_SIGNING_KEY: env.JWT_SIGNING_KEY,
         APPLE_AUDIENCES: env.APPLE_AUDIENCES,
+        SHARING: env.SHARING,
       };
       const response = await createApp().request(
         `/api/users/${handle}`,

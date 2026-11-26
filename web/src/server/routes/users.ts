@@ -6,6 +6,7 @@ import { publicProfileLookup } from "../auth/users";
 import { sessions, users } from "../db/schema";
 import { apiError, errorResponse } from "../lib/errors";
 import { createRouter } from "../lib/router";
+import { sharingAvailable } from "../lib/sharing-available";
 import { TRACK_SPORTS } from "../lib/track";
 import { decodeCursor, encodeCursor } from "./sessions";
 
@@ -122,7 +123,8 @@ userRoutes.openapi(profileRoute, async (c) => {
   const after = cursor === undefined ? null : decodeCursor(cursor);
   if (cursor !== undefined && !after) return apiError(c, 400, "invalid_request", "Bad cursor.");
   const account = publicProfileLookup(profileKey);
-  if (!account) return notFound(c);
+  // No profile is public while sharing is unavailable (lib/sharing-available.ts).
+  if (!account || !sharingAvailable(c.env)) return notFound(c);
 
   const db = drizzle(c.env.DB);
   // The account, the totals and the page are read in one batch: one round trip that D1

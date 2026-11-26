@@ -5,7 +5,10 @@
  * With it off, nothing can be shared: new accounts start with their own switch
  * (`users.sharing_enabled`) off, `PATCH /me` refuses to turn it on or share anything
  * (409 `sharing_disabled`), and every other way to share already needs that account switch
- * (unlisted or public sessions, the public profile, live voyage links). Migration
+ * (unlisted or public sessions, the public profile, live voyage links). Readers check this
+ * switch too (session and track reads, wind, profiles, /s and /u previews, route images,
+ * live viewer links), so an account switch an old Worker turned back on during the deploy
+ * still shares nothing. Migration
  * 0018_sharing_unavailable turned every account's switch off and made everything private,
  * so nothing shared before stays readable.
  *
