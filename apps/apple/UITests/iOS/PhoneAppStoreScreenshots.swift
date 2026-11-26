@@ -8,7 +8,9 @@ final class PhoneAppStoreScreenshots: XCTestCase {
         continueAfterFailure = false
     }
 
-    private let look = ["-app.appearance", "light"]
+    /// Light appearance, and the Release tab bar: Debug (needed for the demo data) would
+    /// otherwise show the Voyages tab, which Release doesn't have.
+    private let look = ["-app.appearance", "light", "-releaseTabs"]
 
     /// The start screen: local conditions, sport cards and the last sessions.
     @MainActor
@@ -44,6 +46,8 @@ final class PhoneAppStoreScreenshots: XCTestCase {
     func test03History() {
         let app = launchDemoHistory(extraArguments: look)
         app.tabBars.buttons["History"].tap()
+        // The screenshots show the Release tab bar, which has no Voyages tab.
+        XCTAssertFalse(app.tabBars.buttons["Voyages"].exists)
         let rows = app.buttons.matching(identifier: "session.row")
         XCTAssertTrue(rows.firstMatch.waitForExistence(timeout: 15))
         // The cards are tall, so the list loads only the first few rows; the totals card

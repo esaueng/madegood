@@ -14,6 +14,12 @@ struct ContentView: View {
     @State private var showingAnchorAlarm = false
     @Environment(SessionSync.self) private var sessionSync: SessionSync?
 
+    #if MADEGOOD_VOYAGES
+        /// `-releaseTabs` (Debug builds only, where Voyages exists) shows the tab bar Release
+        /// ships, without Voyages, for the App Store screenshots (scripts/app-store-screenshots).
+        static let releaseTabs = ProcessInfo.processInfo.arguments.contains("-releaseTabs")
+    #endif
+
     enum AppTab: Hashable {
         case record, history, settings
         #if MADEGOOD_VOYAGES
@@ -84,8 +90,10 @@ struct ContentView: View {
                 RecordView(controller: controller, library: library, showHistory: { tab = .history })
             }
             #if MADEGOOD_VOYAGES
-                Tab("Voyages", systemImage: "sailboat", value: AppTab.voyages) {
-                    VoyagesView(recorder: voyageRecorder)
+                if !Self.releaseTabs {
+                    Tab("Voyages", systemImage: "sailboat", value: AppTab.voyages) {
+                        VoyagesView(recorder: voyageRecorder)
+                    }
                 }
             #endif
             Tab("History", systemImage: "list.bullet", value: AppTab.history) {
