@@ -17,8 +17,6 @@ import WaterKit
 final class LiveStrokes: Sendable {
     private struct State {
         var detector: StrokeDetector
-        /// The latest motion sample, to close its bin at the end.
-        var lastSample: MotionSample?
         /// Wall time and monotonic time read together, both in seconds since the start, in
         /// recorded order. The first is the start itself.
         var anchors: [(mono: Double, wall: Double)] = [(0, 0)]
@@ -49,10 +47,7 @@ final class LiveStrokes: Sendable {
             gravity: Vector3(x: line.gx, y: line.gy, z: line.gz),
             rotationRate: Vector3(x: line.rx, y: line.ry, z: line.rz),
             attitude: Quaternion(x: line.qx, y: line.qy, z: line.qz, w: line.qw))
-        state.withLock { state in
-            state.detector.ingest(sample)
-            state.lastSample = sample
-        }
+        state.withLock { $0.detector.ingest(sample) }
     }
 
     /// The user's manual pause or resume, now: strokes stop counting while paused, as all
@@ -72,15 +67,11 @@ final class LiveStrokes: Sendable {
         }
     }
 
-    /// Closes the last motion bin at the end of the session, as session detail does, so a
-    /// stroke confirmed in it counts.
+    /// Ends the motion as session detail does: closes the last bin, so a stroke confirmed in
+    /// it counts, and settles an axis still waiting for a full window, so strokes in a
+    /// session shorter than that count too.
     func finish() {
-        state.withLock { state in
-            guard let last = state.lastSample else { return }
-            state.detector.ingest(
-                StrokeAnalysis.closingSample(after: last, binInterval: state.detector.config.binInterval))
-            state.lastSample = nil
-        }
+        state.withLock { $0.detector.finish() }
     }
 
     /// The metrics now, so the rate blanks when paddling stops. The count leaves out strokes

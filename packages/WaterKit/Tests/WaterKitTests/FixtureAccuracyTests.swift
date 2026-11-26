@@ -106,6 +106,21 @@ import Testing
         if let rewritten = try rewritten(fixture.folder, session, truth: truth) {
             try check(truth, session: rewritten, context: context + " (rewritten)")
         }
+        // ...and with the motion of a 100 Hz recording decimated to 50 Hz.
+        if let decimated = decimatedTo50Hz(session) {
+            try check(truth, session: decimated, context: context + " (50 Hz)")
+        }
+    }
+
+    /// The recording with every second motion sample, when its motion is at about 100 Hz.
+    static func decimatedTo50Hz(_ session: RawSession) -> RawSession? {
+        let motion = session.motion
+        guard motion.count > 100 else { return nil }
+        let intervals = zip(motion.dropFirst(), motion).map { $0.t - $1.t }
+        guard StrokeDetector.median(intervals) < 0.015 else { return nil }
+        var decimated = session
+        decimated.motion = StrokeRateInvarianceTests.decimated(motion)
+        return decimated
     }
 
     /// A raw recording written by `RawSessionWriter` and read back; nil for a track fixture.

@@ -6,7 +6,7 @@ through the same types the readers use.
 
 | Format | Used for | Leaves the device? |
 |---|---|---|
-| **Raw recording v3** | Research and algorithm work: every sensor stream (motion at 100 Hz, GPS at 1 Hz, heading at about 1 Hz), rounded well below sensor noise | Only when the user shares it (AirDrop/Files), or with an opt-in "contribute data" setting |
+| **Raw recording v3** | Research and algorithm work: every sensor stream (motion at 50 Hz, 100 Hz in earlier recordings; GPS at 1 Hz, heading at about 1 Hz), rounded well below sensor noise | Only when the user shares it (AirDrop/Files), or with an opt-in "contribute data" setting |
 | **Track v1** | The stored and uploaded session: GPS, heart rate, events, analysis summary | Uploaded when sync is on |
 
 WaterKit also exports tracks as **GPX 1.1** for other apps (see [GPX export](#gpx-export)).
@@ -111,7 +111,7 @@ strokes, with the user's pauses) runs on the monotonic clock instead.
   "endedAt": 1809169200.0,
   "device": { "kind": "watch", "model": "Watch7,5", "os": "watchOS 26.1" },
   "app": { "version": "0.1.0", "build": "1" },
-  "requestedRates": { "motion": 100, "gps": 1, "heading": 1 }
+  "requestedRates": { "motion": 50, "gps": 1, "heading": 1 }
 }
 ```
 

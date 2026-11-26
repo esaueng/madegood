@@ -82,7 +82,7 @@ final class LocationSource: Sendable {
 
 // MARK: Motion
 
-/// Device motion at the requested rate (100 Hz). Accelerations are converted from g to m/s².
+/// Device motion at the requested rate (50 Hz, `SessionRecorder.motionRate`). Accelerations are converted from g to m/s².
 @MainActor
 final class MotionSource {
     private let manager = CMMotionManager()

@@ -61,7 +61,7 @@ public enum RawSessionReader {
     }
 
     /// Reads a recording folder, version 1, 2 or 3. Pass `includeMotion: false` to skip the
-    /// 100 Hz motion stream (tens of MB per hour) when only GPS, heart rate and events are
+    /// motion stream (tens of MB per hour) when only GPS, heart rate and events are
     /// needed. Every version comes out on the session's monotonic clock: version 1's device
     /// uptimes are converted with its start anchor, `mono = clock.unix + (uptime − clock.uptime)`.
     /// Version 3 differs from 2 only in the shape of motion lines, which `MotionLine` decodes.

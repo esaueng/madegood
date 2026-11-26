@@ -194,7 +194,8 @@ so post-session strokes need the raw recording.
 | Resampling | Samples are averaged into 40 ms bins (25 Hz), whatever the sensor rate. When the time between two samples is at most 0.2 s, any empty bins are interpolated between the bins either side (never held at the last value); a longer gap restarts the filters, the main axis and the rate |
 | Signal | Rotation rate (rad/s) and user acceleration divided by 4 m/s² per rad/s, six channels |
 | Band-pass | 0.3–3 Hz per channel (second-order Butterworth high-pass and low-pass) |
-| Main axis | First principal component of the filtered channels over the last 3 s, refreshed every 0.5 s: the eigenvector with the largest eigenvalue of their covariance, by the Jacobi method, so a change of movement plane is always found; the previous axis only keeps the sign. After a restart the axis is found afresh and detection runs over the bins that waited for it. PLAN §5 suggests 5 s; 3 s follows a side switch within about a stroke |
+| Main axis | First principal component of the filtered channels over the last 3 s, refreshed every 0.5 s: the eigenvector with the largest eigenvalue of their covariance, by the Jacobi method, so a change of movement plane is always found. A window whose RMS along that axis is below 0.15 (the cycle threshold's floor is 0.25) is too quiet to hold a stroke, and its axis would follow noise: there is no axis until movement returns, checked on every bin. A lobe still waiting for its negative swing when the window goes quiet ends there as a cycle. When movement returns a new axis is fitted to it, and detection runs over the window's bins that waited for it, so the first stroke after a rest counts and is projected the same way at any sample rate. The first axis waits for a full 3 s window, unless a restart or the end of the motion comes first: then it is found from what there is, if the samples since the start or the restart span at least 1 s (first to last sample, whatever the bins' alignment). After a restart the axis is found afresh, and detection runs over the bins that waited for it. PLAN §5 suggests 5 s; 3 s follows a side switch within about a stroke |
+| Axis sign | The sign decides which lobe of the wrist cycle is the peak (the other one is a few hundred ms away), so it follows the signal: the projection's long-run skewness is positive. The second and third moments of the six filtered channels are averaged, evenly after a start or restart and then with a 60 s time constant, and each axis's skewness is read from them, so it depends on the axis and the motion, not on the steps the estimates took. A first axis, or one more than about 45° (cosine 0.7) from the axis whose sign was last decided, takes the sign of its skewness. Otherwise it keeps that axis's sign unless the skewness falls below −0.05, which flips it. An interval between peaks either side of a sign decision (a turned axis, a flip, or a new axis after a quiet window) is not a period; every decision since the last peak counts, not only the latest. Where the stroke is nearly symmetric (its skewness near zero) and the watch turns, which lobe is the stroke is ambiguous, and recordings of the same paddling (another sample rate or bin phase) can settle on lobes 0.5–1 s apart. That moves stroke times; the count, rate and side don't depend on it, beyond one cycle added or dropped where the lobe changes, and the interval across that change is not a period |
 | Cycle | A positive lobe of the projected signal above max(0.25, 0.5 × running RMS (3 s time constant)), ended by a swing below −0.3 × that threshold. The peak time is refined with a parabola through the top three bins |
 | Minimum gap | Peaks closer than max(0.33 s, 0.45 × median recent period) are one cycle |
 | Strokes | Kayak: two per wrist cycle (left and right). Canoe and SUP: one |
@@ -277,6 +278,20 @@ time only), and is skipped while none is in the fixture set. Labels list every s
 person confirmed and the stretches that are not paddling; the count and rate are derived
 from them (fixtures/README.md, "How to label a session"). `scripts/label-strokes` drafts
 them from the detector and writes a local page to review them.
+
+**Sample rate.** The detector finds the same strokes at 50 Hz as at 100 Hz:
+`StrokeRateInvarianceTests` decimates and time-shifts synthetic paddling (with rests,
+side switches and heavy noise) and checks that the strokes agree, and the fixture checks
+also run on every 100 Hz paddling fixture decimated to 50 Hz. When the watch turns on the
+wrist the two rates may pick different lobes of a nearly symmetric stroke (see "Axis
+sign"), so there the tests compare what the user sees: the count within 3 cycles or 1 %,
+the average rate within 1 spm, and the side of at least 98 % of the strokes. Before 1.3.0
+the axis kept the sign of the first axis, which was arbitrary: in a real kayak recording
+decimated to 50 Hz, only 17–40 % of the cycles stayed within 40 ms, the rest on the
+other lobe about 450 ms away, and strokes in moving time differed by up to 1.4 %. Now
+about 97 % stay within 40 ms, and strokes in moving time are within 0.11 % and the
+average rate within 0.05 spm of the 100 Hz figures. The recorder samples motion at 50 Hz
+since.
 
 ## Sailing maneuvers
 
@@ -595,9 +610,10 @@ just started ringing.
 
 ## Session summary
 
-Track v1 stores the analysis as `summary`, with `analyzerVersion` (currently `1.2.0`,
+Track v1 stores the analysis as `summary`, with `analyzerVersion` (currently `1.3.0`,
 bumped whenever a definition on this page changes; 1.1.0 added the windsurf keys, 1.2.0
-left vehicle legs out of paddle sessions):
+left vehicle legs out of paddle sessions, 1.3.0 set the stroke axis's sign from the
+signal):
 
 | Key | Meaning |
 |---|---|

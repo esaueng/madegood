@@ -440,7 +440,7 @@ private func approx(_ a: Double?, _ b: Double, tolerance: Double = 0.01) -> Bool
         if case .array(let laps) = summary["laps"] { #expect(laps.count == 2) } else { Issue.record("no laps") }
         let decoded = try TrackCodec.decode(TrackCodec.encode(analyzed))
         #expect(decoded.summary == analyzed.summary)
-        #expect(decoded.analyzerVersion == "1.2.0")
+        #expect(decoded.analyzerVersion == "1.3.0")
         #expect(decoded.events.map(\.type) == analyzed.events.map(\.type))
     }
 }

@@ -124,7 +124,7 @@ public struct SessionReplay: Sendable {
     /// Version of the analysis that produced `summary` and the generated events. Bump it
     /// when a metric definition in docs/metrics.md changes, so stored tracks can be
     /// re-analyzed.
-    public static let analyzerVersion = "1.2.0"
+    public static let analyzerVersion = "1.3.0"
 
     /// The session summary stored in track v1 (`summary`, docs/metrics.md "Session
     /// summary"). Values are SI; absent values are left out.

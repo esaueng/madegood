@@ -103,7 +103,7 @@ Both privacy manifests declare these types, except Coarse Location, which only t
 iPhone manifest declares: the watch never calls the API.
 
 Not collected: email, phone, contacts, photos, browsing or search history, purchases,
-financial info, sensitive info, device ID, advertising data, audio, raw wrist motion (the 100 Hz motion stream never leaves the
+financial info, sensitive info, device ID, advertising data, audio, raw wrist motion (the 50 Hz motion stream never leaves the
 phone unless the user shares a raw recording file themselves).
 
 **Apple Weather on the iPhone (#137).** Local conditions (off until the user taps Show on the start
@@ -363,7 +363,7 @@ needed: nothing uses those APIs.
 | `NSLocationWhenInUseUsageDescription` | iPhone | "MadeGood records your track, speed and course during a session, including with the screen off. It also uses your position for start-line pings, to mark a man-overboard position and guide you back to it, to set an anchor point and watch for drift while the anchor alarm is armed, and, rounded to about 11 km, for local conditions if you turn them on." |
 | `NSLocationWhenInUseUsageDescription` | Watch | "MadeGood records your track, speed and course during a session, including with the screen off. It also uses your position for start-line pings, and to mark a man-overboard position and guide you back to it." |
 | `NSAlarmKitUsageDescription` | iPhone | "MadeGood sounds an alarm if your boat drifts outside the swing radius you set, or if usable GPS positions stop arriving while the anchor alarm is armed." |
-| `NSMotionUsageDescription` | Both | "MadeGood records motion during a session to count paddle strokes. The samples stay in the recording on your devices." Motion is recorded at 100 Hz in every sport and used live for strokes in kayak, canoe and SUP. |
+| `NSMotionUsageDescription` | Both | "MadeGood records motion during a session to count paddle strokes. The samples stay in the recording on your devices." Motion is recorded at 50 Hz in every sport and used live for strokes in kayak, canoe and SUP. |
 | `NSHealthShareUsageDescription` | Both | See [HealthKit](#healthkit). |
 | `NSHealthUpdateUsageDescription` | Both | See [HealthKit](#healthkit). |
 
