@@ -3,14 +3,15 @@ import WaterKit
 
 /// A small animated seascape for the conditions: the sky, sun or moon, clouds, rain,
 /// snow, fog and lightning; waves, whitecaps and wind streaks that grow with the wind;
-/// and a sailboat whose rig shows the wind: slack sails in a calm, full and heeled in a
+/// and a sailboat whose rig shows the wind: slack sails in a calm, full in a
 /// breeze, reefed when it's strong, furled when it's too much. Kept to a few bold shapes
 /// so it reads at card size. Still with Reduce Motion. Decorative: the card around it
 /// carries the words.
 ///
 /// Everything moves with the wind (clouds, rain, snow, streaks, waves, whitecaps), and the
-/// boat runs before it: bow downwind, heeled downwind, wake trailing upwind, pennant
-/// streaming ahead. See ``SceneWind``.
+/// boat runs before it: bow downwind, wake trailing upwind, pennant
+/// streaming ahead. See ``SceneWind``. It sits level on flat water and rocks only as
+/// much as the waves move it (``BoatMotion``).
 struct WeatherScene: View {
     let weather: WeatherNow
     let outlook: WaterOutlook
@@ -452,13 +453,13 @@ private struct SceneDrawing {
     private enum Rig {
         /// No wind: sails hang slack, the pennant droops, a reflection on flat water.
         case slack
-        /// Sails drawing, a little heel.
+        /// Sails drawing.
         case drawing
-        /// Sails full and taut, well heeled, a wake.
+        /// Sails full and taut, a wake.
         case powered
-        /// Main reefed down, heeled well over, a longer wake.
+        /// Main reefed down, a longer wake.
         case reefed
-        /// Too windy or thunder: sails furled, rocking at anchor.
+        /// Too windy or thunder: sails furled.
         case furled
     }
 
@@ -472,24 +473,12 @@ private struct SceneDrawing {
         }
     }
 
-    /// Heel in radians, positive to leeward (the way the wind blows).
-    private var heel: Double {
-        switch rig {
-        case .slack: 0
-        case .drawing: 0.08
-        case .powered: outlook.wind == .fresh ? 0.26 : 0.2
-        case .reefed: 0.26
-        case .furled: 0.05
-        }
-    }
-
     private var boatScale: Double { h * 0.42 }
     private var boatX: Double { w * 0.78 }
 
     /// Where the boat floats this frame: its waterline and its on-screen angle (clockwise
     /// positive). It rides the swell averaged over the hull (both ends and the middle), so
-    /// the short ripples don't jostle it, and rocks slowly and only a little on top of its
-    /// heel.
+    /// the short ripples don't jostle it, and tilts only with the waves.
     private func boatPose() -> (waterline: Double, y: Double, angle: Double) {
         let s = boatScale
         let x = boatX
@@ -498,16 +487,10 @@ private struct SceneDrawing {
         let swell = (left + 2 * waveY(x, layer: 0) + right) / 4
         // Follow most of the swell's rise and fall, less of it as the sea builds.
         let waterline = horizon + (swell - horizon) * 0.7 / (1 + 0.6 * windiness)
-        let pitch = atan((right - left) / (s * 0.9)) * 0.35 / (1 + windiness)
-        let rock: Double
-        switch rig {
-        case .furled: rock = sin(t * 0.8) * 0.035
-        case .reefed: rock = sin(t * 1.1) * 0.035
-        case .slack: rock = sin(t * 0.6) * 0.01
-        case .drawing, .powered: rock = sin(t * 0.9) * 0.02
-        }
+        let sea = outlook.wind == .calm ? 0 : min(windiness, 1)
+        let angle = BoatMotion.angle(slope: (right - left) / (s * 0.9), sea: sea, t: t)
         let bob = rig == .slack ? sin(t * 0.7) * 0.5 : 0
-        return (waterline, waterline + s * 0.06 + bob, pitch + wind.heelTurn * heel + rock)
+        return (waterline, waterline + s * 0.06 + bob, angle)
     }
 
     private func drawBoat(_ context: inout GraphicsContext) {
@@ -712,8 +695,8 @@ private struct SceneDrawing {
 /// How the scene's wind runs across the card, and how the boat sits in it. The card is
 /// a side view looking north, so a west wind blows left to right. The boat is drawn in
 /// profile, where the wind runs along its length, so it can only be shown running before
-/// the wind: its bow points downwind, it leans downwind, its wake trails upwind and its
-/// pennant streams ahead. Pointing it the other way would put it head to wind, where it
+/// the wind: its bow points downwind, its wake trails upwind and its pennant streams
+/// ahead. Pointing it the other way would put it head to wind, where it
 /// can't sail.
 struct SceneWind: Equatable {
     /// +1 when the wind blows left to right on screen (from the west), −1 the other way.
@@ -728,8 +711,6 @@ struct SceneWind: Equatable {
     var bowDirection: Double { sign }
     /// The wake trails from the stern, upwind.
     var wakeDirection: Double { -sign }
-    /// The sign of the heel's on-screen turn (clockwise positive), so the mast leans downwind.
-    var heelTurn: Double { sign }
     /// The x scale that turns the boat's own frame (drawn bow to the left) to face downwind.
     var hullScale: Double { -sign }
 
@@ -740,5 +721,22 @@ struct SceneWind: Equatable {
         CGAffineTransform(scaleX: hullScale, y: 1)
             .concatenating(CGAffineTransform(rotationAngle: angle))
             .concatenating(CGAffineTransform(translationX: origin.x, y: origin.y))
+    }
+}
+
+/// How the boat tilts: level on flat water, never heeled by the wind, and only rocked by
+/// the waves under it.
+enum BoatMotion {
+    /// Most a building sea rocks the boat on top of the swell's slope, radians.
+    static let maxRock = 0.045
+
+    /// The boat's on-screen angle (radians, clockwise positive). `slope` is the water's
+    /// rise from the hull's left end to its right (screen y over x, so positive when the
+    /// right end sits lower); `sea` runs 0 (flat) … 1 (a big sea); `t` is in seconds.
+    static func angle(slope: Double, sea: Double, t: Double) -> Double {
+        let sea = min(max(sea, 0), 1)
+        let follow = atan(slope) * 0.35
+        let rock = sin(t * (0.8 + 0.4 * sea)) * maxRock * sea
+        return follow + rock
     }
 }
