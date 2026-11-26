@@ -36,11 +36,14 @@ final class WeatherSceneTests: XCTestCase {
     func testBoatIsLevelWithoutWaves() {
         for t in stride(from: 0.0, through: 60, by: 0.7) {
             XCTAssertEqual(BoatMotion.angle(slope: 0, sea: 0, t: t), 0, accuracy: 1e-12)
+            // Regression: calm water's small ripple still has a slope; the boat ignores it,
+            // so it never tilts away from its upright reflection.
+            XCTAssertEqual(BoatMotion.angle(slope: 0.05, sea: 0, t: t), 0, accuracy: 1e-12)
         }
         let rocking = stride(from: 0.0, through: 60, by: 0.7).map { BoatMotion.angle(slope: 0, sea: 1, t: $0) }
         XCTAssertGreaterThan(rocking.map(abs).max() ?? 0, 0.03)
         XCTAssertLessThanOrEqual(rocking.map(abs).max() ?? 0, BoatMotion.maxRock + 1e-12)
         // A wave under the hull tips it with the water: right end lower turns it clockwise.
-        XCTAssertGreaterThan(BoatMotion.angle(slope: 0.3, sea: 0, t: 0), 0)
+        XCTAssertGreaterThan(BoatMotion.angle(slope: 0.3, sea: 0.5, t: 0), 0)
     }
 }

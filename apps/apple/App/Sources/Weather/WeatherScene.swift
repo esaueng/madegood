@@ -733,8 +733,11 @@ enum BoatMotion {
     /// The boat's on-screen angle (radians, clockwise positive). `slope` is the water's
     /// rise from the hull's left end to its right (screen y over x, so positive when the
     /// right end sits lower); `sea` runs 0 (flat) … 1 (a big sea); `t` is in seconds.
+    /// With no sea the boat sits dead level, matching its reflection, whatever ripple the
+    /// calm water still draws.
     static func angle(slope: Double, sea: Double, t: Double) -> Double {
         let sea = min(max(sea, 0), 1)
+        guard sea > 0 else { return 0 }
         let follow = atan(slope) * 0.35
         let rock = sin(t * (0.8 + 0.4 * sea)) * maxRock * sea
         return follow + rock
