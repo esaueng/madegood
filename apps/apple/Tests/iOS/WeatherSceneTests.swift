@@ -4,9 +4,9 @@ import XCTest
 @testable import MadeGood
 
 final class WeatherSceneTests: XCTestCase {
-    /// Regression: the boat was always drawn bow to the left, so in a west wind (the scene's
-    /// default) it pointed head to wind while the clouds and waves ran the other way.
-    func testBoatRunsBeforeTheWind() {
+    /// Regression: the boat was always drawn bow to the left, whichever way the wind blew.
+    /// It now sails up into the wind, its wake and pennant trailing downwind.
+    func testBoatSailsIntoTheWind() {
         for (from, downwind) in [(270.0, 1.0), (225, 1), (0, 1), (90, -1), (45, -1)] {
             let wind = SceneWind(windFrom: from)
             XCTAssertEqual(wind.sign, downwind, "wind from \(from)°")
@@ -16,10 +16,10 @@ final class WeatherSceneTests: XCTestCase {
             let stern = CGPoint(x: 10, y: 0).applying(transform)
             let masthead = CGPoint(x: 0, y: -40).applying(transform)
 
-            XCTAssertEqual((bow.x - stern.x).sign, downwind.sign, "bow points downwind, wind from \(from)°")
+            XCTAssertEqual((stern.x - bow.x).sign, downwind.sign, "bow points upwind, wind from \(from)°")
             XCTAssertEqual(masthead.x, 100, accuracy: 1e-9, "mast upright, wind from \(from)°")
-            XCTAssertEqual(wind.wakeDirection, -downwind, "wake trails upwind, wind from \(from)°")
-            XCTAssertEqual(wind.bowDirection, downwind)
+            XCTAssertEqual(wind.wakeDirection, downwind, "wake trails downwind, wind from \(from)°")
+            XCTAssertEqual(wind.bowDirection, -downwind)
         }
     }
 
